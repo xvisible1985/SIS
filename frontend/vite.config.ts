@@ -11,10 +11,10 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/auth': 'http://localhost:8080',
-      '/signals': 'http://localhost:8080',
-      '/webhooks': 'http://localhost:8080',
-      '/ws': { target: 'ws://localhost:8080', ws: true },
+      '/auth': { target: 'http://localhost:8080', changeOrigin: true },
+      '/signals': { target: 'http://localhost:8080', changeOrigin: true },
+      '/webhooks': { target: 'http://localhost:8080', changeOrigin: true },
+      '/ws': { target: 'ws://localhost:8080', ws: true, changeOrigin: true },
     },
   },
 })
