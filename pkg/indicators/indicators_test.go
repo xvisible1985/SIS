@@ -115,6 +115,20 @@ func TestMACD_Basic(t *testing.T) {
 			break
 		}
 	}
+	// Signal line should also be valid after enough bars
+	for i := validFrom; i < len(result.Signal); i++ {
+		if math.IsNaN(result.Signal[i]) {
+			t.Errorf("Signal[%d] unexpected NaN", i)
+			break
+		}
+	}
+	// Histogram should also be valid
+	for i := validFrom; i < len(result.Histogram); i++ {
+		if math.IsNaN(result.Histogram[i]) {
+			t.Errorf("Histogram[%d] unexpected NaN", i)
+			break
+		}
+	}
 }
 
 func TestBollingerBands_Width(t *testing.T) {
@@ -170,6 +184,31 @@ func TestVolume(t *testing.T) {
 	for i, v := range vol {
 		if v != candles[i].Volume {
 			t.Errorf("volume[%d]: got %v, want %v", i, v, candles[i].Volume)
+		}
+	}
+}
+
+func TestEMAFromValues_NaNPrefix(t *testing.T) {
+	// Simulate MACD's macdLine: 25 NaN values, then valid values
+	values := make([]float64, 40)
+	for i := 0; i < 25; i++ {
+		values[i] = math.NaN()
+	}
+	for i := 25; i < 40; i++ {
+		values[i] = float64(i - 25) // 0, 1, 2, ...
+	}
+	out := indicators.EMAFromValues(values, 9)
+
+	// First 25 + 8 = 33 values should be NaN
+	for i := 0; i < 33; i++ {
+		if !math.IsNaN(out[i]) {
+			t.Errorf("out[%d] should be NaN, got %v", i, out[i])
+		}
+	}
+	// From index 33 onward should be valid
+	for i := 33; i < len(out); i++ {
+		if math.IsNaN(out[i]) {
+			t.Errorf("out[%d] unexpected NaN", i)
 		}
 	}
 }
