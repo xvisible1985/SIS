@@ -21,12 +21,16 @@ export function OptimizerPage() {
 
   useEffect(() => {
     if (!id) return
-    getOptimizationResults(id).then(setResults).catch(() => {})
+    getOptimizationResults(id).then(setResults).catch((e: unknown) => {
+      setError(e instanceof Error ? e.message : 'Failed to load results')
+    })
   }, [id])
 
   useEffect(() => {
     if (progress.status === 'done' && id) {
-      getOptimizationResults(id).then(setResults).catch(() => {})
+      getOptimizationResults(id).then(setResults).catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : 'Failed to load results')
+      })
       setJobId(null)
     }
   }, [progress.status, id])
@@ -40,6 +44,7 @@ export function OptimizerPage() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
+    if (!id) return
     setError('')
     setSubmitting(true)
     try {

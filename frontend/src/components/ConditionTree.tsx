@@ -164,6 +164,7 @@ function NodeView({ node, onChange, onRemove }: NodeViewProps) {
       <LeafView node={node} onChange={onChange} onRemove={onRemove!} />
     )
   }
+  // signal_ref nodes are not yet editable in the UI
   return null
 }
 

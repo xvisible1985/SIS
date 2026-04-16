@@ -21,19 +21,24 @@ export function BacktestPage() {
   // Load previous results
   useEffect(() => {
     if (!id) return
-    getBacktestResults(id).then(setResults).catch(() => {})
+    getBacktestResults(id).then(setResults).catch((e: unknown) => {
+      setError(e instanceof Error ? e.message : 'Failed to load results')
+    })
   }, [id])
 
   // Reload results when job completes
   useEffect(() => {
     if (progress.status === 'done' && id) {
-      getBacktestResults(id).then(setResults).catch(() => {})
+      getBacktestResults(id).then(setResults).catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : 'Failed to load results')
+      })
       setJobId(null)
     }
   }, [progress.status, id])
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
+    if (!id) return
     setError('')
     setSubmitting(true)
     try {
