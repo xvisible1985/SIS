@@ -23,12 +23,12 @@ export default function App() {
               <ProtectedRoute>
                 <Layout>
                   <Routes>
-                    <Route path="/" element={<DashboardPage />} />
-                    <Route path="/signals/new" element={<SignalBuilderPage />} />
-                    <Route path="/signals/:id/edit" element={<SignalBuilderPage />} />
-                    <Route path="/signals/:id/backtest" element={<BacktestPage />} />
-                    <Route path="/signals/:id/optimize" element={<OptimizerPage />} />
-                    <Route path="/webhooks" element={<WebhooksPage />} />
+                    <Route path="" element={<DashboardPage />} />
+                    <Route path="signals/new" element={<SignalBuilderPage />} />
+                    <Route path="signals/:id/edit" element={<SignalBuilderPage />} />
+                    <Route path="signals/:id/backtest" element={<BacktestPage />} />
+                    <Route path="signals/:id/optimize" element={<OptimizerPage />} />
+                    <Route path="webhooks" element={<WebhooksPage />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
                 </Layout>
