@@ -66,10 +66,13 @@ func (s *Server) CreateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var exists bool
-	s.pool.QueryRow(r.Context(),
+	if err := s.pool.QueryRow(r.Context(),
 		`SELECT EXISTS(SELECT 1 FROM signals WHERE id=$1 AND owner_id=$2)`,
 		req.SignalID, userID,
-	).Scan(&exists)
+	).Scan(&exists); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
 	if !exists {
 		writeError(w, http.StatusNotFound, "signal not found")
 		return
@@ -121,7 +124,7 @@ func (s *Server) UpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	_, err := s.pool.Exec(r.Context(),
+	tag, err := s.pool.Exec(r.Context(),
 		`UPDATE webhooks SET
 			url       = COALESCE(NULLIF($3,''), url),
 			platform  = COALESCE(NULLIF($4,''), platform),
@@ -131,6 +134,10 @@ func (s *Server) UpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "webhook not found")
 		return
 	}
 	s.GetWebhook(w, r)
