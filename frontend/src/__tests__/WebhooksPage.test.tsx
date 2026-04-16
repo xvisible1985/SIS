@@ -96,4 +96,7 @@ test('deletes a webhook when Delete clicked', async () => {
   await waitFor(() =>
     expect(webhooksApi.deleteWebhook).toHaveBeenCalledWith('w1')
   )
+  await waitFor(() =>
+    expect(screen.queryByText('https://example.com/hook')).not.toBeInTheDocument()
+  )
 })

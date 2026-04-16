@@ -19,6 +19,7 @@ export function WebhooksPage() {
   const [formPlatform, setFormPlatform] = useState('custom')
   const [formError, setFormError] = useState('')
   const [creating, setCreating] = useState(false)
+  const [error, setError] = useState('')
 
   useEffect(() => {
     Promise.all([listWebhooks(), listSignals()])
@@ -27,6 +28,7 @@ export function WebhooksPage() {
         setSignals(sigs)
         if (sigs.length > 0) setFormSignalId(sigs[0].id)
       })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'))
       .finally(() => setLoading(false))
   }, [])
 
@@ -51,8 +53,12 @@ export function WebhooksPage() {
   }
 
   async function handleDelete(id: string) {
-    await deleteWebhook(id)
-    setWebhooks((prev) => prev.filter((w) => w.id !== id))
+    try {
+      await deleteWebhook(id)
+      setWebhooks((prev) => prev.filter((w) => w.id !== id))
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to delete')
+    }
   }
 
   function signalName(id: string) {
@@ -121,6 +127,8 @@ export function WebhooksPage() {
           </button>
         </div>
       )}
+
+      {error && <p className="text-red-600 text-sm">{error}</p>}
 
       {webhooks.length === 0 ? (
         <p className="text-gray-500 py-10 text-center">No webhooks yet.</p>
