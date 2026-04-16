@@ -249,14 +249,6 @@ func generateCombinations(space ParamSpace, tps, sls []float64) []comboEntry {
 		}
 	}
 
-	if len(space) == 0 {
-		for _, tp := range tps {
-			for _, sl := range sls {
-				result = append(result, comboEntry{combo: Combination{}, tp: tp, sl: sl})
-			}
-		}
-	}
-
 	return result
 }
 
