@@ -67,6 +67,12 @@ func main() {
 		r.Post("/signals/{id}/optimize", s.SubmitOptimize)
 		r.Get("/signals/{id}/backtest-results", s.GetBacktestResults)
 		r.Get("/signals/{id}/optimization-results", s.GetOptimizationResults)
+
+		r.Get("/webhooks", s.ListWebhooks)
+		r.Post("/webhooks", s.CreateWebhook)
+		r.Get("/webhooks/{id}", s.GetWebhook)
+		r.Put("/webhooks/{id}", s.UpdateWebhook)
+		r.Delete("/webhooks/{id}", s.DeleteWebhook)
 	})
 
 	// WebSocket — auth via ?token= query param
