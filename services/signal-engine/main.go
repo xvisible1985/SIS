@@ -40,6 +40,7 @@ func main() {
 
 	worker := NewWorker(pool, rdb)
 	log.Println("signal-engine: starting")
+	go worker.RunOptimizer(ctx)
 	worker.Start(ctx)
 	log.Println("signal-engine: stopped")
 }
