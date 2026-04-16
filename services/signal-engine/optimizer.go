@@ -244,7 +244,11 @@ func generateCombinations(space ParamSpace, tps, sls []float64) []comboEntry {
 		}
 		for _, tp := range tps {
 			for _, sl := range sls {
-				result = append(result, comboEntry{combo: combo, tp: tp, sl: sl})
+				cp := make(Combination, len(combo))
+				for k, v := range combo {
+					cp[k] = v
+				}
+				result = append(result, comboEntry{combo: cp, tp: tp, sl: sl})
 			}
 		}
 	}
@@ -297,8 +301,9 @@ func scoreBacktest(r BacktestResult, scoreBy string) float64 {
 	case "avg_gain":
 		return r.AvgGain
 	default: // "profit_factor"
-		if r.ProfitFactor == math.MaxFloat64 || math.IsInf(r.ProfitFactor, 1) {
-			return 999
+		// computeMetrics sets MaxFloat64 when totalLoss==0; cap to avoid comparison issues
+		if r.ProfitFactor >= math.MaxFloat64 {
+			return math.MaxFloat64
 		}
 		return r.ProfitFactor
 	}
@@ -313,11 +318,15 @@ func splitWalkForwardWindows(from, to time.Time, folds int) []WFWindow {
 	step := to.Sub(from) / time.Duration(folds)
 	windows := make([]WFWindow, 0, folds-1)
 	for i := 0; i < folds-1; i++ {
+		outTo := from.Add(step * time.Duration(i+2))
+		if i == folds-2 {
+			outTo = to
+		}
 		windows = append(windows, WFWindow{
 			InFrom:  from,
 			InTo:    from.Add(step * time.Duration(i+1)),
 			OutFrom: from.Add(step * time.Duration(i+1)),
-			OutTo:   from.Add(step * time.Duration(i+2)),
+			OutTo:   outTo,
 		})
 	}
 	return windows
@@ -331,7 +340,8 @@ func buildOptimizeResult(results []RankedResult, topN int) OptimizeResult {
 	if topN <= 0 || topN > len(results) {
 		topN = len(results)
 	}
-	top := results[:topN]
+	top := make([]RankedResult, topN)
+	copy(top, results[:topN])
 	best := Combination{}
 	if len(top) > 0 {
 		best = top[0].Params
