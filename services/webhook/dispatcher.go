@@ -222,5 +222,3 @@ func (d *Dispatcher) ack(ctx context.Context, msgID string) {
 		log.Printf("webhook-dispatcher: ack error %s: %v", msgID, err)
 	}
 }
-
-func main() {}
