@@ -102,6 +102,8 @@ func (w *Worker) handleMessage(ctx context.Context, msg redis.XMessage) {
 
 	if err := w.runJob(ctx, job); err != nil {
 		log.Printf("worker: job %s failed: %v", job.JobID, err)
+		progressKey := fmt.Sprintf(progressKeyFmt, job.JobID)
+		w.rdb.HSet(ctx, progressKey, "status", "error", "error", err.Error(), "updated_at", time.Now().Unix())
 	}
 	w.ack(ctx, msg.ID)
 }

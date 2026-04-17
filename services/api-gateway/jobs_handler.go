@@ -73,7 +73,7 @@ func (s *Server) SubmitBacktest(w http.ResponseWriter, r *http.Request) {
 		"period_to":   req.PeriodTo,
 		"take_profit": req.TakeProfit,
 		"stop_loss":   req.StopLoss,
-		"conditions":  string(condJSON),
+		"conditions":  condJSON,
 	}
 	payloadJSON, _ := json.Marshal(payload)
 
@@ -142,7 +142,7 @@ func (s *Server) SubmitOptimize(w http.ResponseWriter, r *http.Request) {
 		"stop_losses":         req.StopLosses,
 		"param_space":         req.ParamSpace,
 		"wf_folds":            req.WFFolds,
-		"conditions_template": string(condJSON),
+		"conditions_template": condJSON,
 	}
 	payloadJSON, _ := json.Marshal(payload)
 

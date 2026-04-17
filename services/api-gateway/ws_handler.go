@@ -81,7 +81,7 @@ func (s *Server) JobProgress(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			if msg.Status == "done" {
+			if msg.Status == "done" || msg.Status == "error" {
 				return
 			}
 		}

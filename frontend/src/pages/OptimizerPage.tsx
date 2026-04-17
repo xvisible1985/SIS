@@ -33,6 +33,10 @@ export function OptimizerPage() {
       })
       setJobId(null)
     }
+    if (progress.status === 'error') {
+      setError('Optimization failed — check signal conditions and candle data availability')
+      setJobId(null)
+    }
   }, [progress.status, id])
 
   function parseList(s: string): number[] {

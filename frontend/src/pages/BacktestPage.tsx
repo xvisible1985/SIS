@@ -26,12 +26,16 @@ export function BacktestPage() {
     })
   }, [id])
 
-  // Reload results when job completes
+  // Reload results when job completes; surface error if job failed
   useEffect(() => {
     if (progress.status === 'done' && id) {
       getBacktestResults(id).then(setResults).catch((e: unknown) => {
         setError(e instanceof Error ? e.message : 'Failed to load results')
       })
+      setJobId(null)
+    }
+    if (progress.status === 'error') {
+      setError('Backtest failed — check signal conditions and candle data availability')
       setJobId(null)
     }
   }, [progress.status, id])

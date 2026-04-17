@@ -94,6 +94,8 @@ func (w *Worker) handleOptimizeMessage(ctx context.Context, msg redis.XMessage) 
 
 	if err := w.runOptimizeJob(ctx, payload); err != nil {
 		log.Printf("optimizer: job %s failed: %v", payload.JobID, err)
+		progressKey := fmt.Sprintf(optimizeProgressFmt, payload.JobID)
+		w.rdb.HSet(ctx, progressKey, "status", "error", "error", err.Error(), "updated_at", time.Now().Unix())
 	}
 	w.ackOptimize(ctx, msg.ID)
 }
