@@ -46,8 +46,8 @@ func serverTimestamp() string {
 				var serverMs int64
 				fmt.Sscanf(r.Time, "%d", &serverMs)
 				tsOffset = serverMs - time.Now().UnixMilli()
+				tsUpdated = time.Now()
 			}
-			tsUpdated = time.Now()
 		}
 	}
 	return fmt.Sprintf("%d", time.Now().UnixMilli()+tsOffset)
