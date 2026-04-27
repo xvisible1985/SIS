@@ -16,11 +16,12 @@ type Server struct {
 	pool      *pgxpool.Pool
 	rdb       *redis.Client
 	jwtSecret []byte
+	encKey    string
 }
 
 // NewServer creates a Server.
-func NewServer(pool *pgxpool.Pool, rdb *redis.Client, jwtSecret string) *Server {
-	return &Server{pool: pool, rdb: rdb, jwtSecret: []byte(jwtSecret)}
+func NewServer(pool *pgxpool.Pool, rdb *redis.Client, jwtSecret, encKey string) *Server {
+	return &Server{pool: pool, rdb: rdb, jwtSecret: []byte(jwtSecret), encKey: encKey}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

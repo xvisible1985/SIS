@@ -23,6 +23,7 @@ func main() {
 	dsn := mustEnv("DATABASE_URL")
 	redisURL := mustEnv("REDIS_URL")
 	jwtSecret := mustEnv("JWT_SECRET")
+	encKey := getEnv("ENC_KEY", "")
 	listenAddr := getEnv("LISTEN_ADDR", ":8080")
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -44,7 +45,7 @@ func main() {
 	}
 	defer rdb.Close()
 
-	s := NewServer(pool, rdb, jwtSecret)
+	s := NewServer(pool, rdb, jwtSecret, encKey)
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
