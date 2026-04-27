@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/joho/godotenv"
 	"sis/pkg/cache"
 	"sis/pkg/db"
+	traderPkg "sis/pkg/trader"
 )
 
 func main() {
@@ -23,8 +25,13 @@ func main() {
 	dsn := mustEnv("DATABASE_URL")
 	redisURL := mustEnv("REDIS_URL")
 	jwtSecret := mustEnv("JWT_SECRET")
-	encKey := getEnv("ENC_KEY", "")
+	encKey := mustEnv("ENCRYPTION_KEY")
 	listenAddr := getEnv("LISTEN_ADDR", ":8080")
+
+	syncDays := 30
+	if v := os.Getenv("TRADER_SYNC_DAYS"); v != "" {
+		fmt.Sscanf(v, "%d", &syncDays)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -46,6 +53,11 @@ func main() {
 	defer rdb.Close()
 
 	s := NewServer(pool, rdb, jwtSecret, encKey)
+
+	// Start background syncer
+	syncer := traderPkg.NewSyncer(pool, encKey, syncDays)
+	syncer.Start(ctx)
+
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
@@ -74,10 +86,25 @@ func main() {
 		r.Get("/webhooks/{id}", s.GetWebhook)
 		r.Put("/webhooks/{id}", s.UpdateWebhook)
 		r.Delete("/webhooks/{id}", s.DeleteWebhook)
+
+		// Exchange accounts
+		r.Get("/accounts", s.ListAccounts)
+		r.Post("/accounts", s.CreateAccount)
+		r.Delete("/accounts/{id}", s.DeleteAccount)
+		r.Get("/accounts/{id}/verify", s.VerifyAccount)
+
+		// Trader
+		r.Post("/trader/order", s.TraderPlaceOrder)
+		r.Delete("/trader/order", s.TraderCancelOrder)
+		r.Post("/trader/leverage", s.TraderSetLeverage)
+		r.Get("/trader/orders", s.ListTraderOrders)
+		r.Get("/trader/executions", s.ListTraderExecutions)
+		r.Get("/trader/stats", s.GetTraderStats)
 	})
 
-	// WebSocket — auth via ?token= query param
+	// WebSocket endpoints — auth via ?token= query param
 	r.Get("/ws/jobs/{id}/progress", s.JobProgress)
+	r.Get("/ws/trader/positions", s.PositionsStream)
 
 	srv := &http.Server{Addr: listenAddr, Handler: r}
 

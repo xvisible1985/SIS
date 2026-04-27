@@ -109,6 +109,10 @@ func (s *Server) ListTraderOrders(w http.ResponseWriter, r *http.Request) {
 		}
 		result = append(result, o)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "row error")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"orders": result, "total": total, "page": page})
 }
 
@@ -191,6 +195,10 @@ func (s *Server) ListTraderExecutions(w http.ResponseWriter, r *http.Request) {
 		}
 		result = append(result, e)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "row error")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"executions": result, "total": total, "page": page})
 }
 
@@ -223,14 +231,17 @@ func (s *Server) GetTraderStats(w http.ResponseWriter, r *http.Request) {
 
 	var totalFee, totalFunding float64
 	var tradeCount int
-	s.pool.QueryRow(r.Context(),
+	if err := s.pool.QueryRow(r.Context(),
 		fmt.Sprintf(`SELECT
 			COALESCE(SUM(exec_fee) FILTER (WHERE exec_type='Trade'),0),
 			COALESCE(SUM(exec_fee) FILTER (WHERE exec_type='Funding'),0),
 			COUNT(*) FILTER (WHERE exec_type='Trade')
 			FROM trader_executions WHERE %s`, where),
 		args...,
-	).Scan(&totalFee, &totalFunding, &tradeCount)
+	).Scan(&totalFee, &totalFunding, &tradeCount); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total_fee":     totalFee,
