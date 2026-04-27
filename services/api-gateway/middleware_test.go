@@ -64,3 +64,8 @@ func TestUserIDFromCtx_Empty(t *testing.T) {
 		t.Errorf("expected empty, got %q", id)
 	}
 }
+
+// withUserID injects a user ID into the request context (simulates RequireAuth middleware).
+func withUserID(r *http.Request, userID string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), ctxUserID, userID))
+}
