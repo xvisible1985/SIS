@@ -9,6 +9,7 @@ import { SignalBuilderPage } from './pages/SignalBuilderPage'
 import { BacktestPage } from './pages/BacktestPage'
 import { OptimizerPage } from './pages/OptimizerPage'
 import { WebhooksPage } from './pages/WebhooksPage'
+import { TerminalPage } from './pages/TerminalPage'
 
 export default function App() {
   return (
@@ -28,6 +29,7 @@ export default function App() {
                     <Route path="signals/:id/edit" element={<SignalBuilderPage />} />
                     <Route path="signals/:id/backtest" element={<BacktestPage />} />
                     <Route path="signals/:id/optimize" element={<OptimizerPage />} />
+                    <Route path="terminal" element={<TerminalPage />} />
                     <Route path="webhooks" element={<WebhooksPage />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
