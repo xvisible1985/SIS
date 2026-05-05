@@ -21,6 +21,6 @@ export async function deleteAccount(id: string): Promise<void> {
 }
 
 export async function verifyAccount(id: string): Promise<{ ok: boolean; message?: string }> {
-  const res = await apiClient.post<{ ok: boolean; message?: string }>(`/accounts/${id}/verify`)
+  const res = await apiClient.get<{ ok: boolean; message?: string }>(`/accounts/${id}/verify`)
   return res.data
 }

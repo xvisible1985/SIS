@@ -50,11 +50,6 @@ func withChiParams(r *http.Request, params map[string]string) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
 }
 
-// withUserID injects a user ID into the request context (simulates RequireAuth middleware).
-func withUserID(r *http.Request, userID string) *http.Request {
-	return r.WithContext(context.WithValue(r.Context(), ctxUserID, userID))
-}
-
 const testConditions = `{"type":"condition","indicator":"RSI","params":{"period":14},"operator":">","value":50}`
 
 func TestCreateAndGetSignal(t *testing.T) {

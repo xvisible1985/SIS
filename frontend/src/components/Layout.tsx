@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 
 const navItems = [
   { label: 'Dashboard', to: '/' },
+  { label: 'Terminal', to: '/terminal' },
   { label: 'Webhooks', to: '/webhooks' },
   { label: 'Аккаунты', to: '/accounts' },
 ]
@@ -48,7 +49,7 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
       </aside>
       {/* Main */}
-      <main className="flex-1 overflow-auto p-6">{children}</main>
+      <main className={`flex-1 overflow-auto ${pathname === '/terminal' ? '' : 'p-6'}`}>{children}</main>
     </div>
   )
 }
