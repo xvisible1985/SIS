@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi, ColorType } from 'lightweight-charts'
 import type { Candle } from '../../hooks/terminal/useCandles'
 import type { Position, ActiveOrder } from '../../types'
@@ -16,6 +16,8 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const priceLines = useRef<any[]>([])
   const loadedSymbolRef = useRef<string | null>(null)
+  // incremented after every setData so the price-lines effect re-fires
+  const [afterSetData, setAfterSetData] = useState(0)
 
   // Init chart once
   useEffect(() => {
@@ -75,20 +77,22 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
     }
   }, [])
 
-  // Candles: setData only on first load per symbol, update() for live ticks
+  // Candles: full setData only on symbol change/initial load, live ticks via update()
   useEffect(() => {
     if (!seriesRef.current || !candles.length) return
     if (loadedSymbolRef.current !== symbol) {
       seriesRef.current.setData(candles as any)
       chartRef.current?.timeScale().fitContent()
       loadedSymbolRef.current = symbol
+      // setData clears price lines in v5 — trigger redraw
+      setAfterSetData(n => n + 1)
     } else {
       const last = candles[candles.length - 1]
       if (last) seriesRef.current.update(last as any)
     }
   }, [candles, symbol])
 
-  // Price lines: redraw from props directly
+  // Price lines: runs on positions/orders/symbol change AND after every setData
   useEffect(() => {
     const series = seriesRef.current
     if (!series) return
@@ -136,7 +140,7 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
         }))
       }
     }
-  }, [positions, orders, symbol])
+  }, [positions, orders, symbol, afterSetData])
 
   return <div ref={containerRef} className="w-full h-full" />
 }
