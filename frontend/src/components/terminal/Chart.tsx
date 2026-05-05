@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useCallback } from 'react'
 import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi, ColorType } from 'lightweight-charts'
 import type { Candle } from '../../hooks/terminal/useCandles'
 import type { Position, ActiveOrder } from '../../types'
@@ -15,6 +15,67 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const priceLines = useRef<any[]>([])
+  const loadedSymbolRef = useRef<string | null>(null)
+
+  // Refs so applyPriceLines always sees fresh values without being a dependency
+  const positionsRef = useRef(positions)
+  const ordersRef = useRef(orders)
+  const symbolRef = useRef(symbol)
+  useEffect(() => { positionsRef.current = positions })
+  useEffect(() => { ordersRef.current = orders })
+  useEffect(() => { symbolRef.current = symbol })
+
+  const applyPriceLines = useCallback(() => {
+    const series = seriesRef.current
+    if (!series) return
+    for (const line of priceLines.current) {
+      try { series.removePriceLine(line) } catch {}
+    }
+    priceLines.current = []
+
+    const sym = symbolRef.current
+
+    for (const pos of positionsRef.current.filter(p => p.symbol === sym)) {
+      const price = parseFloat(pos.entryPrice)
+      if (!price) continue
+      const isLong = pos.side === 'Buy'
+      priceLines.current.push(series.createPriceLine({
+        price,
+        color: isLong ? '#00DC82' : '#ef4444',
+        lineWidth: 2,
+        lineStyle: 0,
+        axisLabelVisible: true,
+        title: `${isLong ? 'Long' : 'Short'} ${pos.size}`,
+      }))
+    }
+
+    for (const ord of ordersRef.current.filter(o => o.symbol === sym)) {
+      const isLong = ord.side === 'Buy'
+      const color = isLong ? '#34d399' : '#f87171'
+      if (ord.triggerPrice && parseFloat(ord.triggerPrice) > 0) {
+        priceLines.current.push(series.createPriceLine({
+          price: parseFloat(ord.triggerPrice),
+          color,
+          lineWidth: 1,
+          lineStyle: 4,
+          axisLabelVisible: true,
+          title: `${isLong ? 'Buy' : 'Sell'} Stop`,
+        }))
+      }
+      if (ord.price && parseFloat(ord.price) > 0 && ord.orderType === 'Limit') {
+        priceLines.current.push(series.createPriceLine({
+          price: parseFloat(ord.price),
+          color,
+          lineWidth: 1,
+          lineStyle: 1,
+          axisLabelVisible: true,
+          title: `${isLong ? 'Buy' : 'Sell'} ${ord.qty}`,
+        }))
+      }
+    }
+  }, [])
+
+  // Init chart once
   useEffect(() => {
     if (!containerRef.current) return
 
@@ -68,61 +129,28 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
       ro.disconnect()
       themeObserver.disconnect()
       chart.remove()
+      loadedSymbolRef.current = null
     }
   }, [])
 
+  // Candles: setData only on symbol change, update() on live ticks
   useEffect(() => {
     if (!seriesRef.current || !candles.length) return
-    seriesRef.current.setData(candles as any)
-    chartRef.current?.timeScale().fitContent()
-  }, [candles])
+    if (loadedSymbolRef.current !== symbol) {
+      seriesRef.current.setData(candles as any)
+      chartRef.current?.timeScale().fitContent()
+      loadedSymbolRef.current = symbol
+      applyPriceLines()
+    } else {
+      const last = candles[candles.length - 1]
+      if (last) seriesRef.current.update(last as any)
+    }
+  }, [candles, symbol, applyPriceLines])
 
+  // Price lines: re-apply when positions/orders/symbol change
   useEffect(() => {
-    if (!seriesRef.current) return
-    for (const line of priceLines.current) {
-      try { seriesRef.current.removePriceLine(line) } catch {}
-    }
-    priceLines.current = []
-
-    for (const pos of positions.filter(p => p.symbol === symbol)) {
-      const price = parseFloat(pos.entryPrice)
-      if (!price) continue
-      const isLong = pos.side === 'Buy'
-      priceLines.current.push(seriesRef.current.createPriceLine({
-        price,
-        color: isLong ? '#00DC82' : '#ef4444',
-        lineWidth: 1,
-        lineStyle: 0,
-        axisLabelVisible: true,
-        title: `${isLong ? 'Long' : 'Short'} ${pos.size}`,
-      }))
-    }
-
-    for (const ord of orders.filter(o => o.symbol === symbol)) {
-      const isLong = ord.side === 'Buy'
-      const color = isLong ? '#34d399' : '#f87171'
-      if (ord.triggerPrice && parseFloat(ord.triggerPrice) > 0) {
-        priceLines.current.push(seriesRef.current.createPriceLine({
-          price: parseFloat(ord.triggerPrice),
-          color,
-          lineWidth: 1,
-          lineStyle: 4,
-          axisLabelVisible: true,
-          title: `${isLong ? 'Buy' : 'Sell'} Stop`,
-        }))
-      }
-      if (ord.price && parseFloat(ord.price) > 0 && ord.orderType === 'Limit') {
-        priceLines.current.push(seriesRef.current.createPriceLine({
-          price: parseFloat(ord.price),
-          color,
-          lineWidth: 1,
-          lineStyle: 1,
-          axisLabelVisible: true,
-          title: `${isLong ? 'Buy' : 'Sell'} ${ord.qty}`,
-        }))
-      }
-    }
-  }, [positions, orders, symbol])
+    applyPriceLines()
+  }, [positions, orders, symbol, applyPriceLines])
 
   return <div ref={containerRef} className="w-full h-full" />
 }
