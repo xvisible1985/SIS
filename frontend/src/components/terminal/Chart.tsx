@@ -44,6 +44,8 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
       upColor: '#00DC82', downColor: '#ef4444',
       borderUpColor: '#00DC82', borderDownColor: '#ef4444',
       wickUpColor: '#00DC82', wickDownColor: '#ef4444',
+      lastValueVisible: false,
+      priceLineVisible: false,
     })
     seriesRef.current = series
 
