@@ -22,13 +22,13 @@ export function OrdersTable({ accountId, orders, loading }: Props) {
     setCancelling(null)
   }
 
-  if (loading) return <div className="flex items-center justify-center h-full text-gray-400 text-sm"><span className="animate-pulse">Загрузка...</span></div>
-  if (!orders.length) return <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-2"><span className="text-2xl opacity-30">📭</span><p className="text-sm">Активных ордеров нет</p></div>
+  if (loading) return <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400 text-sm"><span className="animate-pulse">Загрузка...</span></div>
+  if (!orders.length) return <div className="flex flex-col items-center justify-center h-full text-gray-500 dark:text-gray-400 gap-2"><span className="text-2xl opacity-30">📭</span><p className="text-sm">Активных ордеров нет</p></div>
 
   return (
     <table className="w-full text-xs">
-      <thead className="sticky top-0 z-10 bg-gray-900">
-        <tr className="text-gray-400 border-b border-gray-700">
+      <thead className="sticky top-0 z-10 bg-white dark:bg-gray-900">
+        <tr className="text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
           <th className="text-left px-3 py-2">Символ</th>
           <th className="text-left px-3 py-2">Сторона</th>
           <th className="text-left px-3 py-2">Тип</th>
@@ -42,7 +42,7 @@ export function OrdersTable({ accountId, orders, loading }: Props) {
       </thead>
       <tbody>
         {orders.map(ord => (
-          <tr key={ord.orderId} className="border-b border-gray-700/50 hover:bg-gray-800/60">
+          <tr key={ord.orderId} className="border-b border-gray-200 dark:border-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-800/60">
             <td className="px-3 py-2 font-mono font-medium">
               <div className="flex items-center gap-1.5">
                 <img src={coinIcon(ord.symbol)} className="w-4 h-4 rounded-full shrink-0" onError={e => (e.currentTarget.style.display='none')} />
@@ -54,12 +54,12 @@ export function OrdersTable({ accountId, orders, loading }: Props) {
                 {ord.side}
               </span>
             </td>
-            <td className="px-3 py-2 text-gray-400">{ord.orderType}</td>
+            <td className="px-3 py-2 text-gray-500 dark:text-gray-400">{ord.orderType}</td>
             <td className="px-3 py-2 text-right font-mono">
               {ord.triggerPrice ? `~${parseFloat(ord.triggerPrice).toFixed(2)}` : parseFloat(ord.price) > 0 ? parseFloat(ord.price).toFixed(2) : '—'}
             </td>
             <td className="px-3 py-2 text-right font-mono">{ord.qty}</td>
-            <td className="px-3 py-2 text-right font-mono text-gray-400">{ord.cumExecQty}</td>
+            <td className="px-3 py-2 text-right font-mono text-gray-500 dark:text-gray-400">{ord.cumExecQty}</td>
             <td className="px-3 py-2">
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400">{ord.orderStatus}</span>
             </td>
@@ -70,7 +70,7 @@ export function OrdersTable({ accountId, orders, loading }: Props) {
             </td>
             <td className="px-3 py-2 text-right">
               <button onClick={() => handleCancel(ord)} disabled={cancelling === ord.orderId}
-                className="text-gray-400 hover:text-red-400 transition-colors disabled:opacity-50">✕</button>
+                className="text-gray-500 dark:text-gray-400 hover:text-red-400 transition-colors disabled:opacity-50">✕</button>
             </td>
           </tr>
         ))}

@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi, ColorType } from 'lightweight-charts'
 import type { Candle } from '../../hooks/terminal/useCandles'
 import type { Position, ActiveOrder } from '../../types'
+import { useTheme } from '../../hooks/useTheme'
 
 interface Props {
   candles: Candle[]
@@ -15,22 +16,24 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const priceLines = useRef<any[]>([])
+  const { theme } = useTheme()
 
   useEffect(() => {
     if (!containerRef.current) return
+    const isDark = theme === 'dark'
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
       layout: {
-        background: { type: ColorType.Solid, color: '#0a0a0f' },
-        textColor: '#9ca3af',
+        background: { type: ColorType.Solid, color: isDark ? '#0a0a0f' : '#ffffff' },
+        textColor: isDark ? '#9ca3af' : '#374151',
       },
       grid: {
-        vertLines: { color: '#1a1a2e' },
-        horzLines: { color: '#1a1a2e' },
+        vertLines: { color: isDark ? '#1a1a2e' : '#e5e7eb' },
+        horzLines: { color: isDark ? '#1a1a2e' : '#e5e7eb' },
       },
-      rightPriceScale: { borderColor: '#2d2d3d' },
-      timeScale: { borderColor: '#2d2d3d', timeVisible: true },
+      rightPriceScale: { borderColor: isDark ? '#2d2d3d' : '#d1d5db' },
+      timeScale: { borderColor: isDark ? '#2d2d3d' : '#d1d5db', timeVisible: true },
       crosshair: { mode: 1 },
     })
     chartRef.current = chart
@@ -63,6 +66,23 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
     seriesRef.current.setData(candles as any)
     chartRef.current?.timeScale().fitContent()
   }, [candles])
+
+  useEffect(() => {
+    if (!chartRef.current) return
+    const isDark = theme === 'dark'
+    chartRef.current.applyOptions({
+      layout: {
+        background: { type: ColorType.Solid, color: isDark ? '#0a0a0f' : '#ffffff' },
+        textColor: isDark ? '#9ca3af' : '#374151',
+      },
+      grid: {
+        vertLines: { color: isDark ? '#1a1a2e' : '#e5e7eb' },
+        horzLines: { color: isDark ? '#1a1a2e' : '#e5e7eb' },
+      },
+      rightPriceScale: { borderColor: isDark ? '#2d2d3d' : '#d1d5db' },
+      timeScale: { borderColor: isDark ? '#2d2d3d' : '#d1d5db', timeVisible: true },
+    })
+  }, [theme])
 
   useEffect(() => {
     if (!seriesRef.current) return

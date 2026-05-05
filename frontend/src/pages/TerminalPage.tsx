@@ -56,27 +56,27 @@ export function TerminalPage() {
   ]
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '65% 35%', gridTemplateRows: '65% 35%', height: 'calc(100vh - 65px)', gap: '10px', padding: '10px', background: '#07070f' }}>
+    <div className="bg-gray-100 dark:bg-[#07070f]" style={{ display: 'grid', gridTemplateColumns: '65% 35%', gridTemplateRows: '65% 35%', height: 'calc(100vh - 65px)', gap: '10px', padding: '10px' }}>
 
       {/* Chart area */}
-      <div style={{ gridColumn: 1, gridRow: 1 }} className="bg-gray-900/50 border border-gray-700/50 rounded-xl flex flex-col overflow-hidden">
+      <div style={{ gridColumn: 1, gridRow: 1 }} className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden">
         {/* Toolbar */}
-        <div className="flex items-center gap-3 px-4 py-2 border-b border-gray-700 flex-shrink-0">
+        <div className="flex items-center gap-3 px-4 py-2 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
           <select value={symbol} onChange={e => setSymbol(e.target.value)}
-            className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white w-36 focus:outline-none">
+            className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm text-gray-900 dark:text-white w-36 focus:outline-none">
             {COINS.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
           <div className="flex gap-1">
             {TIMEFRAMES.map(t => (
               <button key={t.value} onClick={() => setTf(t.value)}
-                className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${tf === t.value ? 'bg-blue-500 text-white' : 'text-gray-400 hover:text-white'}`}>
+                className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${tf === t.value ? 'bg-blue-500 text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
                 {t.label}
               </button>
             ))}
           </div>
           {lastPrice && (
             <div className="ml-auto flex items-center gap-2">
-              <span className="font-mono font-bold text-lg text-white">{lastPrice}</span>
+              <span className="font-mono font-bold text-lg text-gray-900 dark:text-white">{lastPrice}</span>
               <span className={`text-sm font-medium ${priceChange >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                 {priceChange >= 0 ? '+' : ''}{priceChange.toFixed(2)}%
               </span>
@@ -89,24 +89,24 @@ export function TerminalPage() {
       </div>
 
       {/* Bottom: positions/orders/history */}
-      <div style={{ gridColumn: 1, gridRow: 2 }} className="bg-gray-900/50 border border-gray-700/50 rounded-xl flex flex-col overflow-hidden">
-        <div className="flex items-center border-b border-gray-700 flex-shrink-0 px-2">
+      <div style={{ gridColumn: 1, gridRow: 2 }} className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden">
+        <div className="flex items-center border-b border-gray-200 dark:border-gray-700 flex-shrink-0 px-2">
           {bottomTabs.map(t => (
             <button key={t.key} onClick={() => setBottomTab(t.key)}
-              className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors ${bottomTab === t.key ? 'border-blue-500 text-white' : 'border-transparent text-gray-400 hover:text-white'}`}>
+              className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors ${bottomTab === t.key ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
               {t.label}
               {t.count != null && t.count > 0 && (
                 loading && (t.key === 'positions' || t.key === 'orders')
                   ? <span className="inline-block w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
-                  : <span className="bg-gray-700 text-xs px-1.5 py-0.5 rounded-full">{t.count}</span>
+                  : <span className="bg-gray-200 dark:bg-gray-700 text-xs px-1.5 py-0.5 rounded-full">{t.count}</span>
               )}
             </button>
           ))}
-          {accountName && <span className="text-xs text-gray-400 ml-2">{accountName}</span>}
+          {accountName && <span className="text-xs text-gray-500 dark:text-gray-400 ml-2">{accountName}</span>}
           <div className="ml-auto flex items-center gap-1.5">
             <span className={`w-2 h-2 rounded-full ${statusColor}`} />
             {(status === 'closed' || status === 'error') && (
-              <button onClick={reconnect} className="text-gray-400 hover:text-white text-xs">↺</button>
+              <button onClick={reconnect} className="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white text-xs">↺</button>
             )}
           </div>
         </div>
@@ -121,17 +121,17 @@ export function TerminalPage() {
 
       {/* Right panel: OrderForm + Orderbook */}
       <div style={{ gridColumn: 2, gridRow: '1 / 3', display: 'flex', flexDirection: 'column', gap: '10px', overflow: 'hidden' }}>
-        <div className="bg-gray-900/50 border border-gray-700/50 rounded-xl overflow-hidden flex-shrink-0" style={{ maxHeight: '55%' }}>
+        <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl overflow-hidden flex-shrink-0" style={{ maxHeight: '55%' }}>
           {accountId ? (
             <OrderForm accountId={accountId} symbol={symbol} lastPrice={lastPrice} orders={orders} positions={positions} />
           ) : (
-            <div className="flex flex-col items-center justify-center h-full p-6 text-center text-gray-400 gap-3">
+            <div className="flex flex-col items-center justify-center h-full p-6 text-center text-gray-500 dark:text-gray-400 gap-3">
               <span className="text-3xl opacity-30">🔑</span>
               <p className="text-sm">Нет аккаунта Bybit. Добавьте API-ключи в настройках.</p>
             </div>
           )}
         </div>
-        <div className="bg-gray-900/50 border border-gray-700/50 rounded-xl flex-1 flex flex-col overflow-hidden min-h-0">
+        <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex-1 flex flex-col overflow-hidden min-h-0">
           <Orderbook bids={bids} asks={asks} spread={spread} symbol={symbol} />
         </div>
       </div>
