@@ -86,10 +86,6 @@ function AccountCard({
     onDelete(acc.id)
   }
 
-  const activePerms = s.verify?.permissions
-    ? Object.entries(s.verify.permissions).filter(([, v]) => v.length > 0).map(([k]) => k)
-    : []
-
   return (
     <li className="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
       {/* Header */}
@@ -158,20 +154,38 @@ function AccountCard({
               <div className="text-sm text-gray-400">Нажмите «Проверить» для загрузки</div>
             ) : !s.verify.ok ? (
               <div className="text-sm text-red-500">{s.verify.message ?? 'Ошибка'}</div>
-            ) : activePerms.length === 0 ? (
-              <div className="text-sm text-gray-400">Разрешений нет</div>
             ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {activePerms.map(p => (
-                  <span key={p} className="text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 px-2 py-0.5 rounded-full font-medium">
-                    {PERM_LABELS[p] ?? p}
+              <div className="space-y-2">
+                {/* Read/write + IP row */}
+                <div className="flex flex-wrap gap-1.5">
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                    s.verify.read_only
+                      ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
+                      : 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                  }`}>
+                    {s.verify.read_only ? 'Только чтение' : 'Чтение и запись'}
                   </span>
-                ))}
-                {s.verify.read_only && (
-                  <span className="text-xs bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300 px-2 py-0.5 rounded-full font-medium">
-                    Только чтение
-                  </span>
-                )}
+                  {s.verify.ips && s.verify.ips.length > 0 && (
+                    <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300 font-mono">
+                      IP: {s.verify.ips.join(', ')}
+                    </span>
+                  )}
+                </div>
+                {/* All permission categories */}
+                <div className="flex flex-wrap gap-1.5">
+                  {Object.entries(s.verify.permissions ?? {}).map(([key, vals]) => {
+                    const active = (vals as string[]).length > 0
+                    return (
+                      <span key={key} className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                        active
+                          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+                          : 'bg-gray-100 text-gray-400 dark:bg-gray-700/50 dark:text-gray-500 line-through'
+                      }`}>
+                        {PERM_LABELS[key] ?? key}
+                      </span>
+                    )
+                  })}
+                </div>
               </div>
             )}
           </div>
