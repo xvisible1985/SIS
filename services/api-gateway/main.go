@@ -92,6 +92,8 @@ func main() {
 		r.Post("/accounts", s.CreateAccount)
 		r.Delete("/accounts/{id}", s.DeleteAccount)
 		r.Get("/accounts/{id}/verify", s.VerifyAccount)
+		r.Get("/accounts/{id}/balance", s.GetAccountBalance)
+		r.Patch("/accounts/{id}/active", s.ToggleAccountActive)
 
 		// Trader
 		r.Post("/trader/order", s.TraderPlaceOrder)

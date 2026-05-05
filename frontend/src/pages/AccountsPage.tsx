@@ -1,7 +1,215 @@
 import { useState, useEffect } from 'react'
-import { listAccounts, createAccount, deleteAccount, verifyAccount } from '../api/accounts'
+import {
+  listAccounts, createAccount, deleteAccount,
+  verifyAccount, getAccountBalance, toggleAccountActive,
+  type VerifyResult, type BalanceResult,
+} from '../api/accounts'
 import type { ExchangeAccount } from '../types'
 
+// ── Permission label map ──────────────────────────────────────────────────────
+const PERM_LABELS: Record<string, string> = {
+  ContractTrade: 'Фьючерсы',
+  Spot: 'Спот',
+  Wallet: 'Кошелёк',
+  Options: 'Опционы',
+  Derivatives: 'Деривативы',
+  CopyTrading: 'Копитрейдинг',
+  BlockTrade: 'Блочные сделки',
+  Exchange: 'Обмен',
+}
+
+// ── AccountCard ───────────────────────────────────────────────────────────────
+interface CardState {
+  open: boolean
+  verify: VerifyResult | null
+  balance: BalanceResult | null
+  verifying: boolean
+  loadingBalance: boolean
+  toggling: boolean
+}
+
+function AccountCard({
+  acc,
+  onDelete,
+  onToggled,
+}: {
+  acc: ExchangeAccount
+  onDelete: (id: string) => void
+  onToggled: (updated: ExchangeAccount) => void
+}) {
+  const [s, setS] = useState<CardState>({
+    open: false, verify: null, balance: null,
+    verifying: false, loadingBalance: false, toggling: false,
+  })
+
+  async function fetchBalance() {
+    if (s.balance) return
+    setS(p => ({ ...p, loadingBalance: true }))
+    try {
+      const b = await getAccountBalance(acc.id)
+      setS(p => ({ ...p, balance: b }))
+    } finally {
+      setS(p => ({ ...p, loadingBalance: false }))
+    }
+  }
+
+  function handleOpen() {
+    setS(p => {
+      if (!p.open) setTimeout(fetchBalance, 0)
+      return { ...p, open: !p.open }
+    })
+  }
+
+  async function handleVerify() {
+    setS(p => ({ ...p, verifying: true }))
+    try {
+      const v = await verifyAccount(acc.id)
+      setS(p => ({ ...p, verify: v }))
+    } finally {
+      setS(p => ({ ...p, verifying: false }))
+    }
+  }
+
+  async function handleToggle() {
+    setS(p => ({ ...p, toggling: true }))
+    try {
+      const updated = await toggleAccountActive(acc.id)
+      onToggled(updated)
+    } finally {
+      setS(p => ({ ...p, toggling: false }))
+    }
+  }
+
+  async function handleDelete() {
+    if (!window.confirm('Удалить аккаунт?')) return
+    await deleteAccount(acc.id)
+    onDelete(acc.id)
+  }
+
+  const activePerms = s.verify?.permissions
+    ? Object.entries(s.verify.permissions).filter(([, v]) => v.length > 0).map(([k]) => k)
+    : []
+
+  return (
+    <li className="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
+      {/* Header */}
+      <button
+        onClick={handleOpen}
+        className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors text-left"
+      >
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-gray-900 dark:text-white capitalize">{acc.exchange}</span>
+            <span className="text-gray-400">·</span>
+            <span className="text-gray-700 dark:text-gray-300">{acc.label}</span>
+          </div>
+          <div className="text-xs text-gray-400 mt-0.5">
+            Добавлен {new Date(acc.created_at).toLocaleDateString('ru-RU')}
+          </div>
+        </div>
+        <div className="flex items-center gap-3 shrink-0 ml-4">
+          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+            acc.is_active
+              ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+              : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
+          }`}>
+            {acc.is_active ? 'Активен' : 'Остановлен'}
+          </span>
+          <svg
+            className={`w-4 h-4 text-gray-400 transition-transform duration-200 ${s.open ? 'rotate-180' : ''}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
+      </button>
+
+      {/* Expanded body */}
+      {s.open && (
+        <div className="border-t border-gray-200 dark:border-gray-700 px-5 py-4 space-y-4 bg-gray-50/50 dark:bg-gray-800/30">
+
+          {/* Balance */}
+          <div>
+            <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Депозит (USDT)</div>
+            {s.loadingBalance ? (
+              <div className="text-sm text-gray-400">Загрузка…</div>
+            ) : s.balance ? (
+              s.balance.ok ? (
+                <div className="flex items-baseline gap-3">
+                  <span className="text-lg font-semibold text-gray-900 dark:text-white">
+                    {s.balance.available?.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}
+                  </span>
+                  <span className="text-xs text-gray-400">
+                    доступно / всего {s.balance.equity?.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+              ) : (
+                <div className="text-sm text-red-500">{s.balance.message ?? 'Ошибка загрузки'}</div>
+              )
+            ) : (
+              <div className="text-sm text-gray-400">—</div>
+            )}
+          </div>
+
+          {/* Permissions */}
+          <div>
+            <div className="text-xs text-gray-500 dark:text-gray-400 mb-1.5">Разрешения</div>
+            {s.verify === null ? (
+              <div className="text-sm text-gray-400">Нажмите «Проверить» для загрузки</div>
+            ) : !s.verify.ok ? (
+              <div className="text-sm text-red-500">{s.verify.message ?? 'Ошибка'}</div>
+            ) : activePerms.length === 0 ? (
+              <div className="text-sm text-gray-400">Разрешений нет</div>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {activePerms.map(p => (
+                  <span key={p} className="text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 px-2 py-0.5 rounded-full font-medium">
+                    {PERM_LABELS[p] ?? p}
+                  </span>
+                ))}
+                {s.verify.read_only && (
+                  <span className="text-xs bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300 px-2 py-0.5 rounded-full font-medium">
+                    Только чтение
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={handleVerify}
+              disabled={s.verifying}
+              className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            >
+              {s.verifying ? 'Проверка…' : 'Проверить'}
+            </button>
+            <button
+              onClick={handleToggle}
+              disabled={s.toggling}
+              className={`px-3 py-1.5 text-sm rounded-lg border transition-colors disabled:opacity-50 ${
+                acc.is_active
+                  ? 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+                  : 'border-green-500 text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20'
+              }`}
+            >
+              {s.toggling ? '…' : acc.is_active ? 'Остановить' : 'Запустить'}
+            </button>
+            <button
+              onClick={handleDelete}
+              className="ml-auto px-3 py-1.5 text-sm text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+            >
+              Удалить
+            </button>
+          </div>
+        </div>
+      )}
+    </li>
+  )
+}
+
+// ── AccountsPage ──────────────────────────────────────────────────────────────
 export function AccountsPage() {
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
   const [loading, setLoading] = useState(true)
@@ -11,8 +219,6 @@ export function AccountsPage() {
   const [secret, setSecret] = useState('')
   const [adding, setAdding] = useState(false)
   const [addMsg, setAddMsg] = useState<{ ok: boolean; text: string } | null>(null)
-  const [verifyResults, setVerifyResults] = useState<Record<string, { ok: boolean; text: string }>>({})
-  const [verifying, setVerifying] = useState<string | null>(null)
 
   async function load() {
     setLoading(true)
@@ -43,35 +249,25 @@ export function AccountsPage() {
     }
   }
 
-  async function handleVerify(id: string) {
-    setVerifying(id)
-    try {
-      const res = await verifyAccount(id)
-      setVerifyResults(prev => ({ ...prev, [id]: { ok: res.ok, text: res.ok ? 'OK' : (res.message ?? 'Ошибка') } }))
-    } catch {
-      setVerifyResults(prev => ({ ...prev, [id]: { ok: false, text: 'Ошибка запроса' } }))
-    } finally {
-      setVerifying(null)
-    }
+  function handleDelete(id: string) {
+    setAccounts(prev => prev.filter(a => a.id !== id))
   }
 
-  async function handleDelete(id: string) {
-    if (!window.confirm('Удалить аккаунт?')) return
-    await deleteAccount(id)
-    await load()
+  function handleToggled(updated: ExchangeAccount) {
+    setAccounts(prev => prev.map(a => a.id === updated.id ? updated : a))
   }
 
   return (
     <div className="max-w-2xl mx-auto space-y-8">
       {/* Add form */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow p-6">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Добавить аккаунт</h2>
         <form onSubmit={handleAdd} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Биржа</label>
               <select value={exchange} onChange={e => setExchange(e.target.value)}
-                className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                className="w-full border rounded px-3 py-2 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white">
                 <option value="bybit">Bybit</option>
                 <option value="binance">Binance</option>
               </select>
@@ -79,23 +275,26 @@ export function AccountsPage() {
             <div>
               <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Название</label>
               <input value={label} onChange={e => setLabel(e.target.value)} required placeholder="Мой аккаунт"
-                className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400" />
+                autoComplete="off"
+                className="w-full border rounded px-3 py-2 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white" />
             </div>
           </div>
           <div>
             <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">API Key</label>
             <input value={apiKey} onChange={e => setApiKey(e.target.value)} required type="password" placeholder="API Key"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400" />
+              autoComplete="new-password"
+              className="w-full border rounded px-3 py-2 text-sm font-mono dark:bg-gray-700 dark:border-gray-600 dark:text-white" />
           </div>
           <div>
             <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Secret</label>
             <input value={secret} onChange={e => setSecret(e.target.value)} required type="password" placeholder="Secret"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400" />
+              autoComplete="new-password"
+              className="w-full border rounded px-3 py-2 text-sm font-mono dark:bg-gray-700 dark:border-gray-600 dark:text-white" />
           </div>
           <div className="flex items-center gap-3">
             <button type="submit" disabled={adding}
-              className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50">
-              {adding ? 'Добавление...' : 'Добавить'}
+              className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
+              {adding ? 'Добавление…' : 'Добавить'}
             </button>
             {addMsg && (
               <span className={`text-sm ${addMsg.ok ? 'text-green-600' : 'text-red-600'}`}>
@@ -107,47 +306,23 @@ export function AccountsPage() {
       </div>
 
       {/* List */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow">
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow">
         <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Мои аккаунты</h2>
         </div>
         {loading ? (
-          <div className="p-8 text-center text-gray-400">Загрузка...</div>
+          <div className="p-8 text-center text-gray-400">Загрузка…</div>
         ) : !accounts.length ? (
           <div className="p-8 text-center text-gray-400">Нет аккаунтов. Добавьте первый выше.</div>
         ) : (
           <ul className="divide-y divide-gray-100 dark:divide-gray-700">
             {accounts.map(acc => (
-              <li key={acc.id} className="flex items-center justify-between px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-gray-900 dark:text-white capitalize">{acc.exchange}</span>
-                    <span className="text-gray-400">·</span>
-                    <span className="text-gray-700 dark:text-gray-300">{acc.label}</span>
-                    <span className={`text-xs px-1.5 py-0.5 rounded-full ${acc.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'}`}>
-                      {acc.is_active ? 'Активен' : 'Неактивен'}
-                    </span>
-                  </div>
-                  <div className="text-xs text-gray-400 mt-0.5">
-                    Добавлен {new Date(acc.created_at).toLocaleDateString('ru-RU')}
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 ml-4 shrink-0">
-                  {verifyResults[acc.id] && (
-                    <span className={`text-xs ${verifyResults[acc.id].ok ? 'text-green-600' : 'text-red-500'}`}>
-                      {verifyResults[acc.id].ok ? '✓' : '✗'} {verifyResults[acc.id].text}
-                    </span>
-                  )}
-                  <button onClick={() => handleVerify(acc.id)} disabled={verifying === acc.id}
-                    className="text-sm text-blue-600 hover:text-blue-800 disabled:opacity-50">
-                    {verifying === acc.id ? '...' : 'Проверить'}
-                  </button>
-                  <button onClick={() => handleDelete(acc.id)}
-                    className="text-sm text-red-500 hover:text-red-700">
-                    Удалить
-                  </button>
-                </div>
-              </li>
+              <AccountCard
+                key={acc.id}
+                acc={acc}
+                onDelete={handleDelete}
+                onToggled={handleToggled}
+              />
             ))}
           </ul>
         )}

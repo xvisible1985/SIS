@@ -271,6 +271,37 @@ func FetchExecutions(ctx context.Context, creds Credentials, category, cursor st
 	return resp.Result.List, resp.Result.NextPageCursor, nil
 }
 
+// GetWalletBalance returns total equity and available balance in USDT.
+// Tries UNIFIED account first, then CONTRACT (classic accounts).
+func GetWalletBalance(ctx context.Context, creds Credentials) (equity, available float64, err error) {
+	for _, accType := range []string{"UNIFIED", "CONTRACT"} {
+		data, e := doSignedGET(ctx, creds, "/v5/account/wallet-balance", "accountType="+accType)
+		if e != nil {
+			continue
+		}
+		if e := checkRetCode(data); e != nil {
+			continue
+		}
+		var r struct {
+			Result struct {
+				List []struct {
+					TotalEquity           string `json:"totalEquity"`
+					TotalAvailableBalance string `json:"totalAvailableBalance"`
+				} `json:"list"`
+			} `json:"result"`
+		}
+		if e := json.Unmarshal(data, &r); e != nil || len(r.Result.List) == 0 {
+			continue
+		}
+		fmt.Sscanf(r.Result.List[0].TotalEquity, "%f", &equity)
+		fmt.Sscanf(r.Result.List[0].TotalAvailableBalance, "%f", &available)
+		if equity > 0 {
+			return equity, available, nil
+		}
+	}
+	return equity, available, nil
+}
+
 // QueryAPI calls /v5/user/query-api and returns the raw result JSON.
 func QueryAPI(ctx context.Context, creds Credentials) (json.RawMessage, error) {
 	data, err := doSignedGET(ctx, creds, "/v5/user/query-api", "")

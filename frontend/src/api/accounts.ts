@@ -20,7 +20,33 @@ export async function deleteAccount(id: string): Promise<void> {
   await apiClient.delete(`/accounts/${id}`)
 }
 
-export async function verifyAccount(id: string): Promise<{ ok: boolean; message?: string }> {
-  const res = await apiClient.get<{ ok: boolean; message?: string }>(`/accounts/${id}/verify`)
+export interface VerifyResult {
+  ok: boolean
+  message?: string
+  read_only?: boolean
+  permissions?: Record<string, string[]>
+  ips?: string[]
+  expires_at?: number
+}
+
+export async function verifyAccount(id: string): Promise<VerifyResult> {
+  const res = await apiClient.get<VerifyResult>(`/accounts/${id}/verify`)
+  return res.data
+}
+
+export interface BalanceResult {
+  ok: boolean
+  message?: string
+  equity?: number
+  available?: number
+}
+
+export async function getAccountBalance(id: string): Promise<BalanceResult> {
+  const res = await apiClient.get<BalanceResult>(`/accounts/${id}/balance`)
+  return res.data
+}
+
+export async function toggleAccountActive(id: string): Promise<ExchangeAccount> {
+  const res = await apiClient.patch<ExchangeAccount>(`/accounts/${id}/active`)
   return res.data
 }
