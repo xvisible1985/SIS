@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
 import { Chart } from '../components/terminal/Chart'
-import { DepthChart } from '../components/terminal/DepthChart'
 import { Orderbook } from '../components/terminal/Orderbook'
 import { OrderForm } from '../components/terminal/OrderForm'
 import { PositionsTable } from '../components/terminal/PositionsTable'
@@ -24,14 +23,12 @@ const TIMEFRAMES = [
 ]
 
 type BottomTab = 'positions' | 'orders' | 'history' | 'executions' | 'log'
-type ChartView = 'candles' | 'depth'
 
 export function TerminalPage() {
   const [accountId, setAccountId] = useState<string | null>(null)
   const [symbol, setSymbol] = useState('BTCUSDT')
   const [tf, setTf] = useState('60')
   const [bottomTab, setBottomTab] = useState<BottomTab>('positions')
-  const [chartView, setChartView] = useState<ChartView>('candles')
 
   useEffect(() => {
     listAccounts().then(accs => {
@@ -69,30 +66,14 @@ export function TerminalPage() {
             className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm text-gray-900 dark:text-white w-36 focus:outline-none">
             {COINS.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
-
-          {/* Chart view toggle */}
-          <div className="flex rounded overflow-hidden border border-gray-200 dark:border-gray-600">
-            <button onClick={() => setChartView('candles')}
-              className={`px-2 py-0.5 text-xs font-medium transition-colors ${chartView === 'candles' ? 'bg-blue-500 text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
-              Свечи
-            </button>
-            <button onClick={() => setChartView('depth')}
-              className={`px-2 py-0.5 text-xs font-medium transition-colors ${chartView === 'depth' ? 'bg-blue-500 text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
-              Глубина
-            </button>
+          <div className="flex gap-1">
+            {TIMEFRAMES.map(t => (
+              <button key={t.value} onClick={() => setTf(t.value)}
+                className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${tf === t.value ? 'bg-blue-500 text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
+                {t.label}
+              </button>
+            ))}
           </div>
-
-          {chartView === 'candles' && (
-            <div className="flex gap-1">
-              {TIMEFRAMES.map(t => (
-                <button key={t.value} onClick={() => setTf(t.value)}
-                  className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${tf === t.value ? 'bg-blue-500 text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
-                  {t.label}
-                </button>
-              ))}
-            </div>
-          )}
-
           {lastPrice && (
             <div className="ml-auto flex items-center gap-2">
               <span className="font-mono font-bold text-lg text-gray-900 dark:text-white">{lastPrice}</span>
@@ -103,10 +84,7 @@ export function TerminalPage() {
           )}
         </div>
         <div className="flex-1 min-h-0">
-          {chartView === 'candles'
-            ? <Chart candles={candles} positions={positions} orders={orders} symbol={symbol} />
-            : <DepthChart bids={bids} asks={asks} />
-          }
+          <Chart candles={candles} positions={positions} orders={orders} symbol={symbol} />
         </div>
       </div>
 
