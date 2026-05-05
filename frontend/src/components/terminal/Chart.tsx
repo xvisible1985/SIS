@@ -92,7 +92,7 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
         price,
         color: isLong ? '#00DC82' : '#ef4444',
         lineWidth: 1,
-        lineStyle: 2,
+        lineStyle: 0,
         axisLabelVisible: true,
         title: `${isLong ? 'Long' : 'Short'} ${pos.size}`,
       }))
