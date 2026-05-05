@@ -5,7 +5,7 @@ export type WsStatus = 'connecting' | 'connected' | 'error' | 'closed'
 export type LogEntry = { time: string; message: string; error?: boolean }
 
 function mapPosition(p: any): Position {
-  const entry = parseFloat(p.entryPrice ?? p.avgPrice ?? '0')
+  const entry = parseFloat(p.entryPrice || p.avgPrice || '0')
   const mark = parseFloat(p.markPrice ?? '0')
   const size = parseFloat(p.size ?? '0')
   const pnl = parseFloat(p.unrealisedPnl ?? '0')
