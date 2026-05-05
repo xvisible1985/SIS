@@ -73,12 +73,12 @@ export function OptimizerPage() {
 
   return (
     <div className="max-w-3xl space-y-6">
-      <h1 className="text-xl font-semibold">Optimizer</h1>
+      <h1 className="text-xl font-semibold dark:text-white">Optimizer</h1>
 
-      <div className="bg-white rounded-xl shadow p-5">
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow p-5">
         <form onSubmit={handleSubmit} className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs text-gray-600 mb-1" htmlFor="opt-period-from">
+            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1" htmlFor="opt-period-from">
               Period From
             </label>
             <input
@@ -87,11 +87,11 @@ export function OptimizerPage() {
               value={periodFrom}
               onChange={(e) => setPeriodFrom(e.target.value)}
               required
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
             />
           </div>
           <div>
-            <label className="block text-xs text-gray-600 mb-1" htmlFor="opt-period-to">
+            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1" htmlFor="opt-period-to">
               Period To
             </label>
             <input
@@ -100,22 +100,22 @@ export function OptimizerPage() {
               value={periodTo}
               onChange={(e) => setPeriodTo(e.target.value)}
               required
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
             />
           </div>
           <div>
-            <label className="block text-xs text-gray-600 mb-1">Mode</label>
+            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Mode</label>
             <select
               value={mode}
               onChange={(e) => setMode(e.target.value as 'fast' | 'walk_forward')}
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
             >
               <option value="fast">Fast (grid search)</option>
               <option value="walk_forward">Walk-Forward</option>
             </select>
           </div>
           <div>
-            <label className="block text-xs text-gray-600 mb-1">
+            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">
               Take Profit values (comma-separated %)
             </label>
             <input
@@ -123,11 +123,11 @@ export function OptimizerPage() {
               value={takeProfit}
               onChange={(e) => setTakeProfit(e.target.value)}
               placeholder="1.5,2.0,3.0"
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
             />
           </div>
           <div>
-            <label className="block text-xs text-gray-600 mb-1">
+            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">
               Stop Loss values (comma-separated %)
             </label>
             <input
@@ -135,7 +135,7 @@ export function OptimizerPage() {
               value={stopLoss}
               onChange={(e) => setStopLoss(e.target.value)}
               placeholder="0.5,1.0,1.5"
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
             />
           </div>
           <div className="col-span-2">
@@ -152,22 +152,22 @@ export function OptimizerPage() {
       </div>
 
       {jobId && (
-        <div className="bg-white rounded-xl shadow p-5">
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow p-5">
           <p className="text-sm font-medium mb-3">Optimizing…</p>
           <ProgressBar pct={progress.pct} status={progress.status} />
         </div>
       )}
 
       {results.map((result) => (
-        <div key={result.id} className="bg-white rounded-xl shadow overflow-hidden">
-          <div className="px-5 py-3 border-b flex items-center gap-3">
-            <h2 className="font-medium text-sm">
+        <div key={result.id} className="bg-white dark:bg-gray-800 rounded-xl shadow overflow-hidden">
+          <div className="px-5 py-3 border-b dark:border-gray-700 flex items-center gap-3">
+            <h2 className="font-medium text-sm dark:text-white">
               Top Combinations — {result.mode} —{' '}
               {new Date(result.created_at).toLocaleDateString()}
             </h2>
           </div>
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-xs text-gray-600 uppercase">
+            <thead className="bg-gray-50 dark:bg-gray-700 text-xs text-gray-600 dark:text-gray-300 uppercase">
               <tr>
                 <th className="px-4 py-2 text-right">#</th>
                 <th className="px-4 py-2 text-right">Score</th>
@@ -179,10 +179,10 @@ export function OptimizerPage() {
                 <th className="px-4 py-2 text-left">Params</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
               {result.top_combinations.map((combo, idx) => (
                 <tr key={idx}>
-                  <td className="px-4 py-2 text-right text-gray-500">{idx + 1}</td>
+                  <td className="px-4 py-2 text-right text-gray-500 dark:text-gray-400">{idx + 1}</td>
                   <td className="px-4 py-2 text-right font-medium">
                     {combo.score.toFixed(2)}
                   </td>
@@ -195,7 +195,7 @@ export function OptimizerPage() {
                   <td className="px-4 py-2 text-right">{combo.take_profit}</td>
                   <td className="px-4 py-2 text-right">{combo.stop_loss}</td>
                   <td className="px-4 py-2 text-right">{combo.total_signals}</td>
-                  <td className="px-4 py-2 text-left text-xs text-gray-600">
+                  <td className="px-4 py-2 text-left text-xs text-gray-600 dark:text-gray-400">
                     {Object.entries(combo.params)
                       .map(([k, v]) => `${k}=${v}`)
                       .join(', ')}

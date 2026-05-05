@@ -62,12 +62,12 @@ export function BacktestPage() {
 
   return (
     <div className="max-w-3xl space-y-6">
-      <h1 className="text-xl font-semibold">Backtest</h1>
+      <h1 className="text-xl font-semibold dark:text-white">Backtest</h1>
 
-      <div className="bg-white rounded-xl shadow p-5">
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow p-5">
         <form onSubmit={handleSubmit} className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs text-gray-600 mb-1" htmlFor="period-from">
+            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1" htmlFor="period-from">
               Period From
             </label>
             <input
@@ -76,11 +76,11 @@ export function BacktestPage() {
               value={periodFrom}
               onChange={(e) => setPeriodFrom(e.target.value)}
               required
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
             />
           </div>
           <div>
-            <label className="block text-xs text-gray-600 mb-1" htmlFor="period-to">
+            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1" htmlFor="period-to">
               Period To
             </label>
             <input
@@ -89,11 +89,11 @@ export function BacktestPage() {
               value={periodTo}
               onChange={(e) => setPeriodTo(e.target.value)}
               required
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
             />
           </div>
           <div>
-            <label className="block text-xs text-gray-600 mb-1" htmlFor="take-profit">
+            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1" htmlFor="take-profit">
               Take Profit %
             </label>
             <input
@@ -103,11 +103,11 @@ export function BacktestPage() {
               min="0.1"
               value={takeProfit}
               onChange={(e) => setTakeProfit(Number(e.target.value))}
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
             />
           </div>
           <div>
-            <label className="block text-xs text-gray-600 mb-1" htmlFor="stop-loss">
+            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1" htmlFor="stop-loss">
               Stop Loss %
             </label>
             <input
@@ -117,7 +117,7 @@ export function BacktestPage() {
               min="0.1"
               value={stopLoss}
               onChange={(e) => setStopLoss(Number(e.target.value))}
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
             />
           </div>
           <div className="col-span-2">
@@ -134,19 +134,19 @@ export function BacktestPage() {
       </div>
 
       {jobId && (
-        <div className="bg-white rounded-xl shadow p-5">
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow p-5">
           <p className="text-sm font-medium mb-3">Running…</p>
           <ProgressBar pct={progress.pct} status={progress.status} />
         </div>
       )}
 
       {results.length > 0 && (
-        <div className="bg-white rounded-xl shadow overflow-hidden">
-          <div className="px-5 py-3 border-b">
-            <h2 className="font-medium text-sm">Results</h2>
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow overflow-hidden">
+          <div className="px-5 py-3 border-b dark:border-gray-700">
+            <h2 className="font-medium text-sm dark:text-white">Results</h2>
           </div>
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-xs text-gray-600 uppercase">
+            <thead className="bg-gray-50 dark:bg-gray-700 text-xs text-gray-600 dark:text-gray-300 uppercase">
               <tr>
                 <th className="px-4 py-2 text-left">Date</th>
                 <th className="px-4 py-2 text-right">Total</th>
@@ -156,10 +156,10 @@ export function BacktestPage() {
                 <th className="px-4 py-2 text-right">Profit Factor</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
               {results.map((r) => (
                 <tr key={r.id}>
-                  <td className="px-4 py-2 text-gray-600">
+                  <td className="px-4 py-2 text-gray-600 dark:text-gray-400">
                     {new Date(r.created_at).toLocaleDateString()}
                   </td>
                   <td className="px-4 py-2 text-right">{r.total_signals}</td>

@@ -61,7 +61,7 @@ export function SignalBuilderPage() {
 
   return (
     <div className="max-w-2xl">
-      <h1 className="text-xl font-semibold mb-6">
+      <h1 className="text-xl font-semibold mb-6 dark:text-white">
         {isEdit ? 'Edit Signal' : 'New Signal'}
       </h1>
       <form onSubmit={handleSubmit} className="space-y-4">
@@ -71,68 +71,68 @@ export function SignalBuilderPage() {
           value={name}
           onChange={(e) => setName(e.target.value)}
           required
-          className="w-full border rounded px-3 py-2 text-sm"
+          className="w-full border rounded px-3 py-2 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
         />
         <input
           type="text"
           placeholder="Description (optional)"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          className="w-full border rounded px-3 py-2 text-sm"
+          className="w-full border rounded px-3 py-2 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
         />
 
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs text-gray-600 mb-1">Exchange</label>
+            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Exchange</label>
             <select
               value={exchange}
               onChange={(e) => setExchange(e.target.value)}
               disabled={isEdit}
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
             >
               {EXCHANGES.map((x) => <option key={x}>{x}</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-xs text-gray-600 mb-1">Market</label>
+            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Market</label>
             <select
               value={market}
               onChange={(e) => setMarket(e.target.value)}
               disabled={isEdit}
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
             >
               {MARKETS.map((m) => <option key={m}>{m}</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-xs text-gray-600 mb-1" htmlFor="symbol-input">Symbol</label>
+            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1" htmlFor="symbol-input">Symbol</label>
             <input
               id="symbol-input"
               type="text"
               value={symbol}
               onChange={(e) => setSymbol(e.target.value.toUpperCase())}
               disabled={isEdit}
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
             />
           </div>
           <div>
-            <label className="block text-xs text-gray-600 mb-1" htmlFor="timeframe-select">Timeframe</label>
+            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1" htmlFor="timeframe-select">Timeframe</label>
             <select
               id="timeframe-select"
               value={timeframe}
               onChange={(e) => setTimeframe(e.target.value)}
               disabled={isEdit}
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
             >
               {TIMEFRAMES.map((t) => <option key={t}>{t}</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-xs text-gray-600 mb-1">Direction</label>
+            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Direction</label>
             <select
               value={direction}
               onChange={(e) => setDirection(e.target.value)}
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white"
             >
               {DIRECTIONS.map((d) => <option key={d}>{d}</option>)}
             </select>
@@ -140,7 +140,7 @@ export function SignalBuilderPage() {
         </div>
 
         <div>
-          <p className="text-sm font-medium text-gray-700 mb-2">Conditions</p>
+          <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Conditions</p>
           <ConditionTree value={conditions} onChange={setConditions} />
         </div>
 
@@ -157,7 +157,7 @@ export function SignalBuilderPage() {
           <button
             type="button"
             onClick={() => navigate('/')}
-            className="border rounded px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+            className="border rounded px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 dark:border-gray-600"
           >
             Cancel
           </button>

@@ -18,6 +18,8 @@ export function AccountsPage() {
     setLoading(true)
     try {
       setAccounts(await listAccounts())
+    } catch {
+      setAccounts([])
     } finally {
       setLoading(false)
     }
@@ -62,33 +64,33 @@ export function AccountsPage() {
   return (
     <div className="max-w-2xl mx-auto space-y-8">
       {/* Add form */}
-      <div className="bg-white rounded-lg shadow p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">Добавить аккаунт</h2>
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Добавить аккаунт</h2>
         <form onSubmit={handleAdd} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm text-gray-600 mb-1">Биржа</label>
+              <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Биржа</label>
               <select value={exchange} onChange={e => setExchange(e.target.value)}
-                className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
                 <option value="bybit">Bybit</option>
                 <option value="binance">Binance</option>
               </select>
             </div>
             <div>
-              <label className="block text-sm text-gray-600 mb-1">Название</label>
+              <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Название</label>
               <input value={label} onChange={e => setLabel(e.target.value)} required placeholder="Мой аккаунт"
-                className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400" />
             </div>
           </div>
           <div>
-            <label className="block text-sm text-gray-600 mb-1">API Key</label>
+            <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">API Key</label>
             <input value={apiKey} onChange={e => setApiKey(e.target.value)} required type="password" placeholder="API Key"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400" />
           </div>
           <div>
-            <label className="block text-sm text-gray-600 mb-1">Secret</label>
+            <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Secret</label>
             <input value={secret} onChange={e => setSecret(e.target.value)} required type="password" placeholder="Secret"
-              className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400" />
           </div>
           <div className="flex items-center gap-3">
             <button type="submit" disabled={adding}
@@ -105,24 +107,24 @@ export function AccountsPage() {
       </div>
 
       {/* List */}
-      <div className="bg-white rounded-lg shadow">
-        <div className="px-6 py-4 border-b border-gray-200">
-          <h2 className="text-lg font-semibold text-gray-900">Мои аккаунты</h2>
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow">
+        <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Мои аккаунты</h2>
         </div>
         {loading ? (
           <div className="p-8 text-center text-gray-400">Загрузка...</div>
         ) : !accounts.length ? (
           <div className="p-8 text-center text-gray-400">Нет аккаунтов. Добавьте первый выше.</div>
         ) : (
-          <ul className="divide-y divide-gray-100">
+          <ul className="divide-y divide-gray-100 dark:divide-gray-700">
             {accounts.map(acc => (
-              <li key={acc.id} className="flex items-center justify-between px-6 py-4 hover:bg-gray-50">
+              <li key={acc.id} className="flex items-center justify-between px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium text-gray-900 capitalize">{acc.exchange}</span>
+                    <span className="font-medium text-gray-900 dark:text-white capitalize">{acc.exchange}</span>
                     <span className="text-gray-400">·</span>
-                    <span className="text-gray-700">{acc.label}</span>
-                    <span className={`text-xs px-1.5 py-0.5 rounded-full ${acc.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                    <span className="text-gray-700 dark:text-gray-300">{acc.label}</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded-full ${acc.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'}`}>
                       {acc.is_active ? 'Активен' : 'Неактивен'}
                     </span>
                   </div>
