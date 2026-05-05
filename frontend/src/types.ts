@@ -110,6 +110,15 @@ export interface Webhook {
   created_at: string
 }
 
+// Exchange Accounts
+export interface ExchangeAccount {
+  id: string
+  exchange: string
+  label: string
+  is_active: boolean
+  created_at: string
+}
+
 // Job progress (WebSocket frame)
 export interface ProgressMessage {
   pct: number

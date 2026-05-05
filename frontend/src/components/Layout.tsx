@@ -5,6 +5,7 @@ import type { ReactNode } from 'react'
 const navItems = [
   { label: 'Dashboard', to: '/' },
   { label: 'Webhooks', to: '/webhooks' },
+  { label: 'Аккаунты', to: '/accounts' },
 ]
 
 export function Layout({ children }: { children: ReactNode }) {
