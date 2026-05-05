@@ -93,7 +93,7 @@ export function TerminalPage() {
         <div className="flex items-center border-b border-gray-200 dark:border-gray-700 flex-shrink-0 px-2">
           {bottomTabs.map(t => (
             <button key={t.key} onClick={() => setBottomTab(t.key)}
-              className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors ${bottomTab === t.key ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
+              className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors ${bottomTab === t.key ? 'border-blue-500 text-blue-600 dark:text-white' : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
               {t.label}
               {t.count != null && t.count > 0 && (
                 loading && (t.key === 'positions' || t.key === 'orders')
