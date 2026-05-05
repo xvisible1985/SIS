@@ -56,6 +56,8 @@ export function usePositionsWs(accountId: string | null) {
   const [loading, setLoading] = useState(true)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const rawPositions = useRef(new Map<string, any>())
+  const rawOrders = useRef(new Map<string, any>())
 
   const addLog = useCallback((message: string, error = false) => {
     const time = new Date().toLocaleTimeString('ru-RU')
@@ -94,16 +96,22 @@ export function usePositionsWs(accountId: string | null) {
         }
         if (msg.type === 'position') {
           if (msg.dataType === 'snapshot') {
+            rawPositions.current.clear()
+            for (const p of msg.data) rawPositions.current.set(`${p.symbol}-${p.side}`, p)
             setPositions(msg.data.filter((p: any) => parseFloat(p.size) !== 0).map(mapPosition))
           } else {
             setPositions(prev => {
               const next = [...prev]
               for (const p of msg.data) {
+                const key = `${p.symbol}-${p.side}`
+                const merged = { ...(rawPositions.current.get(key) ?? {}), ...p }
+                rawPositions.current.set(key, merged)
                 const idx = next.findIndex(x => x.symbol === p.symbol && x.side === p.side)
-                if (parseFloat(p.size) === 0) {
+                if (parseFloat(merged.size) === 0) {
+                  rawPositions.current.delete(key)
                   if (idx !== -1) next.splice(idx, 1)
                 } else {
-                  const mapped = mapPosition(p)
+                  const mapped = mapPosition(merged)
                   if (idx !== -1) next[idx] = mapped
                   else next.push(mapped)
                 }
@@ -115,6 +123,8 @@ export function usePositionsWs(accountId: string | null) {
         }
         if (msg.type === 'order') {
           if (msg.dataType === 'snapshot') {
+            rawOrders.current.clear()
+            for (const o of msg.data) rawOrders.current.set(o.orderId, o)
             setOrders(msg.data.filter((o: any) => !CLOSED_STATUSES.has(o.orderStatus)).map(mapOrder))
             clearTimeout(loadingTimeout)
             setLoading(false)
@@ -122,11 +132,14 @@ export function usePositionsWs(accountId: string | null) {
             setOrders(prev => {
               const next = [...prev]
               for (const o of msg.data) {
+                const merged = { ...(rawOrders.current.get(o.orderId) ?? {}), ...o }
+                rawOrders.current.set(o.orderId, merged)
                 const idx = next.findIndex(x => x.orderId === o.orderId)
-                if (CLOSED_STATUSES.has(o.orderStatus)) {
+                if (CLOSED_STATUSES.has(merged.orderStatus)) {
+                  rawOrders.current.delete(o.orderId)
                   if (idx !== -1) next.splice(idx, 1)
                 } else {
-                  const mapped = mapOrder(o)
+                  const mapped = mapOrder(merged)
                   if (idx !== -1) next[idx] = mapped
                   else next.push(mapped)
                 }
