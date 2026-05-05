@@ -231,6 +231,7 @@ export function AccountsPage() {
   const [label, setLabel] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [secret, setSecret] = useState('')
+  const [formOpen, setFormOpen] = useState(false)
   const [adding, setAdding] = useState(false)
   const [addMsg, setAddMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
@@ -255,6 +256,7 @@ export function AccountsPage() {
       await createAccount({ exchange, label, api_key: apiKey, secret })
       setAddMsg({ ok: true, text: 'Аккаунт добавлен' })
       setLabel(''); setApiKey(''); setSecret('')
+      setFormOpen(false)
       await load()
     } catch (err: any) {
       setAddMsg({ ok: false, text: err?.response?.data?.error ?? 'Ошибка' })
@@ -274,49 +276,65 @@ export function AccountsPage() {
   return (
     <div className="max-w-2xl mx-auto space-y-8">
       {/* Add form */}
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow p-6">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Добавить аккаунт</h2>
-        <form onSubmit={handleAdd} className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Биржа</label>
-              <select value={exchange} onChange={e => setExchange(e.target.value)}
-                className="w-full border rounded px-3 py-2 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white">
-                <option value="bybit">Bybit</option>
-                <option value="binance">Binance</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Название</label>
-              <input value={label} onChange={e => setLabel(e.target.value)} required placeholder="Мой аккаунт"
-                autoComplete="off"
-                className="w-full border rounded px-3 py-2 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white" />
-            </div>
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow overflow-hidden">
+        <button
+          onClick={() => { setFormOpen(v => !v); setAddMsg(null) }}
+          className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors text-left"
+        >
+          <span className="text-base font-semibold text-gray-900 dark:text-white">Добавить аккаунт</span>
+          <svg
+            className={`w-4 h-4 text-gray-400 transition-transform duration-200 ${formOpen ? 'rotate-180' : ''}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        {formOpen && (
+          <div className="border-t border-gray-200 dark:border-gray-700 px-6 py-5">
+            <form onSubmit={handleAdd} className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Биржа</label>
+                  <select value={exchange} onChange={e => setExchange(e.target.value)}
+                    className="w-full border rounded px-3 py-2 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                    <option value="bybit">Bybit</option>
+                    <option value="binance">Binance</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Название</label>
+                  <input value={label} onChange={e => setLabel(e.target.value)} required placeholder="Мой аккаунт"
+                    autoComplete="off"
+                    className="w-full border rounded px-3 py-2 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">API Key</label>
+                <input value={apiKey} onChange={e => setApiKey(e.target.value)} required type="password" placeholder="API Key"
+                  autoComplete="new-password"
+                  className="w-full border rounded px-3 py-2 text-sm font-mono dark:bg-gray-700 dark:border-gray-600 dark:text-white" />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Secret</label>
+                <input value={secret} onChange={e => setSecret(e.target.value)} required type="password" placeholder="Secret"
+                  autoComplete="new-password"
+                  className="w-full border rounded px-3 py-2 text-sm font-mono dark:bg-gray-700 dark:border-gray-600 dark:text-white" />
+              </div>
+              <div className="flex items-center gap-3">
+                <button type="submit" disabled={adding}
+                  className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                  {adding ? 'Добавление…' : 'Добавить'}
+                </button>
+                {addMsg && (
+                  <span className={`text-sm ${addMsg.ok ? 'text-green-600' : 'text-red-600'}`}>
+                    {addMsg.ok ? '✓' : '✗'} {addMsg.text}
+                  </span>
+                )}
+              </div>
+            </form>
           </div>
-          <div>
-            <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">API Key</label>
-            <input value={apiKey} onChange={e => setApiKey(e.target.value)} required type="password" placeholder="API Key"
-              autoComplete="new-password"
-              className="w-full border rounded px-3 py-2 text-sm font-mono dark:bg-gray-700 dark:border-gray-600 dark:text-white" />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Secret</label>
-            <input value={secret} onChange={e => setSecret(e.target.value)} required type="password" placeholder="Secret"
-              autoComplete="new-password"
-              className="w-full border rounded px-3 py-2 text-sm font-mono dark:bg-gray-700 dark:border-gray-600 dark:text-white" />
-          </div>
-          <div className="flex items-center gap-3">
-            <button type="submit" disabled={adding}
-              className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
-              {adding ? 'Добавление…' : 'Добавить'}
-            </button>
-            {addMsg && (
-              <span className={`text-sm ${addMsg.ok ? 'text-green-600' : 'text-red-600'}`}>
-                {addMsg.ok ? '✓' : '✗'} {addMsg.text}
-              </span>
-            )}
-          </div>
-        </form>
+        )}
       </div>
 
       {/* List */}
