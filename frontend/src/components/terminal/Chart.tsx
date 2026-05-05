@@ -2,7 +2,6 @@ import { useEffect, useRef } from 'react'
 import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi, ColorType } from 'lightweight-charts'
 import type { Candle } from '../../hooks/terminal/useCandles'
 import type { Position, ActiveOrder } from '../../types'
-import { useTheme } from '../../hooks/useTheme'
 
 interface Props {
   candles: Candle[]
@@ -16,24 +15,27 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const priceLines = useRef<any[]>([])
-  const { theme } = useTheme()
-
   useEffect(() => {
     if (!containerRef.current) return
-    const isDark = theme === 'dark'
+
+    const themeColors = (dark: boolean) => ({
+      layout: {
+        background: { type: ColorType.Solid, color: dark ? '#0a0a0f' : '#ffffff' },
+        textColor: dark ? '#9ca3af' : '#374151',
+      },
+      grid: {
+        vertLines: { color: dark ? '#1a1a2e' : '#e5e7eb' },
+        horzLines: { color: dark ? '#1a1a2e' : '#e5e7eb' },
+      },
+      rightPriceScale: { borderColor: dark ? '#2d2d3d' : '#d1d5db' },
+      timeScale: { borderColor: dark ? '#2d2d3d' : '#d1d5db', timeVisible: true },
+    })
+
+    const dark = document.documentElement.classList.contains('dark')
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
-      layout: {
-        background: { type: ColorType.Solid, color: isDark ? '#0a0a0f' : '#ffffff' },
-        textColor: isDark ? '#9ca3af' : '#374151',
-      },
-      grid: {
-        vertLines: { color: isDark ? '#1a1a2e' : '#e5e7eb' },
-        horzLines: { color: isDark ? '#1a1a2e' : '#e5e7eb' },
-      },
-      rightPriceScale: { borderColor: isDark ? '#2d2d3d' : '#d1d5db' },
-      timeScale: { borderColor: isDark ? '#2d2d3d' : '#d1d5db', timeVisible: true },
+      ...themeColors(dark),
       crosshair: { mode: 1 },
     })
     chartRef.current = chart
@@ -44,6 +46,11 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
       wickUpColor: '#00DC82', wickDownColor: '#ef4444',
     })
     seriesRef.current = series
+
+    const themeObserver = new MutationObserver(() => {
+      chart.applyOptions(themeColors(document.documentElement.classList.contains('dark')))
+    })
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
 
     const ro = new ResizeObserver(() => {
       if (containerRef.current) {
@@ -57,6 +64,7 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
 
     return () => {
       ro.disconnect()
+      themeObserver.disconnect()
       chart.remove()
     }
   }, [])
@@ -66,23 +74,6 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
     seriesRef.current.setData(candles as any)
     chartRef.current?.timeScale().fitContent()
   }, [candles])
-
-  useEffect(() => {
-    if (!chartRef.current) return
-    const isDark = theme === 'dark'
-    chartRef.current.applyOptions({
-      layout: {
-        background: { type: ColorType.Solid, color: isDark ? '#0a0a0f' : '#ffffff' },
-        textColor: isDark ? '#9ca3af' : '#374151',
-      },
-      grid: {
-        vertLines: { color: isDark ? '#1a1a2e' : '#e5e7eb' },
-        horzLines: { color: isDark ? '#1a1a2e' : '#e5e7eb' },
-      },
-      rightPriceScale: { borderColor: isDark ? '#2d2d3d' : '#d1d5db' },
-      timeScale: { borderColor: isDark ? '#2d2d3d' : '#d1d5db', timeVisible: true },
-    })
-  }, [theme])
 
   useEffect(() => {
     if (!seriesRef.current) return
