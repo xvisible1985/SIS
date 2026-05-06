@@ -2,9 +2,6 @@ package trader
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -41,9 +38,7 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 	fmt.Sscanf(ts, "%d", &tsMs)
 	expires := tsMs + 10000
 	sigStr := fmt.Sprintf("GET/realtime%d", expires)
-	mac := hmac.New(sha256.New, []byte(creds.SecretKey))
-	mac.Write([]byte(sigStr))
-	wsSign := hex.EncodeToString(mac.Sum(nil))
+	wsSign := hmacHex(creds.SecretKey, sigStr)
 
 	bwsConn, _, err := websocket.DefaultDialer.DialContext(ctx, bybitPrivateWS, nil)
 	if err != nil {
