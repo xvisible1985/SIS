@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -318,4 +319,31 @@ func QueryAPI(ctx context.Context, creds Credentials) (json.RawMessage, error) {
 		return nil, err
 	}
 	return r.Result, nil
+}
+
+// FetchMarkPrice returns the current mark price for a symbol from Bybit REST.
+func FetchMarkPrice(ctx context.Context, creds Credentials, category, symbol string) (float64, error) {
+	q := "category=" + category + "&symbol=" + symbol
+	data, err := doSignedGET(ctx, creds, "/v5/market/tickers", q)
+	if err != nil {
+		return 0, err
+	}
+	var resp struct {
+		Result struct {
+			List []struct {
+				MarkPrice string `json:"markPrice"`
+			} `json:"list"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return 0, err
+	}
+	if len(resp.Result.List) == 0 {
+		return 0, fmt.Errorf("no ticker for %s/%s", category, symbol)
+	}
+	price, err := strconv.ParseFloat(resp.Result.List[0].MarkPrice, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse mark price: %w", err)
+	}
+	return price, nil
 }
