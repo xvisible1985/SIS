@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"sis/pkg/strategy"
 )
 
 // Server holds shared dependencies for all HTTP handlers.
@@ -17,11 +18,14 @@ type Server struct {
 	rdb       *redis.Client
 	jwtSecret []byte
 	encKey    string
+	engine    *strategy.Engine
 }
 
 // NewServer creates a Server.
 func NewServer(pool *pgxpool.Pool, rdb *redis.Client, jwtSecret, encKey string) *Server {
-	return &Server{pool: pool, rdb: rdb, jwtSecret: []byte(jwtSecret), encKey: encKey}
+	s := &Server{pool: pool, rdb: rdb, jwtSecret: []byte(jwtSecret), encKey: encKey}
+	s.engine = strategy.New(pool, encKey)
+	return s
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

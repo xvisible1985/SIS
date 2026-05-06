@@ -54,6 +54,9 @@ func main() {
 
 	s := NewServer(pool, rdb, jwtSecret, encKey)
 
+	// Start strategy engine
+	go s.engine.Start(ctx)
+
 	// Start background syncer
 	syncer := traderPkg.NewSyncer(pool, encKey, syncDays)
 	syncer.Start(ctx)
@@ -94,6 +97,13 @@ func main() {
 		r.Get("/accounts/{id}/verify", s.VerifyAccount)
 		r.Get("/accounts/{id}/balance", s.GetAccountBalance)
 		r.Patch("/accounts/{id}/active", s.ToggleAccountActive)
+
+		// Strategies
+		r.Get("/strategies", s.ListStrategies)
+		r.Post("/strategies", s.CreateStrategy)
+		r.Put("/strategies/{id}", s.UpdateStrategy)
+		r.Post("/strategies/{id}/status", s.SetStrategyStatus)
+		r.Delete("/strategies/{id}", s.DeleteStrategy)
 
 		// Trader
 		r.Post("/trader/order", s.TraderPlaceOrder)
