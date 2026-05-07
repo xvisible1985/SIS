@@ -32,13 +32,13 @@ func (s *Server) loadCreds(r *http.Request, accountID, userID string) (trader.Cr
 	return trader.Credentials{APIKey: apiKey, SecretKey: secret}, nil
 }
 
-// makeOrderLinkID returns the next SiS-N order link ID using a DB sequence.
+// makeOrderLinkID returns a SIS_TRM-N order link ID for terminal (manual) orders.
 func (s *Server) makeOrderLinkID(ctx context.Context) string {
 	var n int64
 	if err := s.pool.QueryRow(ctx, "SELECT nextval('sis_order_seq')").Scan(&n); err != nil {
-		return fmt.Sprintf("SiS-e%d", time.Now().UnixMilli())
+		return fmt.Sprintf("SIS_TRM-%d", time.Now().UnixMilli())
 	}
-	return fmt.Sprintf("SiS-%d", n)
+	return fmt.Sprintf("SIS_TRM-%d", n)
 }
 
 type placeOrderReq struct {

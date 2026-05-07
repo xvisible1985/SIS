@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { Strategy, StrategyState, StrategyFormData } from '../types'
+import type { Strategy, StrategyState, StrategyEvent, StrategyFormData } from '../types'
 
 export async function listStrategies(): Promise<Strategy[]> {
   const res = await apiClient.get<Strategy[]>('/strategies')
@@ -28,5 +28,10 @@ export async function deleteStrategy(id: string): Promise<void> {
 
 export async function getStrategyState(id: string): Promise<StrategyState> {
   const res = await apiClient.get<StrategyState>(`/strategies/${id}/state`)
+  return res.data
+}
+
+export async function getStrategyEvents(id: string): Promise<StrategyEvent[]> {
+  const res = await apiClient.get<StrategyEvent[]>(`/strategies/${id}/events`)
   return res.data
 }

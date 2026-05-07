@@ -6,13 +6,30 @@ interface Props {
   accountId: string
   orders: ActiveOrder[]
   loading: boolean
+  onSelect?: (symbol: string) => void
+}
+
+function orderLabel(ord: ActiveOrder): string {
+  const id = ord.orderLinkId ?? ''
+  const type = ord.orderType?.toLowerCase() ?? ''
+  if (/^(SIS_STR|STP)-[a-f0-9]+-tp-\d+$/.test(id)) return `TP_${type}`
+  if (/^(SIS_STR|STP)-[a-f0-9]+-sl-\d+$/.test(id)) return `SL_${type}`
+  const lvl = id.match(/^(SIS_STR|STR)-[a-f0-9]+-\d+-(\d+)$/)
+  if (lvl) return `L${lvl[2]}_${type}`
+  return type || '—'
+}
+
+function orderSource(linkId: string): 'str' | 'trm' | null {
+  if (linkId.startsWith('SIS_STR-') || linkId.startsWith('STR-') || linkId.startsWith('STP-')) return 'str'
+  if (linkId.startsWith('SIS_TRM-') || linkId.startsWith('SiS-')) return 'trm'
+  return null
 }
 
 function coinIcon(s: string) {
   return `https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons/32/color/${s.replace(/USDT|USDC|USD$/, '').toLowerCase()}.png`
 }
 
-export function OrdersTable({ accountId, orders, loading }: Props) {
+export function OrdersTable({ accountId, orders, loading, onSelect }: Props) {
   const [cancelling, setCancelling] = useState<string | null>(null)
 
   async function handleCancel(ord: ActiveOrder) {
@@ -42,7 +59,7 @@ export function OrdersTable({ accountId, orders, loading }: Props) {
       </thead>
       <tbody>
         {orders.map(ord => (
-          <tr key={ord.orderId} className="border-b border-gray-200 dark:border-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-800/60">
+          <tr key={ord.orderId} onClick={() => onSelect?.(ord.symbol)} className={`border-b border-gray-200 dark:border-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-800/60 ${onSelect ? 'cursor-pointer' : ''}`}>
             <td className="px-3 py-2 font-mono font-medium">
               <div className="flex items-center gap-1.5">
                 <img src={coinIcon(ord.symbol)} className="w-4 h-4 rounded-full shrink-0" onError={e => (e.currentTarget.style.display='none')} />
@@ -54,7 +71,7 @@ export function OrdersTable({ accountId, orders, loading }: Props) {
                 {ord.side}
               </span>
             </td>
-            <td className="px-3 py-2 text-gray-500 dark:text-gray-400">{ord.orderType}</td>
+            <td className="px-3 py-2 text-gray-500 dark:text-gray-400 font-mono">{orderLabel(ord)}</td>
             <td className="px-3 py-2 text-right font-mono">
               {ord.triggerPrice ? `~${parseFloat(ord.triggerPrice).toFixed(2)}` : parseFloat(ord.price) > 0 ? parseFloat(ord.price).toFixed(2) : '—'}
             </td>
@@ -64,8 +81,11 @@ export function OrdersTable({ accountId, orders, loading }: Props) {
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400">{ord.orderStatus}</span>
             </td>
             <td className="px-3 py-2">
-              {ord.orderLinkId?.startsWith('sis') && (
-                <span className="text-[10px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-400">SIS</span>
+              {orderSource(ord.orderLinkId ?? '') === 'str' && (
+                <span className="text-[10px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-400">STR</span>
+              )}
+              {orderSource(ord.orderLinkId ?? '') === 'trm' && (
+                <span className="text-[10px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-400">TRM</span>
               )}
             </td>
             <td className="px-3 py-2 text-right">

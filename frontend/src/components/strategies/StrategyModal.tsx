@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { TemplateSelector } from './TemplateSelector'
 import { createStrategy, updateStrategy } from '../../api/strategies'
 import { listAccounts } from '../../api/accounts'
+import { CoinPicker } from '../common/CoinPicker'
 import type { Strategy, StrategyFormData, GridStep, SignalConfig, ExchangeAccount } from '../../types'
 
 const AVAILABLE_SIGNALS = [
@@ -209,11 +210,9 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className={labelCls}>Символ</label>
-                  <input
-                    value={form.symbol}
-                    onChange={e => patch({ symbol: e.target.value.toUpperCase() })}
-                    placeholder="BTCUSDT"
-                    className={inputCls}
+                  <CoinPicker
+                    value={form.symbol || 'BTCUSDT'}
+                    onChange={sym => patch({ symbol: sym })}
                   />
                 </div>
                 <div>
@@ -315,20 +314,30 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
                   >
                     <div className="text-center text-[10px] text-gray-600">{i + 1}</div>
                     <input
-                      type="number" step="0.1" min="0.1"
+                      type="number" step="0.1" min="0"
                       value={step.price_move_pct}
                       onChange={e => updateStep(i, 'price_move_pct', Number(e.target.value))}
                       className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
                     />
                     <input
-                      type="number" step="1" min="1"
+                      type="number" step="0.1" min="0.1"
                       value={step.lots}
-                      onChange={e => updateStep(i, 'lots', Number(e.target.value))}
+                      onChange={e => {
+                        const lots = Number(e.target.value)
+                        updateStep(i, 'lots', lots)
+                      }}
                       className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
                     />
-                    <div className="text-center text-[11px] text-gray-500">
-                      {(step.lots * form.grid_size_usdt).toFixed(0)}
-                    </div>
+                    <input
+                      type="number" step="1" min="1"
+                      value={+(step.lots * form.grid_size_usdt).toFixed(2)}
+                      onChange={e => {
+                        const usdt = Number(e.target.value)
+                        if (usdt > 0 && form.grid_size_usdt > 0)
+                          updateStep(i, 'lots', Math.round(usdt / form.grid_size_usdt * 100) / 100)
+                      }}
+                      className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
+                    />
                     <button
                       onClick={() => removeStep(i)}
                       className="text-red-500 hover:text-red-400 text-center text-sm"
@@ -409,7 +418,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
                   <div>
                     <label className={labelCls}>Режим</label>
                     <Toggle
-                      options={[{ label: 'total', value: 'total' }, { label: 'per level', value: 'per_level' }]}
+                      options={[{ label: 'На всю позицию', value: 'total' }, { label: 'По уровням', value: 'per_level' }]}
                       value={form.tp_mode}
                       onChange={v => patch({ tp_mode: v as 'total' | 'per_level' })}
                     />
@@ -434,8 +443,8 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
                     <label className={labelCls}>Тип</label>
                     <Toggle
                       options={[
-                        { label: 'conditional', value: 'conditional' },
-                        { label: 'market', value: 'programmatic' },
+                        { label: 'На бирже', value: 'conditional' },
+                        { label: 'Программный', value: 'programmatic' },
                       ]}
                       value={form.sl_type}
                       onChange={v => patch({ sl_type: v as 'conditional' | 'programmatic' })}

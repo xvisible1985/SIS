@@ -1,19 +1,22 @@
 import { useState, useEffect, useCallback } from 'react'
 import { placeOrder, cancelOrder, setLeverage } from '../../api/trader'
+import { CoinPicker } from '../common/CoinPicker'
 import type { ActiveOrder } from '../../types'
 
 interface Props {
   accountId: string
   symbol: string
+  onSymbolChange: (sym: string) => void
   lastPrice: string | null
   orders: ActiveOrder[]
   hedgeMode: boolean
 }
 
+
 type Tab = 'Limit' | 'Market' | 'Conditional'
 type LogEntry = { text: string; status: 'pending' | 'ok' | 'error' }
 
-export function OrderForm({ accountId, symbol, lastPrice, orders, hedgeMode }: Props) {
+export function OrderForm({ accountId, symbol, onSymbolChange, lastPrice, orders, hedgeMode }: Props) {
   const category = symbol.endsWith('USDT') || symbol.endsWith('USDC') ? 'linear' : 'inverse'
   const baseCoin = symbol.replace(/USDT|USDC|USD$/, '')
   const quoteCoin = symbol.endsWith('USDC') ? 'USDC' : 'USDT'
@@ -157,6 +160,9 @@ export function OrderForm({ accountId, symbol, lastPrice, orders, hedgeMode }: P
 
       {open && (
         <>
+          <div className="px-3 py-1.5 border-b border-gray-200 dark:border-gray-700">
+            <CoinPicker value={symbol} onChange={onSymbolChange} size="sm" />
+          </div>
           <div className="flex border-y border-gray-200 dark:border-gray-700">
             {(['Limit', 'Market', 'Conditional'] as Tab[]).map(t => (
               <button

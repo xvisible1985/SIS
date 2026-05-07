@@ -268,6 +268,12 @@ export interface StrategyLevel {
   filled_price: number
 }
 
+export interface StrategyEvent {
+  message: string
+  level: 'info' | 'warn' | 'error'
+  created_at: string
+}
+
 export interface StrategyState {
   cycle_num: number
   start_price: number

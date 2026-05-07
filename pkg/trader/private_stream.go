@@ -27,9 +27,19 @@ type OrderEvent struct {
 	OrderFilter string `json:"orderFilter"`
 }
 
+// PositionEvent carries position data from Bybit private WS "position" topic.
+type PositionEvent struct {
+	Symbol      string `json:"symbol"`
+	Side        string `json:"side"`
+	Size        string `json:"size"`
+	Category    string `json:"category"`
+	PositionIdx int    `json:"positionIdx"`
+}
+
 // PrivateStreamHandler receives events from Bybit private WS.
 type PrivateStreamHandler interface {
 	OnOrderEvent(ev OrderEvent)
+	OnPositionEvent(ev PositionEvent)
 	OnConnected()
 	OnDisconnected(err error)
 }
@@ -113,7 +123,7 @@ func runPrivateOnce(ctx context.Context, creds Credentials, handler PrivateStrea
 				if ok, _ := raw["success"].(bool); ok && !subscribed {
 					sub, _ := json.Marshal(map[string]any{
 						"op":   "subscribe",
-						"args": []string{"order"},
+						"args": []string{"order", "position"},
 					})
 					conn.WriteMessage(websocket.TextMessage, sub) //nolint:errcheck
 					subscribed = true
@@ -125,16 +135,30 @@ func runPrivateOnce(ctx context.Context, creds Credentials, handler PrivateStrea
 				// ignore
 			default:
 				topic, _ := raw["topic"].(string)
-				if topic == "order" {
-					items, ok := raw["data"].([]any)
-					if !ok {
-						continue
-					}
+				msgType, _ := raw["type"].(string)
+				items, ok := raw["data"].([]any)
+				if !ok {
+					continue
+				}
+				switch topic {
+				case "order":
 					for _, item := range items {
 						b, _ := json.Marshal(item)
 						var ev OrderEvent
 						if json.Unmarshal(b, &ev) == nil {
 							handler.OnOrderEvent(ev)
+						}
+					}
+				case "position":
+					// Skip snapshot — Bybit sends current state on subscribe which may
+					// include size=0 for already-closed positions; only react to deltas.
+					if msgType == "delta" {
+						for _, item := range items {
+							b, _ := json.Marshal(item)
+							var ev PositionEvent
+							if json.Unmarshal(b, &ev) == nil {
+								handler.OnPositionEvent(ev)
+							}
 						}
 					}
 				}

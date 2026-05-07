@@ -257,6 +257,7 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.engine.Notify(r.Context(), id)
+	s.engine.RestartCycle(r.Context(), id)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -304,6 +305,49 @@ func (s *Server) DeleteStrategy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// GetStrategyEvents returns the last 200 events for a strategy.
+// GET /strategies/{id}/events
+func (s *Server) GetStrategyEvents(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	id := chi.URLParam(r, "id")
+
+	var exists bool
+	if err := s.pool.QueryRow(r.Context(),
+		`SELECT true FROM strategies WHERE id=$1 AND owner_id=$2`, id, userID,
+	).Scan(&exists); err != nil {
+		writeError(w, http.StatusNotFound, "strategy not found")
+		return
+	}
+
+	rows, err := s.pool.Query(r.Context(), `
+		SELECT message, level, created_at
+		FROM strategy_events
+		WHERE strategy_id=$1
+		ORDER BY created_at DESC LIMIT 200`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type eventRow struct {
+		Message   string    `json:"message"`
+		Level     string    `json:"level"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	var result []eventRow
+	for rows.Next() {
+		var e eventRow
+		if rows.Scan(&e.Message, &e.Level, &e.CreatedAt) == nil {
+			result = append(result, e)
+		}
+	}
+	if result == nil {
+		result = []eventRow{}
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 // GetStrategyState returns the active cycle's levels plus computed volume and avg entry.
 // GET /strategies/{id}/state
 func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
@@ -330,13 +374,20 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 	}
 	var cycleID string
 	var cycle cycleInfo
+	var cycleEnded bool
 	err := s.pool.QueryRow(r.Context(), `
 		SELECT id, cycle_num, COALESCE(start_price,0),
-		       COALESCE(tp_order_id,''), COALESCE(sl_order_id,''), started_at
+		       COALESCE(tp_order_id,''), COALESCE(sl_order_id,''), started_at,
+		       ended_at IS NOT NULL
 		FROM strategy_cycles
-		WHERE strategy_id=$1 AND ended_at IS NULL ORDER BY cycle_num DESC LIMIT 1`, id,
+		WHERE strategy_id=$1 ORDER BY cycle_num DESC LIMIT 1`, id,
 	).Scan(&cycleID, &cycle.CycleNum, &cycle.StartPrice,
-		&cycle.TPOrderID, &cycle.SLOrderID, &cycle.StartedAt)
+		&cycle.TPOrderID, &cycle.SLOrderID, &cycle.StartedAt, &cycleEnded)
+	if cycleEnded {
+		cycle.TPOrderID = ""
+		cycle.SLOrderID = ""
+		cycle.StartPrice = 0
+	}
 
 	type levelInfo struct {
 		LevelIdx    int     `json:"level_idx"`
@@ -373,7 +424,7 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 		levels = []levelInfo{}
 	}
 	var avgEntry float64
-	if totalCoins > 0 {
+	if totalCoins > 0 && !cycleEnded {
 		avgEntry = totalCost / totalCoins
 	}
 

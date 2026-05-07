@@ -11,6 +11,7 @@ export function StrategiesPage() {
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Strategy | undefined>()
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -68,8 +69,11 @@ export function StrategiesPage() {
                 key={s.id}
                 strategy={s}
                 accounts={accounts}
+                orders={[]}
                 onEdit={openEdit}
                 onChanged={load}
+                isOpen={s.id === expandedId}
+                onToggleOpen={() => setExpandedId(prev => prev === s.id ? null : s.id)}
               />
             ))}
           </ul>

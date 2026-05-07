@@ -105,8 +105,9 @@ func main() {
 		r.Post("/strategies/{id}/status", s.SetStrategyStatus)
 		r.Delete("/strategies/{id}", s.DeleteStrategy)
 
-		// Strategy state
+		// Strategy state and events
 		r.Get("/strategies/{id}/state", s.GetStrategyState)
+		r.Get("/strategies/{id}/events", s.GetStrategyEvents)
 
 		// Strategy templates
 		r.Get("/strategy-templates", s.ListTemplates)

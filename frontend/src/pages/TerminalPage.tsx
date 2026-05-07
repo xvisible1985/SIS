@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
 import { Chart } from '../components/terminal/Chart'
 import { Orderbook } from '../components/terminal/Orderbook'
 import { OrderForm } from '../components/terminal/OrderForm'
@@ -10,16 +9,15 @@ import { ExecutionsTable } from '../components/terminal/ExecutionsTable'
 import { TradeLog } from '../components/terminal/TradeLog'
 import { PnlTable } from '../components/terminal/PnlTable'
 import { GridForm } from '../components/terminal/GridForm'
+import { CoinPicker } from '../components/common/CoinPicker'
 import { usePositionsWs } from '../hooks/terminal/usePositionsWs'
 import { useCandles } from '../hooks/terminal/useCandles'
 import { useOrderbook } from '../hooks/terminal/useOrderbook'
 import { listAccounts } from '../api/accounts'
-import { switchPositionMode } from '../api/trader'
-import { listStrategies, setStrategyStatus } from '../api/strategies'
-import type { Strategy } from '../types'
-import type { BookRow } from '../hooks/terminal/useOrderbook'
-
-const COINS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT']
+import { listStrategies } from '../api/strategies'
+import { StrategyCard } from '../components/strategies/StrategyCard'
+import { StrategyModal } from '../components/strategies/StrategyModal'
+import type { Strategy, ExchangeAccount, ActiveOrder } from '../types'
 
 let _cachedSymbol = 'BTCUSDT'
 let _cachedTf = '60'
@@ -34,140 +32,73 @@ const TIMEFRAMES = [
 ]
 
 type BottomTab = 'positions' | 'orders' | 'history' | 'executions' | 'log' | 'pnl'
+type RightTab = 'manual' | 'strategies' | 'bots'
 
-function coinIcon(sym: string) {
-  const base = sym.replace(/USDT|USDC|USD$/, '').toLowerCase()
-  return `https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons/32/color/${base}.png`
-}
-
-// ── Strategies panel ────────────────────────────────────────────────────────
-function StrategiesPanel({ symbol, accountId }: { symbol: string; accountId: string | null }) {
-  const [open, setOpen] = useState(false)
+// ── Strategies tab ───────────────────────────────────────────────────────────
+function TerminalStrategiesTab({ onSymbolChange, orders }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[] }) {
   const [strategies, setStrategies] = useState<Strategy[]>([])
-  const [loaded, setLoaded] = useState(false)
-  const [acting, setActing] = useState(false)
+  const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
+  const [loading, setLoading] = useState(true)
+  const [editTarget, setEditTarget] = useState<Strategy | undefined>()
+  const [modalOpen, setModalOpen] = useState(false)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (!open) return
-    setLoaded(false)
-    listStrategies()
-      .then(all => setStrategies(all.filter(s => s.symbol === symbol)))
-      .catch(() => setStrategies([]))
-      .finally(() => setLoaded(true))
-  }, [open, symbol])
-
-  async function handleStatus(id: string, status: 'active' | 'stopped') {
-    setActing(true)
+  async function load() {
+    setLoading(true)
     try {
-      await setStrategyStatus(id, status)
-      const all = await listStrategies()
-      setStrategies(all.filter(s => s.symbol === symbol))
+      const [strats, accs] = await Promise.all([listStrategies(), listAccounts()])
+      setStrategies(strats)
+      setAccounts(accs)
+    } catch {
+      setStrategies([])
     } finally {
-      setActing(false)
+      setLoading(false)
     }
   }
 
-  const activeCount = strategies.filter(s => s.status === 'active').length
+  useEffect(() => { load() }, [])
+
+  function handleSelect(s: Strategy) {
+    setSelectedId(s.id)
+    onSymbolChange(s.symbol)
+  }
 
   return (
-    <div className="border-b border-gray-200 dark:border-gray-700">
-      <button
-        onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
-      >
-        <span className="flex items-center gap-1.5">
-          <span className="text-[10px] opacity-60">⠿</span>
-          Стратегии
-          {activeCount > 0 && !open && (
-            <span className="bg-green-500/20 text-green-400 text-[10px] px-1.5 rounded-full">{activeCount}</span>
-          )}
-        </span>
-        <span className={`text-[10px] transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>▾</span>
-      </button>
-
-      {open && (
-        <div className="border-t border-gray-200 dark:border-gray-700 px-3 py-2 space-y-2 text-xs">
-          {!loaded && <div className="py-4 text-center text-gray-500">Загрузка…</div>}
-          {loaded && strategies.length === 0 && (
-            <div className="py-4 text-center text-gray-500">Нет стратегий для {symbol}</div>
-          )}
-          {loaded && strategies.map(s => (
-            <div key={s.id} className="rounded-lg border border-gray-200 dark:border-gray-700 px-2.5 py-2 space-y-1.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
-                    s.direction === 'long' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-                  }`}>
-                    {s.direction.toUpperCase()}
-                  </span>
-                  <span className="text-gray-400">{s.strategy_type}</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  {s.status === 'active' || s.status === 'finishing' ? (
-                    <button
-                      disabled={acting}
-                      onClick={() => handleStatus(s.id, 'stopped')}
-                      className="text-[10px] px-2 py-0.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 disabled:opacity-50 transition-colors"
-                    >■</button>
-                  ) : (
-                    <button
-                      disabled={acting}
-                      onClick={() => handleStatus(s.id, 'active')}
-                      className="text-[10px] px-2 py-0.5 rounded bg-green-500/20 text-green-400 hover:bg-green-500/30 disabled:opacity-50 transition-colors"
-                    >▶</button>
-                  )}
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                    s.status === 'active' ? 'bg-green-900/40 text-green-400' :
-                    s.status === 'finishing' ? 'bg-yellow-900/40 text-yellow-400' :
-                    'bg-gray-800 text-gray-500'
-                  }`}>{s.status}</span>
-                </div>
-              </div>
-              <div className="flex items-center justify-between text-gray-500 text-[10px]">
-                <span>Grid {s.active_levels}/{s.grid_levels}</span>
-                <span>{s.volume_usdt.toFixed(0)} USDT</span>
-                <span className={s.last_pnl > 0 ? 'text-green-400' : s.last_pnl < 0 ? 'text-red-400' : ''}>
-                  {s.last_pnl === 0 ? '—' : `${s.last_pnl > 0 ? '+' : ''}${s.last_pnl.toFixed(2)}`}
-                </span>
-              </div>
-            </div>
-          ))}
-          <Link
-            to="/strategies"
-            className="block text-center text-[11px] text-blue-400 hover:text-blue-300 py-1 transition-colors"
-          >
-            Все стратегии →
-          </Link>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── Orderbook panel ──────────────────────────────────────────────────────────
-function OrderbookPanel({ bids, asks, spread, symbol }: {
-  bids: BookRow[]
-  asks: BookRow[]
-  spread: string | null
-  symbol: string
-}) {
-  const [open, setOpen] = useState(true)
-  return (
-    <div>
-      <button
-        onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors border-b border-gray-200 dark:border-gray-700"
-      >
-        <span className="flex items-center gap-1.5">
-          <span className="text-[10px] opacity-60">⠿</span>
-          Стакан
-        </span>
-        <span className={`text-[10px] transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>▾</span>
-      </button>
-      {open && (
-        <div style={{ height: 260 }}>
-          <Orderbook bids={bids} asks={asks} spread={spread} symbol={symbol} />
-        </div>
+    <div className="flex flex-col h-full">
+      <div className="px-3 py-2 flex items-center justify-between border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+        <span className="text-xs text-gray-500 dark:text-gray-400">{strategies.length} стратегий</span>
+        <button
+          onClick={() => { setEditTarget(undefined); setModalOpen(true) }}
+          className="text-xs px-2.5 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+        >+ Новая</button>
+      </div>
+      <div className="flex-1 overflow-y-auto p-2 space-y-2">
+        {loading && <div className="p-8 text-center text-sm text-gray-400">Загрузка…</div>}
+        {!loading && strategies.length === 0 && (
+          <div className="p-8 text-center text-sm text-gray-400">Нет стратегий</div>
+        )}
+        {!loading && strategies.map(s => (
+          <StrategyCard
+            key={s.id}
+            strategy={s}
+            accounts={accounts}
+            orders={orders}
+            onEdit={s => { setEditTarget(s); setModalOpen(true) }}
+            onChanged={load}
+            selected={s.id === selectedId}
+            onSelect={handleSelect}
+            isOpen={s.id === expandedId}
+            onToggleOpen={() => setExpandedId(prev => prev === s.id ? null : s.id)}
+          />
+        ))}
+      </div>
+      {modalOpen && (
+        <StrategyModal
+          strategy={editTarget}
+          onClose={() => setModalOpen(false)}
+          onSaved={() => { setModalOpen(false); load() }}
+        />
       )}
     </div>
   )
@@ -179,6 +110,7 @@ export function TerminalPage() {
   const [symbol, setSymbol] = useState(_cachedSymbol)
   const [tf, setTf] = useState(_cachedTf)
   const [bottomTab, setBottomTab] = useState<BottomTab>('positions')
+  const [rightTab, setRightTab] = useState<RightTab>('manual')
 
   useEffect(() => {
     listAccounts().then(accs => {
@@ -196,7 +128,6 @@ export function TerminalPage() {
   // Hedge mode (shared across right panel)
   const hedgeModeFromPositions = positions.some(p => p.symbol === symbol && p.positionIdx !== 0)
   const [hedgeModeOverride, setHedgeModeOverride] = useState<boolean | null>(null)
-  const [modeLoading, setModeLoading] = useState(false)
   const hedgeStorageKey = accountId ? `sis_hedge_${accountId}_${symbol}` : null
 
   useEffect(() => {
@@ -216,15 +147,6 @@ export function TerminalPage() {
 
   const hedgeMode = hedgeModeOverride !== null ? hedgeModeOverride : hedgeModeFromPositions
 
-  async function handleSwitchMode() {
-    if (!accountId) return
-    const cat = symbol.endsWith('USDT') || symbol.endsWith('USDC') ? 'linear' : 'inverse'
-    setModeLoading(true)
-    const nextMode = hedgeMode ? 0 : 3
-    const res = await switchPositionMode({ account_id: accountId, symbol, category: cat, mode: nextMode })
-    if (res.ok) setHedgeModeOverride(nextMode === 3)
-    setModeLoading(false)
-  }
 
   const statusColor = {
     connecting: 'bg-yellow-400 animate-pulse',
@@ -243,15 +165,12 @@ export function TerminalPage() {
   ]
 
   return (
-    <div className="bg-gray-100 dark:bg-[#07070f]" style={{ display: 'grid', gridTemplateColumns: '78% 22%', gridTemplateRows: '65% 35%', height: 'calc(100vh - 65px)', gap: '10px', padding: '10px' }}>
+    <div className="bg-gray-100 dark:bg-[#07070f]" style={{ display: 'grid', gridTemplateColumns: '75% 25%', gridTemplateRows: '65% 35%', height: 'calc(100vh - 65px)', gap: '10px', padding: '10px' }}>
 
       {/* Chart area */}
       <div style={{ gridColumn: 1, gridRow: 1 }} className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden">
         <div className="flex items-center gap-3 px-4 py-2 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
-          <select value={symbol} onChange={e => setSymbol(e.target.value)}
-            className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm text-gray-900 dark:text-white w-36 focus:outline-none">
-            {COINS.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
+          <CoinPicker value={symbol} onChange={setSymbol} />
           <div className="flex gap-1">
             {TIMEFRAMES.map(t => (
               <button key={t.value} onClick={() => setTf(t.value)}
@@ -270,7 +189,7 @@ export function TerminalPage() {
           )}
         </div>
         <div className="flex-1 min-h-0">
-          <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} symbol={symbol} onLoadMore={loadMore} />
+          <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} />
         </div>
       </div>
 
@@ -298,7 +217,7 @@ export function TerminalPage() {
         </div>
         <div className="flex-1 overflow-auto">
           {bottomTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} />}
-          {bottomTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} />}
+          {bottomTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} />}
           {bottomTab === 'history' && <HistoryTable accountId={accountId ?? undefined} symbol={symbol} />}
           {bottomTab === 'executions' && <ExecutionsTable accountId={accountId ?? undefined} />}
           {bottomTab === 'log' && <TradeLog log={log} />}
@@ -306,52 +225,67 @@ export function TerminalPage() {
         </div>
       </div>
 
-      {/* Right panel: shared header + collapsible blocks */}
+      {/* Right panel */}
       <div style={{ gridColumn: 2, gridRow: '1 / 3' }} className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden">
 
-        {/* Panel header: symbol + hedge mode toggle */}
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
-          <img
-            src={coinIcon(symbol)}
-            className="w-5 h-5 rounded-full"
-            onError={e => (e.currentTarget.style.display = 'none')}
-          />
-          <span className="font-bold font-mono text-sm text-gray-900 dark:text-white">{symbol}</span>
-          <button
-            onClick={handleSwitchMode}
-            disabled={!accountId || modeLoading}
-            className={`ml-auto flex items-center gap-2 px-2.5 py-1 rounded-lg text-xs font-medium transition-all disabled:opacity-50 ${
-              hedgeMode
-                ? 'bg-blue-500 text-white hover:bg-blue-600'
-                : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-gray-600'
-            }`}
-          >
-            <span className="select-none">Хедж режим</span>
-            <span className={`relative inline-flex w-7 h-4 rounded-full transition-colors flex-shrink-0 ${hedgeMode ? 'bg-white/30' : 'bg-black/20'}`}>
-              <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-all ${hedgeMode ? 'left-3.5' : 'left-0.5'}`} />
-            </span>
-          </button>
+        {/* Tab bar */}
+        <div className="flex gap-1.5 p-2 border-b border-gray-200 dark:border-gray-700 flex-shrink-0 bg-gray-50 dark:bg-gray-800/60">
+          {([
+            { key: 'manual', label: 'Торговля' },
+            { key: 'strategies', label: 'Стратегии' },
+            { key: 'bots', label: 'Боты' },
+          ] as { key: RightTab; label: string }[]).map(t => (
+            <button
+              key={t.key}
+              onClick={() => setRightTab(t.key)}
+              className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                rightTab === t.key
+                  ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
 
-        {/* Scrollable blocks */}
-        <div className="flex-1 overflow-y-auto">
-          {accountId ? (
-            <OrderForm
-              accountId={accountId}
-              symbol={symbol}
-              lastPrice={lastPrice}
-              orders={orders}
-              hedgeMode={hedgeMode}
-            />
-          ) : (
-            <div className="flex flex-col items-center justify-center p-6 text-center text-gray-500 dark:text-gray-400 gap-3 border-b border-gray-200 dark:border-gray-700">
-              <span className="text-3xl opacity-30">🔑</span>
-              <p className="text-sm">Нет аккаунта Bybit. Добавьте API-ключи в настройках.</p>
+        {/* Tab content */}
+        <div className="flex-1 overflow-y-auto flex flex-col">
+          {rightTab === 'manual' && (
+            <>
+              {accountId ? (
+                <OrderForm
+                  accountId={accountId}
+                  symbol={symbol}
+                  onSymbolChange={setSymbol}
+                  lastPrice={lastPrice}
+                  orders={orders}
+                  hedgeMode={hedgeMode}
+                />
+              ) : (
+                <div className="flex flex-col items-center justify-center p-6 text-center text-gray-500 dark:text-gray-400 gap-3 border-b border-gray-200 dark:border-gray-700">
+                  <span className="text-3xl opacity-30">🔑</span>
+                  <p className="text-sm">Нет аккаунта Bybit. Добавьте API-ключи в настройках.</p>
+                </div>
+              )}
+              <GridForm
+                accountId={accountId ?? ''}
+                symbol={symbol}
+                onSymbolChange={setSymbol}
+                hedgeMode={hedgeMode}
+                lastPrice={lastPrice}
+              />
+              <div style={{ height: 280 }} className="flex-shrink-0">
+                <Orderbook bids={bids} asks={asks} spread={spread} symbol={symbol} />
+              </div>
+            </>
+          )}
+          {rightTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} />}
+          {rightTab === 'bots' && (
+            <div className="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500 text-sm">
+              В разработке
             </div>
           )}
-          <GridForm accountId={accountId ?? ''} symbol={symbol} lastPrice={lastPrice} />
-          <StrategiesPanel symbol={symbol} accountId={accountId} />
-          <OrderbookPanel bids={bids} asks={asks} spread={spread} symbol={symbol} />
         </div>
       </div>
 

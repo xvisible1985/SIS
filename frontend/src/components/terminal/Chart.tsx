@@ -9,14 +9,29 @@ interface Props {
   positions: Position[]
   orders: ActiveOrder[]
   symbol: string
+  lastPrice: string | null
   onLoadMore: (before: number) => Promise<void>
 }
 
-export function Chart({ candles, candleSymbol, positions, orders, symbol, onLoadMore }: Props) {
+function parseOrderLabel(linkId: string): string {
+  if (!linkId) return ''
+  if (/^(SIS_STR|STP)-[a-f0-9]+-tp-\d+$/.test(linkId)) return 'TP'
+  if (/^(SIS_STR|STP)-[a-f0-9]+-sl-\d+$/.test(linkId)) return 'SL'
+  const m = linkId.match(/^(SIS_STR|STR)-[a-f0-9]+-\d+-(\d+)$/)
+  return m ? `L${m[2]}` : ''
+}
+
+function pctFromPrice(orderPrice: number, currentPrice: number): string {
+  const pct = (orderPrice - currentPrice) / currentPrice * 100
+  return `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`
+}
+
+export function Chart({ candles, candleSymbol, positions, orders, symbol, lastPrice, onLoadMore }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const priceLines = useRef<any[]>([])
+  const currentPriceLineRef = useRef<any>(null)
   const loadedSymbolRef = useRef<string | null>(null)
   const prevFirstTimeRef = useRef<number | null>(null)
   const onLoadMoreRef = useRef(onLoadMore)
@@ -116,6 +131,7 @@ export function Chart({ candles, candleSymbol, positions, orders, symbol, onLoad
 
     if (isNewSymbol) {
       seriesRef.current.setData(candles as any)
+      chartRef.current?.priceScale('right').applyOptions({ autoScale: true })
       chartRef.current?.timeScale().fitContent()
       loadedSymbolRef.current = symbol
       lastLoadMoreRef.current = Date.now() + 2000  // suppress auto-load right after initial load
@@ -137,7 +153,28 @@ export function Chart({ candles, candleSymbol, positions, orders, symbol, onLoad
     }
   }, [candles, candleSymbol, symbol])
 
-  // Price lines
+  // Current price line — updates on every tick
+  useEffect(() => {
+    const series = seriesRef.current
+    if (!series) return
+    if (currentPriceLineRef.current) {
+      try { series.removePriceLine(currentPriceLineRef.current) } catch {}
+      currentPriceLineRef.current = null
+    }
+    const price = lastPrice ? parseFloat(lastPrice) : 0
+    if (price > 0) {
+      currentPriceLineRef.current = series.createPriceLine({
+        price,
+        color: '#64748b',
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: '',
+      })
+    }
+  }, [lastPrice, afterSetData])
+
+  // Price lines — positions and orders
   useEffect(() => {
     const series = seriesRef.current
     if (!series) return
@@ -146,6 +183,8 @@ export function Chart({ candles, candleSymbol, positions, orders, symbol, onLoad
       try { series.removePriceLine(line) } catch {}
     }
     priceLines.current = []
+
+    const currentPrice = lastPrice ? parseFloat(lastPrice) : 0
 
     for (const pos of positions.filter(p => p.symbol === symbol)) {
       const price = parseFloat(pos.entryPrice)
@@ -164,29 +203,36 @@ export function Chart({ candles, candleSymbol, positions, orders, symbol, onLoad
     for (const ord of orders.filter(o => o.symbol === symbol)) {
       const isLong = ord.side === 'Buy'
       const color = isLong ? '#34d399' : '#f87171'
+      const label = parseOrderLabel(ord.orderLinkId)
       if (ord.triggerPrice && parseFloat(ord.triggerPrice) > 0) {
-        const usdt = (parseFloat(ord.qty) * parseFloat(ord.triggerPrice)).toFixed(0)
+        const p = parseFloat(ord.triggerPrice)
+        const usdt = (parseFloat(ord.qty) * p).toFixed(0)
+        const pct = currentPrice > 0 ? ` ${pctFromPrice(p, currentPrice)}` : ''
+        const prefix = label || (isLong ? 'Buy' : 'Sell')
         priceLines.current.push(series.createPriceLine({
-          price: parseFloat(ord.triggerPrice),
+          price: p,
           color,
           lineWidth: 1,
           lineStyle: 4,
           axisLabelVisible: true,
-          title: `${isLong ? 'Buy' : 'Sell'} ${usdt}$`,
+          title: `${prefix}${pct} ${usdt}$`,
         }))
       }
       if (ord.price && parseFloat(ord.price) > 0 && ord.orderType === 'Limit') {
+        const p = parseFloat(ord.price)
+        const pct = currentPrice > 0 ? ` ${pctFromPrice(p, currentPrice)}` : ''
+        const prefix = label || (isLong ? 'Buy' : 'Sell')
         priceLines.current.push(series.createPriceLine({
-          price: parseFloat(ord.price),
+          price: p,
           color,
           lineWidth: 1,
           lineStyle: 1,
           axisLabelVisible: true,
-          title: `${isLong ? 'Buy' : 'Sell'} ${ord.qty}`,
+          title: `${prefix}${pct} ${ord.qty}`,
         }))
       }
     }
-  }, [positions, orders, symbol, afterSetData])
+  }, [positions, orders, symbol, lastPrice, afterSetData])
 
   return <div ref={containerRef} className="w-full h-full" />
 }

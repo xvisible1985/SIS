@@ -1,15 +1,19 @@
 import { useState, useEffect } from 'react'
 import { placeOrder } from '../../api/trader'
+import { CoinPicker } from '../common/CoinPicker'
 
 interface Props {
   accountId: string
   symbol: string
+  onSymbolChange: (sym: string) => void
+  hedgeMode: boolean
   lastPrice: string | null
 }
 
+
 type Direction = 'buy' | 'sell' | 'both'
 
-export function GridForm({ accountId, symbol, lastPrice }: Props) {
+export function GridForm({ accountId, symbol, onSymbolChange, hedgeMode, lastPrice }: Props) {
   const [open, setOpen] = useState(false)
   const [basePrice, setBasePrice] = useState('')
   const [step, setStep] = useState('')
@@ -22,10 +26,6 @@ export function GridForm({ accountId, symbol, lastPrice }: Props) {
   const [qtyStep, setQtyStep] = useState('1')
 
   const category = symbol.endsWith('USDT') || symbol.endsWith('USDC') ? 'linear' : 'inverse'
-
-  const hedgeMode = accountId
-    ? localStorage.getItem(`sis_hedge_${accountId}_${symbol}`) === 'true'
-    : false
 
   useEffect(() => {
     fetch(`https://api.bybit.com/v5/market/instruments-info?category=${category}&symbol=${symbol}`)
@@ -115,6 +115,14 @@ export function GridForm({ accountId, symbol, lastPrice }: Props) {
 
       {open && (
         <div className="border-t border-gray-200 dark:border-gray-700 px-3 py-2 space-y-2 text-xs">
+
+          {/* Монета + хедж режим */}
+          <div className="flex items-center gap-2">
+            <CoinPicker value={symbol} onChange={onSymbolChange} size="sm" />
+            <span className={`ml-auto px-1.5 py-0.5 rounded text-[10px] font-medium flex-shrink-0 ${hedgeMode ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400'}`}>
+              {hedgeMode ? 'Хедж' : 'One-way'}
+            </span>
+          </div>
 
           {/* Направление */}
           <div className="grid grid-cols-3 gap-1">

@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"strconv"
 	"sync"
@@ -36,7 +37,8 @@ func (e *Engine) Start(ctx context.Context) {
 	rows, err := e.pool.Query(ctx,
 		`SELECT id, owner_id, account_id, symbol, category, direction, status,
 		        grid_levels, grid_active, grid_step_pct, grid_size_usdt,
-		        tp_mode, tp_pct, sl_type, sl_pct, signal_filter
+		        tp_mode, tp_pct, sl_type, sl_pct, signal_filter, hedge_mode,
+		        COALESCE(steps::text,'[]')
 		 FROM strategies WHERE status IN ('active','finishing')`)
 	if err != nil {
 		log.Printf("strategy engine: load: %v", err)
@@ -57,7 +59,8 @@ func (e *Engine) Notify(ctx context.Context, strategyID string) {
 	row := e.pool.QueryRow(ctx,
 		`SELECT id, owner_id, account_id, symbol, category, direction, status,
 		        grid_levels, grid_active, grid_step_pct, grid_size_usdt,
-		        tp_mode, tp_pct, sl_type, sl_pct, signal_filter
+		        tp_mode, tp_pct, sl_type, sl_pct, signal_filter, hedge_mode,
+		        COALESCE(steps::text,'[]')
 		 FROM strategies WHERE id=$1`, strategyID)
 	if err := scanStrategyRow(row, &s); err != nil {
 		log.Printf("strategy engine: notify %s: %v", strategyID, err)
@@ -68,7 +71,7 @@ func (e *Engine) Notify(ctx context.Context, strategyID string) {
 		runner := e.runners[s.AccountID]
 		e.mu.RUnlock()
 		if runner != nil {
-			runner.removeStrategy(ctx, strategyID)
+			runner.removeStrategy(strategyID)
 		}
 		return
 	}
@@ -85,7 +88,7 @@ func (e *Engine) loadStrategy(ctx context.Context, s Strategy) {
 			log.Printf("strategy engine: creds for account %s: %v", s.AccountID, err)
 			return
 		}
-		runCtx, cancel := context.WithCancel(ctx)
+		runCtx, cancel := context.WithCancel(context.Background())
 		runner = newAccountRunner(s.AccountID, creds, e.pool, cancel)
 		e.runners[s.AccountID] = runner
 		e.mu.Unlock()
@@ -93,7 +96,23 @@ func (e *Engine) loadStrategy(ctx context.Context, s Strategy) {
 	} else {
 		e.mu.Unlock()
 	}
-	runner.addStrategy(ctx, s)
+	runner.addStrategy(s)
+}
+
+// RestartCycle cancels the current cycle for a strategy and starts a new one.
+// Called after strategy settings are updated so new grid parameters take effect.
+func (e *Engine) RestartCycle(ctx context.Context, strategyID string) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, runner := range e.runners {
+		runner.mu.RLock()
+		sr, ok := runner.strategies[strategyID]
+		runner.mu.RUnlock()
+		if ok {
+			go sr.restartCycle(context.Background())
+			return
+		}
+	}
 }
 
 func (e *Engine) loadCreds(ctx context.Context, accountID string) (trader.Credentials, error) {
@@ -116,13 +135,14 @@ func (e *Engine) loadCreds(ctx context.Context, accountID string) (trader.Creden
 
 // scanStrategy scans a pgx row into a Strategy.
 func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
-	var dir, stat, tpm, slt string
-	var sf bool
+	var dir, stat, tpm, slt, stepsJSON string
+	var sf, hm bool
 	err := rows.Scan(
 		&s.ID, &s.OwnerID, &s.AccountID, &s.Symbol, &s.Category,
 		&dir, &stat,
 		&s.GridLevels, &s.GridActive, &s.GridStepPct, &s.GridSizeUSDT,
-		&tpm, &s.TPPct, &slt, &s.SLPct, &sf,
+		&tpm, &s.TPPct, &slt, &s.SLPct, &sf, &hm,
+		&stepsJSON,
 	)
 	if err != nil {
 		return err
@@ -132,6 +152,10 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 	s.TPMode = TPMode(tpm)
 	s.SLType = SLType(slt)
 	s.SignalFilter = sf
+	s.HedgeMode = hm
+	if stepsJSON != "" && stepsJSON != "[]" {
+		_ = json.Unmarshal([]byte(stepsJSON), &s.Steps)
+	}
 	return nil
 }
 
@@ -169,23 +193,29 @@ func (ar *AccountRunner) run(ctx context.Context) {
 	trader.RunPrivateStream(ctx, ar.creds, ar)
 }
 
-func (ar *AccountRunner) addStrategy(ctx context.Context, s Strategy) {
+func (ar *AccountRunner) addStrategy(s Strategy) {
 	ar.mu.Lock()
 	existing, ok := ar.strategies[s.ID]
 	if ok {
 		existing.mu.Lock()
+		prevStatus := existing.strategy.Status
 		existing.strategy = s
 		existing.mu.Unlock()
 		ar.mu.Unlock()
+		// Re-activate: runner was stopped/idle (e.g. after handlePositionClose),
+		// now status is active again — start a fresh cycle.
+		if prevStatus != StatusActive && s.Status == StatusActive {
+			go existing.loadOrStart(context.Background())
+		}
 		return
 	}
 	sr := &StrategyRunner{strategy: s, runner: ar}
 	ar.strategies[s.ID] = sr
 	ar.mu.Unlock()
-	go sr.loadOrStart(ctx)
+	go sr.loadOrStart(context.Background())
 }
 
-func (ar *AccountRunner) removeStrategy(ctx context.Context, strategyID string) {
+func (ar *AccountRunner) removeStrategy(strategyID string) {
 	ar.mu.Lock()
 	sr, ok := ar.strategies[strategyID]
 	if !ok {
@@ -199,7 +229,7 @@ func (ar *AccountRunner) removeStrategy(ctx context.Context, strategyID string) 
 		}
 	}
 	ar.mu.Unlock()
-	go sr.cancelAllPlaced(ctx)
+	go sr.cancelAllPlaced(context.Background())
 }
 
 // RegisterOrder adds an exchange order → strategy mapping so WS events can be routed.
@@ -216,13 +246,54 @@ func (ar *AccountRunner) UnregisterOrder(exchangeOrderID string) {
 	ar.mu.Unlock()
 }
 
+// OnPositionEvent implements trader.PrivateStreamHandler.
+// Handles manual position close: stops strategy and logs.
+func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
+	size, _ := strconv.ParseFloat(ev.Size, 64)
+	if size != 0 {
+		return
+	}
+	ar.mu.RLock()
+	var runners []*StrategyRunner
+	for _, sr := range ar.strategies {
+		if sr.strategy.Symbol != ev.Symbol {
+			continue
+		}
+		// In hedge mode each position slot belongs to one direction; route only to
+		// the matching strategy so a short-position close doesn't kill the long one.
+		if ev.PositionIdx != 0 {
+			if positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction) != ev.PositionIdx {
+				continue
+			}
+		}
+		runners = append(runners, sr)
+	}
+	ar.mu.RUnlock()
+	for _, sr := range runners {
+		go sr.handlePositionClose(context.Background())
+	}
+}
+
 // OnOrderEvent implements trader.PrivateStreamHandler.
 func (ar *AccountRunner) OnOrderEvent(ev trader.OrderEvent) {
+	if ev.OrderStatus == "Cancelled" {
+		// Unregister cancelled orders so the slot is freed.
+		ar.mu.Lock()
+		delete(ar.orderIndex, ev.OrderID)
+		delete(ar.orderIndex, ev.OrderLinkID)
+		ar.mu.Unlock()
+		return
+	}
 	if ev.OrderStatus != "Filled" {
 		return
 	}
 	ar.mu.RLock()
 	ref, ok := ar.orderIndex[ev.OrderID]
+	if !ok {
+		// Fallback: market orders may fill before RegisterOrder(orderId) runs;
+		// linkID was pre-registered so we can still route the event.
+		ref, ok = ar.orderIndex[ev.OrderLinkID]
+	}
 	if !ok {
 		ar.mu.RUnlock()
 		return
