@@ -57,7 +57,7 @@ func (s *Server) Register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"token": token, "user_id": userID})
+	writeJSON(w, http.StatusCreated, map[string]string{"token": token, "user_id": userID, "email": req.Email})
 }
 
 // Login authenticates a user and returns a JWT.
@@ -90,5 +90,5 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"token": token, "user_id": userID})
+	writeJSON(w, http.StatusOK, map[string]string{"token": token, "user_id": userID, "email": req.Email})
 }

@@ -8,7 +8,7 @@ function TestWidget() {
       <span data-testid="authed">{isAuthenticated ? 'yes' : 'no'}</span>
       <span data-testid="token">{token ?? 'none'}</span>
       <span data-testid="userId">{userId ?? 'none'}</span>
-      <button onClick={() => login('tok123', 'uid456')}>do-login</button>
+      <button onClick={() => login('tok123', 'uid456', 'u@test.com')}>do-login</button>
       <button onClick={logout}>do-logout</button>
     </div>
   )

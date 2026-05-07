@@ -1,7 +1,9 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useTheme } from '../hooks/useTheme'
-import type { ReactNode } from 'react'
+import { listAccounts, getAccountBalance } from '../api/accounts'
+import type { ExchangeAccount } from '../types'
+import { useState, useEffect, type ReactNode } from 'react'
 
 const navItems = [
   { label: 'Dashboard', to: '/' },
@@ -12,9 +14,28 @@ const navItems = [
 
 export function Layout({ children }: { children: ReactNode }) {
   const { pathname } = useLocation()
-  const { logout } = useAuth()
+  const { logout, email } = useAuth()
   const navigate = useNavigate()
   const { theme, toggle } = useTheme()
+
+  const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
+  const [selectedId, setSelectedId] = useState<string>('')
+  const [balance, setBalance] = useState<number | null>(null)
+
+  useEffect(() => {
+    listAccounts().then(accs => {
+      setAccounts(accs)
+      if (accs.length > 0 && accs[0]) setSelectedId(accs[0].id)
+    }).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (!selectedId) return
+    setBalance(null)
+    getAccountBalance(selectedId).then(res => {
+      if (res.ok && res.equity != null) setBalance(res.equity)
+    }).catch(() => {})
+  }, [selectedId])
 
   function handleLogout() {
     logout()
@@ -25,9 +46,26 @@ export function Layout({ children }: { children: ReactNode }) {
     <div className="flex h-screen bg-gray-100 dark:bg-gray-900">
       {/* Sidebar */}
       <aside className="w-48 bg-white dark:bg-gray-800 shadow flex flex-col" style={{ height: '100vh' }}>
-        {/* Logo — 15% */}
-        <div className="flex items-center px-4 border-b dark:border-gray-700 shrink-0" style={{ height: '15%' }}>
-          <span className="font-bold text-lg text-blue-600 dark:text-blue-400">SIS</span>
+        {/* Top zone — 15%: logo, user, balance, account picker */}
+        <div className="flex flex-col justify-between px-3 py-3 border-b dark:border-gray-700 shrink-0 gap-1.5" style={{ height: '15%' }}>
+          <span className="font-bold text-base text-blue-600 dark:text-blue-400 leading-none">Novabot</span>
+          {email && (
+            <span className="text-[11px] text-gray-500 dark:text-gray-400 truncate leading-none">{email}</span>
+          )}
+          <span className="text-sm font-semibold text-gray-800 dark:text-gray-100 leading-none">
+            {balance != null ? `$${balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+          </span>
+          {accounts.length > 0 && (
+            <select
+              value={selectedId}
+              onChange={e => setSelectedId(e.target.value)}
+              className="w-full bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded px-1.5 py-0.5 text-[11px] text-gray-700 dark:text-gray-200 focus:outline-none"
+            >
+              {accounts.map(a => (
+                <option key={a.id} value={a.id}>{a.label}</option>
+              ))}
+            </select>
+          )}
         </div>
         {/* Nav + footer — 85% */}
         <div className="flex flex-col" style={{ height: '85%' }}>

@@ -33,7 +33,7 @@ test('renders email and password fields', () => {
 })
 
 test('calls login API and redirects on success', async () => {
-  vi.mocked(authApi.login).mockResolvedValue({ token: 'tok', user_id: 'uid1' })
+  vi.mocked(authApi.login).mockResolvedValue({ token: 'tok', user_id: 'uid1', email: 'a@b.com' })
   renderLogin()
   fireEvent.change(screen.getByPlaceholderText('Email'), {
     target: { value: 'a@b.com' },

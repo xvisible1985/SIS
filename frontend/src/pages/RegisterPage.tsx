@@ -17,7 +17,7 @@ export function RegisterPage() {
     setLoading(true)
     try {
       const res = await register(email, password)
-      authLogin(res.token, res.user_id)
+      authLogin(res.token, res.user_id, res.email)
       navigate('/')
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Registration failed'
