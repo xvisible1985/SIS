@@ -141,6 +141,14 @@ func CancelOrder(ctx context.Context, creds Credentials, req CancelRequest) erro
 	return checkRetCode(data)
 }
 
+func CancelAllOrders(ctx context.Context, creds Credentials, req CancelAllRequest) error {
+	data, err := doSignedPOST(ctx, creds, "/v5/order/cancel-all", req)
+	if err != nil {
+		return err
+	}
+	return checkRetCode(data)
+}
+
 func SetLeverage(ctx context.Context, creds Credentials, req LeverageRequest) error {
 	data, err := doSignedPOST(ctx, creds, "/v5/position/set-leverage", req)
 	if err != nil {

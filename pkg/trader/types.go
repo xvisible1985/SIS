@@ -32,6 +32,11 @@ type CancelRequest struct {
 	OrderFilter string `json:"orderFilter,omitempty"`
 }
 
+type CancelAllRequest struct {
+	Category string `json:"category"`
+	Symbol   string `json:"symbol,omitempty"`
+}
+
 type LeverageRequest struct {
 	Symbol       string `json:"symbol"`
 	Category     string `json:"category"`

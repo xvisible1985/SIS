@@ -664,17 +664,20 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 	sr.levels = nil
 }
 
-// cancelPlacedLevels cancels all placed grid level orders on the exchange.
+// cancelPlacedLevels cancels all open orders for this strategy's symbol via a single
+// cancel-all call, then unregisters placed level orders from the index.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) cancelPlacedLevels(ctx context.Context) {
+	if err := trader.CancelAllOrders(ctx, sr.runner.creds, trader.CancelAllRequest{
+		Category: sr.strategy.Category,
+		Symbol:   sr.strategy.Symbol,
+	}); err != nil && !isOrderGone(err) {
+		sr.warn(ctx, fmt.Sprintf("cancelPlacedLevels: cancel-all: %v", err))
+	}
 	for _, l := range sr.levels {
-		if l.Status != LevelPlaced {
-			continue
+		if l.Status == LevelPlaced {
+			sr.runner.UnregisterOrder(l.ExchangeOrderID)
 		}
-		trader.CancelOrder(ctx, sr.runner.creds, trader.CancelRequest{ //nolint:errcheck
-			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category, OrderId: l.ExchangeOrderID,
-		})
-		sr.runner.UnregisterOrder(l.ExchangeOrderID)
 	}
 	if sr.cycle != nil {
 		sr.runner.pool.Exec(ctx, //nolint:errcheck
