@@ -122,7 +122,7 @@ export function TerminalPage() {
   useEffect(() => { _cachedSymbol = symbol }, [symbol])
   useEffect(() => { _cachedTf = tf }, [tf])
 
-  const { positions, orders, log, status, accountName, loading, reconnect } = usePositionsWs(accountId)
+  const { positions, orders, log, status, accountName, loading, reconnect, removeOrder } = usePositionsWs(accountId)
   const { candles, candleSymbol, lastPrice, priceChange, loadMore } = useCandles(symbol, tf)
   const { bids, asks, spread } = useOrderbook(symbol)
 
@@ -218,7 +218,7 @@ export function TerminalPage() {
         </div>
         <div className="flex-1 overflow-auto">
           {bottomTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} />}
-          {bottomTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} />}
+          {bottomTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} onRemoveOrder={removeOrder} />}
           {bottomTab === 'history' && <HistoryTable accountId={accountId ?? undefined} symbol={symbol} />}
           {bottomTab === 'executions' && <ExecutionsTable accountId={accountId ?? undefined} />}
           {bottomTab === 'log' && <TradeLog log={log} />}

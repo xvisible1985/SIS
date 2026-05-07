@@ -235,5 +235,10 @@ export function usePositionsWs(accountId: string | null) {
     connect()
   }, [connect])
 
-  return { positions, orders, log, status, accountName, loading, reconnect }
+  const removeOrder = useCallback((orderId: string) => {
+    rawOrders.current.delete(orderId)
+    setOrders(prev => prev.filter(o => o.orderId !== orderId))
+  }, [])
+
+  return { positions, orders, log, status, accountName, loading, reconnect, removeOrder }
 }

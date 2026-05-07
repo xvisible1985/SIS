@@ -1,12 +1,13 @@
-import { useState } from 'react'
 import type { ActiveOrder } from '../../types'
 import { cancelOrder } from '../../api/trader'
+import { useState } from 'react'
 
 interface Props {
   accountId: string
   orders: ActiveOrder[]
   loading: boolean
   onSelect?: (symbol: string) => void
+  onRemoveOrder?: (orderId: string) => void
 }
 
 function orderLabel(ord: ActiveOrder): string {
@@ -29,27 +30,25 @@ function coinIcon(s: string) {
   return `https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons/32/color/${s.replace(/USDT|USDC|USD$/, '').toLowerCase()}.png`
 }
 
-export function OrdersTable({ accountId, orders, loading, onSelect }: Props) {
+export function OrdersTable({ accountId, orders, loading, onSelect, onRemoveOrder }: Props) {
   const [cancelling, setCancelling] = useState<string | null>(null)
-  const [removed, setRemoved] = useState<Set<string>>(new Set())
 
   async function handleCancel(ord: ActiveOrder) {
     if (cancelling === ord.orderId) return
     setCancelling(ord.orderId)
     try {
       await cancelOrder({ account_id: accountId, symbol: ord.symbol, category: ord.category, order_id: ord.orderId, order_filter: ord.orderFilter })
+      onRemoveOrder?.(ord.orderId)
     } catch (e: any) {
-      // 110001 = order not exists on exchange — remove locally regardless
-      if (!String(e?.response?.data?.message ?? e?.message ?? '').includes('110001')) {
-        setCancelling(null)
-        return
+      // 110001 = order not exists on exchange — remove from state regardless
+      if (String(e?.response?.data?.message ?? e?.message ?? '').includes('110001')) {
+        onRemoveOrder?.(ord.orderId)
       }
     }
-    setRemoved(prev => new Set(prev).add(ord.orderId))
     setCancelling(null)
   }
 
-  const visible = orders.filter(o => !removed.has(o.orderId))
+  const visible = orders
 
   if (loading) return <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400 text-sm"><span className="animate-pulse">Загрузка...</span></div>
   if (!visible.length) return <div className="flex flex-col items-center justify-center h-full text-gray-500 dark:text-gray-400 gap-2"><span className="text-2xl opacity-30">📭</span><p className="text-sm">Активных ордеров нет</p></div>
