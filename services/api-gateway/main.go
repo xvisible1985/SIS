@@ -105,12 +105,22 @@ func main() {
 		r.Post("/strategies/{id}/status", s.SetStrategyStatus)
 		r.Delete("/strategies/{id}", s.DeleteStrategy)
 
+		// Strategy state
+		r.Get("/strategies/{id}/state", s.GetStrategyState)
+
+		// Strategy templates
+		r.Get("/strategy-templates", s.ListTemplates)
+		r.Post("/strategy-templates", s.CreateTemplate)
+		r.Delete("/strategy-templates/{id}", s.DeleteTemplate)
+
 		// Trader
 		r.Post("/trader/order", s.TraderPlaceOrder)
 		r.Delete("/trader/order", s.TraderCancelOrder)
 		r.Post("/trader/leverage", s.TraderSetLeverage)
+			r.Post("/trader/position-mode", s.TraderSwitchPositionMode)
 		r.Get("/trader/orders", s.ListTraderOrders)
 		r.Get("/trader/executions", s.ListTraderExecutions)
+		r.Get("/trader/pnl", s.GetClosedPnl)
 		r.Get("/trader/stats", s.GetTraderStats)
 	})
 
