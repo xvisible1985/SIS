@@ -250,7 +250,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
                 <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Ждёт</div>
                 <div className="flex gap-4">
                   {/* Left: levels */}
-                  <div className="flex-1 space-y-1.5">
+                  <div className="flex-[3] space-y-1.5">
                     <div className="text-[9px] text-gray-500 uppercase mb-1">Уровни</div>
                     {cs.state && cs.state.levels.length > 0 ? (
                       cs.state.levels.map(l => (
@@ -283,7 +283,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
                   <div className="w-px bg-gray-800 shrink-0" />
 
                   {/* Right: TP/SL */}
-                  <div className="w-44 space-y-2">
+                  <div className="w-36 space-y-2">
                     <div className="text-[9px] text-gray-500 uppercase mb-1">Выход</div>
                     <div className="border border-green-900/40 bg-green-950/20 rounded-lg px-3 py-2">
                       <div className="flex items-center justify-between mb-1">
