@@ -140,6 +140,7 @@ func runPrivateOnce(ctx context.Context, creds Credentials, handler PrivateStrea
 				if !ok {
 					continue
 				}
+				log.Printf("private stream: topic=%q type=%q items=%d", topic, msgType, len(items))
 				switch topic {
 				case "order":
 					for _, item := range items {
@@ -150,6 +151,7 @@ func runPrivateOnce(ctx context.Context, creds Credentials, handler PrivateStrea
 						}
 					}
 				case "position":
+					log.Printf("private stream: position msg type=%q count=%d", msgType, len(items))
 					// Skip snapshot — Bybit sends current state on subscribe which may
 					// include size=0 for already-closed positions; only react to deltas.
 					if msgType == "delta" {
