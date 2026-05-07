@@ -1,28 +1,24 @@
 import { useState, useEffect, useCallback } from 'react'
-import { placeOrder, cancelOrder, setLeverage, switchPositionMode } from '../../api/trader'
-import type { ActiveOrder, Position } from '../../types'
+import { placeOrder, cancelOrder, setLeverage } from '../../api/trader'
+import type { ActiveOrder } from '../../types'
 
 interface Props {
   accountId: string
   symbol: string
   lastPrice: string | null
   orders: ActiveOrder[]
-  positions: Position[]
+  hedgeMode: boolean
 }
 
 type Tab = 'Limit' | 'Market' | 'Conditional'
 type LogEntry = { text: string; status: 'pending' | 'ok' | 'error' }
 
-function coinIcon(symbol: string) {
-  const base = symbol.replace(/USDT|USDC|USD$/, '').toLowerCase()
-  return `https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons/32/color/${base}.png`
-}
-
-export function OrderForm({ accountId, symbol, lastPrice, orders, positions }: Props) {
+export function OrderForm({ accountId, symbol, lastPrice, orders, hedgeMode }: Props) {
   const category = symbol.endsWith('USDT') || symbol.endsWith('USDC') ? 'linear' : 'inverse'
   const baseCoin = symbol.replace(/USDT|USDC|USD$/, '')
   const quoteCoin = symbol.endsWith('USDC') ? 'USDC' : 'USDT'
 
+  const [open, setOpen] = useState(true)
   const [tab, setTab] = useState<Tab>('Limit')
   const [side, setSide] = useState<'Buy' | 'Sell'>('Buy')
   const [price, setPrice] = useState('')
@@ -38,47 +34,6 @@ export function OrderForm({ accountId, symbol, lastPrice, orders, positions }: P
   const [loading, setLoading] = useState(false)
   const [log, setLog] = useState<LogEntry[]>([])
   const [qtyStep, setQtyStep] = useState('1')
-
-  const hedgeModeFromPositions = positions.some(p => p.symbol === symbol && p.positionIdx !== 0)
-  const [hedgeModeOverride, setHedgeModeOverride] = useState<boolean | null>(null)
-  const hedgeStorageKey = accountId ? `sis_hedge_${accountId}_${symbol}` : null
-
-  // Загружаем из localStorage при смене символа/аккаунта
-  useEffect(() => {
-    if (!hedgeStorageKey) return
-    const stored = localStorage.getItem(hedgeStorageKey)
-    setHedgeModeOverride(stored === 'true' ? true : stored === 'false' ? false : null)
-  }, [hedgeStorageKey])
-
-  // Сохраняем в localStorage при изменении
-  useEffect(() => {
-    if (!hedgeStorageKey || hedgeModeOverride === null) return
-    localStorage.setItem(hedgeStorageKey, String(hedgeModeOverride))
-  }, [hedgeStorageKey, hedgeModeOverride])
-
-  // Позиции подтверждают хедж — фиксируем
-  useEffect(() => {
-    if (hedgeModeFromPositions) setHedgeModeOverride(true)
-  }, [hedgeModeFromPositions])
-
-  const hedgeMode = hedgeModeOverride !== null ? hedgeModeOverride : hedgeModeFromPositions
-
-  const [modeLoading, setModeLoading] = useState(false)
-
-  async function handleSwitchMode() {
-    setModeLoading(true)
-    setLog([])
-    const nextMode = hedgeMode ? 0 : 3
-    addLog(hedgeMode ? 'Переключение → Один. направление...' : 'Переключение → Хедж-режим...')
-    const res = await switchPositionMode({ account_id: accountId, symbol, category, mode: nextMode })
-    if (res.ok) {
-      setHedgeModeOverride(nextMode === 3)
-      resolveLog('ok', nextMode === 3 ? 'Хедж-режим включён' : 'Один. направление включено')
-    } else {
-      resolveLog('error', `Ошибка: ${res.message}`)
-    }
-    setModeLoading(false)
-  }
 
   const effectivePrice = useCallback(() => {
     if (tab === 'Limit' || (tab === 'Conditional' && condType === 'Limit'))
@@ -137,46 +92,32 @@ export function OrderForm({ accountId, symbol, lastPrice, orders, positions }: P
     if (!finalQty) { addLog('Укажите количество или объём в USDT', 'error'); return }
     if (tab === 'Limit' && !price) { addLog('Укажите цену', 'error'); return }
     if (tab === 'Conditional' && !triggerPrice) { addLog('Укажите цену триггера', 'error'); return }
-
-    // В одностороннем режиме Sell закрывает существующий лонг — предупреждаем
-    if (!hedgeMode && !reduceOnly) {
-      const existingOpposite = positions.find(p => p.symbol === symbol && p.side === (side === 'Sell' ? 'Buy' : 'Sell'))
-      if (existingOpposite) {
-        addLog(`⚠ Одностор. режим: этот ордер закроет ${side === 'Sell' ? 'Long' : 'Short'} позицию. Для независимого хеджа — включите Хедж режим.`, 'error')
-        return
-      }
-    }
-
     setLoading(true)
-    setLog([])
+    const sideLabel = side === 'Buy' ? 'Buy / Long' : 'Sell / Short'
+    addLog(`Размещение ${sideLabel}...`)
 
-    const sideLabel = side === 'Buy' ? '▲ Buy' : '▼ Sell'
-    addLog(`${sideLabel} ${applyStep(parseFloat(finalQty))} ${baseCoin}`, 'ok')
-
-    if (leverage && parseFloat(leverage) > 0) {
-      addLog(`Плечо ${leverage}x — установка...`)
+    if (leverage) {
       const levRes = await setLeverage({ account_id: accountId, symbol, category, leverage })
-      resolveLog(levRes.ok ? 'ok' : 'error', levRes.ok ? `Плечо ${leverage}x установлено` : levRes.message)
-      if (!levRes.ok) { setLoading(false); return }
+      if (!levRes.ok) { resolveLog('error', `Плечо: ${levRes.message}`); setLoading(false); return }
     }
 
-    addLog('Отправка ордера...')
     const res = await placeOrder({
       account_id: accountId,
       symbol,
       category,
       side,
-      order_type: tab === 'Conditional' ? condType : tab,
-      qty: applyStep(parseFloat(finalQty)),
-      price: tab === 'Limit' || (tab === 'Conditional' && condType === 'Limit') ? price : undefined,
+      order_type: tab === 'Market' ? 'Market' : tab === 'Conditional' ? condType : 'Limit',
+      qty: finalQty,
+      price: (tab === 'Limit' || (tab === 'Conditional' && condType === 'Limit')) ? price : undefined,
       trigger_price: tab === 'Conditional' ? triggerPrice : undefined,
       trigger_by: tab === 'Conditional' ? triggerBy : undefined,
       trigger_direction: tab === 'Conditional' ? triggerDir : undefined,
+      order_filter: tab === 'Conditional' ? 'StopOrder' : 'Order',
       time_in_force: tab === 'Limit' ? tif : undefined,
-      order_filter: tab === 'Conditional' ? 'StopOrder' : undefined,
       reduce_only: reduceOnly,
       position_idx: hedgeMode ? (side === 'Buy' ? 1 : 2) : 0,
     })
+
     if (res.ok) {
       resolveLog('ok', `Принят: ${symbol} ${sideLabel}`)
       setQty(''); setQtyUsdt(''); setPrice(''); setTriggerPrice('')
@@ -199,178 +140,177 @@ export function OrderForm({ accountId, symbol, lastPrice, orders, positions }: P
   const symbolOrders = orders.filter(o => o.symbol === symbol)
 
   return (
-    <div className="flex flex-col h-full overflow-hidden text-xs text-gray-900 dark:text-white bg-white dark:bg-gray-900">
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
-        <img src={coinIcon(symbol)} className="w-5 h-5 rounded-full" onError={e => (e.currentTarget.style.display = 'none')} />
-        <span className="font-bold font-mono text-sm">{symbol}</span>
-        <button
-          onClick={handleSwitchMode}
-          disabled={modeLoading}
-          className={`ml-auto flex items-center gap-2 px-2.5 py-1 rounded-lg text-xs font-medium transition-all disabled:opacity-50 ${
-            hedgeMode
-              ? 'bg-blue-500 text-white hover:bg-blue-600'
-              : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-gray-600'
-          }`}
-        >
-          <span className="select-none">Хедж режим</span>
-          <span className={`relative inline-flex w-7 h-4 rounded-full transition-colors flex-shrink-0 ${hedgeMode ? 'bg-white/30' : 'bg-black/20'}`}>
-            <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-all ${hedgeMode ? 'left-3.5' : 'left-0.5'}`} />
-          </span>
-        </button>
-      </div>
+    <div className="border-b border-gray-200 dark:border-gray-700 text-xs text-gray-900 dark:text-white">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+      >
+        <span className="flex items-center gap-1.5">
+          <span className="text-[10px] opacity-60">⠿</span>
+          Ручная торговля
+          {symbolOrders.length > 0 && !open && (
+            <span className="bg-blue-500/20 text-blue-400 text-[10px] px-1.5 rounded-full">{symbolOrders.length}</span>
+          )}
+        </span>
+        <span className={`text-[10px] transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>▾</span>
+      </button>
 
-      <div className="flex border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
-        {(['Limit', 'Market', 'Conditional'] as Tab[]).map(t => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`flex-1 py-1.5 text-xs font-medium border-b-2 transition-colors ${tab === t ? 'border-blue-500 text-gray-900 dark:text-white' : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}
-          >
-            {t === 'Limit' ? 'Лимит' : t === 'Market' ? 'Рынок' : 'Условный'}
-          </button>
-        ))}
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
-        <div className="grid grid-cols-2 gap-1">
-          <button onClick={() => setSide('Buy')}
-            className={`py-1.5 rounded font-semibold transition-colors ${side === 'Buy' ? 'bg-green-500 text-white' : 'bg-green-500/10 text-green-500 hover:bg-green-500/20'}`}>
-            Купить / Long
-          </button>
-          <button onClick={() => setSide('Sell')}
-            className={`py-1.5 rounded font-semibold transition-colors ${side === 'Sell' ? 'bg-red-500 text-white' : 'bg-red-500/10 text-red-500 hover:bg-red-500/20'}`}>
-            Продать / Short
-          </button>
-        </div>
-
-        {tab === 'Conditional' && (
-          <>
-            <div className="grid grid-cols-2 gap-1">
-              {(['Market', 'Limit'] as const).map(t => (
-                <button key={t} onClick={() => setCondType(t)}
-                  className={`py-1 rounded text-xs transition-colors ${condType === t ? 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
-                  {t === 'Market' ? 'По рынку' : 'Лимит'}
-                </button>
-              ))}
-            </div>
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <label className="text-gray-500 dark:text-gray-400">Триггер</label>
-                <div className="flex gap-1">
-                  {['MarkPrice', 'LastPrice', 'IndexPrice'].map(opt => (
-                    <button key={opt} onClick={() => setTriggerBy(opt)}
-                      className={`px-1.5 py-0.5 rounded text-xs ${triggerBy === opt ? 'bg-blue-500/20 text-blue-400' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
-                      {opt === 'MarkPrice' ? 'Марк.' : opt === 'LastPrice' ? 'Посл.' : 'Индекс'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex items-center gap-1">
-                <input value={triggerPrice} onChange={e => setTriggerPrice(e.target.value)} type="number" placeholder="0.00"
-                  className="flex-1 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 font-mono text-xs focus:outline-none focus:border-blue-500" />
-                <div className="flex flex-col gap-0.5">
-                  {([1, 2] as const).map(d => (
-                    <button key={d} onClick={() => setTriggerDir(d)}
-                      className={`px-1.5 py-0.5 rounded text-xs ${triggerDir === d ? (d === 1 ? 'bg-green-500/20 text-green-500' : 'bg-red-500/20 text-red-500') : 'text-gray-500 dark:text-gray-400'}`}>
-                      {d === 1 ? '↑' : '↓'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-
-        {(tab === 'Limit' || (tab === 'Conditional' && condType === 'Limit')) && (
-          <div>
-            <label className="text-gray-500 dark:text-gray-400 block mb-1">Цена ({quoteCoin})</label>
-            <input value={price} onChange={e => setPrice(e.target.value)} type="number" placeholder="0.00"
-              className="w-full bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 font-mono text-xs focus:outline-none focus:border-blue-500" />
-          </div>
-        )}
-
-        <div className="grid grid-cols-2 gap-1">
-          <div>
-            <label className="text-gray-500 dark:text-gray-400 block mb-1">Кол-во ({baseCoin})</label>
-            <input value={qty} onChange={e => onQtyChange(e.target.value)} type="number" placeholder="0.00"
-              className="w-full bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 font-mono text-xs focus:outline-none focus:border-blue-500" />
-          </div>
-          <div>
-            <label className="text-gray-500 dark:text-gray-400 block mb-1">Объём (USDT)</label>
-            <input value={qtyUsdt} onChange={e => onQtyUsdtChange(e.target.value)} type="number" placeholder="0.00"
-              className="w-full bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 font-mono text-xs focus:outline-none focus:border-blue-500" />
-          </div>
-        </div>
-
-        {tab === 'Limit' && (
-          <div className="flex items-center gap-1">
-            <span className="text-gray-500 dark:text-gray-400">TIF:</span>
-            {['GTC', 'IOC', 'FOK'].map(t => (
-              <button key={t} onClick={() => setTif(t)}
-                className={`px-1.5 py-0.5 rounded text-xs ${tif === t ? 'bg-blue-500/20 text-blue-400' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
-                {t}
+      {open && (
+        <>
+          <div className="flex border-y border-gray-200 dark:border-gray-700">
+            {(['Limit', 'Market', 'Conditional'] as Tab[]).map(t => (
+              <button
+                key={t}
+                onClick={() => setTab(t)}
+                className={`flex-1 py-1.5 text-xs font-medium border-b-2 transition-colors ${tab === t ? 'border-blue-500 text-gray-900 dark:text-white' : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}
+              >
+                {t === 'Limit' ? 'Лимит' : t === 'Market' ? 'Рынок' : 'Условный'}
               </button>
             ))}
           </div>
-        )}
 
-        <div className="flex items-center gap-2">
-          <label className="text-gray-500 dark:text-gray-400 shrink-0">Плечо (x)</label>
-          <input value={leverage} onChange={e => setLev(e.target.value)} type="number" min="1" max="200" placeholder="авто"
-            className="w-20 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 font-mono text-xs focus:outline-none focus:border-blue-500" />
-          <span className="text-gray-400 dark:text-gray-500 text-[10px]">Пусто = не менять</span>
-        </div>
+          <div className="px-3 py-2 space-y-2">
+            <div className="grid grid-cols-2 gap-1">
+              <button onClick={() => setSide('Buy')}
+                className={`py-1.5 rounded font-semibold transition-colors ${side === 'Buy' ? 'bg-green-500 text-white' : 'bg-green-500/10 text-green-500 hover:bg-green-500/20'}`}>
+                Купить / Long
+              </button>
+              <button onClick={() => setSide('Sell')}
+                className={`py-1.5 rounded font-semibold transition-colors ${side === 'Sell' ? 'bg-red-500 text-white' : 'bg-red-500/10 text-red-500 hover:bg-red-500/20'}`}>
+                Продать / Short
+              </button>
+            </div>
 
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" checked={reduceOnly} onChange={e => setReduceOnly(e.target.checked)} className="rounded" />
-          <span className="text-gray-500 dark:text-gray-400">Только закрытие (Reduce Only)</span>
-        </label>
-
-        <button onClick={handleSubmit} disabled={loading}
-          className={`w-full py-2 rounded font-semibold transition-all ${side === 'Buy' ? 'bg-green-500 hover:bg-green-600' : 'bg-red-500 hover:bg-red-600'} text-white ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}>
-          {side === 'Buy' ? 'Купить / Long' : 'Продать / Short'}
-        </button>
-
-        {log.length > 0 && (
-          <div className="rounded border border-gray-200 dark:border-gray-700 overflow-hidden">
-            {log.map((e, i) => (
-              <div key={i} className={`flex items-center gap-2 px-2 py-1 text-xs border-b border-gray-200 dark:border-gray-700/30 last:border-0 ${e.status === 'ok' ? 'bg-green-500/5' : e.status === 'error' ? 'bg-red-500/5' : ''}`}>
-                <span className="shrink-0">
-                  {e.status === 'pending' && <span className="inline-block w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />}
-                  {e.status === 'ok' && <span className="text-green-500">✓</span>}
-                  {e.status === 'error' && <span className="text-red-400">✗</span>}
-                </span>
-                <span className={e.status === 'error' ? 'text-red-400' : e.status === 'ok' ? 'text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'}>{e.text}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {symbolOrders.length > 0 && (
-        <div className="border-t border-gray-200 dark:border-gray-700 flex-shrink-0">
-          <div className="px-3 py-1.5 text-gray-500 dark:text-gray-400 flex items-center justify-between">
-            <span>Активные ордера</span>
-            <span className="bg-gray-200 dark:bg-gray-700 text-xs px-1.5 py-0.5 rounded-full">{symbolOrders.length}</span>
-          </div>
-          <div className="overflow-y-auto max-h-32">
-            {symbolOrders.map(ord => (
-              <div key={ord.orderId} className="flex items-center justify-between px-3 py-1.5 border-t border-gray-200 dark:border-gray-700/30 hover:bg-gray-100 dark:hover:bg-gray-800/50">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <span className={`text-[10px] px-1 rounded ${ord.side === 'Buy' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-                    {ord.side === 'Buy' ? 'Long' : 'Short'}
-                  </span>
-                  <span className="text-gray-500 dark:text-gray-400">{ord.orderType}</span>
-                  <span className="font-mono">
-                    {ord.triggerPrice ? `~${parseFloat(ord.triggerPrice).toFixed(4)}` : parseFloat(ord.price) > 0 ? parseFloat(ord.price).toFixed(4) : '—'}
-                  </span>
-                  <span className="text-gray-500 dark:text-gray-400">× {ord.qty}</span>
+            {tab === 'Conditional' && (
+              <>
+                <div className="grid grid-cols-2 gap-1">
+                  {(['Market', 'Limit'] as const).map(t => (
+                    <button key={t} onClick={() => setCondType(t)}
+                      className={`py-1 rounded text-xs transition-colors ${condType === t ? 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
+                      {t === 'Market' ? 'По рынку' : 'Лимит'}
+                    </button>
+                  ))}
                 </div>
-                <button onClick={() => handleCancel(ord)} className="text-gray-500 dark:text-gray-400 hover:text-red-400 transition-colors ml-1 shrink-0">✕</button>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label className="text-gray-500 dark:text-gray-400">Триггер</label>
+                    <div className="flex gap-1">
+                      {['MarkPrice', 'LastPrice', 'IndexPrice'].map(opt => (
+                        <button key={opt} onClick={() => setTriggerBy(opt)}
+                          className={`px-1.5 py-0.5 rounded text-xs ${triggerBy === opt ? 'bg-blue-500/20 text-blue-400' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
+                          {opt === 'MarkPrice' ? 'Марк.' : opt === 'LastPrice' ? 'Посл.' : 'Индекс'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <input value={triggerPrice} onChange={e => setTriggerPrice(e.target.value)} type="number" placeholder="0.00"
+                      className="flex-1 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 font-mono text-xs focus:outline-none focus:border-blue-500" />
+                    <div className="flex flex-col gap-0.5">
+                      {([1, 2] as const).map(d => (
+                        <button key={d} onClick={() => setTriggerDir(d)}
+                          className={`px-1.5 py-0.5 rounded text-xs ${triggerDir === d ? (d === 1 ? 'bg-green-500/20 text-green-500' : 'bg-red-500/20 text-red-500') : 'text-gray-500 dark:text-gray-400'}`}>
+                          {d === 1 ? '↑' : '↓'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {(tab === 'Limit' || (tab === 'Conditional' && condType === 'Limit')) && (
+              <div>
+                <label className="text-gray-500 dark:text-gray-400 block mb-1">Цена ({quoteCoin})</label>
+                <input value={price} onChange={e => setPrice(e.target.value)} type="number" placeholder="0.00"
+                  className="w-full bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 font-mono text-xs focus:outline-none focus:border-blue-500" />
               </div>
-            ))}
+            )}
+
+            <div className="grid grid-cols-2 gap-1">
+              <div>
+                <label className="text-gray-500 dark:text-gray-400 block mb-1">Кол-во ({baseCoin})</label>
+                <input value={qty} onChange={e => onQtyChange(e.target.value)} type="number" placeholder="0.00"
+                  className="w-full bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 font-mono text-xs focus:outline-none focus:border-blue-500" />
+              </div>
+              <div>
+                <label className="text-gray-500 dark:text-gray-400 block mb-1">Объём (USDT)</label>
+                <input value={qtyUsdt} onChange={e => onQtyUsdtChange(e.target.value)} type="number" placeholder="0.00"
+                  className="w-full bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 font-mono text-xs focus:outline-none focus:border-blue-500" />
+              </div>
+            </div>
+
+            {tab === 'Limit' && (
+              <div className="flex items-center gap-1">
+                <span className="text-gray-500 dark:text-gray-400">TIF:</span>
+                {['GTC', 'IOC', 'FOK'].map(t => (
+                  <button key={t} onClick={() => setTif(t)}
+                    className={`px-1.5 py-0.5 rounded text-xs ${tif === t ? 'bg-blue-500/20 text-blue-400' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
+                    {t}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              <label className="text-gray-500 dark:text-gray-400 shrink-0">Плечо (x)</label>
+              <input value={leverage} onChange={e => setLev(e.target.value)} type="number" min="1" max="200" placeholder="авто"
+                className="w-20 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 font-mono text-xs focus:outline-none focus:border-blue-500" />
+              <span className="text-gray-400 dark:text-gray-500 text-[10px]">Пусто = не менять</span>
+            </div>
+
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={reduceOnly} onChange={e => setReduceOnly(e.target.checked)} className="rounded" />
+              <span className="text-gray-500 dark:text-gray-400">Только закрытие (Reduce Only)</span>
+            </label>
+
+            <button onClick={handleSubmit} disabled={loading}
+              className={`w-full py-2 rounded font-semibold transition-all ${side === 'Buy' ? 'bg-green-500 hover:bg-green-600' : 'bg-red-500 hover:bg-red-600'} text-white ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}>
+              {side === 'Buy' ? 'Купить / Long' : 'Продать / Short'}
+            </button>
+
+            {log.length > 0 && (
+              <div className="rounded border border-gray-200 dark:border-gray-700 overflow-hidden">
+                {log.map((e, i) => (
+                  <div key={i} className={`flex items-center gap-2 px-2 py-1 text-xs border-b border-gray-200 dark:border-gray-700/30 last:border-0 ${e.status === 'ok' ? 'bg-green-500/5' : e.status === 'error' ? 'bg-red-500/5' : ''}`}>
+                    <span className="shrink-0">
+                      {e.status === 'pending' && <span className="inline-block w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />}
+                      {e.status === 'ok' && <span className="text-green-500">✓</span>}
+                      {e.status === 'error' && <span className="text-red-400">✗</span>}
+                    </span>
+                    <span className={e.status === 'error' ? 'text-red-400' : e.status === 'ok' ? 'text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'}>{e.text}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-        </div>
+
+          {symbolOrders.length > 0 && (
+            <div className="border-t border-gray-200 dark:border-gray-700">
+              <div className="px-3 py-1.5 text-gray-500 dark:text-gray-400 flex items-center justify-between text-xs">
+                <span>Активные ордера</span>
+                <span className="bg-gray-200 dark:bg-gray-700 text-xs px-1.5 py-0.5 rounded-full">{symbolOrders.length}</span>
+              </div>
+              <div className="overflow-y-auto max-h-32">
+                {symbolOrders.map(ord => (
+                  <div key={ord.orderId} className="flex items-center justify-between px-3 py-1.5 border-t border-gray-200 dark:border-gray-700/30 hover:bg-gray-100 dark:hover:bg-gray-800/50">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className={`text-[10px] px-1 rounded ${ord.side === 'Buy' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                        {ord.side === 'Buy' ? 'Long' : 'Short'}
+                      </span>
+                      <span className="text-gray-500 dark:text-gray-400">{ord.orderType}</span>
+                      <span className="font-mono">
+                        {ord.triggerPrice ? `~${parseFloat(ord.triggerPrice).toFixed(4)}` : parseFloat(ord.price) > 0 ? parseFloat(ord.price).toFixed(4) : '—'}
+                      </span>
+                      <span className="text-gray-500 dark:text-gray-400">× {ord.qty}</span>
+                    </div>
+                    <button onClick={() => handleCancel(ord)} className="text-gray-500 dark:text-gray-400 hover:text-red-400 transition-colors ml-1 shrink-0">✕</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   )

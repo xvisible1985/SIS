@@ -15,6 +15,8 @@ export default defineConfig({
       '/signals': { target: 'http://localhost:8080', changeOrigin: true },
       '/webhooks': { target: 'http://localhost:8080', changeOrigin: true },
       '/accounts': { target: 'http://localhost:8080', changeOrigin: true },
+      '/strategies': { target: 'http://localhost:8080', changeOrigin: true },
+      '/strategy-templates': { target: 'http://localhost:8080', changeOrigin: true },
       '/trader': { target: 'http://localhost:8080', changeOrigin: true },
       '/ws': { target: 'ws://localhost:8080', ws: true, changeOrigin: true },
     },

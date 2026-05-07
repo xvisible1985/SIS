@@ -98,7 +98,7 @@ export function GridForm({ accountId, symbol, lastPrice }: Props) {
   }
 
   return (
-    <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex-shrink-0 overflow-hidden">
+    <div className="border-b border-gray-200 dark:border-gray-700">
       <button
         onClick={() => setOpen(v => !v)}
         className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
