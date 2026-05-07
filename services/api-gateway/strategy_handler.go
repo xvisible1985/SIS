@@ -308,10 +308,10 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 
 	// Verify ownership
 	var exists bool
-	s.pool.QueryRow(r.Context(),
+	if err := s.pool.QueryRow(r.Context(),
 		`SELECT true FROM strategies WHERE id=$1 AND owner_id=$2`, id, userID,
-	).Scan(&exists)
-	if !exists {
+	).Scan(&exists); err != nil {
+		// pgx returns an error for no rows; treat any error as not found
 		writeError(w, http.StatusNotFound, "strategy not found")
 		return
 	}
@@ -346,10 +346,10 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 	var volumeUSDT, totalCost, totalCoins float64
 
 	if err == nil {
-		lrows, _ := s.pool.Query(r.Context(), `
+		lrows, lErr := s.pool.Query(r.Context(), `
 			SELECT level_idx, side, target_price, size_usdt, status, COALESCE(filled_price,0)
 			FROM strategy_levels WHERE cycle_id=$1 ORDER BY level_idx`, cycleID)
-		if lrows != nil {
+		if lErr == nil && lrows != nil {
 			defer lrows.Close()
 			for lrows.Next() {
 				var l levelInfo
