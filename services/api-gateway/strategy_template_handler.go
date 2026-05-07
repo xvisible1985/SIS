@@ -27,17 +27,16 @@ func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
 		Config    json.RawMessage `json:"config"`
 		CreatedAt time.Time       `json:"created_at"`
 	}
-	var result []row
+	result := make([]row, 0)
 	for rows.Next() {
 		var r row
 		var configStr string
-		if rows.Scan(&r.ID, &r.Name, &configStr, &r.CreatedAt) == nil {
-			r.Config = json.RawMessage(configStr)
-			result = append(result, r)
+		if err := rows.Scan(&r.ID, &r.Name, &configStr, &r.CreatedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "scan error")
+			return
 		}
-	}
-	if result == nil {
-		result = []row{}
+		r.Config = json.RawMessage(configStr)
+		result = append(result, r)
 	}
 	writeJSON(w, http.StatusOK, result)
 }
