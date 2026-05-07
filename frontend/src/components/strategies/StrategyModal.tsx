@@ -51,6 +51,7 @@ function defaultForm(): StrategyFormData {
       { price_move_pct: 1.5, lots: 2 },
       { price_move_pct: 2.0, lots: 2 },
     ],
+    grid_active: 0,
     signal_configs: [],
     tp_pct: 2.0,
     tp_mode: 'total',
@@ -74,6 +75,7 @@ function strategyToForm(s: Strategy): StrategyFormData {
     margin_type: s.margin_type,
     hedge_mode: s.hedge_mode,
     steps: s.steps ?? [{ price_move_pct: s.grid_step_pct, lots: 1 }],
+    grid_active: s.grid_active ?? 0,
     signal_configs: s.signal_configs ?? [],
     tp_pct: s.tp_pct,
     tp_mode: s.tp_mode,
@@ -149,7 +151,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
       const payload = {
         ...form,
         grid_levels: form.steps.length || 1,
-        grid_active: form.steps.length || 1,
+        grid_active: form.grid_active > 0 ? form.grid_active : form.steps.length || 1,
         grid_step_pct: form.steps[0]?.price_move_pct ?? 0,
         signal_filter: false,
       }
@@ -307,51 +309,67 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
                   <div className="text-center">USDT</div>
                   <div />
                 </div>
-                {form.steps.map((step, i) => (
-                  <div
-                    key={i}
-                    className="grid grid-cols-[28px_1fr_1fr_1fr_28px] gap-2 items-center py-1.5 border-b border-gray-800/60 last:border-0"
-                  >
-                    <div className="text-center text-[10px] text-gray-600">{i + 1}</div>
-                    <input
-                      type="number" step="0.1" min="0"
-                      value={step.price_move_pct}
-                      onChange={e => updateStep(i, 'price_move_pct', Number(e.target.value))}
-                      className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
-                    />
-                    <input
-                      type="number" step="0.1" min="0.1"
-                      value={step.lots}
-                      onChange={e => {
-                        const lots = Number(e.target.value)
-                        updateStep(i, 'lots', lots)
-                      }}
-                      className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
-                    />
-                    <input
-                      type="number" step="1" min="1"
-                      value={+(step.lots * form.grid_size_usdt).toFixed(2)}
-                      onChange={e => {
-                        const usdt = Number(e.target.value)
-                        if (usdt > 0 && form.grid_size_usdt > 0)
-                          updateStep(i, 'lots', Math.round(usdt / form.grid_size_usdt * 100) / 100)
-                      }}
-                      className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
-                    />
-                    <button
-                      onClick={() => removeStep(i)}
-                      className="text-red-500 hover:text-red-400 text-center text-sm"
+                <div className="max-h-[216px] overflow-y-auto">
+                  {form.steps.map((step, i) => (
+                    <div
+                      key={i}
+                      className="grid grid-cols-[28px_1fr_1fr_1fr_28px] gap-2 items-center py-1.5 border-b border-gray-800/60 last:border-0"
                     >
-                      ✕
-                    </button>
-                  </div>
-                ))}
+                      <div className="text-center text-[10px] text-gray-600">{i + 1}</div>
+                      <input
+                        type="number" step="0.1" min="0"
+                        value={step.price_move_pct}
+                        onChange={e => updateStep(i, 'price_move_pct', Number(e.target.value))}
+                        className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
+                      />
+                      <input
+                        type="number" step="0.1" min="0.1"
+                        value={step.lots}
+                        onChange={e => {
+                          const lots = Number(e.target.value)
+                          updateStep(i, 'lots', lots)
+                        }}
+                        className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
+                      />
+                      <input
+                        type="number" step="1" min="1"
+                        value={+(step.lots * form.grid_size_usdt).toFixed(2)}
+                        onChange={e => {
+                          const usdt = Number(e.target.value)
+                          if (usdt > 0 && form.grid_size_usdt > 0)
+                            updateStep(i, 'lots', Math.round(usdt / form.grid_size_usdt * 100) / 100)
+                        }}
+                        className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
+                      />
+                      <button
+                        onClick={() => removeStep(i)}
+                        className="text-red-500 hover:text-red-400 text-center text-sm"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
                 <button
                   onClick={addStep}
                   className="mt-2 w-full border border-dashed border-blue-800 text-blue-500 rounded-md py-1.5 text-[11px] hover:border-blue-600 hover:text-blue-400 transition-colors"
                 >
                   + Добавить шаг
                 </button>
+              </div>
+
+              <div>
+                <label className={labelCls}>Одновременно на бирже (0 = все шаги)</label>
+                <input
+                  type="number" min={0} max={form.steps.length}
+                  value={form.grid_active}
+                  onChange={e => patch({ grid_active: Number(e.target.value) })}
+                  className={inputCls}
+                  placeholder="0"
+                />
+                <p className="text-[10px] text-gray-600 mt-1">
+                  При заполнении ордера автоматически выставляется следующий шаг.
+                </p>
               </div>
 
               <div className="text-[10px] text-gray-500 uppercase tracking-wider pb-1 border-b border-gray-800 mt-2">

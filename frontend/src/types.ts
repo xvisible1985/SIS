@@ -303,6 +303,7 @@ export interface StrategyFormData {
   margin_type: 'isolated' | 'cross'
   hedge_mode: boolean
   steps: GridStep[]
+  grid_active: number
   signal_configs: SignalConfig[]
   tp_pct: number
   tp_mode: 'total' | 'per_level'

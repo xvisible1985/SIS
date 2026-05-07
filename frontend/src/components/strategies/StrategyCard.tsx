@@ -82,6 +82,17 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
   }, [strategyOrdersKey])
 
   // Immediately reload when the position for this strategy closes via WS
+  const levelsScrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const container = levelsScrollRef.current
+    if (!container || !cs.state?.levels) return
+    const placed = container.querySelector<HTMLElement>('[data-lvl-status="placed"]')
+    if (placed) {
+      container.scrollTop = Math.max(0, placed.offsetTop - 8)
+    }
+  }, [cs.state?.levels])
+
   const hadPositionRef = useRef(false)
   useEffect(() => {
     if (!positions) return
@@ -250,11 +261,12 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
                 <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Ждёт</div>
                 <div className="flex gap-4">
                   {/* Left: levels */}
-                  <div className="flex-[3] space-y-1.5">
+                  <div className="flex-[3]">
                     <div className="text-[9px] text-gray-500 uppercase mb-1">Уровни</div>
+                    <div ref={levelsScrollRef} className="max-h-[144px] overflow-y-auto space-y-1.5">
                     {cs.state && cs.state.levels.length > 0 ? (
                       cs.state.levels.map(l => (
-                        <div key={l.level_idx} className="flex items-center gap-2 text-[11px]">
+                        <div key={l.level_idx} data-lvl-status={l.status} className="flex items-center gap-2 text-[11px]">
                           <span className={
                             l.status === 'filled' ? 'text-green-400' :
                             l.status === 'placed' ? 'text-yellow-400' :
@@ -277,6 +289,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
                     ) : (
                       <div className="text-[11px] text-gray-500">Нет активного цикла</div>
                     )}
+                    </div>
                   </div>
 
                   {/* Divider */}
