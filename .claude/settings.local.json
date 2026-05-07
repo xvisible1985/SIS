@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(git -C \"c:\\\\Users\\\\123\\\\Projects\\\\sis\\\\.worktrees\\\\feature\\\\trader\" add frontend/src/)",
+      "PowerShell(git -C \"c:\\\\Users\\\\123\\\\Projects\\\\sis\\\\.worktrees\\\\feature\\\\trader\" commit -m \"feat: add TerminalPage with chart, orderbook, order form, positions and history\")",
+      "Bash(git -C \"c:\\\\Users\\\\123\\\\Projects\\\\sis\\\\.worktrees\\\\feature\\\\trader\" log --oneline master..HEAD)",
+      "Bash(git -C \"c:\\\\Users\\\\123\\\\Projects\\\\sis\" add frontend/src/pages/AccountsPage.tsx frontend/src/components/Layout.tsx frontend/src/App.tsx frontend/src/api/accounts.ts frontend/src/types.ts)",
+      "Bash(git -C 'c:\\\\Users\\\\123\\\\Projects\\\\sis' commit -m ' *)",
+      "Bash(go run *)",
+      "PowerShell(netstat -ano)",
+      "PowerShell(Get-Process -Id 9340)",
+      "PowerShell(Get-WmiObject Win32_Process -Filter \"ProcessId=9340\")",
+      "PowerShell(\\(Get-Item \\(Get-Process -Id 9340\\).Path\\).FullName 2>$null; if \\(-not $?\\) { \"path not accessible\" })",
+      "PowerShell(Stop-Process -Id 9340 -Force)",
+      "PowerShell(Start-Process \"C:\\\\Users\\\\123\\\\Projects\\\\sis\\\\bin\\\\api-gateway.exe\" -WorkingDirectory \"C:\\\\Users\\\\123\\\\Projects\\\\sis\" -WindowStyle Hidden)",
+      "Bash(git -C \"c:\\\\Users\\\\123\\\\Projects\\\\sis\" add frontend/src/api/client.ts)",
+      "Bash(git -C \"c:\\\\Users\\\\123\\\\Projects\\\\sis\" add frontend/src/pages/AccountsPage.tsx)",
+      "Bash(git -C \"c:\\\\Users\\\\123\\\\Projects\\\\sis\" add frontend/src/components/terminal/Chart.tsx)",
+      "Bash(git -C \"c:\\\\Users\\\\123\\\\Projects\\\\sis\" add frontend/src/components/terminal/Chart.tsx frontend/src/hooks/terminal/usePositionsWs.ts)",
+      "PowerShell(Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue | Select-Object LocalPort, OwningProcess | ForEach-Object { $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; [PSCustomObject]@{Port=$_.LocalPort; PID=$_.OwningProcess; Name=$p.Name; Path=$p.Path} })",
+      "WebFetch(domain:bybit-exchange.github.io)",
+      "WebFetch(domain:github.com)"
+    ]
+  }
+}

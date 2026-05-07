@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	traderPkg "sis/pkg/trader"
 )
 
 type traderOrderRow struct {
@@ -200,6 +202,29 @@ func (s *Server) ListTraderExecutions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"executions": result, "total": total, "page": page})
+}
+
+// GetClosedPnl fetches closed position P&L from Bybit.
+// GET /trader/pnl?account_id=&category=linear&cursor=
+func (s *Server) GetClosedPnl(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	accountID := r.URL.Query().Get("account_id")
+	category := r.URL.Query().Get("category")
+	cursor := r.URL.Query().Get("cursor")
+	if category == "" {
+		category = "linear"
+	}
+	creds, err := s.loadCreds(r, accountID, userID)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	list, nextCursor, err := traderPkg.FetchClosedPnl(r.Context(), creds, category, cursor)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"list": list, "nextCursor": nextCursor})
 }
 
 // GetTraderStats returns aggregated fee/funding stats.

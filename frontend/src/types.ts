@@ -126,15 +126,6 @@ export interface ProgressMessage {
   updated_at: number
 }
 
-// Exchange Accounts
-export interface ExchangeAccount {
-  id: string
-  exchange: string
-  label: string
-  is_active: boolean
-  created_at: string
-}
-
 // Trader — positions & orders (live, from WS)
 export interface Position {
   symbol: string

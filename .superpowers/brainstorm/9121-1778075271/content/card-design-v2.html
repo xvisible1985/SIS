@@ -1,0 +1,129 @@
+<h2>Карточка стратегии — v2</h2>
+<p class="subtitle">Сигналы вместо параметров в развёрнутом виде</p>
+
+<div style="max-width:560px;margin:0 auto;font-family:monospace;font-size:12px">
+
+  <!-- Expanded card with signals -->
+  <div style="border:1px solid #3b82f6;border-radius:8px;overflow:hidden">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:#0f172a;border-bottom:1px solid #1e293b">
+      <div style="flex:none">
+        <div style="color:#e2e8f0;font-weight:bold;font-size:13px">ETHUSDT</div>
+        <div style="color:#64748b;font-size:10px">Long · Main acc</div>
+      </div>
+      <div style="flex:1;display:flex;gap:16px;align-items:center;justify-content:flex-end">
+        <div style="text-align:center">
+          <div style="color:#64748b;font-size:10px">Grid</div>
+          <div style="color:#e2e8f0">2 / 8</div>
+        </div>
+        <div style="text-align:center">
+          <div style="color:#64748b;font-size:10px">Объём</div>
+          <div style="color:#e2e8f0">480 USDT</div>
+        </div>
+        <div style="text-align:center">
+          <div style="color:#64748b;font-size:10px">P&amp;L</div>
+          <div style="color:#ef4444">−1.80 USDT</div>
+        </div>
+        <div style="background:#14532d;color:#4ade80;padding:2px 8px;border-radius:4px;font-size:10px">Active</div>
+        <div style="color:#3b82f6;font-size:16px;cursor:pointer">▲</div>
+      </div>
+    </div>
+
+    <!-- Signals section -->
+    <div style="padding:10px 16px;background:#0f172a;border-bottom:1px solid #1e293b">
+      <div style="color:#64748b;font-size:10px;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">Сигналы</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+
+        <!-- Signal card: Supertrend -->
+        <div style="position:relative;background:#0d1f38;border:1px solid #1e3a5f;border-radius:6px;padding:6px 10px 6px 10px;min-width:110px;flex:1">
+          <div style="position:absolute;top:4px;left:4px">
+            <span style="background:#14532d;color:#4ade80;font-size:9px;padding:1px 5px;border-radius:3px">▲ Buy</span>
+          </div>
+          <div style="margin-top:14px;display:flex;align-items:center;gap:5px;margin-bottom:4px">
+            <span style="color:#60a5fa;font-size:11px">⬆</span>
+            <span style="color:#94a3b8;font-size:11px;font-weight:bold">Supertrend</span>
+            <span style="color:#475569;font-size:9px">(10,3)</span>
+          </div>
+          <div style="color:#4ade80;font-size:15px;font-weight:bold">LONG</div>
+          <div style="color:#475569;font-size:9px">Δ −1.2% до линии</div>
+        </div>
+
+        <!-- Signal card: Volume Spike -->
+        <div style="position:relative;background:#1c1003;border:1px solid #431407;border-radius:6px;padding:6px 10px 6px 10px;min-width:110px;flex:1">
+          <div style="position:absolute;top:4px;left:4px">
+            <span style="background:#7c2d12;color:#fdba74;font-size:9px;padding:1px 5px;border-radius:3px">⚡ Выброс</span>
+          </div>
+          <div style="margin-top:14px;display:flex;align-items:center;gap:5px;margin-bottom:4px">
+            <span style="color:#f97316;font-size:11px">⚡</span>
+            <span style="color:#94a3b8;font-size:11px;font-weight:bold">Volume Spike</span>
+            <span style="color:#475569;font-size:9px">(20, ×2)</span>
+          </div>
+          <div style="color:#fb923c;font-size:15px;font-weight:bold">3.4×</div>
+          <div style="color:#475569;font-size:9px">от среднего объёма</div>
+        </div>
+
+        <!-- Signal card: RSI -->
+        <div style="position:relative;background:#0f172a;border:1px solid #1e293b;border-radius:6px;padding:6px 10px 6px 10px;min-width:110px;flex:1">
+          <div style="position:absolute;top:4px;left:4px">
+            <span style="background:#1c1917;color:#78716c;font-size:9px;padding:1px 5px;border-radius:3px">Норма</span>
+          </div>
+          <div style="margin-top:14px;display:flex;align-items:center;gap:5px;margin-bottom:4px">
+            <span style="color:#a78bfa;font-size:11px">〜</span>
+            <span style="color:#94a3b8;font-size:11px;font-weight:bold">RSI</span>
+            <span style="color:#475569;font-size:9px">(14)</span>
+          </div>
+          <div style="color:#e2e8f0;font-size:15px;font-weight:bold">52.4</div>
+          <div style="color:#475569;font-size:9px">нейтрально</div>
+        </div>
+
+        <!-- Signal card: ATR Breakout — neutral/no signal -->
+        <div style="position:relative;background:#0f172a;border:1px solid #1e293b;border-radius:6px;padding:6px 10px 6px 10px;min-width:110px;flex:1">
+          <div style="position:absolute;top:4px;left:4px">
+            <span style="background:#1c1917;color:#78716c;font-size:9px;padding:1px 5px;border-radius:3px">Норма</span>
+          </div>
+          <div style="margin-top:14px;display:flex;align-items:center;gap:5px;margin-bottom:4px">
+            <span style="color:#818cf8;font-size:11px">↕</span>
+            <span style="color:#94a3b8;font-size:11px;font-weight:bold">ATR Breakout</span>
+            <span style="color:#475569;font-size:9px">(14,1.5)</span>
+          </div>
+          <div style="color:#e2e8f0;font-size:15px;font-weight:bold">0.8×</div>
+          <div style="color:#475569;font-size:9px">нет пробоя</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- What strategy waits for -->
+    <div style="padding:10px 16px;background:#0f172a;border-bottom:1px solid #1e293b">
+      <div style="color:#64748b;font-size:10px;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em">Ждёт</div>
+      <div style="display:flex;flex-direction:column;gap:4px;font-size:11px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="color:#fbbf24">◉</span>
+          <span style="color:#94a3b8">Buy L3 @ <span style="color:#e2e8f0">1 845.20</span> — ожидает заполнения</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="color:#22c55e">✓</span>
+          <span style="color:#94a3b8">Buy L2 @ <span style="color:#e2e8f0">1 863.45</span> — заполнен</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="color:#22c55e">✓</span>
+          <span style="color:#94a3b8">Buy L1 @ <span style="color:#e2e8f0">1 882.10</span> — заполнен</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="color:#3b82f6">→</span>
+          <span style="color:#94a3b8">TP ордер @ <span style="color:#e2e8f0">1 919.35</span> — выставлен</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Control buttons -->
+    <div style="padding:10px 16px;background:#0f172a;display:flex;gap:8px">
+      <span style="background:#1e3a5f;color:#93c5fd;padding:4px 12px;border-radius:4px;font-size:11px;cursor:pointer">✎ Редактировать</span>
+      <span style="background:#7f1d1d;color:#fca5a5;padding:4px 12px;border-radius:4px;font-size:11px;cursor:pointer">■ Остановить</span>
+      <span style="background:#1c1917;color:#78716c;padding:4px 12px;border-radius:4px;font-size:11px;cursor:pointer">⊠ Завершить</span>
+    </div>
+
+  </div>
+
+</div>

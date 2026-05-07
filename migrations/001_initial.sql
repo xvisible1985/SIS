@@ -19,4 +19,6 @@ SELECT create_hypertable('candles', by_range('open_time'), if_not_exists => TRUE
 CREATE INDEX IF NOT EXISTS candles_lookup
     ON candles (exchange, symbol, market, timeframe, open_time DESC);
 
+ALTER TABLE candles SET (timescaledb.compress = true, timescaledb.compress_segmentby = 'exchange,symbol,market,timeframe');
+
 SELECT add_compression_policy('candles', compress_after => INTERVAL '7 days', if_not_exists => TRUE);

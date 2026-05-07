@@ -71,6 +71,9 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 		}
 	}()
 
+	// Bybit private WS сообщения по топикам position/order всегда пересылаем как "delta".
+	// Начальный снапшот обеспечивает fetchAndSendSnapshot через REST API.
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -116,11 +119,11 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 				if topic == "position" || topic == "order" {
 					safeSend(conn, map[string]any{
 						"type":     topic,
-						"dataType": raw["type"],
+						"dataType": "delta",
 						"data":     raw["data"],
 					})
 					if items, ok := raw["data"].([]any); ok {
-						log.Printf("trader ws: %s/%v count=%d", topic, raw["type"], len(items))
+						log.Printf("trader ws: %s/delta count=%d", topic, len(items))
 					}
 				}
 			}
@@ -140,10 +143,5 @@ func fetchAndSendSnapshot(ctx context.Context, conn *websocket.Conn, creds Crede
 		return fmt.Errorf("orders: %w", err)
 	}
 	safeSend(conn, map[string]any{"type": "order", "dataType": "snapshot", "data": orders})
-
-	safeSend(conn, map[string]any{
-		"type":    "log",
-		"message": fmt.Sprintf("[REST] Позиции: %d | Ордера: %d", len(positions), len(orders)),
-	})
 	return nil
 }

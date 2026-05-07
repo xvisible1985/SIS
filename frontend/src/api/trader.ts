@@ -68,6 +68,39 @@ export async function listExecutions(params: {
   return res.data
 }
 
+export interface ClosedPnlItem {
+  symbol: string
+  side: string
+  qty: string
+  avgEntryPrice: string
+  avgExitPrice: string
+  cumEntryValue: string
+  cumExitValue: string
+  closedPnl: string
+  leverage: string
+  createdTime: string
+  category: string
+}
+
+export async function getClosedPnl(params: {
+  account_id: string
+  category?: string
+  cursor?: string
+}): Promise<{ list: ClosedPnlItem[]; nextCursor: string }> {
+  const res = await apiClient.get('/trader/pnl', { params })
+  return res.data
+}
+
+export async function switchPositionMode(params: {
+  account_id: string
+  symbol: string
+  category: string
+  mode: 0 | 3
+}): Promise<{ ok: boolean; message?: string }> {
+  const res = await apiClient.post('/trader/position-mode', params)
+  return res.data
+}
+
 export async function getStats(params: {
   account_id?: string
   from?: string

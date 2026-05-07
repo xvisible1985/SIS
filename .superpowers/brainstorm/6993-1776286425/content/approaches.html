@@ -1,0 +1,40 @@
+<h2>3 архитектурных подхода</h2>
+<p class="subtitle">Выбери направление — детали обсудим в терминале</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Монолит (Modular Monolith)</h3>
+      <p>Один Go-бинарник с чёткими внутренними модулями: ingestion, signal engine, backtesting, API, WebSocket, webhook dispatcher. Всё в одном процессе, общая память.</p>
+      <div class="pros-cons" style="margin-top:10px">
+        <div class="pros"><h4>Плюсы</h4><ul><li>Быстрый старт</li><li>Простой деплой</li><li>Нет сетевых задержек между компонентами</li></ul></div>
+        <div class="cons"><h4>Минусы</h4><ul><li>Бэктестинг может блокировать real-time</li><li>Тяжело масштабировать отдельные части</li><li>Вырастет в сложности быстро</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>⭐ Сервисный монорепо (рекомендую)</h3>
+      <p>4 отдельных Go-сервиса в одном репозитории: <strong>API Gateway</strong>, <strong>Data Ingester</strong>, <strong>Signal Engine</strong>, <strong>Webhook Dispatcher</strong>. Общаются через Redis Streams. React фронтенд отдельно.</p>
+      <div class="pros-cons" style="margin-top:10px">
+        <div class="pros"><h4>Плюсы</h4><ul><li>Каждый сервис масштабируется независимо</li><li>Бэктестинг изолирован от real-time</li><li>Один репозиторий — просто разрабатывать</li><li>Redis уже нужен для кэша и pub/sub</li></ul></div>
+        <div class="cons"><h4>Минусы</h4><ul><li>Чуть сложнее первый деплой</li><li>Нужно следить за совместимостью интерфейсов</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Полные микросервисы + Kafka</h3>
+      <p>Каждый компонент — отдельный сервис, общение через Kafka. Kubernetes для оркестрации. Максимальная масштабируемость с первого дня.</p>
+      <div class="pros-cons" style="margin-top:10px">
+        <div class="pros"><h4>Плюсы</h4><ul><li>Максимальная отказоустойчивость</li><li>Горизонтальное масштабирование без ограничений</li><li>Enterprise-grade с первого дня</li></ul></div>
+        <div class="cons"><h4>Минусы</h4><ul><li>Избыточно для старта SaaS</li><li>Kafka сложна в операционке</li><li>Долго разрабатывать</li><li>Высокие расходы на инфраструктуру</li></ul></div>
+      </div>
+    </div>
+  </div>
+</div>

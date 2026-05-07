@@ -5,19 +5,31 @@ import type { Position, ActiveOrder } from '../../types'
 
 interface Props {
   candles: Candle[]
+  candleSymbol: string | null
   positions: Position[]
   orders: ActiveOrder[]
   symbol: string
+  onLoadMore: (before: number) => Promise<void>
 }
 
-export function Chart({ candles, positions, orders, symbol }: Props) {
+export function Chart({ candles, candleSymbol, positions, orders, symbol, onLoadMore }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const priceLines = useRef<any[]>([])
   const loadedSymbolRef = useRef<string | null>(null)
-  // incremented after every setData so the price-lines effect re-fires
+  const prevFirstTimeRef = useRef<number | null>(null)
+  const onLoadMoreRef = useRef(onLoadMore)
+  const oldestTimeRef = useRef<number | null>(null)
+  const loadingMoreRef = useRef(false)
+  const lastLoadMoreRef = useRef(0)
   const [afterSetData, setAfterSetData] = useState(0)
+
+  useEffect(() => { onLoadMoreRef.current = onLoadMore }, [onLoadMore])
+
+  useEffect(() => {
+    oldestTimeRef.current = candles[0]?.time ?? null
+  }, [candles])
 
   // Init chart once
   useEffect(() => {
@@ -54,6 +66,19 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
     })
     seriesRef.current = series
 
+    // Subscribe to visible range changes to load historical data
+    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      if (!range || loadingMoreRef.current) return
+      if (Date.now() - lastLoadMoreRef.current < 1500) return
+      if (range.from < 10 && oldestTimeRef.current) {
+        lastLoadMoreRef.current = Date.now()
+        loadingMoreRef.current = true
+        onLoadMoreRef.current(oldestTimeRef.current).finally(() => {
+          loadingMoreRef.current = false
+        })
+      }
+    })
+
     const themeObserver = new MutationObserver(() => {
       chart.applyOptions(themeColors(document.documentElement.classList.contains('dark')))
     })
@@ -74,25 +99,45 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
       themeObserver.disconnect()
       chart.remove()
       loadedSymbolRef.current = null
+      prevFirstTimeRef.current = null
     }
   }, [])
 
-  // Candles: full setData only on symbol change/initial load, live ticks via update()
+  // Candles: full setData on symbol change, prepend for history, live update() for ticks
   useEffect(() => {
-    if (!seriesRef.current || !candles.length) return
-    if (loadedSymbolRef.current !== symbol) {
+    if (!seriesRef.current || !candles.length || candleSymbol !== symbol) return
+
+    const isNewSymbol = loadedSymbolRef.current !== symbol
+    const isPrepend = !isNewSymbol
+      && prevFirstTimeRef.current !== null
+      && candles[0].time < prevFirstTimeRef.current
+
+    prevFirstTimeRef.current = candles[0].time
+
+    if (isNewSymbol) {
       seriesRef.current.setData(candles as any)
       chartRef.current?.timeScale().fitContent()
       loadedSymbolRef.current = symbol
-      // setData clears price lines in v5 — trigger redraw
+      lastLoadMoreRef.current = Date.now() + 2000  // suppress auto-load right after initial load
       setAfterSetData(n => n + 1)
+    } else if (isPrepend) {
+      // Preserve viewport when prepending historical candles
+      const visibleRange = chartRef.current?.timeScale().getVisibleRange()
+      seriesRef.current.setData(candles as any)
+      setAfterSetData(n => n + 1)
+      if (visibleRange) {
+        requestAnimationFrame(() => {
+          chartRef.current?.timeScale().setVisibleRange(visibleRange as any)
+        })
+      }
     } else {
+      // Live tick
       const last = candles[candles.length - 1]
       if (last) seriesRef.current.update(last as any)
     }
-  }, [candles, symbol])
+  }, [candles, candleSymbol, symbol])
 
-  // Price lines: runs on positions/orders/symbol change AND after every setData
+  // Price lines
   useEffect(() => {
     const series = seriesRef.current
     if (!series) return
@@ -120,13 +165,14 @@ export function Chart({ candles, positions, orders, symbol }: Props) {
       const isLong = ord.side === 'Buy'
       const color = isLong ? '#34d399' : '#f87171'
       if (ord.triggerPrice && parseFloat(ord.triggerPrice) > 0) {
+        const usdt = (parseFloat(ord.qty) * parseFloat(ord.triggerPrice)).toFixed(0)
         priceLines.current.push(series.createPriceLine({
           price: parseFloat(ord.triggerPrice),
           color,
           lineWidth: 1,
           lineStyle: 4,
           axisLabelVisible: true,
-          title: `${isLong ? 'Buy' : 'Sell'} Stop`,
+          title: `${isLong ? 'Buy' : 'Sell'} ${usdt}$`,
         }))
       }
       if (ord.price && parseFloat(ord.price) > 0 && ord.orderType === 'Limit') {

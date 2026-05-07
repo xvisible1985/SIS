@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #020817; color: #94a3b8; font-family: monospace; font-size: 12px; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+  .modal { background: #0f172a; border: 1px solid #1e293b; border-radius: 10px; width: 480px; box-shadow: 0 24px 48px rgba(0,0,0,0.6); overflow: visible; position: relative; }
+  .modal-header { padding: 14px 18px; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; }
+  .modal-header span { color: #e2e8f0; font-weight: bold; font-size: 14px; }
+  .close { color: #475569; cursor: pointer; font-size: 16px; }
+
+  /* Template bar */
+  .template-bar { padding: 8px 18px; background: #0a1628; border-bottom: 1px solid #1e293b; display: flex; align-items: center; gap: 8px; }
+  .tpl-label { color: #475569; font-size: 10px; white-space: nowrap; }
+  .tpl-select { flex: 1; position: relative; }
+  .tpl-select-btn { background: #1e293b; border-radius: 5px; padding: 5px 10px; color: #e2e8f0; font-size: 11px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+  .tpl-select-btn .arrow { color: #475569; font-size: 10px; }
+  .tpl-dropdown { position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: #1e293b; border: 1px solid #334155; border-radius: 6px; z-index: 100; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,0.5); display: none; }
+  .tpl-dropdown.open { display: block; }
+  .tpl-item { padding: 7px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #273344; }
+  .tpl-item:last-child { border-bottom: none; }
+  .tpl-item:hover { background: #273344; }
+  .tpl-item-name { color: #e2e8f0; font-size: 11px; }
+  .tpl-item-meta { color: #475569; font-size: 9px; }
+  .tpl-item-del { color: #ef4444; font-size: 10px; padding: 2px 6px; cursor: pointer; opacity: 0; }
+  .tpl-item:hover .tpl-item-del { opacity: 1; }
+  .tpl-save-btn { background: #1e3a5f; color: #93c5fd; border-radius: 5px; padding: 5px 10px; font-size: 10px; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 4px; }
+
+  /* Tabs */
+  .tabs { display: flex; border-bottom: 1px solid #1e293b; }
+  .tab { flex: 1; padding: 9px 0; text-align: center; font-size: 11px; color: #475569; cursor: pointer; border-bottom: 2px solid transparent; }
+  .tab:hover { color: #94a3b8; }
+  .tab.active { color: #3b82f6; border-bottom-color: #3b82f6; }
+
+  /* Tab panels */
+  .tab-panel { display: none; padding: 16px 18px; flex-direction: column; gap: 12px; max-height: 340px; overflow-y: auto; }
+  .tab-panel.active { display: flex; }
+
+  /* Form */
+  .label { color: #64748b; font-size: 10px; margin-bottom: 4px; }
+  .field { background: #1e293b; border-radius: 5px; padding: 6px 10px; color: #e2e8f0; font-size: 11px; }
+  .field-green { color: #4ade80; }
+  .field-red { color: #ef4444; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .toggle { display: flex; gap: 4px; }
+  .toggle-btn { flex: 1; text-align: center; background: #1e293b; color: #64748b; border-radius: 5px; padding: 5px 0; cursor: pointer; }
+  .toggle-btn.on-green { background: #14532d; color: #4ade80; }
+  .toggle-btn.on-blue { background: #1e3a5f; color: #93c5fd; }
+
+  /* Steps */
+  .steps-header { display: grid; grid-template-columns: 28px 1fr 1fr 1fr 28px; gap: 6px; color: #475569; font-size: 10px; padding: 0 2px; margin-bottom: 2px; text-align: center; }
+  .step-row { display: grid; grid-template-columns: 28px 1fr 1fr 1fr 28px; gap: 6px; align-items: center; padding: 4px 2px; border-bottom: 1px solid #1a2640; }
+  .step-row:last-child { border-bottom: none; }
+  .step-num { color: #475569; font-size: 10px; text-align: center; }
+  .step-field { background: #1e293b; border-radius: 4px; padding: 4px 6px; color: #e2e8f0; font-size: 11px; text-align: center; }
+  .step-del { color: #ef4444; cursor: pointer; text-align: center; font-size: 13px; }
+  .add-step { border: 1px dashed #1e3a5f; border-radius: 5px; padding: 5px; text-align: center; color: #3b82f6; font-size: 10px; cursor: pointer; margin-top: 4px; }
+  .section-title { color: #475569; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 4px; border-bottom: 1px solid #1a2640; }
+  .signals-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+  .signal-tag { background: #0d1f38; border: 1px solid #1e3a5f; border-radius: 5px; padding: 4px 10px; display: inline-flex; align-items: center; gap: 6px; }
+  .signal-tag span { color: #93c5fd; font-size: 11px; }
+  .signal-tag .params { color: #475569; font-size: 9px; }
+  .signal-tag .rm { color: #475569; cursor: pointer; font-size: 10px; }
+  .add-signal { border: 1px dashed #1e3a5f; border-radius: 5px; padding: 4px 10px; color: #3b82f6; font-size: 10px; cursor: pointer; display: inline-flex; align-items: center; }
+
+  /* Exit */
+  .exit-card { border: 1px solid #1e293b; border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .exit-card.tp { border-color: #14532d; background: #052e16; }
+  .exit-card.sl { border-color: #7f1d1d; background: #1a0a0a; }
+  .exit-label { font-size: 10px; font-weight: bold; }
+  .exit-label.tp { color: #4ade80; }
+  .exit-label.sl { color: #ef4444; }
+  .ts-toggle { display: flex; align-items: center; gap: 8px; }
+  .ts-pill { width: 32px; height: 16px; background: #14532d; border-radius: 8px; position: relative; cursor: pointer; }
+  .ts-knob { width: 12px; height: 12px; background: #4ade80; border-radius: 50%; position: absolute; top: 2px; right: 2px; }
+
+  /* Footer */
+  .modal-footer { padding: 12px 18px; border-top: 1px solid #1e293b; display: flex; gap: 8px; align-items: center; }
+  .btn-cancel { background: #1e293b; color: #94a3b8; border-radius: 5px; padding: 6px 14px; font-size: 11px; cursor: pointer; }
+  .btn-primary { background: #1d4ed8; color: white; border-radius: 5px; padding: 6px 14px; font-size: 11px; cursor: pointer; }
+  .footer-spacer { flex: 1; }
+
+  /* Save template inline prompt */
+  .save-tpl-row { display: none; align-items: center; gap: 6px; padding: 8px 18px; background: #0a1628; border-top: 1px solid #1e293b; }
+  .save-tpl-row.visible { display: flex; }
+  .save-tpl-input { flex: 1; background: #1e293b; border-radius: 5px; padding: 5px 10px; color: #e2e8f0; font-size: 11px; border: 1px solid #334155; }
+  .btn-tpl-confirm { background: #14532d; color: #4ade80; border-radius: 5px; padding: 5px 12px; font-size: 10px; cursor: pointer; white-space: nowrap; }
+  .btn-tpl-cancel { color: #475569; font-size: 18px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<div class="modal">
+
+  <!-- Header -->
+  <div class="modal-header">
+    <span>Новая стратегия</span>
+    <span class="close">✕</span>
+  </div>
+
+  <!-- Template bar -->
+  <div class="template-bar">
+    <span class="tpl-label">Шаблон:</span>
+    <div class="tpl-select">
+      <div class="tpl-select-btn" onclick="toggleDropdown()">
+        <span id="tpl-selected" style="color:#64748b">Без шаблона</span>
+        <span class="arrow">▾</span>
+      </div>
+      <div class="tpl-dropdown" id="tpl-dropdown">
+        <div class="tpl-item" onclick="loadTemplate('BTC Grid 5×')">
+          <div><div class="tpl-item-name">BTC Grid 5×</div><div class="tpl-item-meta">Long · 8 шагов · TP 2% · SL 5%</div></div>
+          <span class="tpl-item-del" title="Удалить">🗑</span>
+        </div>
+        <div class="tpl-item" onclick="loadTemplate('ETH DCA Conservative')">
+          <div><div class="tpl-item-name">ETH DCA Conservative</div><div class="tpl-item-meta">Long · 5 шагов · TP 1.5% · SL 8%</div></div>
+          <span class="tpl-item-del" title="Удалить">🗑</span>
+        </div>
+        <div class="tpl-item" onclick="loadTemplate('SOL Short Hedge')">
+          <div><div class="tpl-item-name">SOL Short Hedge</div><div class="tpl-item-meta">Short · Hedge · 6 шагов · TP 3%</div></div>
+          <span class="tpl-item-del" title="Удалить">🗑</span>
+        </div>
+      </div>
+    </div>
+    <div class="tpl-save-btn" onclick="showSaveRow()">💾 Сохранить</div>
+  </div>
+
+  <!-- Save template row (hidden by default) -->
+  <div class="save-tpl-row" id="save-tpl-row">
+    <span style="color:#64748b;font-size:10px;white-space:nowrap">Имя шаблона:</span>
+    <input class="save-tpl-input" placeholder="Например: BTC Grid 5×" />
+    <div class="btn-tpl-confirm" onclick="hideSaveRow()">Сохранить</div>
+    <span class="btn-tpl-cancel" onclick="hideSaveRow()">✕</span>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab(0)">1. Вход</div>
+    <div class="tab" onclick="switchTab(1)">2. Усреднение</div>
+    <div class="tab" onclick="switchTab(2)">3. Выход</div>
+  </div>
+
+  <!-- Tab 1: Entry -->
+  <div class="tab-panel active" id="tab0">
+    <div class="grid-2">
+      <div><div class="label">Символ</div><div class="field">ETHUSDT</div></div>
+      <div><div class="label">Аккаунт</div><div class="field">Main acc ▾</div></div>
+    </div>
+    <div>
+      <div class="label">Направление</div>
+      <div class="toggle">
+        <div class="toggle-btn on-green">Long</div>
+        <div class="toggle-btn">Short</div>
+      </div>
+    </div>
+    <div>
+      <div class="label">Тип стратегии</div>
+      <div class="toggle">
+        <div class="toggle-btn on-blue">Grid</div>
+        <div class="toggle-btn">DCA</div>
+        <div class="toggle-btn">Manual</div>
+      </div>
+    </div>
+    <div class="grid-2">
+      <div><div class="label">Плечо</div><div class="field">5×</div></div>
+      <div><div class="label">Объём 1 лота (USDT)</div><div class="field">100</div></div>
+    </div>
+    <div>
+      <div class="label">Тип маржи</div>
+      <div class="toggle">
+        <div class="toggle-btn on-blue">Isolated</div>
+        <div class="toggle-btn">Cross</div>
+      </div>
+    </div>
+    <div>
+      <div class="label">Хедж режим</div>
+      <div class="toggle">
+        <div class="toggle-btn">Нет</div>
+        <div class="toggle-btn on-blue">Да (Hedge)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 2: Averaging -->
+  <div class="tab-panel" id="tab1">
+    <div class="section-title">Шаги усреднения</div>
+    <div>
+      <div class="steps-header">
+        <div>#</div><div>Движение %</div><div>Лотов</div><div>Объём USDT</div><div></div>
+      </div>
+      <div class="step-row"><div class="step-num">1</div><div class="step-field">1.0%</div><div class="step-field">1</div><div class="step-field" style="color:#64748b">100</div><div class="step-del">✕</div></div>
+      <div class="step-row"><div class="step-num">2</div><div class="step-field">1.5%</div><div class="step-field">2</div><div class="step-field" style="color:#64748b">200</div><div class="step-del">✕</div></div>
+      <div class="step-row"><div class="step-num">3</div><div class="step-field">2.0%</div><div class="step-field">2</div><div class="step-field" style="color:#64748b">200</div><div class="step-del">✕</div></div>
+      <div class="step-row"><div class="step-num">4</div><div class="step-field">3.0%</div><div class="step-field">3</div><div class="step-field" style="color:#64748b">300</div><div class="step-del">✕</div></div>
+      <div class="add-step">+ Добавить шаг</div>
+    </div>
+    <div>
+      <div class="section-title" style="margin-bottom:8px">Сигналы для усреднения</div>
+      <div class="signals-wrap">
+        <div class="signal-tag"><span>Supertrend</span><span class="params">(10, 3)</span><span class="rm">✕</span></div>
+        <div class="signal-tag"><span>RSI</span><span class="params">(14)</span><span class="rm">✕</span></div>
+        <div class="add-signal">+ Добавить</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 3: Exit -->
+  <div class="tab-panel" id="tab2">
+    <div class="exit-card tp">
+      <div class="exit-label tp">Take Profit</div>
+      <div class="grid-2">
+        <div><div class="label">TP %</div><div class="field field-green">2.0%</div></div>
+        <div>
+          <div class="label">Режим</div>
+          <div class="toggle">
+            <div class="toggle-btn on-green" style="font-size:10px">total</div>
+            <div class="toggle-btn" style="font-size:10px">per level</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="exit-card sl">
+      <div class="exit-label sl">Stop Loss</div>
+      <div class="grid-2">
+        <div><div class="label">SL %</div><div class="field field-red">5.0%</div></div>
+        <div>
+          <div class="label">Тип</div>
+          <div class="toggle">
+            <div class="toggle-btn on-blue" style="font-size:10px;background:#3b1f1f;color:#fca5a5">conditional</div>
+            <div class="toggle-btn" style="font-size:10px">market</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="section-title" style="margin-bottom:8px">Трейлинг-стоп</div>
+      <div class="ts-toggle" style="margin-bottom:10px">
+        <div class="ts-pill"><div class="ts-knob"></div></div>
+        <span style="color:#4ade80;font-size:11px">Включён</span>
+      </div>
+      <div class="grid-2">
+        <div><div class="label">Активация %</div><div class="field field-green">1.5%</div></div>
+        <div><div class="label">Callback %</div><div class="field">0.5%</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="modal-footer">
+    <div class="btn-cancel">Отмена</div>
+    <div class="footer-spacer"></div>
+    <div class="btn-primary">Создать стратегию</div>
+  </div>
+
+</div>
+
+<script>
+function switchTab(idx) {
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', i===idx));
+  document.querySelectorAll('.tab-panel').forEach((p,i) => p.classList.toggle('active', i===idx));
+}
+function toggleDropdown() {
+  document.getElementById('tpl-dropdown').classList.toggle('open');
+}
+function loadTemplate(name) {
+  document.getElementById('tpl-selected').textContent = name;
+  document.getElementById('tpl-selected').style.color = '#e2e8f0';
+  document.getElementById('tpl-dropdown').classList.remove('open');
+}
+function showSaveRow() {
+  document.getElementById('save-tpl-row').classList.add('visible');
+}
+function hideSaveRow() {
+  document.getElementById('save-tpl-row').classList.remove('visible');
+}
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('.tpl-select') && !e.target.closest('.tpl-save-btn')) {
+    document.getElementById('tpl-dropdown').classList.remove('open');
+  }
+});
+</script>
+</body>
+</html>

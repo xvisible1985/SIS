@@ -10,6 +10,30 @@ const AVAILABLE_SIGNALS = [
   'Supertrend', 'Volume Spike', 'ATR Breakout', 'Divergence',
 ]
 
+function Toggle({ options, value, onChange }: {
+  options: { label: string; value: string }[]
+  value: string
+  onChange: (v: string) => void
+}) {
+  return (
+    <div className="flex gap-1">
+      {options.map(o => (
+        <button
+          key={o.value}
+          onClick={() => onChange(o.value)}
+          className={`flex-1 text-center rounded-md py-1.5 text-xs transition-colors ${
+            value === o.value
+              ? 'bg-blue-700 text-white'
+              : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function defaultForm(): StrategyFormData {
   return {
     account_id: '',
@@ -121,10 +145,17 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
     setSaving(true)
     setError(null)
     try {
+      const payload = {
+        ...form,
+        grid_levels: form.steps.length || 1,
+        grid_active: form.steps.length || 1,
+        grid_step_pct: form.steps[0]?.price_move_pct ?? 0,
+        signal_filter: false,
+      }
       if (strategy) {
-        await updateStrategy(strategy.id, form)
+        await updateStrategy(strategy.id, payload as any)
       } else {
-        await createStrategy(form)
+        await createStrategy(payload as any)
       }
       onSaved()
     } catch (e: any) {
@@ -137,30 +168,6 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
   const tabLabels = ['1. Вход', '2. Усреднение', '3. Выход']
   const inputCls = 'w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-blue-500'
   const labelCls = 'block text-xs text-gray-500 mb-1'
-
-  function Toggle({ options, value, onChange }: {
-    options: { label: string; value: string }[]
-    value: string
-    onChange: (v: string) => void
-  }) {
-    return (
-      <div className="flex gap-1">
-        {options.map(o => (
-          <button
-            key={o.value}
-            onClick={() => onChange(o.value)}
-            className={`flex-1 text-center rounded-md py-1.5 text-xs transition-colors ${
-              value === o.value
-                ? 'bg-blue-700 text-white'
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-            }`}
-          >
-            {o.label}
-          </button>
-        ))}
-      </div>
-    )
-  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">

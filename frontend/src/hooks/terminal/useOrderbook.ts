@@ -45,7 +45,13 @@ export function useOrderbook(symbol: string) {
       } catch { /* ignore */ }
     }
     ws.onerror = () => ws.close()
-    return () => ws.close()
+    return () => {
+      ws.onopen = null
+      ws.onmessage = null
+      ws.onerror = null
+      ws.onclose = null
+      ws.close()
+    }
   }, [symbol, flush])
 
   const spread = bids[0] && asks[0]

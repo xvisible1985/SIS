@@ -48,7 +48,7 @@ type Position struct {
 	Symbol        string `json:"symbol"`
 	Side          string `json:"side"`
 	Size          string `json:"size"`
-	EntryPrice    string `json:"entryPrice"`
+	EntryPrice    string `json:"avgPrice"`
 	MarkPrice     string `json:"markPrice"`
 	LiqPrice      string `json:"liqPrice"`
 	UnrealisedPnl string `json:"unrealisedPnl"`
@@ -72,6 +72,21 @@ type Order struct {
 	Category     string `json:"category"`
 	OrderFilter  string `json:"orderFilter"`
 	CreatedTime  string `json:"createdTime"`
+}
+
+type ClosedPnl struct {
+	Symbol        string `json:"symbol"`
+	Side          string `json:"side"`
+	Qty           string `json:"qty"`
+	AvgEntryPrice string `json:"avgEntryPrice"`
+	AvgExitPrice  string `json:"avgExitPrice"`
+	CumEntryValue string `json:"cumEntryValue"`
+	CumExitValue  string `json:"cumExitValue"`
+	ClosedPnl     string `json:"closedPnl"`
+	Leverage      string `json:"leverage"`
+	CreatedTime   string `json:"createdTime"`
+	UpdatedTime   string `json:"updatedTime"`
+	Category      string `json:"category"`
 }
 
 type Execution struct {

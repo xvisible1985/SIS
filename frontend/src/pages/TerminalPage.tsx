@@ -7,12 +7,19 @@ import { OrdersTable } from '../components/terminal/OrdersTable'
 import { HistoryTable } from '../components/terminal/HistoryTable'
 import { ExecutionsTable } from '../components/terminal/ExecutionsTable'
 import { TradeLog } from '../components/terminal/TradeLog'
+import { PnlTable } from '../components/terminal/PnlTable'
+import { GridForm } from '../components/terminal/GridForm'
 import { usePositionsWs } from '../hooks/terminal/usePositionsWs'
 import { useCandles } from '../hooks/terminal/useCandles'
 import { useOrderbook } from '../hooks/terminal/useOrderbook'
 import { listAccounts } from '../api/accounts'
 
 const COINS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT']
+
+// Кэш выбранного символа и таймфрейма между навигациями
+let _cachedSymbol = 'BTCUSDT'
+let _cachedTf = '60'
+
 const TIMEFRAMES = [
   { label: '1м', value: '1' },
   { label: '5м', value: '5' },
@@ -22,12 +29,12 @@ const TIMEFRAMES = [
   { label: '1д', value: 'D' },
 ]
 
-type BottomTab = 'positions' | 'orders' | 'history' | 'executions' | 'log'
+type BottomTab = 'positions' | 'orders' | 'history' | 'executions' | 'log' | 'pnl'
 
 export function TerminalPage() {
   const [accountId, setAccountId] = useState<string | null>(null)
-  const [symbol, setSymbol] = useState('BTCUSDT')
-  const [tf, setTf] = useState('60')
+  const [symbol, setSymbol] = useState(_cachedSymbol)
+  const [tf, setTf] = useState(_cachedTf)
   const [bottomTab, setBottomTab] = useState<BottomTab>('positions')
 
   useEffect(() => {
@@ -36,8 +43,11 @@ export function TerminalPage() {
     }).catch(() => {})
   }, [])
 
+  useEffect(() => { _cachedSymbol = symbol }, [symbol])
+  useEffect(() => { _cachedTf = tf }, [tf])
+
   const { positions, orders, log, status, accountName, loading, reconnect } = usePositionsWs(accountId)
-  const { candles, lastPrice, priceChange } = useCandles(symbol, tf)
+  const { candles, candleSymbol, lastPrice, priceChange, loadMore } = useCandles(symbol, tf)
   const { bids, asks, spread } = useOrderbook(symbol)
 
   const statusColor = {
@@ -53,10 +63,11 @@ export function TerminalPage() {
     { key: 'history', label: 'История' },
     { key: 'executions', label: 'Сделки' },
     { key: 'log', label: 'Лог' },
+    { key: 'pnl', label: 'P&L' },
   ]
 
   return (
-    <div className="bg-gray-100 dark:bg-[#07070f]" style={{ display: 'grid', gridTemplateColumns: '65% 35%', gridTemplateRows: '65% 35%', height: 'calc(100vh - 65px)', gap: '10px', padding: '10px' }}>
+    <div className="bg-gray-100 dark:bg-[#07070f]" style={{ display: 'grid', gridTemplateColumns: '78% 22%', gridTemplateRows: '65% 35%', height: 'calc(100vh - 65px)', gap: '10px', padding: '10px' }}>
 
       {/* Chart area */}
       <div style={{ gridColumn: 1, gridRow: 1 }} className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden">
@@ -84,7 +95,7 @@ export function TerminalPage() {
           )}
         </div>
         <div className="flex-1 min-h-0">
-          <Chart candles={candles} positions={positions} orders={orders} symbol={symbol} />
+          <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} symbol={symbol} onLoadMore={loadMore} />
         </div>
       </div>
 
@@ -116,12 +127,13 @@ export function TerminalPage() {
           {bottomTab === 'history' && <HistoryTable accountId={accountId ?? undefined} symbol={symbol} />}
           {bottomTab === 'executions' && <ExecutionsTable accountId={accountId ?? undefined} />}
           {bottomTab === 'log' && <TradeLog log={log} />}
+          {bottomTab === 'pnl' && <PnlTable accountId={accountId ?? undefined} />}
         </div>
       </div>
 
-      {/* Right panel: OrderForm + Orderbook */}
+      {/* Right panel: OrderForm + GridForm + Orderbook */}
       <div style={{ gridColumn: 2, gridRow: '1 / 3', display: 'flex', flexDirection: 'column', gap: '10px', overflow: 'hidden' }}>
-        <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl overflow-hidden flex-shrink-0" style={{ maxHeight: '55%' }}>
+        <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl overflow-hidden flex-shrink-0" style={{ maxHeight: '42%' }}>
           {accountId ? (
             <OrderForm accountId={accountId} symbol={symbol} lastPrice={lastPrice} orders={orders} positions={positions} />
           ) : (
@@ -131,7 +143,8 @@ export function TerminalPage() {
             </div>
           )}
         </div>
-        <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex-1 flex flex-col overflow-hidden min-h-0">
+        <GridForm accountId={accountId ?? ''} symbol={symbol} lastPrice={lastPrice} />
+        <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex-1 min-h-0 flex flex-col overflow-hidden">
           <Orderbook bids={bids} asks={asks} spread={spread} symbol={symbol} />
         </div>
       </div>

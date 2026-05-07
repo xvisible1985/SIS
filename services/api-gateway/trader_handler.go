@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -31,13 +32,13 @@ func (s *Server) loadCreds(r *http.Request, accountID, userID string) (trader.Cr
 	return trader.Credentials{APIKey: apiKey, SecretKey: secret}, nil
 }
 
-// makeOrderLinkID generates a unique order link ID with the "sis" prefix.
-func makeOrderLinkID(accountID string) string {
-	short := accountID
-	if len(short) > 8 {
-		short = short[:8]
+// makeOrderLinkID returns the next SiS-N order link ID using a DB sequence.
+func (s *Server) makeOrderLinkID(ctx context.Context) string {
+	var n int64
+	if err := s.pool.QueryRow(ctx, "SELECT nextval('sis_order_seq')").Scan(&n); err != nil {
+		return fmt.Sprintf("SiS-e%d", time.Now().UnixMilli())
 	}
-	return fmt.Sprintf("sis%s%d", short, time.Now().UnixMilli())
+	return fmt.Sprintf("SiS-%d", n)
 }
 
 type placeOrderReq struct {
@@ -88,7 +89,7 @@ func (s *Server) TraderPlaceOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	orderLinkID := makeOrderLinkID(req.AccountID)
+	orderLinkID := s.makeOrderLinkID(r.Context())
 	orderReq := trader.OrderRequest{
 		Symbol:           req.Symbol,
 		Category:         req.Category,
@@ -203,6 +204,39 @@ func (s *Server) TraderSetLeverage(w http.ResponseWriter, r *http.Request) {
 		BuyLeverage:  req.Leverage,
 		SellLeverage: req.Leverage,
 	}); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// TraderSwitchPositionMode switches position mode for a symbol (0=one-way, 3=hedge).
+// POST /trader/position-mode
+func (s *Server) TraderSwitchPositionMode(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	var req struct {
+		AccountID string `json:"account_id"`
+		Symbol    string `json:"symbol"`
+		Category  string `json:"category"`
+		Mode      int    `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.AccountID == "" || req.Symbol == "" {
+		writeError(w, http.StatusBadRequest, "account_id and symbol are required")
+		return
+	}
+	if req.Category == "" {
+		req.Category = "linear"
+	}
+	creds, err := s.loadCreds(r, req.AccountID, userID)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if err := trader.SwitchPositionMode(r.Context(), creds, req.Category, req.Symbol, req.Mode); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
 		return
 	}

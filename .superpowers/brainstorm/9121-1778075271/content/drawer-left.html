@@ -1,0 +1,141 @@
+<h2>Drawer слева — форма создания стратегии</h2>
+<p class="subtitle">Выезжает слева, список карточек сдвигается вправо</p>
+
+<div style="font-family:monospace;font-size:12px;background:#0f172a;border-radius:8px;overflow:hidden;display:flex;min-height:420px;border:1px solid #1e293b">
+
+  <!-- Left Drawer -->
+  <div style="width:260px;flex-shrink:0;border-right:1px solid #1e293b;display:flex;flex-direction:column;background:#0a1628">
+    <div style="padding:12px 16px;border-bottom:1px solid #1e293b;display:flex;justify-content:space-between;align-items:center">
+      <span style="color:#e2e8f0;font-weight:bold;font-size:13px">Новая стратегия</span>
+      <span style="color:#64748b;cursor:pointer;font-size:16px">✕</span>
+    </div>
+
+    <div style="flex:1;overflow-y:auto;padding:12px 16px;display:flex;flex-direction:column;gap:10px">
+
+      <!-- Symbol + Account -->
+      <div>
+        <div style="color:#64748b;font-size:10px;margin-bottom:4px">Символ</div>
+        <div style="background:#1e293b;border-radius:4px;padding:5px 8px;color:#e2e8f0;font-size:11px">ETHUSDT</div>
+      </div>
+      <div>
+        <div style="color:#64748b;font-size:10px;margin-bottom:4px">Аккаунт</div>
+        <div style="background:#1e293b;border-radius:4px;padding:5px 8px;color:#e2e8f0;font-size:11px">Main acc ▾</div>
+      </div>
+
+      <!-- Direction -->
+      <div>
+        <div style="color:#64748b;font-size:10px;margin-bottom:4px">Направление</div>
+        <div style="display:flex;gap:4px">
+          <div style="flex:1;text-align:center;background:#14532d;color:#4ade80;border-radius:4px;padding:4px 0;font-size:11px;cursor:pointer">Long</div>
+          <div style="flex:1;text-align:center;background:#1e293b;color:#64748b;border-radius:4px;padding:4px 0;font-size:11px;cursor:pointer">Short</div>
+        </div>
+      </div>
+
+      <!-- Grid params -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div>
+          <div style="color:#64748b;font-size:10px;margin-bottom:4px">Grid уровней</div>
+          <div style="background:#1e293b;border-radius:4px;padding:5px 8px;color:#e2e8f0;font-size:11px">8</div>
+        </div>
+        <div>
+          <div style="color:#64748b;font-size:10px;margin-bottom:4px">Активных</div>
+          <div style="background:#1e293b;border-radius:4px;padding:5px 8px;color:#e2e8f0;font-size:11px">3</div>
+        </div>
+        <div>
+          <div style="color:#64748b;font-size:10px;margin-bottom:4px">Step %</div>
+          <div style="background:#1e293b;border-radius:4px;padding:5px 8px;color:#e2e8f0;font-size:11px">1.0%</div>
+        </div>
+        <div>
+          <div style="color:#64748b;font-size:10px;margin-bottom:4px">Size USDT</div>
+          <div style="background:#1e293b;border-radius:4px;padding:5px 8px;color:#e2e8f0;font-size:11px">100</div>
+        </div>
+      </div>
+
+      <!-- TP / SL -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div>
+          <div style="color:#64748b;font-size:10px;margin-bottom:4px">TP %</div>
+          <div style="background:#1e293b;border-radius:4px;padding:5px 8px;color:#4ade80;font-size:11px">2.0%</div>
+        </div>
+        <div>
+          <div style="color:#64748b;font-size:10px;margin-bottom:4px">SL %</div>
+          <div style="background:#1e293b;border-radius:4px;padding:5px 8px;color:#ef4444;font-size:11px">5.0%</div>
+        </div>
+      </div>
+
+      <!-- Signals -->
+      <div>
+        <div style="color:#64748b;font-size:10px;margin-bottom:6px">Сигналы</div>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <!-- Selected signal -->
+          <div style="background:#0d1f38;border:1px solid #1e3a5f;border-radius:4px;padding:4px 8px;display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <span style="color:#93c5fd;font-size:11px">Supertrend</span>
+              <span style="color:#475569;font-size:9px"> (10, 3)</span>
+            </div>
+            <span style="color:#64748b;cursor:pointer;font-size:10px">✕</span>
+          </div>
+          <div style="background:#0d1f38;border:1px solid #1e3a5f;border-radius:4px;padding:4px 8px;display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <span style="color:#93c5fd;font-size:11px">Volume Spike</span>
+              <span style="color:#475569;font-size:9px"> (20, ×2)</span>
+            </div>
+            <span style="color:#64748b;cursor:pointer;font-size:10px">✕</span>
+          </div>
+          <!-- Add signal button -->
+          <div style="border:1px dashed #1e3a5f;border-radius:4px;padding:4px 8px;text-align:center;color:#3b82f6;font-size:10px;cursor:pointer">+ Добавить сигнал</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Footer buttons -->
+    <div style="padding:12px 16px;border-top:1px solid #1e293b;display:flex;gap:6px">
+      <div style="flex:1;text-align:center;background:#1d4ed8;color:white;border-radius:4px;padding:6px 0;font-size:11px;cursor:pointer">Создать</div>
+      <div style="flex:1;text-align:center;background:#1e293b;color:#94a3b8;border-radius:4px;padding:6px 0;font-size:11px;cursor:pointer">Отмена</div>
+    </div>
+  </div>
+
+  <!-- Right: strategy list (shifted) -->
+  <div style="flex:1;padding:12px;display:flex;flex-direction:column;gap:8px;overflow:hidden">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+      <span style="color:#94a3b8;font-size:11px">Стратегии</span>
+    </div>
+
+    <!-- Card 1 -->
+    <div style="border:1px solid #1e293b;border-radius:6px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#0f172a">
+        <div style="flex:none">
+          <div style="color:#e2e8f0;font-weight:bold;font-size:12px">BTCUSDT</div>
+          <div style="color:#64748b;font-size:9px">Long · Main acc</div>
+        </div>
+        <div style="flex:1;display:flex;gap:10px;align-items:center;justify-content:flex-end">
+          <div style="text-align:center"><div style="color:#64748b;font-size:9px">Grid</div><div style="color:#e2e8f0;font-size:11px">3/5</div></div>
+          <div style="text-align:center"><div style="color:#64748b;font-size:9px">Объём</div><div style="color:#e2e8f0;font-size:11px">312 USDT</div></div>
+          <div style="text-align:center"><div style="color:#64748b;font-size:9px">P&amp;L</div><div style="color:#4ade80;font-size:11px">+4.23</div></div>
+          <div style="background:#14532d;color:#4ade80;padding:1px 6px;border-radius:3px;font-size:9px">Active</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 2 -->
+    <div style="border:1px solid #1e293b;border-radius:6px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#0f172a">
+        <div style="flex:none">
+          <div style="color:#94a3b8;font-weight:bold;font-size:12px">SOLUSDT</div>
+          <div style="color:#64748b;font-size:9px">Short · Hedge acc</div>
+        </div>
+        <div style="flex:1;display:flex;gap:10px;align-items:center;justify-content:flex-end">
+          <div style="text-align:center"><div style="color:#64748b;font-size:9px">Grid</div><div style="color:#64748b;font-size:11px">—/6</div></div>
+          <div style="text-align:center"><div style="color:#64748b;font-size:9px">Объём</div><div style="color:#64748b;font-size:11px">0 USDT</div></div>
+          <div style="text-align:center"><div style="color:#64748b;font-size:9px">P&amp;L</div><div style="color:#64748b;font-size:11px">—</div></div>
+          <div style="background:#1c1917;color:#78716c;padding:1px 6px;border-radius:3px;font-size:9px">Stopped</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add new -->
+    <div style="border:1px dashed #1e293b;border-radius:6px;padding:10px;text-align:center;color:#3b82f6;font-size:11px;cursor:pointer">+ Новая стратегия</div>
+  </div>
+
+</div>

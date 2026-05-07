@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { placeOrder, cancelOrder, setLeverage } from '../../api/trader'
+import { placeOrder, cancelOrder, setLeverage, switchPositionMode } from '../../api/trader'
 import type { ActiveOrder, Position } from '../../types'
 
 interface Props {
@@ -39,7 +39,46 @@ export function OrderForm({ accountId, symbol, lastPrice, orders, positions }: P
   const [log, setLog] = useState<LogEntry[]>([])
   const [qtyStep, setQtyStep] = useState('1')
 
-  const hedgeMode = positions.some(p => p.symbol === symbol && p.positionIdx !== 0)
+  const hedgeModeFromPositions = positions.some(p => p.symbol === symbol && p.positionIdx !== 0)
+  const [hedgeModeOverride, setHedgeModeOverride] = useState<boolean | null>(null)
+  const hedgeStorageKey = accountId ? `sis_hedge_${accountId}_${symbol}` : null
+
+  // Загружаем из localStorage при смене символа/аккаунта
+  useEffect(() => {
+    if (!hedgeStorageKey) return
+    const stored = localStorage.getItem(hedgeStorageKey)
+    setHedgeModeOverride(stored === 'true' ? true : stored === 'false' ? false : null)
+  }, [hedgeStorageKey])
+
+  // Сохраняем в localStorage при изменении
+  useEffect(() => {
+    if (!hedgeStorageKey || hedgeModeOverride === null) return
+    localStorage.setItem(hedgeStorageKey, String(hedgeModeOverride))
+  }, [hedgeStorageKey, hedgeModeOverride])
+
+  // Позиции подтверждают хедж — фиксируем
+  useEffect(() => {
+    if (hedgeModeFromPositions) setHedgeModeOverride(true)
+  }, [hedgeModeFromPositions])
+
+  const hedgeMode = hedgeModeOverride !== null ? hedgeModeOverride : hedgeModeFromPositions
+
+  const [modeLoading, setModeLoading] = useState(false)
+
+  async function handleSwitchMode() {
+    setModeLoading(true)
+    setLog([])
+    const nextMode = hedgeMode ? 0 : 3
+    addLog(hedgeMode ? 'Переключение → Один. направление...' : 'Переключение → Хедж-режим...')
+    const res = await switchPositionMode({ account_id: accountId, symbol, category, mode: nextMode })
+    if (res.ok) {
+      setHedgeModeOverride(nextMode === 3)
+      resolveLog('ok', nextMode === 3 ? 'Хедж-режим включён' : 'Один. направление включено')
+    } else {
+      resolveLog('error', `Ошибка: ${res.message}`)
+    }
+    setModeLoading(false)
+  }
 
   const effectivePrice = useCallback(() => {
     if (tab === 'Limit' || (tab === 'Conditional' && condType === 'Limit'))
@@ -99,6 +138,15 @@ export function OrderForm({ accountId, symbol, lastPrice, orders, positions }: P
     if (tab === 'Limit' && !price) { addLog('Укажите цену', 'error'); return }
     if (tab === 'Conditional' && !triggerPrice) { addLog('Укажите цену триггера', 'error'); return }
 
+    // В одностороннем режиме Sell закрывает существующий лонг — предупреждаем
+    if (!hedgeMode && !reduceOnly) {
+      const existingOpposite = positions.find(p => p.symbol === symbol && p.side === (side === 'Sell' ? 'Buy' : 'Sell'))
+      if (existingOpposite) {
+        addLog(`⚠ Одностор. режим: этот ордер закроет ${side === 'Sell' ? 'Long' : 'Short'} позицию. Для независимого хеджа — включите Хедж режим.`, 'error')
+        return
+      }
+    }
+
     setLoading(true)
     setLog([])
 
@@ -155,10 +203,20 @@ export function OrderForm({ accountId, symbol, lastPrice, orders, positions }: P
       <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
         <img src={coinIcon(symbol)} className="w-5 h-5 rounded-full" onError={e => (e.currentTarget.style.display = 'none')} />
         <span className="font-bold font-mono text-sm">{symbol}</span>
-        <span className="ml-auto text-gray-500 dark:text-gray-400 text-[10px]">
-          <span className={`inline-block w-2 h-2 rounded-full mr-1 ${hedgeMode ? 'bg-blue-500' : 'bg-gray-500'}`} />
-          {hedgeMode ? 'Хедж' : 'Один. нап.'}
-        </span>
+        <button
+          onClick={handleSwitchMode}
+          disabled={modeLoading}
+          className={`ml-auto flex items-center gap-2 px-2.5 py-1 rounded-lg text-xs font-medium transition-all disabled:opacity-50 ${
+            hedgeMode
+              ? 'bg-blue-500 text-white hover:bg-blue-600'
+              : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-300 dark:hover:bg-gray-600'
+          }`}
+        >
+          <span className="select-none">Хедж режим</span>
+          <span className={`relative inline-flex w-7 h-4 rounded-full transition-colors flex-shrink-0 ${hedgeMode ? 'bg-white/30' : 'bg-black/20'}`}>
+            <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-all ${hedgeMode ? 'left-3.5' : 'left-0.5'}`} />
+          </span>
+        </button>
       </div>
 
       <div className="flex border-b border-gray-200 dark:border-gray-700 flex-shrink-0">

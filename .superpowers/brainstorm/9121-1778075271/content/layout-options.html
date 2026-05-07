@@ -1,0 +1,134 @@
+<h2>Раскладка страницы стратегий</h2>
+<p class="subtitle">Выбери вариант который лучше подходит под задачу</p>
+
+<div class="cards">
+
+  <!-- Option A: Table -->
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="font-size:11px;font-family:monospace;background:#0f172a;color:#94a3b8;border-radius:6px;padding:10px;line-height:1.7">
+        <div style="display:flex;gap:8px;border-bottom:1px solid #1e293b;padding-bottom:6px;margin-bottom:6px;color:#64748b;font-size:10px">
+          <span style="flex:2">Символ / Аккаунт</span>
+          <span style="flex:1">Статус</span>
+          <span style="flex:1">Grid</span>
+          <span style="flex:1">TP / SL</span>
+          <span style="flex:1">Цикл</span>
+          <span style="flex:1">Действия</span>
+        </div>
+        <div style="display:flex;gap:8px;padding:4px 0;align-items:center">
+          <span style="flex:2;color:#e2e8f0">BTCUSDT<br><span style="color:#64748b;font-size:9px">Main acc</span></span>
+          <span style="flex:1"><span style="background:#14532d;color:#4ade80;padding:1px 6px;border-radius:4px;font-size:10px">Active</span></span>
+          <span style="flex:1;color:#e2e8f0">5 / 3</span>
+          <span style="flex:1;color:#e2e8f0">2% / 5%</span>
+          <span style="flex:1;color:#e2e8f0">#4 · 2/5</span>
+          <span style="flex:1"><span style="color:#ef4444;cursor:pointer">■ Stop</span></span>
+        </div>
+        <div style="display:flex;gap:8px;padding:4px 0;align-items:center;border-top:1px solid #1e293b">
+          <span style="flex:2;color:#e2e8f0">ETHUSDT<br><span style="color:#64748b;font-size:9px">Main acc</span></span>
+          <span style="flex:1"><span style="background:#1c1917;color:#78716c;padding:1px 6px;border-radius:4px;font-size:10px">Stopped</span></span>
+          <span style="flex:1;color:#e2e8f0">8 / 3</span>
+          <span style="flex:1;color:#e2e8f0">1.5% / 3%</span>
+          <span style="flex:1;color:#64748b">—</span>
+          <span style="flex:1"><span style="color:#4ade80;cursor:pointer">▶ Start</span></span>
+        </div>
+        <div style="margin-top:10px;text-align:right">
+          <span style="background:#1d4ed8;color:white;padding:3px 10px;border-radius:4px;font-size:10px">+ Новая стратегия</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — Таблица</h3>
+      <p>Компактно, много стратегий сразу, настройки открываются в модальном окне или drawer справа</p>
+    </div>
+  </div>
+
+  <!-- Option B: Cards (like AccountsPage) -->
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="font-size:11px;font-family:monospace;background:#0f172a;color:#94a3b8;border-radius:6px;padding:10px;line-height:1.7">
+        <!-- Card 1 expanded -->
+        <div style="border:1px solid #1e293b;border-radius:6px;margin-bottom:6px;overflow:hidden">
+          <div style="display:flex;justify-content:space-between;padding:8px 10px;background:#1e293b">
+            <div>
+              <span style="color:#e2e8f0;font-weight:bold">BTCUSDT</span>
+              <span style="color:#64748b"> · long · Main acc</span>
+            </div>
+            <span style="background:#14532d;color:#4ade80;padding:1px 6px;border-radius:4px;font-size:10px">Active</span>
+          </div>
+          <div style="padding:8px 10px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:10px">
+            <div><span style="color:#64748b">Grid</span><br><span style="color:#e2e8f0">5 уровней / 3 активны</span></div>
+            <div><span style="color:#64748b">Step</span><br><span style="color:#e2e8f0">1.0%</span></div>
+            <div><span style="color:#64748b">Size</span><br><span style="color:#e2e8f0">100 USDT</span></div>
+            <div><span style="color:#64748b">TP</span><br><span style="color:#e2e8f0">2% total</span></div>
+            <div><span style="color:#64748b">SL</span><br><span style="color:#e2e8f0">5% cond.</span></div>
+            <div><span style="color:#64748b">Цикл</span><br><span style="color:#e2e8f0">#4 · 2/5 filled</span></div>
+          </div>
+          <div style="padding:6px 10px;border-top:1px solid #1e293b;display:flex;gap:6px">
+            <span style="background:#7f1d1d;color:#fca5a5;padding:2px 8px;border-radius:4px;font-size:10px">■ Stop</span>
+            <span style="color:#3b82f6;font-size:10px;margin-left:auto">Изменить</span>
+          </div>
+        </div>
+        <!-- Card 2 collapsed -->
+        <div style="border:1px solid #1e293b;border-radius:6px;overflow:hidden">
+          <div style="display:flex;justify-content:space-between;padding:8px 10px">
+            <div>
+              <span style="color:#e2e8f0;font-weight:bold">ETHUSDT</span>
+              <span style="color:#64748b"> · long · Main acc</span>
+            </div>
+            <span style="background:#1c1917;color:#78716c;padding:1px 6px;border-radius:4px;font-size:10px">Stopped</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — Карточки (как Аккаунты)</h3>
+      <p>Разворачивающиеся карточки с деталями, единый стиль с остальными страницами</p>
+    </div>
+  </div>
+
+  <!-- Option C: Two-panel -->
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="display:flex;gap:6px;font-size:11px;font-family:monospace;background:#0f172a;border-radius:6px;padding:10px;line-height:1.7;min-height:140px">
+        <!-- Left panel: list -->
+        <div style="width:140px;border-right:1px solid #1e293b;padding-right:8px">
+          <div style="color:#64748b;font-size:10px;margin-bottom:6px">СТРАТЕГИИ</div>
+          <div style="background:#1e293b;border-radius:4px;padding:5px 8px;margin-bottom:4px">
+            <div style="color:#e2e8f0">BTCUSDT</div>
+            <div style="display:flex;justify-content:space-between">
+              <span style="color:#64748b;font-size:9px">long</span>
+              <span style="color:#4ade80;font-size:9px">● active</span>
+            </div>
+          </div>
+          <div style="border-radius:4px;padding:5px 8px;margin-bottom:4px">
+            <div style="color:#94a3b8">ETHUSDT</div>
+            <div style="display:flex;justify-content:space-between">
+              <span style="color:#64748b;font-size:9px">long</span>
+              <span style="color:#78716c;font-size:9px">● stopped</span>
+            </div>
+          </div>
+          <div style="margin-top:8px;color:#3b82f6;font-size:10px">+ Добавить</div>
+        </div>
+        <!-- Right panel: detail -->
+        <div style="flex:1;padding-left:8px">
+          <div style="color:#e2e8f0;font-weight:bold;margin-bottom:6px">BTCUSDT <span style="color:#4ade80;font-size:10px">active</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:10px">
+            <div><span style="color:#64748b">Grid levels</span><br><span style="color:#e2e8f0">5 / 3 active</span></div>
+            <div><span style="color:#64748b">Step %</span><br><span style="color:#e2e8f0">1.0%</span></div>
+            <div><span style="color:#64748b">Size USDT</span><br><span style="color:#e2e8f0">100</span></div>
+            <div><span style="color:#64748b">TP</span><br><span style="color:#e2e8f0">2% total</span></div>
+          </div>
+          <div style="margin-top:8px;display:flex;gap:6px">
+            <span style="background:#7f1d1d;color:#fca5a5;padding:2px 8px;border-radius:4px;font-size:10px">■ Stop</span>
+            <span style="background:#1e3a5f;color:#93c5fd;padding:2px 8px;border-radius:4px;font-size:10px">✎ Edit</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C — Список + Детали</h3>
+      <p>Левая колонка: список, правая: детали выбранной стратегии. Удобно при большом числе параметров</p>
+    </div>
+  </div>
+
+</div>

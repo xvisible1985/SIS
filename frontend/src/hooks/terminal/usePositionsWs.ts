@@ -4,6 +4,12 @@ import type { Position, ActiveOrder, WsMsg } from '../../types'
 export type WsStatus = 'connecting' | 'connected' | 'error' | 'closed'
 export type LogEntry = { time: string; message: string; error?: boolean }
 
+// Модульный кэш — живёт между навигациями, сбрасывается при смене аккаунта
+let _cacheAccountId: string | null = null
+let _cachePositions: Position[] = []
+let _cacheOrders: ActiveOrder[] = []
+let _cacheAccountName = ''
+
 function mapPosition(p: any): Position {
   const entry = parseFloat(p.entryPrice || p.avgPrice || '0')
   const mark = parseFloat(p.markPrice ?? '0')
@@ -48,12 +54,13 @@ function mapOrder(o: any): ActiveOrder {
 const CLOSED_STATUSES = new Set(['Filled', 'Cancelled', 'Rejected', 'Deactivated'])
 
 export function usePositionsWs(accountId: string | null) {
-  const [positions, setPositions] = useState<Position[]>([])
-  const [orders, setOrders] = useState<ActiveOrder[]>([])
+  const fromCache = accountId !== null && accountId === _cacheAccountId
+  const [positions, setPositions] = useState<Position[]>(fromCache ? _cachePositions : [])
+  const [orders, setOrders] = useState<ActiveOrder[]>(fromCache ? _cacheOrders : [])
   const [log, setLog] = useState<LogEntry[]>([])
   const [status, setStatus] = useState<WsStatus>('connecting')
-  const [accountName, setAccountName] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [accountName, setAccountName] = useState(fromCache ? _cacheAccountName : '')
+  const [loading, setLoading] = useState(!fromCache)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const rawPositions = useRef(new Map<string, any>())
@@ -66,6 +73,18 @@ export function usePositionsWs(accountId: string | null) {
 
   const connect = useCallback(() => {
     if (!accountId) return
+
+    // Safely close existing WS without triggering its onclose reconnect logic
+    if (wsRef.current) {
+      const old = wsRef.current
+      old.onopen = null
+      old.onmessage = null
+      old.onerror = null
+      old.onclose = null
+      old.close()
+      wsRef.current = null
+    }
+
     const token = localStorage.getItem('token') ?? ''
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const url = `${proto}//${window.location.host}/ws/trader/positions?token=${encodeURIComponent(token)}&account_id=${accountId}`
@@ -73,7 +92,8 @@ export function usePositionsWs(accountId: string | null) {
     const ws = new WebSocket(url)
     wsRef.current = ws
     setStatus('connecting')
-    setLoading(true)
+    const hasCache = accountId === _cacheAccountId && (_cachePositions.length > 0 || _cacheOrders.length > 0)
+    if (!hasCache) setLoading(true)
 
     const loadingTimeout = setTimeout(() => setLoading(false), 15000)
 
@@ -95,19 +115,25 @@ export function usePositionsWs(accountId: string | null) {
           return
         }
         if (msg.type === 'position') {
+          // Key by positionIdx for hedge mode (1=long, 2=short), symbol-side for one-way (positionIdx=0)
+          const posKey = (p: any) => p.positionIdx ? `${p.symbol}-${p.positionIdx}` : `${p.symbol}-${p.side}`
+          const posSize = (s: any) => { const n = parseFloat(s); return isNaN(n) ? 0 : n }
+
           if (msg.dataType === 'snapshot') {
             rawPositions.current.clear()
-            for (const p of msg.data) rawPositions.current.set(`${p.symbol}-${p.side}`, p)
-            setPositions(msg.data.filter((p: any) => parseFloat(p.size) !== 0).map(mapPosition))
+            for (const p of msg.data) rawPositions.current.set(posKey(p), p)
+            setPositions(msg.data.filter((p: any) => posSize(p.size) !== 0).map(mapPosition))
           } else {
             setPositions(prev => {
               const next = [...prev]
               for (const p of msg.data) {
-                const key = `${p.symbol}-${p.side}`
+                const key = posKey(p)
                 const merged = { ...(rawPositions.current.get(key) ?? {}), ...p }
                 rawPositions.current.set(key, merged)
-                const idx = next.findIndex(x => x.symbol === p.symbol && x.side === p.side)
-                if (parseFloat(merged.size) === 0) {
+                const idx = p.positionIdx
+                  ? next.findIndex(x => x.symbol === p.symbol && x.positionIdx === p.positionIdx)
+                  : next.findIndex(x => x.symbol === p.symbol && x.side === p.side)
+                if (posSize(merged.size) === 0) {
                   rawPositions.current.delete(key)
                   if (idx !== -1) next.splice(idx, 1)
                 } else {
@@ -167,16 +193,45 @@ export function usePositionsWs(accountId: string | null) {
     }
   }, [accountId, addLog])
 
+  // Когда accountId становится известен — подгружаем кэш если он совпадает
+  useEffect(() => {
+    if (!accountId || accountId !== _cacheAccountId) return
+    if (_cachePositions.length > 0 || _cacheOrders.length > 0) {
+      setPositions(_cachePositions)
+      setOrders(_cacheOrders)
+      setAccountName(_cacheAccountName)
+      setLoading(false)
+    }
+  }, [accountId])
+
   useEffect(() => {
     connect()
     return () => {
       if (reconnectRef.current) clearTimeout(reconnectRef.current)
-      wsRef.current?.close()
+      if (wsRef.current) {
+        wsRef.current.onopen = null
+        wsRef.current.onmessage = null
+        wsRef.current.onerror = null
+        wsRef.current.onclose = null
+        wsRef.current.close()
+      }
     }
   }, [connect])
 
+  // Синхронизируем данные в кэш после каждого обновления
+  useEffect(() => {
+    if (!accountId) return
+    _cacheAccountId = accountId
+    _cachePositions = positions
+    _cacheOrders = orders
+  }, [accountId, positions, orders])
+
+  useEffect(() => {
+    if (accountId && accountName) _cacheAccountName = accountName
+  }, [accountId, accountName])
+
   const reconnect = useCallback(() => {
-    wsRef.current?.close()
+    if (reconnectRef.current) clearTimeout(reconnectRef.current)
     connect()
   }, [connect])
 

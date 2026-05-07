@@ -1,0 +1,156 @@
+<h2>Конструктор сигналов</h2>
+<p class="subtitle">Как выглядит создание сигнала из индикаторов</p>
+
+<style>
+.builder {
+  display: flex;
+  gap: 16px;
+  margin: 12px 0;
+}
+.panel {
+  background: #1e1e2e;
+  border: 1px solid #313244;
+  border-radius: 10px;
+  padding: 14px;
+  flex: 1;
+}
+.panel h4 { margin: 0 0 10px; font-size: 13px; color: #cdd6f4; border-bottom: 1px solid #313244; padding-bottom: 6px; }
+.condition-block {
+  background: #181825;
+  border: 1px solid #45475a;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.condition-block .op { color: #fab387; font-weight: bold; font-size: 11px; margin-bottom: 6px; }
+.condition-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+  font-size: 12px;
+}
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.tag.indicator { background: #1e3a5f; color: #89b4fa; }
+.tag.operator  { background: #2d2b40; color: #cba6f7; }
+.tag.value     { background: #1a3a2a; color: #a6e3a1; }
+.tag.signal    { background: #3a2a1a; color: #fab387; }
+.add-btn {
+  background: none;
+  border: 1px dashed #45475a;
+  border-radius: 6px;
+  color: #6c7086;
+  padding: 6px 12px;
+  font-size: 11px;
+  cursor: pointer;
+  width: 100%;
+  margin-top: 4px;
+}
+.stats-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.stat-card {
+  flex: 1;
+  background: #181825;
+  border-radius: 8px;
+  padding: 10px;
+  text-align: center;
+}
+.stat-card .val { font-size: 22px; font-weight: bold; }
+.stat-card .lbl { font-size: 10px; color: #6c7086; margin-top: 2px; }
+.green { color: #a6e3a1; }
+.red   { color: #f38ba8; }
+.blue  { color: #89b4fa; }
+.bar-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 11px; }
+.bar-bg { flex: 1; background: #313244; border-radius: 4px; height: 8px; }
+.bar-fill { height: 8px; border-radius: 4px; }
+</style>
+
+<div class="builder">
+
+  <!-- Left: Signal Builder -->
+  <div class="panel" style="flex: 1.2">
+    <h4>⚡ Конструктор сигнала</h4>
+
+    <div style="display:flex; gap:8px; margin-bottom:10px; font-size:12px;">
+      <div style="flex:1; background:#181825; border-radius:6px; padding:6px 10px; border:1px solid #313244;">BTC/USDT</div>
+      <div style="background:#181825; border-radius:6px; padding:6px 10px; border:1px solid #313244;">1h</div>
+      <div style="background:#181825; border-radius:6px; padding:6px 10px; border:1px solid #313244; color:#a6e3a1;">LONG</div>
+    </div>
+
+    <div class="condition-block">
+      <div class="op">AND (все условия)</div>
+      <div class="condition-row">
+        <span class="tag indicator">RSI(14)</span>
+        <span class="tag operator">&lt;</span>
+        <span class="tag value">35</span>
+      </div>
+      <div class="condition-row">
+        <span class="tag indicator">EMA(9)</span>
+        <span class="tag operator">crosses ↑</span>
+        <span class="tag indicator">EMA(21)</span>
+      </div>
+      <div class="condition-row">
+        <span class="tag indicator">Volume</span>
+        <span class="tag operator">&gt;</span>
+        <span class="tag value">SMA_Vol(20) × 1.5</span>
+      </div>
+    </div>
+
+    <div class="condition-block">
+      <div class="op">OR (любое из условий)</div>
+      <div class="condition-row">
+        <span class="tag signal">📡 Сигнал: BB Oversold</span>
+        <span style="color:#6c7086; font-size:11px;">активен</span>
+      </div>
+      <div class="condition-row">
+        <span class="tag indicator">MACD</span>
+        <span class="tag operator">hist &gt;</span>
+        <span class="tag value">0</span>
+      </div>
+    </div>
+
+    <button class="add-btn">+ Добавить условие / блок</button>
+    <button class="add-btn" style="margin-top:6px; border-color:#89b4fa; color:#89b4fa;">+ Вложить другой сигнал</button>
+  </div>
+
+  <!-- Right: Backtest Result -->
+  <div class="panel">
+    <h4>📊 Результат бэктеста · 1 год · BTC/USDT 1h</h4>
+
+    <div class="stats-row">
+      <div class="stat-card"><div class="val green">68.4%</div><div class="lbl">Win Rate</div></div>
+      <div class="stat-card"><div class="val blue">247</div><div class="lbl">Сигналов</div></div>
+      <div class="stat-card"><div class="val green">+18.3%</div><div class="lbl">Avg Gain</div></div>
+      <div class="stat-card"><div class="val red">-7.2%</div><div class="lbl">Max DD</div></div>
+    </div>
+
+    <div style="font-size:11px; color:#6c7086; margin-bottom:8px;">Распределение по месяцам</div>
+    <div class="bar-row"><span style="width:30px; color:#6c7086">Apr</span><div class="bar-bg"><div class="bar-fill" style="width:80%; background:#a6e3a1"></div></div><span class="green">+12%</span></div>
+    <div class="bar-row"><span style="width:30px; color:#6c7086">May</span><div class="bar-bg"><div class="bar-fill" style="width:35%; background:#f38ba8"></div></div><span class="red">-4%</span></div>
+    <div class="bar-row"><span style="width:30px; color:#6c7086">Jun</span><div class="bar-bg"><div class="bar-fill" style="width:65%; background:#a6e3a1"></div></div><span class="green">+9%</span></div>
+    <div class="bar-row"><span style="width:30px; color:#6c7086">Jul</span><div class="bar-bg"><div class="bar-fill" style="width:90%; background:#a6e3a1"></div></div><span class="green">+21%</span></div>
+    <div class="bar-row"><span style="width:30px; color:#6c7086">Aug</span><div class="bar-bg"><div class="bar-fill" style="width:50%; background:#fab387"></div></div><span style="color:#fab387">+2%</span></div>
+
+    <div style="margin-top:12px; font-size:11px; color:#6c7086;">Паттерны</div>
+    <div style="font-size:12px; margin-top:6px; display:flex; flex-direction:column; gap:4px;">
+      <div style="display:flex; justify-content:space-between;"><span>🟢 Лучше всего работает во вторник</span><span class="green">74%</span></div>
+      <div style="display:flex; justify-content:space-between;"><span>🟡 Слабее при высокой волатильности</span><span style="color:#fab387">52%</span></div>
+      <div style="display:flex; justify-content:space-between;"><span>🔴 Ложные сигналы при боковике</span><span class="red">38%</span></div>
+    </div>
+
+    <button class="mock-button" style="margin-top:14px; width:100%; background:#89b4fa; color:#1e1e2e; border:none; border-radius:6px; padding:8px; font-weight:600; cursor:pointer;">
+      🔗 Подключить вебхук
+    </button>
+  </div>
+
+</div>

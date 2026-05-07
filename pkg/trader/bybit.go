@@ -272,6 +272,33 @@ func FetchExecutions(ctx context.Context, creds Credentials, category, cursor st
 	return resp.Result.List, resp.Result.NextPageCursor, nil
 }
 
+func FetchClosedPnl(ctx context.Context, creds Credentials, category, cursor string) ([]ClosedPnl, string, error) {
+	q := "category=" + category + "&limit=50"
+	if cursor != "" {
+		q += "&cursor=" + cursor
+	}
+	data, err := doSignedGET(ctx, creds, "/v5/position/closed-pnl", q)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := checkRetCode(data); err != nil {
+		return nil, "", err
+	}
+	var resp struct {
+		Result struct {
+			List           []ClosedPnl `json:"list"`
+			NextPageCursor string      `json:"nextPageCursor"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, "", err
+	}
+	for i := range resp.Result.List {
+		resp.Result.List[i].Category = category
+	}
+	return resp.Result.List, resp.Result.NextPageCursor, nil
+}
+
 // GetWalletBalance returns total equity and available balance in USDT.
 // Tries UNIFIED account first, then CONTRACT (classic accounts).
 func GetWalletBalance(ctx context.Context, creds Credentials) (equity, available float64, err error) {
@@ -301,6 +328,35 @@ func GetWalletBalance(ctx context.Context, creds Credentials) (equity, available
 		}
 	}
 	return equity, available, nil
+}
+
+// SwitchPositionMode switches between one-way (mode=0) and hedge (mode=3) for a symbol.
+func SwitchPositionMode(ctx context.Context, creds Credentials, category, symbol string, mode int) error {
+	body := map[string]any{
+		"category": category,
+		"symbol":   symbol,
+		"mode":     mode,
+	}
+	data, err := doSignedPOST(ctx, creds, "/v5/position/switch-mode", body)
+	if err != nil {
+		return err
+	}
+	var r struct {
+		RetCode int    `json:"retCode"`
+		RetMsg  string `json:"retMsg"`
+	}
+	if err := json.Unmarshal(data, &r); err != nil {
+		return fmt.Errorf("bybit: parse response: %w", err)
+	}
+	switch r.RetCode {
+	case 0, 110025: // 110025 = already in this mode
+		return nil
+	case 110024:
+		return fmt.Errorf("нельзя переключить режим при открытой позиции — сначала закройте все позиции и ордера по %s", symbol)
+	default:
+		return fmt.Errorf("bybit: retCode=%d: %s", r.RetCode, r.RetMsg)
+	}
+	return nil
 }
 
 // QueryAPI calls /v5/user/query-api and returns the raw result JSON.
