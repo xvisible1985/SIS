@@ -744,10 +744,12 @@ func (sr *StrategyRunner) handlePositionClose(ctx context.Context) {
 	// If we closed the position ourselves (TP/SL), ignore the WS position event.
 	if sr.closedBySelf {
 		sr.closedBySelf = false
+		log.Printf("strategy %s: handlePositionClose: closedBySelf, ignoring", sr.strategy.ID)
 		return
 	}
 
 	if sr.cycle == nil {
+		log.Printf("strategy %s: handlePositionClose: cycle==nil, ignoring", sr.strategy.ID)
 		return // cycle already closed by TP/SL
 	}
 
@@ -755,14 +757,15 @@ func (sr *StrategyRunner) handlePositionClose(ctx context.Context) {
 	// We trust the WS event if we have TP/SL orders registered (definitive proof of open position),
 	// or if any level was already filled (position might have been opened before TP/SL was placed).
 	hasPosition := sr.tpOrderID != "" || sr.slOrderID != ""
-	if !hasPosition {
-		for _, l := range sr.levels {
-			if l.Status == LevelFilled {
-				hasPosition = true
-				break
-			}
+	filledCount := 0
+	for _, l := range sr.levels {
+		if l.Status == LevelFilled {
+			hasPosition = true
+			filledCount++
 		}
 	}
+	log.Printf("strategy %s: handlePositionClose: tpID=%q slID=%q filledLevels=%d hasPosition=%v",
+		sr.strategy.ID, sr.tpOrderID, sr.slOrderID, filledCount, hasPosition)
 	if !hasPosition {
 		return // no fills and no TP/SL — position close is unrelated to this strategy
 	}
