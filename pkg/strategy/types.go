@@ -41,23 +41,42 @@ const (
 	LevelCancelled LevelStatus = "cancelled"
 )
 
+type SignalConfig struct {
+	Name   string             `json:"name"`
+	Params map[string]float64 `json:"params"`
+}
+
+type GridStep struct {
+	PriceMovePct float64 `json:"price_move_pct"`
+	Lots         float64 `json:"lots"`
+}
+
 type Strategy struct {
-	ID           string
-	OwnerID      string
-	AccountID    string
-	Symbol       string
-	Category     string
-	Direction    Direction
-	Status       Status
-	GridLevels   int
-	GridActive   int
-	GridStepPct  float64
-	GridSizeUSDT float64
-	TPMode       TPMode
-	TPPct        float64
-	SLType       SLType
-	SLPct        float64
-	SignalFilter bool
+	ID                    string
+	OwnerID               string
+	AccountID             string
+	Symbol                string
+	Category              string
+	Direction             Direction
+	Status                Status
+	GridLevels            int
+	GridActive            int
+	GridStepPct           float64
+	GridSizeUSDT          float64
+	TPMode                TPMode
+	TPPct                 float64
+	SLType                SLType
+	SLPct                 float64
+	SignalFilter          bool
+	Leverage              int
+	MarginType            string
+	HedgeMode             bool
+	StrategyType          string
+	SignalConfigs         []SignalConfig
+	Steps                 []GridStep
+	TrailingStopEnabled   bool
+	TrailingActivationPct float64
+	TrailingCallbackPct   float64
 }
 
 type Cycle struct {
