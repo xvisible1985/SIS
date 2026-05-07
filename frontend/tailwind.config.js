@@ -2,6 +2,14 @@
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   darkMode: 'class',
-  theme: { extend: {} },
+  theme: {
+    extend: {
+      fontFamily: {
+        sans:    ['Inter', 'system-ui', 'sans-serif'],
+        display: ['"Space Grotesk"', 'sans-serif'],
+        mono:    ['"JetBrains Mono"', 'monospace'],
+      },
+    },
+  },
   plugins: [],
 }
