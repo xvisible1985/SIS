@@ -55,17 +55,24 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
   }, [isOpen])
 
   // Reload state when this strategy's orders change (supports both old and new link ID formats)
-  const strategyOrdersKey = useMemo(() => {
+  const strategyOrders = useMemo(() => {
     const id8 = s.id.slice(0, 8)
-    return orders
-      .filter(o => {
-        const lk = o.orderLinkId ?? ''
-        return lk.startsWith('SIS_STR-' + id8) || lk.startsWith('STR-' + id8) || lk.startsWith('STP-' + id8)
-      })
-      .map(o => o.orderId + ':' + o.orderStatus)
-      .sort()
-      .join(',')
+    return orders.filter(o => {
+      const lk = o.orderLinkId ?? ''
+      return lk.startsWith('SIS_STR-' + id8) || lk.startsWith('STR-' + id8) || lk.startsWith('STP-' + id8)
+    })
   }, [orders, s.id])
+
+  const strategyOrdersKey = useMemo(
+    () => strategyOrders.map(o => o.orderId + ':' + o.orderStatus).sort().join(','),
+    [strategyOrders],
+  )
+
+  // Count only L-level orders (exclude TP/SL) for the Grid X/Y header display
+  const activeLOrders = useMemo(
+    () => strategyOrders.filter(o => /^(SIS_STR|STR)-[a-f0-9]+-\d+-\d+$/.test(o.orderLinkId ?? '')).length,
+    [strategyOrders],
+  )
 
   useEffect(() => {
     if (!isOpen || cs.acting) return
@@ -185,7 +192,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
         <div className="flex items-center gap-4 ml-auto shrink-0 text-right">
           <div>
             <div className="text-[10px] text-gray-500">Grid</div>
-            <div className="text-[11px] text-gray-300">{s.active_levels}/{s.grid_levels}</div>
+            <div className="text-[11px] text-gray-300">{activeLOrders}/{s.grid_levels}</div>
           </div>
           <div>
             <div className="text-[10px] text-gray-500">Объём</div>
