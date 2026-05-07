@@ -11,7 +11,6 @@ import { OptimizerPage } from './pages/OptimizerPage'
 import { WebhooksPage } from './pages/WebhooksPage'
 import { AccountsPage } from './pages/AccountsPage'
 import { TerminalPage } from './pages/TerminalPage'
-import { StrategiesPage } from './pages/StrategiesPage'
 
 export default function App() {
   return (
@@ -34,7 +33,6 @@ export default function App() {
                     <Route path="terminal" element={<TerminalPage />} />
                     <Route path="webhooks" element={<WebhooksPage />} />
                     <Route path="accounts" element={<AccountsPage />} />
-                    <Route path="strategies" element={<StrategiesPage />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
                 </Layout>

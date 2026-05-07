@@ -8,7 +8,6 @@ const navItems = [
   { label: 'Terminal', to: '/terminal' },
   { label: 'Webhooks', to: '/webhooks' },
   { label: 'Аккаунты', to: '/accounts' },
-  { label: 'Стратегии', to: '/strategies' },
 ]
 
 export function Layout({ children }: { children: ReactNode }) {
