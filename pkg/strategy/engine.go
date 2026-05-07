@@ -250,7 +250,6 @@ func (ar *AccountRunner) UnregisterOrder(exchangeOrderID string) {
 // Handles manual position close: stops strategy and logs.
 func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
 	size, _ := strconv.ParseFloat(ev.Size, 64)
-	log.Printf("strategy: OnPositionEvent symbol=%s size=%s posIdx=%d account=%s", ev.Symbol, ev.Size, ev.PositionIdx, ar.accountID)
 	if size != 0 {
 		return
 	}
@@ -270,7 +269,6 @@ func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
 		runners = append(runners, sr)
 	}
 	ar.mu.RUnlock()
-	log.Printf("strategy: position close symbol=%s → %d runners", ev.Symbol, len(runners))
 	for _, sr := range runners {
 		go sr.handlePositionClose(context.Background())
 	}
