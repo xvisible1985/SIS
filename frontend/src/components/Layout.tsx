@@ -1,7 +1,7 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useTheme } from '../hooks/useTheme'
-import { listAccounts, getAccountBalance } from '../api/accounts'
+import { listAccounts } from '../api/accounts'
 import type { ExchangeAccount } from '../types'
 import { useState, useEffect, type ReactNode } from 'react'
 
@@ -20,7 +20,6 @@ export function Layout({ children }: { children: ReactNode }) {
 
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
   const [selectedId, setSelectedId] = useState<string>('')
-  const [balance, setBalance] = useState<number | null>(null)
 
   useEffect(() => {
     listAccounts().then(accs => {
@@ -28,14 +27,6 @@ export function Layout({ children }: { children: ReactNode }) {
       if (accs.length > 0 && accs[0]) setSelectedId(accs[0].id)
     }).catch(() => {})
   }, [])
-
-  useEffect(() => {
-    if (!selectedId) return
-    setBalance(null)
-    getAccountBalance(selectedId).then(res => {
-      if (res.ok && res.equity != null) setBalance(res.equity)
-    }).catch(() => {})
-  }, [selectedId])
 
   function handleLogout() {
     logout()
@@ -45,16 +36,19 @@ export function Layout({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-screen bg-gray-100 dark:bg-gray-900">
       {/* Sidebar */}
-      <aside className="w-48 bg-white dark:bg-gray-800 shadow flex flex-col" style={{ height: '100vh' }}>
-        {/* Top zone — 15%: logo, user, balance, account picker */}
+      <aside className="w-[269px] bg-white dark:bg-gray-800 shadow flex flex-col" style={{ height: '100vh' }}>
+        {/* Top zone — 15%: logo, user, platform balance, account picker */}
         <div className="flex flex-col justify-between px-3 py-3 border-b dark:border-gray-700 shrink-0 gap-1.5" style={{ height: '15%' }}>
           <span className="font-bold text-base text-blue-600 dark:text-blue-400 leading-none">Novabot</span>
-          {email && (
-            <span className="text-[11px] text-gray-500 dark:text-gray-400 truncate leading-none">{email}</span>
-          )}
-          <span className="text-sm font-semibold text-gray-800 dark:text-gray-100 leading-none">
-            {balance != null ? `$${balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+          <span className="text-[11px] text-gray-400 truncate leading-none">
+            {email ?? '—'}
           </span>
+          <div className="flex items-center justify-between gap-1">
+            <span className="text-sm font-semibold text-gray-800 dark:text-gray-100 leading-none">$0.00</span>
+            <button className="text-[10px] px-1.5 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-700 transition-colors leading-none">
+              Пополнить
+            </button>
+          </div>
           {accounts.length > 0 && (
             <select
               value={selectedId}
