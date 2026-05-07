@@ -223,3 +223,95 @@ export type WsMsg =
   | { type: 'log'; message: string; error?: boolean }
   | { type: 'position'; dataType: 'snapshot' | 'delta'; data: any[] }
   | { type: 'order'; dataType: 'snapshot' | 'delta'; data: any[] }
+
+// Strategies
+export interface SignalConfig {
+  name: string
+  params: Record<string, number>
+}
+
+export interface GridStep {
+  price_move_pct: number
+  lots: number
+}
+
+export interface Strategy {
+  id: string
+  account_id: string
+  symbol: string
+  category: string
+  direction: 'long' | 'short' | 'both'
+  status: 'active' | 'finishing' | 'stopped'
+  grid_levels: number
+  grid_active: number
+  grid_step_pct: number
+  grid_size_usdt: number
+  tp_mode: 'total' | 'per_level'
+  tp_pct: number
+  sl_type: 'conditional' | 'programmatic'
+  sl_pct: number
+  signal_filter: boolean
+  leverage: number
+  margin_type: 'isolated' | 'cross'
+  hedge_mode: boolean
+  strategy_type: 'grid' | 'dca' | 'manual'
+  signal_configs: SignalConfig[]
+  steps: GridStep[] | null
+  trailing_stop_enabled: boolean
+  trailing_activation_pct: number | null
+  trailing_callback_pct: number | null
+  created_at: string
+  updated_at: string
+  // Computed by server
+  volume_usdt: number
+  active_levels: number
+  last_pnl: number
+}
+
+export interface StrategyLevel {
+  level_idx: number
+  side: string
+  target_price: number
+  size_usdt: number
+  status: 'pending' | 'placed' | 'filled' | 'cancelled'
+  filled_price: number
+}
+
+export interface StrategyState {
+  cycle_num: number
+  start_price: number
+  tp_order_id: string
+  sl_order_id: string
+  started_at: string
+  levels: StrategyLevel[]
+  volume_usdt: number
+  avg_entry: number
+}
+
+export interface StrategyTemplate {
+  id: string
+  name: string
+  config: Partial<Strategy>
+  created_at: string
+}
+
+export interface StrategyFormData {
+  account_id: string
+  symbol: string
+  category: string
+  direction: 'long' | 'short'
+  strategy_type: 'grid' | 'dca' | 'manual'
+  leverage: number
+  grid_size_usdt: number
+  margin_type: 'isolated' | 'cross'
+  hedge_mode: boolean
+  steps: GridStep[]
+  signal_configs: SignalConfig[]
+  tp_pct: number
+  tp_mode: 'total' | 'per_level'
+  sl_pct: number
+  sl_type: 'conditional' | 'programmatic'
+  trailing_stop_enabled: boolean
+  trailing_activation_pct: number
+  trailing_callback_pct: number
+}
