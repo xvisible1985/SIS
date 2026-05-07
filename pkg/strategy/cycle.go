@@ -641,17 +641,21 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
 		`UPDATE strategy_cycles SET ended_at=NOW(), result=$1 WHERE id=$2`, result, sr.cycle.ID)
 	if sr.tpOrderID != "" {
-		trader.CancelOrder(ctx, sr.runner.creds, trader.CancelRequest{ //nolint:errcheck
+		if err := trader.CancelOrder(ctx, sr.runner.creds, trader.CancelRequest{
 			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category, OrderId: sr.tpOrderID,
-		})
+		}); err != nil {
+			sr.warn(ctx, fmt.Sprintf("closeCycle: отмена TP %s: %v", sr.tpOrderID, err))
+		}
 		sr.runner.UnregisterOrder(sr.tpOrderID)
 		sr.tpOrderID = ""
 	}
 	if sr.slOrderID != "" {
-		trader.CancelOrder(ctx, sr.runner.creds, trader.CancelRequest{ //nolint:errcheck
+		if err := trader.CancelOrder(ctx, sr.runner.creds, trader.CancelRequest{
 			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category,
 			OrderId: sr.slOrderID, OrderFilter: "StopOrder",
-		})
+		}); err != nil {
+			sr.warn(ctx, fmt.Sprintf("closeCycle: отмена SL %s: %v", sr.slOrderID, err))
+		}
 		sr.runner.UnregisterOrder(sr.slOrderID)
 		sr.slOrderID = ""
 	}
@@ -747,20 +751,25 @@ func (sr *StrategyRunner) handlePositionClose(ctx context.Context) {
 		return // cycle already closed by TP/SL
 	}
 
-	hasFills := false
-	for _, l := range sr.levels {
-		if l.Status == LevelFilled {
-			hasFills = true
-			break
+	// Determine whether our strategy had an open position.
+	// We trust the WS event if we have TP/SL orders registered (definitive proof of open position),
+	// or if any level was already filled (position might have been opened before TP/SL was placed).
+	hasPosition := sr.tpOrderID != "" || sr.slOrderID != ""
+	if !hasPosition {
+		for _, l := range sr.levels {
+			if l.Status == LevelFilled {
+				hasPosition = true
+				break
+			}
 		}
 	}
-	if !hasFills {
-		return // no fills yet — position close is unrelated
+	if !hasPosition {
+		return // no fills and no TP/SL — position close is unrelated to this strategy
 	}
 
 	sr.warn(ctx, fmt.Sprintf("Позиция закрыта принудительно (на бирже), цикл %d остановлен", sr.cycle.CycleNum))
 
-	// Cancel placed grid orders and mark filled levels as cancelled too
+	// Cancel all remaining placed grid orders and mark filled levels as cancelled.
 	sr.cancelPlacedLevels(ctx)
 	cycleID := sr.cycle.ID
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
@@ -771,9 +780,10 @@ func (sr *StrategyRunner) handlePositionClose(ctx context.Context) {
 		}
 	}
 
+	// closeCycle cancels TP and SL orders on the exchange.
 	sr.closeCycle(ctx, "manual_close")
 
-	// Stop the strategy so it doesn't restart automatically
+	// Stop the strategy so it doesn't restart automatically.
 	sr.strategy.Status = StatusStopped
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
 		`UPDATE strategies SET status='stopped', updated_at=NOW() WHERE id=$1`, sr.strategy.ID)
