@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -643,7 +644,7 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 	if sr.tpOrderID != "" {
 		if err := trader.CancelOrder(ctx, sr.runner.creds, trader.CancelRequest{
 			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category, OrderId: sr.tpOrderID,
-		}); err != nil {
+		}); err != nil && !isOrderGone(err) {
 			sr.warn(ctx, fmt.Sprintf("closeCycle: отмена TP %s: %v", sr.tpOrderID, err))
 		}
 		sr.runner.UnregisterOrder(sr.tpOrderID)
@@ -653,7 +654,7 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 		if err := trader.CancelOrder(ctx, sr.runner.creds, trader.CancelRequest{
 			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category,
 			OrderId: sr.slOrderID, OrderFilter: "StopOrder",
-		}); err != nil {
+		}); err != nil && !isOrderGone(err) {
 			sr.warn(ctx, fmt.Sprintf("closeCycle: отмена SL %s: %v", sr.slOrderID, err))
 		}
 		sr.runner.UnregisterOrder(sr.slOrderID)
@@ -809,4 +810,14 @@ func positionIdxForClose(hedgeMode bool, dir Direction) int {
 		return 1
 	}
 	return 2
+}
+
+// isOrderGone returns true for Bybit errors meaning the order no longer exists.
+// Bybit auto-cancels reduce-only TP/SL orders when the position closes, so
+// retCode=110001 on cancel is expected and not worth logging as a warning.
+func isOrderGone(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "retCode=110001")
 }
