@@ -333,23 +333,109 @@ func sidesForDirection(d Direction) []string {
 }
 
 // placeNextLevels places pending levels until the sliding window (GridActive) is full.
+// Uses batch placement when more than one level needs to be placed.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) placeNextLevels(ctx context.Context) error {
 	need := sr.strategy.GridActive - sr.placedCount()
+	var toPlace []int
 	for i := range sr.levels {
 		if need <= 0 {
 			break
 		}
-		if sr.levels[i].Status != LevelPending {
-			continue
+		if sr.levels[i].Status == LevelPending {
+			toPlace = append(toPlace, i)
+			need--
 		}
-		if err := sr.placeLevel(ctx, i); err != nil {
-			sr.errlog(ctx, fmt.Sprintf("Ошибка выставления уровня L%d: %v", sr.levels[i].LevelIdx, err))
-			continue
+	}
+	if len(toPlace) == 0 {
+		return nil
+	}
+	if len(toPlace) == 1 {
+		if err := sr.placeLevel(ctx, toPlace[0]); err != nil {
+			sr.errlog(ctx, fmt.Sprintf("Ошибка выставления уровня L%d: %v", sr.levels[toPlace[0]].LevelIdx, err))
 		}
-		need--
+		return nil
+	}
+	// Batch placement in chunks of 20 (Bybit limit).
+	for start := 0; start < len(toPlace); start += 20 {
+		end := start + 20
+		if end > len(toPlace) {
+			end = len(toPlace)
+		}
+		sr.placeLevelsBatch(ctx, toPlace[start:end])
 	}
 	return nil
+}
+
+// placeLevelsBatch places a slice of level indices in one batch REST call.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) placeLevelsBatch(ctx context.Context, indices []int) {
+	items := make([]trader.BatchOrderItem, len(indices))
+	refs := make([]orderRef, len(indices))
+	linkIDs := make([]string, len(indices))
+
+	for j, i := range indices {
+		l := &sr.levels[i]
+		linkID := fmt.Sprintf("SIS_STR-%s-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx)
+		linkIDs[j] = linkID
+		refs[j] = orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
+		sr.runner.RegisterOrder(linkID, refs[j])
+
+		item := trader.BatchOrderItem{
+			Symbol:      sr.strategy.Symbol,
+			Side:        l.Side,
+			Qty:         l.Qty,
+			PositionIdx: positionIdxForOpen(sr.strategy.HedgeMode, l.Side),
+			OrderLinkId: linkID,
+		}
+		if l.TargetPrice == 0 {
+			item.OrderType = "Market"
+		} else {
+			item.OrderType = "Limit"
+			item.Price = trader.FormatPrice(l.TargetPrice, sr.instr.TickSize)
+			item.TimeInForce = "GTC"
+		}
+		items[j] = item
+	}
+
+	results, err := trader.PlaceOrderBatch(ctx, sr.runner.creds, trader.BatchPlaceRequest{
+		Category: sr.strategy.Category,
+		Request:  items,
+	})
+	if err != nil {
+		for _, lid := range linkIDs {
+			sr.runner.UnregisterOrder(lid)
+		}
+		sr.errlog(ctx, fmt.Sprintf("Batch выставление: %v", err))
+		return
+	}
+
+	for j, res := range results {
+		i := indices[j]
+		l := &sr.levels[i]
+		linkID := linkIDs[j]
+		if res.Code != 0 {
+			sr.runner.UnregisterOrder(linkID)
+			sr.errlog(ctx, fmt.Sprintf("Batch L%d: [%d] %s", l.LevelIdx, res.Code, res.Msg))
+			continue
+		}
+		if _, err := sr.runner.pool.Exec(ctx,
+			`UPDATE strategy_levels SET status='placed', exchange_order_id=$1, exchange_link_id=$2, placed_at=NOW() WHERE id=$3`,
+			res.OrderId, linkID, l.ID,
+		); err != nil {
+			sr.runner.UnregisterOrder(linkID)
+			sr.errlog(ctx, fmt.Sprintf("Batch DB L%d: %v", l.LevelIdx, err))
+			continue
+		}
+		l.Status = LevelPlaced
+		l.ExchangeOrderID = res.OrderId
+		sr.runner.RegisterOrder(res.OrderId, refs[j])
+		if l.TargetPrice == 0 {
+			sr.info(ctx, fmt.Sprintf("L%d %s @ %.0f USDT MARKET выставлен", l.LevelIdx, l.Side, l.SizeUSDT))
+		} else {
+			sr.info(ctx, fmt.Sprintf("L%d %s @ %.0f USDT выставлен", l.LevelIdx, l.Side, l.SizeUSDT))
+		}
+	}
 }
 
 // placeLevel places a single grid level on the exchange.

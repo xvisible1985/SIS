@@ -141,6 +141,46 @@ func CancelOrder(ctx context.Context, creds Credentials, req CancelRequest) erro
 	return checkRetCode(data)
 }
 
+// PlaceOrderBatch places up to 20 orders in a single REST call.
+// Results are returned in the same order as req.Request.
+// Per-item errors have Code != 0 and do not fail the whole batch.
+func PlaceOrderBatch(ctx context.Context, creds Credentials, req BatchPlaceRequest) ([]BatchPlaceResult, error) {
+	data, err := doSignedPOST(ctx, creds, "/v5/order/create-batch", req)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkRetCode(data); err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Result struct {
+			List []struct {
+				OrderId     string `json:"orderId"`
+				OrderLinkId string `json:"orderLinkId"`
+			} `json:"list"`
+		} `json:"result"`
+		RetExtInfo struct {
+			List []struct {
+				Code int    `json:"code"`
+				Msg  string `json:"msg"`
+			} `json:"list"`
+		} `json:"retExtInfo"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]BatchPlaceResult, len(resp.Result.List))
+	for i, item := range resp.Result.List {
+		out[i].OrderId = item.OrderId
+		out[i].OrderLinkId = item.OrderLinkId
+		if i < len(resp.RetExtInfo.List) {
+			out[i].Code = resp.RetExtInfo.List[i].Code
+			out[i].Msg = resp.RetExtInfo.List[i].Msg
+		}
+	}
+	return out, nil
+}
+
 func CancelAllOrders(ctx context.Context, creds Credentials, req CancelAllRequest) error {
 	data, err := doSignedPOST(ctx, creds, "/v5/order/cancel-all", req)
 	if err != nil {
