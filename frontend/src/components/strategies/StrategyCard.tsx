@@ -1,12 +1,13 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { getStrategyState, getStrategyEvents, setStrategyStatus, deleteStrategy } from '../../api/strategies'
 import { SignalMiniCard } from './SignalMiniCard'
-import type { Strategy, StrategyState, StrategyEvent, ExchangeAccount, ActiveOrder } from '../../types'
+import type { Strategy, StrategyState, StrategyEvent, ExchangeAccount, ActiveOrder, Position } from '../../types'
 
 interface Props {
   strategy: Strategy
   accounts: ExchangeAccount[]
   orders: ActiveOrder[]
+  positions?: Position[]
   onEdit: (s: Strategy) => void
   onChanged: () => void
   selected?: boolean
@@ -36,7 +37,7 @@ function pnlColor(v: number) {
   return 'text-gray-500'
 }
 
-export function StrategyCard({ strategy: s, accounts, orders, onEdit, onChanged, selected, onSelect, isOpen, onToggleOpen }: Props) {
+export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit, onChanged, selected, onSelect, isOpen, onToggleOpen }: Props) {
   const [cs, setCs] = useState<CardState>({ state: null, events: [], loading: false, acting: false })
   const [logOpen, setLogOpen] = useState(false)
 
@@ -53,12 +54,14 @@ export function StrategyCard({ strategy: s, accounts, orders, onEdit, onChanged,
     if (!isOpen) setLogOpen(false)
   }, [isOpen])
 
-  // Reload state when this strategy's orders change via WS
+  // Reload state when this strategy's orders change (supports both old and new link ID formats)
   const strategyOrdersKey = useMemo(() => {
-    const prefix1 = 'STR-' + s.id.slice(0, 8)
-    const prefix2 = 'STP-' + s.id.slice(0, 8)
+    const id8 = s.id.slice(0, 8)
     return orders
-      .filter(o => o.orderLinkId?.startsWith(prefix1) || o.orderLinkId?.startsWith(prefix2))
+      .filter(o => {
+        const lk = o.orderLinkId ?? ''
+        return lk.startsWith('SIS_STR-' + id8) || lk.startsWith('STR-' + id8) || lk.startsWith('STP-' + id8)
+      })
       .map(o => o.orderId + ':' + o.orderStatus)
       .sort()
       .join(',')
@@ -70,6 +73,38 @@ export function StrategyCard({ strategy: s, accounts, orders, onEdit, onChanged,
       .then(([state, events]) => setCs(p => ({ ...p, state, events })))
       .catch(() => {})
   }, [strategyOrdersKey])
+
+  // Immediately reload when the position for this strategy closes via WS
+  const hadPositionRef = useRef(false)
+  useEffect(() => {
+    if (!positions) return
+    const expectedSide = s.direction === 'long' ? 'Buy' : 'Sell'
+    const hasPos = positions.some(p => p.symbol === s.symbol && p.side === expectedSide && parseFloat(p.size) > 0)
+    if (hadPositionRef.current && !hasPos) {
+      // Position just closed — reload card state immediately
+      Promise.all([getStrategyState(s.id), getStrategyEvents(s.id)])
+        .then(([state, events]) => setCs(p => ({ ...p, state, events })))
+        .catch(() => {})
+      onChanged()
+    }
+    hadPositionRef.current = hasPos
+  }, [positions])
+
+  // Poll state every 5s while card is open so avg_entry / TP / SL stay fresh
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  useEffect(() => {
+    if (!isOpen) {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+      return
+    }
+    pollRef.current = setInterval(() => {
+      if (cs.acting) return
+      Promise.all([getStrategyState(s.id), getStrategyEvents(s.id)])
+        .then(([state, events]) => setCs(p => ({ ...p, state, events })))
+        .catch(() => {})
+    }, 5000)
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
+  }, [isOpen, s.id])
 
   function expand(e?: React.MouseEvent) {
     e?.stopPropagation()

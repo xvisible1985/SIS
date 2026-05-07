@@ -17,7 +17,7 @@ import { listAccounts } from '../api/accounts'
 import { listStrategies } from '../api/strategies'
 import { StrategyCard } from '../components/strategies/StrategyCard'
 import { StrategyModal } from '../components/strategies/StrategyModal'
-import type { Strategy, ExchangeAccount, ActiveOrder } from '../types'
+import type { Strategy, ExchangeAccount, ActiveOrder, Position } from '../types'
 
 let _cachedSymbol = 'BTCUSDT'
 let _cachedTf = '60'
@@ -35,7 +35,7 @@ type BottomTab = 'positions' | 'orders' | 'history' | 'executions' | 'log' | 'pn
 type RightTab = 'manual' | 'strategies' | 'bots'
 
 // ── Strategies tab ───────────────────────────────────────────────────────────
-function TerminalStrategiesTab({ onSymbolChange, orders }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[] }) {
+function TerminalStrategiesTab({ onSymbolChange, orders, positions }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[]; positions: Position[] }) {
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
   const [loading, setLoading] = useState(true)
@@ -84,6 +84,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders }: { onSymbolChange: (sy
             strategy={s}
             accounts={accounts}
             orders={orders}
+            positions={positions}
             onEdit={s => { setEditTarget(s); setModalOpen(true) }}
             onChanged={load}
             selected={s.id === selectedId}
@@ -280,7 +281,7 @@ export function TerminalPage() {
               </div>
             </>
           )}
-          {rightTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} />}
+          {rightTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} />}
           {rightTab === 'bots' && (
             <div className="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500 text-sm">
               В разработке
