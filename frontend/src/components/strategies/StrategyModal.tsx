@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import ReactDOM from 'react-dom'
 import { TemplateSelector } from './TemplateSelector'
-import { createStrategy, updateStrategy } from '../../api/strategies'
+import { createStrategy, updateStrategy, getStrategyState } from '../../api/strategies'
 import { listAccounts } from '../../api/accounts'
 import { CoinPicker } from '../common/CoinPicker'
 import type { Strategy, StrategyFormData, GridStep, SignalConfig, ExchangeAccount } from '../../types'
@@ -35,6 +36,48 @@ function Toggle({ options, value, onChange }: {
   )
 }
 
+function Tip({ text }: { text: string }) {
+  const [visible, setVisible] = useState(false)
+  const [coords, setCoords] = useState({ top: 0, left: 0 })
+  const badgeRef = useRef<HTMLSpanElement>(null)
+
+  function show() {
+    if (badgeRef.current) {
+      const r = badgeRef.current.getBoundingClientRect()
+      setCoords({ top: r.top, left: r.left + r.width / 2 })
+    }
+    setVisible(true)
+  }
+
+  return (
+    <span
+      ref={badgeRef}
+      className="ml-1 inline-flex items-center cursor-default"
+      onMouseEnter={show}
+      onMouseLeave={() => setVisible(false)}
+    >
+      <span className="w-3.5 h-3.5 rounded-full bg-white/[.06] border border-white/[.10] text-[9px] text-slate-400 inline-flex items-center justify-center font-bold leading-none select-none">?</span>
+      {visible && ReactDOM.createPortal(
+        <span
+          className="fixed w-60 rounded-[9px] px-3 py-2.5 text-[11px] leading-relaxed shadow-2xl font-medium pointer-events-none whitespace-normal"
+          style={{
+            background: '#2d2500',
+            border: '1px solid rgba(247,166,0,.35)',
+            color: '#f5d97a',
+            zIndex: 9999,
+            top: coords.top,
+            left: coords.left,
+            transform: 'translate(-50%, calc(-100% - 8px))',
+          }}
+        >
+          {text}
+        </span>,
+        document.body
+      )}
+    </span>
+  )
+}
+
 function defaultForm(): StrategyFormData {
   return {
     account_id: '',
@@ -42,6 +85,7 @@ function defaultForm(): StrategyFormData {
     category: 'linear',
     direction: 'long',
     strategy_type: 'grid',
+    entry_order_type: 'limit' as const,
     leverage: 5,
     grid_size_usdt: 100,
     margin_type: 'isolated',
@@ -70,6 +114,7 @@ function strategyToForm(s: Strategy): StrategyFormData {
     category: s.category,
     direction: s.direction === 'short' ? 'short' : 'long',
     strategy_type: s.strategy_type,
+    entry_order_type: s.entry_order_type ?? 'limit',
     leverage: s.leverage,
     grid_size_usdt: s.grid_size_usdt,
     margin_type: s.margin_type,
@@ -89,11 +134,12 @@ function strategyToForm(s: Strategy): StrategyFormData {
 
 interface Props {
   strategy?: Strategy
+  filledLevels?: number
   onClose: () => void
   onSaved: () => void
 }
 
-export function StrategyModal({ strategy, onClose, onSaved }: Props) {
+export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, onClose, onSaved }: Props) {
   const [tab, setTab] = useState(0)
   const [form, setForm] = useState<StrategyFormData>(
     strategy ? strategyToForm(strategy) : defaultForm()
@@ -102,10 +148,19 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [signalPickerOpen, setSignalPickerOpen] = useState(false)
+  const [filledLevels, setFilledLevels] = useState(filledLevelsProp)
 
   useEffect(() => {
     listAccounts().then(setAccounts).catch(() => {})
   }, [])
+
+  // Fetch live filled count when editing — card state may not be loaded yet.
+  useEffect(() => {
+    if (!strategy) return
+    getStrategyState(strategy.id)
+      .then(state => setFilledLevels(state.levels?.filter(l => l.status === 'filled').length ?? 0))
+      .catch(() => {})
+  }, [strategy?.id])
 
   function patch(partial: Partial<StrategyFormData>) {
     setForm(f => ({ ...f, ...partial }))
@@ -162,7 +217,16 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
       }
       onSaved()
     } catch (e: any) {
-      setError(e?.response?.data?.error ?? 'Ошибка сохранения')
+      const status = e?.response?.status
+      const data = e?.response?.data
+      const serverMsg = typeof data === 'object' ? data?.error : typeof data === 'string' ? data : null
+      if (serverMsg) {
+        setError(`${serverMsg}${status ? ` (HTTP ${status})` : ''}`)
+      } else if (status) {
+        setError(`Сервер вернул HTTP ${status}. Откройте консоль бэкенда для деталей.`)
+      } else {
+        setError(e?.message ?? 'Неизвестная ошибка')
+      }
     } finally {
       setSaving(false)
     }
@@ -170,7 +234,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
 
   const tabLabels = ['1. Вход', '2. Усреднение', '3. Выход']
   const inputCls = 'w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-blue-500'
-  const labelCls = 'block text-xs text-gray-500 mb-1'
+  const labelCls = 'flex items-center text-xs text-gray-500 mb-1'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -211,14 +275,15 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
             <>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className={labelCls}>Символ</label>
+                  <label className={labelCls}>Символ<Tip text="Торговый инструмент — монета или контракт, которым будет управлять стратегия. После создания стратегии сменить монету нельзя." /></label>
                   <CoinPicker
                     value={form.symbol || 'BTCUSDT'}
                     onChange={sym => patch({ symbol: sym })}
+                    triggerClassName="w-full px-3 py-1.5 text-sm rounded-md border-gray-700 bg-gray-800"
                   />
                 </div>
                 <div>
-                  <label className={labelCls}>Аккаунт</label>
+                  <label className={labelCls}>Аккаунт<Tip text="API-аккаунт биржи, с которого стратегия будет выставлять ордера и списывать маржу. Один аккаунт может одновременно вести несколько стратегий по разным монетам." /></label>
                   <select
                     value={form.account_id}
                     onChange={e => patch({ account_id: e.target.value })}
@@ -233,7 +298,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
               </div>
 
               <div>
-                <label className={labelCls}>Направление</label>
+                <label className={labelCls}>Направление<Tip text="Long — покупаешь в расчёте на рост цены. Short — продаёшь в расчёте на падение. Сетка усреднения строится в выбранную сторону." /></label>
                 <Toggle
                   options={[{ label: 'Long', value: 'long' }, { label: 'Short', value: 'short' }]}
                   value={form.direction}
@@ -242,7 +307,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
               </div>
 
               <div>
-                <label className={labelCls}>Тип стратегии</label>
+                <label className={labelCls}>Тип стратегии<Tip text="Grid — сетка лимитных ордеров: стратегия сама расставляет уровни и усредняет позицию по мере движения цены. DCA — усреднение по сигналам индикаторов. Manual — ручное управление без автоматики." /></label>
                 <Toggle
                   options={[
                     { label: 'Grid', value: 'grid' },
@@ -254,9 +319,21 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
                 />
               </div>
 
+              <div>
+                <label className={labelCls}>Тип входного ордера<Tip text="Limit — мейкер-ордер ждёт своей цены в стакане (комиссия ~0.02%). Stop Market — тейкер-ордер срабатывает при пробое уровня (комиссия ~0.055%). Limit дешевле, Stop Market гарантирует исполнение." /></label>
+                <Toggle
+                  options={[
+                    { label: 'Limit', value: 'limit' },
+                    { label: 'Stop Market', value: 'stop_market' },
+                  ]}
+                  value={form.entry_order_type}
+                  onChange={v => patch({ entry_order_type: v as 'limit' | 'stop_market' })}
+                />
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className={labelCls}>Плечо (×)</label>
+                  <label className={labelCls}>Плечо (×)<Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500. Чем выше плечо — тем больше потенциальная прибыль и тем ближе ликвидация." /></label>
                   <input
                     type="number" min={1} max={100}
                     value={form.leverage}
@@ -265,7 +342,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
                   />
                 </div>
                 <div>
-                  <label className={labelCls}>Объём 1 лота (USDT)</label>
+                  <label className={labelCls}>Объём 1 лота (USDT)<Tip text="Размер одного базового ордера в USDT. Итоговый объём каждого уровня сетки = лоты шага × этот размер. Например, при 100 USDT/лот и 2 лотах на шаге — ордер на 200 USDT." /></label>
                   <input
                     type="number" min={1}
                     value={form.grid_size_usdt}
@@ -276,7 +353,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
               </div>
 
               <div>
-                <label className={labelCls}>Тип маржи</label>
+                <label className={labelCls}>Тип маржи<Tip text="Isolated — маржа ограничена суммой, зарезервированной под конкретную позицию; максимальный убыток не превысит её. Cross — в расчёте ликвидации участвует вся свободная маржа аккаунта." /></label>
                 <Toggle
                   options={[{ label: 'Isolated', value: 'isolated' }, { label: 'Cross', value: 'cross' }]}
                   value={form.margin_type}
@@ -285,7 +362,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
               </div>
 
               <div>
-                <label className={labelCls}>Хедж режим</label>
+                <label className={labelCls}>Хедж режим<Tip text="Режим биржи, при котором Long и Short по одной монете живут в отдельных слотах и не компенсируют друг друга. Нужен для одновременного ведения двух стратегий по одному инструменту в разных направлениях." /></label>
                 <Toggle
                   options={[{ label: 'Нет', value: 'false' }, { label: 'Да (Hedge)', value: 'true' }]}
                   value={String(form.hedge_mode)}
@@ -310,45 +387,51 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
                   <div />
                 </div>
                 <div className="max-h-[216px] overflow-y-auto">
-                  {form.steps.map((step, i) => (
-                    <div
-                      key={i}
-                      className="grid grid-cols-[28px_1fr_1fr_1fr_28px] gap-2 items-center py-1.5 border-b border-gray-800/60 last:border-0"
-                    >
-                      <div className="text-center text-[10px] text-gray-600">{i + 1}</div>
-                      <input
-                        type="number" step="0.1" min="0"
-                        value={step.price_move_pct}
-                        onChange={e => updateStep(i, 'price_move_pct', Number(e.target.value))}
-                        className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
-                      />
-                      <input
-                        type="number" step="0.1" min="0.1"
-                        value={step.lots}
-                        onChange={e => {
-                          const lots = Number(e.target.value)
-                          updateStep(i, 'lots', lots)
-                        }}
-                        className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
-                      />
-                      <input
-                        type="number" step="1" min="1"
-                        value={+(step.lots * form.grid_size_usdt).toFixed(2)}
-                        onChange={e => {
-                          const usdt = Number(e.target.value)
-                          if (usdt > 0 && form.grid_size_usdt > 0)
-                            updateStep(i, 'lots', Math.round(usdt / form.grid_size_usdt * 100) / 100)
-                        }}
-                        className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
-                      />
-                      <button
-                        onClick={() => removeStep(i)}
-                        className="text-red-500 hover:text-red-400 text-center text-sm"
+                  {form.steps.map((step, i) => {
+                    const isFilled = i < filledLevels
+                    return (
+                      <div
+                        key={i}
+                        className={`grid grid-cols-[28px_1fr_1fr_1fr_28px] gap-2 items-center py-1.5 border-b border-gray-800/60 last:border-0 ${isFilled ? 'bg-green-950/30' : ''}`}
                       >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
+                        <div className="text-center text-[10px]">
+                          {isFilled
+                            ? <span className="text-green-400 font-bold">✓</span>
+                            : <span className="text-gray-600">{i + 1}</span>
+                          }
+                        </div>
+                        <input
+                          type="number" step="0.1" min="0"
+                          value={step.price_move_pct}
+                          onChange={e => updateStep(i, 'price_move_pct', Number(e.target.value))}
+                          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
+                        />
+                        <input
+                          type="number" step="0.1" min="0.1"
+                          value={step.lots}
+                          onChange={e => updateStep(i, 'lots', Number(e.target.value))}
+                          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
+                        />
+                        <input
+                          type="number" step="1" min="1"
+                          value={+(step.lots * form.grid_size_usdt).toFixed(2)}
+                          onChange={e => {
+                            const usdt = Number(e.target.value)
+                            if (usdt > 0 && form.grid_size_usdt > 0)
+                              updateStep(i, 'lots', Math.round(usdt / form.grid_size_usdt * 100) / 100)
+                          }}
+                          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
+                        />
+                        <button
+                          onClick={() => removeStep(i)}
+                          disabled={isFilled}
+                          className={`text-center text-sm ${isFilled ? 'text-gray-700 cursor-not-allowed' : 'text-red-500 hover:text-red-400'}`}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    )
+                  })}
                 </div>
                 <button
                   onClick={addStep}
@@ -359,7 +442,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
               </div>
 
               <div>
-                <label className={labelCls}>Одновременно на бирже (0 = все шаги)</label>
+                <label className={labelCls}>Одновременно на бирже (0 = все шаги)<Tip text="Сколько ордеров из сетки висит на бирже в один момент. При 0 — сразу все. При значении N — после заполнения одного ордера автоматически выставляется следующий, поддерживая N активных заявок." /></label>
                 <input
                   type="number" min={0} max={form.steps.length}
                   value={form.grid_active}
@@ -372,8 +455,8 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
                 </p>
               </div>
 
-              <div className="text-[10px] text-gray-500 uppercase tracking-wider pb-1 border-b border-gray-800 mt-2">
-                Сигналы для усреднения
+              <div className="flex items-center gap-1 text-[10px] text-gray-500 uppercase tracking-wider pb-1 border-b border-gray-800 mt-2">
+                Сигналы для усреднения<Tip text="Технические индикаторы, которые должны совпасть, чтобы стратегия разрешила выставить следующий ордер усреднения. Если сигналов нет — усреднение происходит только по сетке." />
               </div>
               <div className="flex flex-wrap gap-2">
                 {form.signal_configs.map(sc => (
@@ -398,7 +481,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
                     + Добавить
                   </button>
                   {signalPickerOpen && (
-                    <div className="absolute top-full mt-1 left-0 bg-gray-800 border border-gray-600 rounded-lg z-10 w-48 shadow-xl max-h-48 overflow-y-auto">
+                    <div className="absolute bottom-full mb-1 left-0 bg-gray-800 border border-gray-600 rounded-lg z-10 w-48 shadow-xl max-h-48 overflow-y-auto">
                       {AVAILABLE_SIGNALS
                         .filter(name => !form.signal_configs.find(s => s.name === name))
                         .map(name => (
@@ -425,7 +508,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
                 <div className="text-xs font-semibold text-green-400">Take Profit</div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className={labelCls}>TP %</label>
+                    <label className={labelCls}>TP %<Tip text="Процент прибыли от средней цены входа по всей позиции, при достижении которого выставляется ордер закрытия. Отсчитывается от средневзвешенной цены всех заполненных уровней." /></label>
                     <input
                       type="number" step="0.1" min="0.1"
                       value={form.tp_pct}
@@ -434,7 +517,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
                     />
                   </div>
                   <div>
-                    <label className={labelCls}>Режим</label>
+                    <label className={labelCls}>Режим<Tip text="«На всю позицию» — один TP-ордер закрывает сразу всё. «По уровням» — каждый заполненный уровень получает свой TP; позиция закрывается порциями по мере роста цены." /></label>
                     <Toggle
                       options={[{ label: 'На всю позицию', value: 'total' }, { label: 'По уровням', value: 'per_level' }]}
                       value={form.tp_mode}
@@ -449,7 +532,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
                 <div className="text-xs font-semibold text-red-400">Stop Loss</div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className={labelCls}>SL %</label>
+                    <label className={labelCls}>SL %<Tip text="Процент убытка от средней цены входа, при достижении которого позиция принудительно закрывается. Защищает от неконтролируемого роста убытка при сильном движении против позиции." /></label>
                     <input
                       type="number" step="0.1" min="0.1"
                       value={form.sl_pct}
@@ -458,7 +541,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
                     />
                   </div>
                   <div>
-                    <label className={labelCls}>Тип</label>
+                    <label className={labelCls}>Тип<Tip text="«На бирже» — стоп-ордер живёт непосредственно на Bybit и сработает даже если сервер недоступен. «Программный» — сервис сам следит за ценой через WS и закрывает позицию рыночным ордером при достижении уровня." /></label>
                     <Toggle
                       options={[
                         { label: 'На бирже', value: 'conditional' },
@@ -473,8 +556,8 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
 
               {/* Trailing stop */}
               <div className="space-y-3">
-                <div className="text-[10px] text-gray-500 uppercase tracking-wider pb-1 border-b border-gray-800">
-                  Трейлинг-стоп
+                <div className="flex items-center gap-1 text-[10px] text-gray-500 uppercase tracking-wider pb-1 border-b border-gray-800">
+                  Трейлинг-стоп<Tip text="Автоматически подтягивает стоп вслед за ценой, фиксируя накопленную прибыль. Пока цена идёт в твою сторону — стоп следует за ней. Как только цена откатывается на заданный callback — позиция закрывается." />
                 </div>
                 <div className="flex items-center gap-3">
                   <button
@@ -494,7 +577,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
                 {form.trailing_stop_enabled && (
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className={labelCls}>Активация %</label>
+                      <label className={labelCls}>Активация %<Tip text="Прибыль от средней цены входа, при достижении которой трейлинг-стоп начинает следить за ценой. До этого порога стоп стоит на фиксированном уровне SL." /></label>
                       <input
                         type="number" step="0.1" min="0.1"
                         value={form.trailing_activation_pct}
@@ -503,7 +586,7 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
                       />
                     </div>
                     <div>
-                      <label className={labelCls}>Callback %</label>
+                      <label className={labelCls}>Callback %<Tip text="Максимальный откат от пика цены, после которого трейлинг-стоп срабатывает и закрывает позицию. Чем меньше значение — тем раньше фиксируется прибыль, но выше риск закрыться на случайном колебании." /></label>
                       <input
                         type="number" step="0.1" min="0.1"
                         value={form.trailing_callback_pct}
@@ -520,19 +603,21 @@ export function StrategyModal({ strategy, onClose, onSaved }: Props) {
 
         {/* Footer */}
         {error && (
-          <div className="px-5 py-2 text-sm text-red-400 border-t border-gray-700">✗ {error}</div>
+          <div className="px-5 py-2.5 text-xs text-red-400 border-t border-gray-700 break-words select-text">
+            <span className="font-semibold">✗ Ошибка:</span> {error}
+          </div>
         )}
-        <div className="flex justify-end gap-2 px-5 py-3 border-t border-gray-700">
+        <div className="flex justify-end gap-2 px-5 py-2.5 border-t border-gray-700">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-sm bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition-colors"
+            className="px-4 py-1.5 text-sm bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition-colors"
           >
             Отмена
           </button>
           <button
             onClick={handleSubmit}
             disabled={saving}
-            className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
           >
             {saving ? 'Сохранение…' : strategy ? 'Сохранить' : 'Создать стратегию'}
           </button>

@@ -2,7 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -16,6 +19,69 @@ func nullableJSONB(raw json.RawMessage) *string {
 	}
 	s := string(raw)
 	return &s
+}
+
+// normSteps normalises a steps JSON pointer for comparison: nil, "null", "", and "[]"
+// are all treated as "no steps" so that strategies created with NULL and later edited
+// with an empty array don't falsely trigger a grid restart.
+func normSteps(s *string) string {
+	if s == nil {
+		return ""
+	}
+	v := strings.TrimSpace(*s)
+	if v == "" || v == "null" || v == "[]" {
+		return ""
+	}
+	return v
+}
+
+// diffFloat reports whether two float64 values differ by more than a tiny epsilon.
+// Prevents false positives from JSON/DB float representation noise (e.g. 3.5 vs 3.5000000000000004).
+func diffFloat(a, b float64) bool {
+	const eps = 1e-9
+	diff := a - b
+	return diff > eps || diff < -eps
+}
+
+// stepsEqual reports whether two steps JSON strings represent the same grid steps.
+// Uses structural comparison to avoid false positives from PostgreSQL JSONB key ordering
+// (JSONB returns keys alphabetically: "lots" before "price_move_pct", but the frontend
+// sends them in declaration order, making normSteps string comparison always unequal).
+func stepsEqual(a, b *string) bool {
+	sa, sb := normSteps(a), normSteps(b)
+	if sa == sb {
+		return true
+	}
+	if sa == "" || sb == "" {
+		return false
+	}
+	type step struct {
+		PriceMovePct float64 `json:"price_move_pct"`
+		Lots         float64 `json:"lots"`
+	}
+	var as, bs []step
+	if json.Unmarshal([]byte(sa), &as) != nil || json.Unmarshal([]byte(sb), &bs) != nil {
+		return false
+	}
+	if len(as) != len(bs) {
+		return false
+	}
+	for i := range as {
+		if math.Abs(as[i].PriceMovePct-bs[i].PriceMovePct) > 1e-9 {
+			return false
+		}
+		if math.Abs(as[i].Lots-bs[i].Lots) > 1e-9 {
+			return false
+		}
+	}
+	return true
+}
+
+func ptrStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 type strategyPayload struct {
@@ -41,6 +107,7 @@ type strategyPayload struct {
 	TrailingStopEnabled   bool            `json:"trailing_stop_enabled"`
 	TrailingActivationPct *float64        `json:"trailing_activation_pct"`
 	TrailingCallbackPct   *float64        `json:"trailing_callback_pct"`
+	EntryOrderType        string          `json:"entry_order_type"`
 }
 
 func (p *strategyPayload) applyDefaults() {
@@ -74,6 +141,9 @@ func (p *strategyPayload) applyDefaults() {
 	if p.SignalConfigs == nil {
 		p.SignalConfigs = json.RawMessage("[]")
 	}
+	if p.EntryOrderType == "" {
+		p.EntryOrderType = "limit"
+	}
 }
 
 // ListStrategies returns all strategies for the authenticated user with computed fields.
@@ -85,7 +155,7 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 			s.id, s.account_id, s.symbol, s.category, s.direction, s.status,
 			s.grid_levels, s.grid_active, s.grid_step_pct, s.grid_size_usdt,
 			s.tp_mode, s.tp_pct, s.sl_type, s.sl_pct, s.signal_filter,
-			s.leverage, s.margin_type, s.hedge_mode, s.strategy_type,
+			s.leverage, s.margin_type, s.hedge_mode, s.strategy_type, s.entry_order_type,
 			s.signal_configs::text, (s.steps::text),
 			s.trailing_stop_enabled, s.trailing_activation_pct, s.trailing_callback_pct,
 			s.created_at, s.updated_at,
@@ -135,6 +205,7 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 		MarginType            string          `json:"margin_type"`
 		HedgeMode             bool            `json:"hedge_mode"`
 		StrategyType          string          `json:"strategy_type"`
+		EntryOrderType        string          `json:"entry_order_type"`
 		SignalConfigs         json.RawMessage `json:"signal_configs"`
 		Steps                 json.RawMessage `json:"steps"`
 		TrailingStopEnabled   bool            `json:"trailing_stop_enabled"`
@@ -156,7 +227,7 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 			&r.ID, &r.AccountID, &r.Symbol, &r.Category, &r.Direction, &r.Status,
 			&r.GridLevels, &r.GridActive, &r.GridStepPct, &r.GridSizeUSDT,
 			&r.TPMode, &r.TPPct, &r.SLType, &r.SLPct, &r.SignalFilter,
-			&r.Leverage, &r.MarginType, &r.HedgeMode, &r.StrategyType,
+			&r.Leverage, &r.MarginType, &r.HedgeMode, &r.StrategyType, &r.EntryOrderType,
 			&scStr, &stepsStr,
 			&r.TrailingStopEnabled, &r.TrailingActivationPct, &r.TrailingCallbackPct,
 			&r.CreatedAt, &r.UpdatedAt,
@@ -200,18 +271,18 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		  (owner_id, account_id, symbol, category, direction,
 		   grid_levels, grid_active, grid_step_pct, grid_size_usdt,
 		   tp_mode, tp_pct, sl_type, sl_pct, signal_filter,
-		   leverage, margin_type, hedge_mode, strategy_type,
+		   leverage, margin_type, hedge_mode, strategy_type, entry_order_type,
 		   signal_configs, steps,
 		   trailing_stop_enabled, trailing_activation_pct, trailing_callback_pct)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
-		        $15,$16,$17,$18,
-		        $19::jsonb, ($20::text)::jsonb,
-		        $21,$22,$23)
+		        $15,$16,$17,$18,$19,
+		        $20::jsonb, ($21::text)::jsonb,
+		        $22,$23,$24)
 		RETURNING id`,
 		userID, req.AccountID, req.Symbol, req.Category, req.Direction,
 		req.GridLevels, req.GridActive, req.GridStepPct, req.GridSizeUSDT,
 		req.TPMode, req.TPPct, req.SLType, req.SLPct, req.SignalFilter,
-		req.Leverage, req.MarginType, req.HedgeMode, req.StrategyType,
+		req.Leverage, req.MarginType, req.HedgeMode, req.StrategyType, req.EntryOrderType,
 		string(req.SignalConfigs), nullableJSONB(req.Steps),
 		req.TrailingStopEnabled, req.TrailingActivationPct, req.TrailingCallbackPct,
 	).Scan(&id)
@@ -234,30 +305,68 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 	req.applyDefaults()
 
+	// Read current grid fields so we can detect whether the grid actually changed.
+	var oldGridLevels, oldGridActive int
+	var oldGridStepPct, oldGridSizeUSDT float64
+	var oldDirection, oldEntryOrderType string
+	var oldStepsJSON *string
+	_ = s.pool.QueryRow(r.Context(),
+		`SELECT grid_levels, grid_active, grid_step_pct, grid_size_usdt,
+		        direction, entry_order_type, steps::text
+		 FROM strategies WHERE id=$1 AND owner_id=$2`, id, userID,
+	).Scan(&oldGridLevels, &oldGridActive, &oldGridStepPct, &oldGridSizeUSDT,
+		&oldDirection, &oldEntryOrderType, &oldStepsJSON)
+
 	tag, err := s.pool.Exec(r.Context(), `
 		UPDATE strategies SET
 		  symbol=$1, category=$2, direction=$3,
 		  grid_levels=$4, grid_active=$5, grid_step_pct=$6, grid_size_usdt=$7,
 		  tp_mode=$8, tp_pct=$9, sl_type=$10, sl_pct=$11, signal_filter=$12,
-		  leverage=$13, margin_type=$14, hedge_mode=$15, strategy_type=$16,
-		  signal_configs=$17::jsonb, steps=($18::text)::jsonb,
-		  trailing_stop_enabled=$19, trailing_activation_pct=$20, trailing_callback_pct=$21,
+		  leverage=$13, margin_type=$14, hedge_mode=$15, strategy_type=$16, entry_order_type=$17,
+		  signal_configs=$18::jsonb, steps=($19::text)::jsonb,
+		  trailing_stop_enabled=$20, trailing_activation_pct=$21, trailing_callback_pct=$22,
 		  updated_at=NOW()
-		WHERE id=$22 AND owner_id=$23`,
+		WHERE id=$23 AND owner_id=$24`,
 		req.Symbol, req.Category, req.Direction,
 		req.GridLevels, req.GridActive, req.GridStepPct, req.GridSizeUSDT,
 		req.TPMode, req.TPPct, req.SLType, req.SLPct, req.SignalFilter,
-		req.Leverage, req.MarginType, req.HedgeMode, req.StrategyType,
+		req.Leverage, req.MarginType, req.HedgeMode, req.StrategyType, req.EntryOrderType,
 		string(req.SignalConfigs), nullableJSONB(req.Steps),
 		req.TrailingStopEnabled, req.TrailingActivationPct, req.TrailingCallbackPct,
 		id, userID,
 	)
-	if err != nil || tag.RowsAffected() == 0 {
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if tag.RowsAffected() == 0 {
 		writeError(w, http.StatusNotFound, "strategy not found")
 		return
 	}
+
+	newStepsJSON := nullableJSONB(req.Steps)
+	gridChanged := oldGridLevels != req.GridLevels ||
+		oldGridActive != req.GridActive ||
+		diffFloat(oldGridStepPct, req.GridStepPct) ||
+		diffFloat(oldGridSizeUSDT, req.GridSizeUSDT) ||
+		oldDirection != req.Direction ||
+		oldEntryOrderType != req.EntryOrderType ||
+		!stepsEqual(oldStepsJSON, newStepsJSON)
+
 	s.engine.Notify(r.Context(), id)
-	s.engine.RestartCycle(r.Context(), id)
+	if gridChanged {
+		s.engine.RestartCycle(r.Context(), id)
+		s.engine.LogUserAction(r.Context(), id, fmt.Sprintf(
+			"Настройки обновлены (сетка): symbol=%s dir=%s step=%.2f%% size=%.2f USDT active=%d entryType=%s tp=%.2f%% sl=%.2f%%",
+			req.Symbol, req.Direction, req.GridStepPct, req.GridSizeUSDT, req.GridActive, req.EntryOrderType, req.TPPct, req.SLPct,
+		))
+	} else {
+		s.engine.UpdateTPSL(r.Context(), id)
+		s.engine.LogUserAction(r.Context(), id, fmt.Sprintf(
+			"Настройки обновлены (TP/SL): tp=%.2f%% sl=%.2f%%",
+			req.TPPct, req.SLPct,
+		))
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -286,6 +395,12 @@ func (s *Server) SetStrategyStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.engine.Notify(r.Context(), id)
+	statusLabel := map[string]string{
+		"active":    "запущена",
+		"finishing": "завершение",
+		"stopped":   "остановлена",
+	}[req.Status]
+	s.engine.LogUserAction(r.Context(), id, fmt.Sprintf("Статус изменён пользователем: %s", statusLabel))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -390,26 +505,27 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type levelInfo struct {
-		LevelIdx    int     `json:"level_idx"`
-		Side        string  `json:"side"`
-		TargetPrice float64 `json:"target_price"`
-		SizeUSDT    float64 `json:"size_usdt"`
-		Status      string  `json:"status"`
-		FilledPrice float64 `json:"filled_price"`
+		LevelIdx        int     `json:"level_idx"`
+		Side            string  `json:"side"`
+		TargetPrice     float64 `json:"target_price"`
+		SizeUSDT        float64 `json:"size_usdt"`
+		Status          string  `json:"status"`
+		FilledPrice     float64 `json:"filled_price"`
+		ExchangeOrderID string  `json:"exchange_order_id"`
 	}
 	var levels []levelInfo
 	var volumeUSDT, totalCost, totalCoins float64
 
 	if err == nil {
 		lrows, lErr := s.pool.Query(r.Context(), `
-			SELECT level_idx, side, target_price, size_usdt, status, COALESCE(filled_price,0)
+			SELECT level_idx, side, target_price, size_usdt, status, COALESCE(filled_price,0), COALESCE(exchange_order_id,'')
 			FROM strategy_levels WHERE cycle_id=$1 ORDER BY level_idx`, cycleID)
 		if lErr == nil && lrows != nil {
 			defer lrows.Close()
 			for lrows.Next() {
 				var l levelInfo
 				if lrows.Scan(&l.LevelIdx, &l.Side, &l.TargetPrice,
-					&l.SizeUSDT, &l.Status, &l.FilledPrice) == nil {
+					&l.SizeUSDT, &l.Status, &l.FilledPrice, &l.ExchangeOrderID) == nil {
 					levels = append(levels, l)
 					if l.Status == "filled" && l.FilledPrice > 0 {
 						volumeUSDT += l.SizeUSDT

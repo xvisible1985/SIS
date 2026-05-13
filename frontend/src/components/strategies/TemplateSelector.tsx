@@ -59,7 +59,7 @@ export function TemplateSelector({ formData, onLoad }: Props) {
 
   return (
     <div className="flex items-center gap-2 px-4 py-2 bg-gray-900/60 border-b border-gray-700">
-      <span className="text-gray-500 text-[10px] shrink-0">Шаблон:</span>
+      <span className="text-gray-500 text-xs shrink-0">Шаблон:</span>
       <div className="relative flex-1" ref={ref}>
         <button
           onClick={() => setOpen(v => !v)}
@@ -106,7 +106,7 @@ export function TemplateSelector({ formData, onLoad }: Props) {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="bg-green-900/50 text-green-400 border border-green-800 rounded px-2 py-1 text-[10px] shrink-0 disabled:opacity-50"
+            className="bg-green-900/50 text-green-400 border border-green-800 rounded px-3 py-1.5 text-[11px] shrink-0 disabled:opacity-50"
           >
             {saving ? '…' : 'Сохранить'}
           </button>
@@ -115,7 +115,7 @@ export function TemplateSelector({ formData, onLoad }: Props) {
       ) : (
         <button
           onClick={() => setShowSaveRow(true)}
-          className="shrink-0 bg-blue-900/40 text-blue-400 border border-blue-800 rounded px-2 py-1 text-[10px]"
+          className="shrink-0 bg-blue-900/40 text-blue-400 border border-blue-800 rounded px-3 py-1.5 text-[11px]"
         >
           💾 Сохранить
         </button>

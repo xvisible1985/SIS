@@ -107,7 +107,12 @@ func (s *Server) TraderPlaceOrder(w http.ResponseWriter, r *http.Request) {
 		OrderLinkId:      orderLinkID,
 	}
 
-	result, err := trader.PlaceOrder(r.Context(), creds, orderReq)
+	var result trader.OrderResult
+	if ts := s.engine.GetTradeStream(req.AccountID); ts != nil {
+		result, err = ts.PlaceOrder(r.Context(), orderReq)
+	} else {
+		result, err = trader.PlaceOrder(r.Context(), creds, orderReq)
+	}
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
 		return
@@ -156,13 +161,20 @@ func (s *Server) TraderCancelOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}
-	if err := trader.CancelOrder(r.Context(), creds, trader.CancelRequest{
+	cancelReq := trader.CancelRequest{
 		Symbol:      req.Symbol,
 		Category:    req.Category,
 		OrderId:     req.OrderID,
 		OrderFilter: req.OrderFilter,
-	}); err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
+	}
+	var cancelErr error
+	if ts := s.engine.GetTradeStream(req.AccountID); ts != nil {
+		cancelErr = ts.CancelOrder(r.Context(), cancelReq)
+	} else {
+		cancelErr = trader.CancelOrder(r.Context(), creds, cancelReq)
+	}
+	if cancelErr != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": cancelErr.Error()})
 		return
 	}
 	_, _ = s.pool.Exec(r.Context(),

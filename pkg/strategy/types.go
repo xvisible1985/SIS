@@ -77,6 +77,7 @@ type Strategy struct {
 	TrailingStopEnabled   bool
 	TrailingActivationPct float64
 	TrailingCallbackPct   float64
+	EntryOrderType        string
 }
 
 type Cycle struct {

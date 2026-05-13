@@ -90,12 +90,20 @@ func FormatPrice(price, tickSize float64) string {
 	return strconv.FormatFloat(rounded, 'f', stepDecimals(tickSize), 64)
 }
 
-// FormatQty rounds qty down to the nearest step and returns it as a string.
-// Floors (not rounds) to avoid accidentally exceeding account balance.
-func FormatQty(qty, qtyStep float64) string {
+// FormatQty rounds qty down to the nearest step, then enforces minQty.
+// Floors to avoid accidentally exceeding account balance, but snaps up to minQty
+// if the result would be below the exchange minimum order size.
+func FormatQty(qty, qtyStep, minQty float64) string {
 	if qtyStep <= 0 {
+		if minQty > 0 && qty < minQty {
+			qty = minQty
+		}
 		return strconv.FormatFloat(qty, 'f', 6, 64)
 	}
 	rounded := math.Floor(qty/qtyStep) * qtyStep
+	if minQty > 0 && rounded < minQty {
+		// Snap up to the smallest multiple of qtyStep that satisfies minQty.
+		rounded = math.Ceil(minQty/qtyStep) * qtyStep
+	}
 	return strconv.FormatFloat(rounded, 'f', stepDecimals(qtyStep), 64)
 }

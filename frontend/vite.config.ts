@@ -10,6 +10,8 @@ export default defineConfig({
     setupFiles: ['./src/setupTests.ts'],
   },
   server: {
+    port: 5173,
+    strictPort: true,
     proxy: {
       '/auth': { target: 'http://localhost:8080', changeOrigin: true },
       '/signals': { target: 'http://localhost:8080', changeOrigin: true },

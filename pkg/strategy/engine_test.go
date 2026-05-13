@@ -45,6 +45,22 @@ func TestPlacedCount(t *testing.T) {
 	}
 }
 
+// TestPlacedCountExcludesTPSL verifies that TP and SL orders do not count toward
+// GridActive. They live in sr.tpOrderID / sr.slOrderID, not in sr.levels.
+func TestPlacedCountExcludesTPSL(t *testing.T) {
+	sr := &StrategyRunner{
+		tpOrderID: "tp-order-abc",
+		slOrderID: "sl-order-xyz",
+		levels: []GridLevel{
+			{Status: LevelPlaced},
+			{Status: LevelPending},
+		},
+	}
+	if got := sr.placedCount(); got != 1 {
+		t.Errorf("want 1 (TP/SL must not count toward GridActive), got %d", got)
+	}
+}
+
 func TestAvgEntry(t *testing.T) {
 	p1, p2 := 99.0, 98.0
 	sr := &StrategyRunner{

@@ -128,6 +128,8 @@ func main() {
 	// WebSocket endpoints — auth via ?token= query param
 	r.Get("/ws/jobs/{id}/progress", s.JobProgress)
 	r.Get("/ws/trader/positions", s.PositionsStream)
+	r.Get("/ws/strategies/updates", s.StrategiesUpdatesStream)
+	r.Get("/ws/strategies/{id}/events", s.StrategyEventsStream)
 
 	srv := &http.Server{Addr: listenAddr, Handler: r}
 

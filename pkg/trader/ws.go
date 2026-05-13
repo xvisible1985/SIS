@@ -98,10 +98,10 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 				if success, _ := raw["success"].(bool); success {
 					sub, _ := json.Marshal(map[string]any{
 						"op":   "subscribe",
-						"args": []string{"position", "order"},
+						"args": []string{"position", "order", "execution"},
 					})
 					bwsConn.WriteMessage(websocket.TextMessage, sub) //nolint:errcheck
-					logMsg("Авторизация OK, подписка на position и order")
+					logMsg("Авторизация OK, подписка на position, order и execution")
 					go func() {
 						if err := fetchAndSendSnapshot(ctx, conn, creds); err != nil {
 							logMsg("[REST] Ошибка снапшота: "+err.Error(), true)
@@ -116,7 +116,7 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 				// ignore
 			default:
 				topic, _ := raw["topic"].(string)
-				if topic == "position" || topic == "order" {
+				if topic == "position" || topic == "order" || topic == "execution" {
 					safeSend(conn, map[string]any{
 						"type":     topic,
 						"dataType": "delta",

@@ -70,9 +70,8 @@ export function Layout({ children }: { children: ReactNode }) {
           if (next) setSelectedId(next.id)
         }}
         onTopUp={() => navigate('/billing')}
-        onOpenSettings={() => {
-          handleLogout()
-        }}
+        onOpenSettings={() => {}}
+        onLogout={handleLogout}
       />
       <main className={`flex-1 overflow-auto dark:text-gray-100 ${pathname === '/terminal' ? '' : 'p-6'}`}>
         {children}

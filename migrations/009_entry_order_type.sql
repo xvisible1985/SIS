@@ -1,0 +1,1 @@
+ALTER TABLE strategies ADD COLUMN IF NOT EXISTS entry_order_type VARCHAR(20) NOT NULL DEFAULT 'limit';

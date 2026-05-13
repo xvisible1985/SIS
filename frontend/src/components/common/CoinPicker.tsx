@@ -46,9 +46,10 @@ interface Props {
   value: string
   onChange: (sym: string) => void
   size?: 'sm' | 'md'
+  triggerClassName?: string
 }
 
-export function CoinPicker({ value, onChange, size = 'md' }: Props) {
+export function CoinPicker({ value, onChange, size = 'md', triggerClassName }: Props) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [rows, setRows] = useState<TickerRow[]>([])
@@ -103,7 +104,7 @@ export function CoinPicker({ value, onChange, size = 'md' }: Props) {
       <button
         ref={triggerRef}
         onClick={handleOpen}
-        className={`flex items-center gap-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500 transition-colors ${isSm ? 'px-1.5 py-1' : 'px-2 py-1.5'}`}
+        className={`flex items-center gap-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500 transition-colors ${isSm ? 'px-1.5 py-1' : 'px-2 py-1.5'} ${triggerClassName ?? ''}`}
       >
         <CoinIcon symbol={value} className={isSm ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
         <span className={`font-mono font-semibold text-gray-900 dark:text-white ${isSm ? 'text-[11px]' : 'text-xs'}`}>{value}</span>

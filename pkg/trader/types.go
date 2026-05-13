@@ -40,15 +40,18 @@ type CancelAllRequest struct {
 // BatchOrderItem is a single order in a batch place request.
 // Category is omitted — it lives at the top level of BatchPlaceRequest.
 type BatchOrderItem struct {
-	Symbol      string `json:"symbol"`
-	Side        string `json:"side"`
-	OrderType   string `json:"orderType"`
-	Qty         string `json:"qty"`
-	Price       string `json:"price,omitempty"`
-	TimeInForce string `json:"timeInForce,omitempty"`
-	ReduceOnly  bool   `json:"reduceOnly,omitempty"`
-	PositionIdx int    `json:"positionIdx"`
-	OrderLinkId string `json:"orderLinkId,omitempty"`
+	Symbol           string `json:"symbol"`
+	Side             string `json:"side"`
+	OrderType        string `json:"orderType"`
+	Qty              string `json:"qty"`
+	Price            string `json:"price,omitempty"`
+	TriggerPrice     string `json:"triggerPrice,omitempty"`
+	TriggerDirection int    `json:"triggerDirection,omitempty"`
+	OrderFilter      string `json:"orderFilter,omitempty"`
+	TimeInForce      string `json:"timeInForce,omitempty"`
+	ReduceOnly       bool   `json:"reduceOnly,omitempty"`
+	PositionIdx      int    `json:"positionIdx"`
+	OrderLinkId      string `json:"orderLinkId,omitempty"`
 }
 
 type BatchPlaceRequest struct {
@@ -61,6 +64,17 @@ type BatchPlaceResult struct {
 	OrderLinkId string
 	Code        int
 	Msg         string
+}
+
+type BatchCancelItem struct {
+	Symbol      string `json:"symbol"`
+	OrderId     string `json:"orderId,omitempty"`
+	OrderFilter string `json:"orderFilter,omitempty"`
+}
+
+type BatchCancelRequest struct {
+	Category string            `json:"category"`
+	Request  []BatchCancelItem `json:"request"`
 }
 
 type LeverageRequest struct {

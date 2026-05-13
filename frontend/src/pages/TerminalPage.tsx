@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Chart } from '../components/terminal/Chart'
 import { Orderbook } from '../components/terminal/Orderbook'
 import { OrderForm } from '../components/terminal/OrderForm'
@@ -13,11 +13,13 @@ import { CoinPicker } from '../components/common/CoinPicker'
 import { usePositionsWs } from '../hooks/terminal/usePositionsWs'
 import { useCandles } from '../hooks/terminal/useCandles'
 import { useOrderbook } from '../hooks/terminal/useOrderbook'
+import { useTickerPrices } from '../hooks/terminal/useTickerPrices'
 import { listAccounts } from '../api/accounts'
 import { listStrategies } from '../api/strategies'
+import { listExecutions } from '../api/trader'
 import { StrategyCard } from '../components/strategies/StrategyCard'
 import { StrategyModal } from '../components/strategies/StrategyModal'
-import type { Strategy, ExchangeAccount, ActiveOrder, Position } from '../types'
+import type { Strategy, ExchangeAccount, ActiveOrder, Position, ChartExecution } from '../types'
 
 let _cachedSymbol = 'BTCUSDT'
 let _cachedTf = '60'
@@ -33,6 +35,14 @@ const TIMEFRAMES = [
 
 type BottomTab = 'positions' | 'orders' | 'history' | 'executions' | 'log' | 'pnl'
 type RightTab = 'manual' | 'strategies' | 'bots'
+
+const STATUS_ORDER: Record<string, number> = { active: 0, finishing: 1, stopped: 2 }
+function sortStrategies<T extends { status: string; symbol: string }>(list: T[]): T[] {
+  return [...list].sort((a, b) => {
+    const sd = (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9)
+    return sd !== 0 ? sd : a.symbol.localeCompare(b.symbol)
+  })
+}
 
 // ── Strategies tab ───────────────────────────────────────────────────────────
 function TerminalStrategiesTab({ onSymbolChange, orders, positions }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[]; positions: Position[] }) {
@@ -59,9 +69,38 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions }: { onSymbol
 
   useEffect(() => { load() }, [])
 
+  useEffect(() => {
+    let ws: WebSocket | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    function connect() {
+      const token = localStorage.getItem('token') ?? ''
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      ws = new WebSocket(`${proto}//${window.location.host}/ws/strategies/updates?token=${encodeURIComponent(token)}`)
+      ws.onmessage = (evt) => {
+        try {
+          const updates: { id: string; status: string; active_levels: number; volume_usdt: number }[] = JSON.parse(evt.data as string)
+          if (updates.length > 0) {
+            setStrategies(prev => prev.map(s => {
+              const upd = updates.find(u => u.id === s.id)
+              return upd ? { ...s, status: upd.status as Strategy['status'], active_levels: upd.active_levels, volume_usdt: upd.volume_usdt } : s
+            }))
+          }
+        } catch { /* ignore */ }
+      }
+      ws.onclose = () => { reconnectTimer = setTimeout(connect, 5000) }
+      ws.onerror = () => ws?.close()
+    }
+    connect()
+    return () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (ws) { ws.onclose = null; ws.close() }
+    }
+  }, [])
+
   function handleSelect(s: Strategy) {
     setSelectedId(s.id)
     onSymbolChange(s.symbol)
+    setExpandedId(prev => (prev !== null && prev !== s.id ? null : prev))
   }
 
   return (
@@ -78,7 +117,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions }: { onSymbol
         {!loading && strategies.length === 0 && (
           <div className="p-8 text-center text-sm text-gray-400">Нет стратегий</div>
         )}
-        {strategies.map(s => (
+        {sortStrategies(strategies).map(s => (
           <StrategyCard
             key={s.id}
             strategy={s}
@@ -90,7 +129,11 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions }: { onSymbol
             selected={s.id === selectedId}
             onSelect={handleSelect}
             isOpen={s.id === expandedId}
-            onToggleOpen={() => setExpandedId(prev => prev === s.id ? null : s.id)}
+            onToggleOpen={() => {
+              const isExpanding = expandedId !== s.id
+              setExpandedId(isExpanding ? s.id : null)
+              if (isExpanding) { setSelectedId(s.id); onSymbolChange(s.symbol) }
+            }}
           />
         ))}
       </div>
@@ -122,9 +165,38 @@ export function TerminalPage() {
   useEffect(() => { _cachedSymbol = symbol }, [symbol])
   useEffect(() => { _cachedTf = tf }, [tf])
 
-  const { positions, orders, log, status, accountName, loading, reconnect, removeOrder } = usePositionsWs(accountId)
+  const { positions, orders, executions, log, status, accountName, loading, reconnect, removeOrder } = usePositionsWs(accountId)
+
+  const [historicalExecs, setHistoricalExecs] = useState<ChartExecution[]>([])
+  useEffect(() => {
+    if (!accountId) return
+    listExecutions({ account_id: accountId, symbol, type: 'Trade', limit: 200 })
+      .then(res => setHistoricalExecs(
+        res.executions
+          .filter(e => e.side && e.price && e.order_link_id?.startsWith('SIS_STR'))
+          .map(e => ({
+            execId: e.exec_id,
+            symbol: e.symbol,
+            side: e.side as 'Buy' | 'Sell',
+            price: parseFloat(e.price!),
+            qty: e.qty ?? '',
+            timeMs: new Date(e.exec_time).getTime(),
+            orderLinkId: e.order_link_id ?? undefined,
+          }))
+      ))
+      .catch(() => {})
+  }, [accountId, symbol])
+
+  const allExecutions = useMemo<ChartExecution[]>(() => {
+    const wsIds = new Set(executions.map(e => e.execId))
+    return [...historicalExecs.filter(e => !wsIds.has(e.execId)), ...executions]
+  }, [historicalExecs, executions])
+
   const { candles, candleSymbol, lastPrice, priceChange, loadMore } = useCandles(symbol, tf)
   const { bids, asks, spread } = useOrderbook(symbol)
+
+  const positionSymbols = useMemo(() => [...new Set(positions.map(p => p.symbol))], [positions])
+  const tickerPrices = useTickerPrices(positionSymbols)
 
   // Hedge mode (shared across right panel)
   const hedgeModeFromPositions = positions.some(p => p.symbol === symbol && p.positionIdx !== 0)
@@ -166,7 +238,7 @@ export function TerminalPage() {
   ]
 
   return (
-    <div className="bg-gray-100 dark:bg-[#07070f]" style={{ display: 'grid', gridTemplateColumns: '75% 25%', gridTemplateRows: '65% 35%', height: 'calc(100vh - 65px)', gap: '10px', padding: '10px' }}>
+    <div className="bg-gray-100 dark:bg-[#07070f]" style={{ display: 'grid', gridTemplateColumns: '72.5% 27.5%', gridTemplateRows: '65% 35%', height: 'calc(100vh - 65px)', gap: '10px', padding: '10px' }}>
 
       {/* Chart area */}
       <div style={{ gridColumn: 1, gridRow: 1 }} className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden">
@@ -190,7 +262,7 @@ export function TerminalPage() {
           )}
         </div>
         <div className="flex-1 min-h-0">
-          <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} />
+          <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} />
         </div>
       </div>
 
@@ -217,7 +289,7 @@ export function TerminalPage() {
           </div>
         </div>
         <div className="flex-1 overflow-auto">
-          {bottomTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} />}
+          {bottomTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} tickerPrices={tickerPrices} />}
           {bottomTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} onRemoveOrder={removeOrder} />}
           {bottomTab === 'history' && <HistoryTable accountId={accountId ?? undefined} symbol={symbol} />}
           {bottomTab === 'executions' && <ExecutionsTable accountId={accountId ?? undefined} />}
@@ -230,24 +302,27 @@ export function TerminalPage() {
       <div style={{ gridColumn: 2, gridRow: '1 / 3' }} className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden">
 
         {/* Tab bar */}
-        <div className="flex gap-1.5 p-2 border-b border-gray-200 dark:border-gray-700 flex-shrink-0 bg-gray-50 dark:bg-gray-800/60">
-          {([
-            { key: 'manual', label: 'Торговля' },
-            { key: 'strategies', label: 'Стратегии' },
-            { key: 'bots', label: 'Боты' },
-          ] as { key: RightTab; label: string }[]).map(t => (
-            <button
-              key={t.key}
-              onClick={() => setRightTab(t.key)}
-              className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                rightTab === t.key
-                  ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
+        <div className="p-3 pb-2.5 border-b border-gray-200 dark:border-white/[.06] flex-shrink-0">
+          <div className="grid grid-cols-3 gap-0.5 p-[3px] bg-white/[.04] border border-white/[.06] rounded-[11px]">
+            {([
+              { key: 'manual'    , label: 'Торговля',  icon: <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round"><path d="M3 17l5-5 4 4 4-7 5 8"/><circle cx="21" cy="5" r="1.4" fill="currentColor" stroke="none"/></svg> },
+              { key: 'strategies', label: 'Стратегии', icon: <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg> },
+              { key: 'bots'      , label: 'Боты',      icon: <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="7" width="16" height="12" rx="3"/><circle cx="9" cy="13" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="13" r="1.2" fill="currentColor" stroke="none"/><path d="M12 4v3M9 19v2M15 19v2"/></svg> },
+            ] as { key: RightTab; label: string; icon: React.ReactNode }[]).map(t => (
+              <button
+                key={t.key}
+                onClick={() => setRightTab(t.key)}
+                className={`inline-flex items-center justify-center gap-1.5 py-2 px-1.5 rounded-[8px] text-[12.5px] font-semibold transition-all leading-none ${
+                  rightTab === t.key
+                    ? 'bg-[linear-gradient(180deg,#4a7dff,#3a67e6)] text-white shadow-[inset_0_1px_0_rgba(255,255,255,.18),0_4px_10px_-6px_rgba(74,125,255,.6)]'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                style={{ strokeWidth: rightTab === t.key ? 2 : 1.8 }}
+              >
+                {t.icon}{t.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Tab content */}

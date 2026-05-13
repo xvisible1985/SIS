@@ -28,4 +28,5 @@ export type SidebarProps = {
   onSelectAccount?: () => void;
   onTopUp?: () => void;
   onOpenSettings?: () => void;
+  onLogout?: () => void;
 };

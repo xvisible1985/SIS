@@ -10,7 +10,7 @@ interface AuthState {
   userId: string | null
   email: string | null
   isAuthenticated: boolean
-  login: (token: string, userId: string, email: string) => void
+  login: (token: string, userId: string, email: string, persist?: boolean) => void
   logout: () => void
 }
 
@@ -18,19 +18,20 @@ const AuthContext = createContext<AuthState | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(
-    () => localStorage.getItem('token')
+    () => localStorage.getItem('token') ?? sessionStorage.getItem('token')
   )
   const [userId, setUserId] = useState<string | null>(
-    () => localStorage.getItem('userId')
+    () => localStorage.getItem('userId') ?? sessionStorage.getItem('userId')
   )
   const [email, setEmail] = useState<string | null>(
-    () => localStorage.getItem('email')
+    () => localStorage.getItem('email') ?? sessionStorage.getItem('email')
   )
 
-  function login(newToken: string, newUserId: string, newEmail: string) {
-    localStorage.setItem('token', newToken)
-    localStorage.setItem('userId', newUserId)
-    localStorage.setItem('email', newEmail)
+  function login(newToken: string, newUserId: string, newEmail: string, persist = true) {
+    const store = persist ? localStorage : sessionStorage
+    store.setItem('token', newToken)
+    store.setItem('userId', newUserId)
+    store.setItem('email', newEmail)
     setToken(newToken)
     setUserId(newUserId)
     setEmail(newEmail)

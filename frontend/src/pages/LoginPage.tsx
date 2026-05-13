@@ -28,39 +28,75 @@ export function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
-      <div className="w-full max-w-sm bg-white dark:bg-gray-800 rounded-xl shadow p-8">
-        <h1 className="text-2xl font-bold mb-6 text-center dark:text-white">SIS</h1>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <input
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            className="w-full border rounded px-3 py-2 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400"
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            className="w-full border rounded px-3 py-2 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400"
-          />
-          {error && <p className="text-red-600 text-sm">{error}</p>}
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-blue-600 text-white rounded px-3 py-2 text-sm font-medium disabled:opacity-50"
-          >
-            {loading ? 'Signing in…' : 'Sign in'}
-          </button>
-        </form>
-        <p className="mt-4 text-center text-sm text-gray-600 dark:text-gray-400">
-          No account?{' '}
-          <Link to="/register" className="text-blue-600 dark:text-blue-400 hover:underline">
-            Register
+    <div className="min-h-screen flex items-center justify-center font-sans" style={{ background: '#080b12' }}>
+      <div className="w-full max-w-[360px] px-4">
+
+        {/* logo */}
+        <div className="flex items-center justify-center gap-2.5 mb-8">
+          <div className="w-8 h-8 rounded-[8px] bg-[linear-gradient(135deg,#5b8cff,#7b5bff)] flex items-center justify-center shrink-0">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 17l4-6 4 4 4-8 6 10"/>
+            </svg>
+          </div>
+          <span className="text-[20px] font-bold text-white tracking-[-0.4px]">Novabot</span>
+        </div>
+
+        {/* card */}
+        <div className="rounded-[16px] p-6" style={{ background: '#0d1320', border: '1px solid rgba(255,255,255,.08)' }}>
+          <h2 className="text-[15px] font-semibold text-white mb-1">Вход</h2>
+          <p className="text-[12px] text-[#5b6479] mb-5">Введите данные вашего аккаунта</p>
+
+          <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] text-[#7b8aa6] font-medium uppercase tracking-[.7px]">Email</label>
+              <input
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                required
+                className="w-full rounded-[9px] px-3 py-2.5 text-[13px] text-white placeholder-[#3d4a63] outline-none transition-colors"
+                style={{ background: 'rgba(255,255,255,.05)', border: '1px solid rgba(255,255,255,.09)' }}
+                onFocus={e => e.currentTarget.style.borderColor = 'rgba(91,140,255,.5)'}
+                onBlur={e => e.currentTarget.style.borderColor = 'rgba(255,255,255,.09)'}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] text-[#7b8aa6] font-medium uppercase tracking-[.7px]">Пароль</label>
+              <input
+                type="password"
+                placeholder="••••••••"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                required
+                className="w-full rounded-[9px] px-3 py-2.5 text-[13px] text-white placeholder-[#3d4a63] outline-none transition-colors"
+                style={{ background: 'rgba(255,255,255,.05)', border: '1px solid rgba(255,255,255,.09)' }}
+                onFocus={e => e.currentTarget.style.borderColor = 'rgba(91,140,255,.5)'}
+                onBlur={e => e.currentTarget.style.borderColor = 'rgba(255,255,255,.09)'}
+              />
+            </div>
+
+            {error && (
+              <div className="rounded-[8px] px-3 py-2 text-[12px] text-rose-300" style={{ background: 'rgba(248,113,113,.10)', border: '1px solid rgba(248,113,113,.20)' }}>
+                {error}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full rounded-[9px] py-2.5 text-[13px] font-semibold text-white transition-opacity disabled:opacity-50 mt-1"
+              style={{ background: 'linear-gradient(135deg,#5b8cff,#7b5bff)' }}
+            >
+              {loading ? 'Входим…' : 'Войти'}
+            </button>
+          </form>
+        </div>
+
+        <p className="mt-4 text-center text-[12px] text-[#5b6479]">
+          Нет аккаунта?{' '}
+          <Link to="/register" className="text-[#5b8cff] hover:text-[#7ba8ff] transition-colors">
+            Создать
           </Link>
         </p>
       </div>

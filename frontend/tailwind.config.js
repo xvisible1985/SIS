@@ -5,9 +5,9 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans:    ['Inter', 'system-ui', 'sans-serif'],
-        display: ['"Space Grotesk"', 'sans-serif'],
-        mono:    ['"JetBrains Mono"', 'monospace'],
+        sans:    ['Manrope', 'Inter', 'system-ui', 'sans-serif'],
+        display: ['Manrope', '"Space Grotesk"', 'sans-serif'],
+        mono:    ['"Geist Mono"', '"JetBrains Mono"', 'monospace'],
       },
     },
   },

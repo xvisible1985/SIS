@@ -13,8 +13,10 @@ interface Props {
 function orderLabel(ord: ActiveOrder): string {
   const id = ord.orderLinkId ?? ''
   const type = ord.orderType?.toLowerCase() ?? ''
-  if (/^(SIS_STR|STP)-[a-f0-9]+-tp-\d+$/.test(id)) return `TP_${type}`
-  if (/^(SIS_STR|STP)-[a-f0-9]+-sl-\d+$/.test(id)) return `SL_${type}`
+  if (/^(SIS_STR|STP)-[a-f0-9]+-tp(-\d+)+$/.test(id))
+    return ord.side === 'Sell' ? 'TP_LONG' : ord.side === 'Buy' ? 'TP_SHORT' : 'TP'
+  if (/^(SIS_STR|STP)-[a-f0-9]+-sl(-\d+)+$/.test(id))
+    return ord.side === 'Sell' ? 'SL_LONG' : ord.side === 'Buy' ? 'SL_SHORT' : 'SL'
   const lvl = id.match(/^(SIS_STR|STR)-[a-f0-9]+-\d+-(\d+)$/)
   if (lvl) return `L${lvl[2]}_${type}`
   return type || '—'
@@ -62,6 +64,7 @@ export function OrdersTable({ accountId, orders, loading, onSelect, onRemoveOrde
           <th className="text-left px-3 py-2">Тип</th>
           <th className="text-right px-3 py-2">Цена</th>
           <th className="text-right px-3 py-2">Кол-во</th>
+          <th className="text-left px-3 py-2">Размер</th>
           <th className="text-right px-3 py-2">Исполнено</th>
           <th className="text-left px-3 py-2">Статус</th>
           <th className="text-left px-3 py-2">Маркер</th>
@@ -87,6 +90,15 @@ export function OrdersTable({ accountId, orders, loading, onSelect, onRemoveOrde
               {ord.triggerPrice ? `~${parseFloat(ord.triggerPrice).toFixed(2)}` : parseFloat(ord.price) > 0 ? parseFloat(ord.price).toFixed(2) : '—'}
             </td>
             <td className="px-3 py-2 text-right font-mono">{ord.qty}</td>
+            <td className="px-3 py-2 text-left font-mono">
+              {(() => {
+                const p = ord.triggerPrice && parseFloat(ord.triggerPrice) > 0 ? parseFloat(ord.triggerPrice) : parseFloat(ord.price)
+                const usdt = p > 0 ? (parseFloat(ord.qty) * p).toFixed(2) : null
+                return usdt
+                  ? <>{usdt} <span className="text-gray-500 dark:text-gray-400 text-[10px]">USDT</span></>
+                  : <span className="text-gray-500 dark:text-gray-400">—</span>
+              })()}
+            </td>
             <td className="px-3 py-2 text-right font-mono text-gray-500 dark:text-gray-400">{ord.cumExecQty}</td>
             <td className="px-3 py-2">
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400">{ord.orderStatus}</span>

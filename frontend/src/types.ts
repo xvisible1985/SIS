@@ -178,6 +178,16 @@ export interface TraderOrder {
   created_at: string
 }
 
+export interface ChartExecution {
+  execId: string
+  symbol: string
+  side: 'Buy' | 'Sell'
+  price: number
+  qty: string
+  timeMs: number
+  orderLinkId?: string
+}
+
 export interface TraderExecution {
   id: string
   exec_id: string
@@ -215,6 +225,7 @@ export type WsMsg =
   | { type: 'log'; message: string; error?: boolean }
   | { type: 'position'; dataType: 'snapshot' | 'delta'; data: any[] }
   | { type: 'order'; dataType: 'snapshot' | 'delta'; data: any[] }
+  | { type: 'execution'; dataType: 'delta'; data: any[] }
 
 // Strategies
 export interface SignalConfig {
@@ -247,6 +258,7 @@ export interface Strategy {
   margin_type: 'isolated' | 'cross'
   hedge_mode: boolean
   strategy_type: 'grid' | 'dca' | 'manual'
+  entry_order_type: 'limit' | 'stop_market'
   signal_configs: SignalConfig[]
   steps: GridStep[] | null
   trailing_stop_enabled: boolean
@@ -267,6 +279,7 @@ export interface StrategyLevel {
   size_usdt: number
   status: 'pending' | 'placed' | 'filled' | 'cancelled'
   filled_price: number
+  exchange_order_id: string
 }
 
 export interface StrategyEvent {
@@ -299,6 +312,7 @@ export interface StrategyFormData {
   category: string
   direction: 'long' | 'short'
   strategy_type: 'grid' | 'dca' | 'manual'
+  entry_order_type: 'limit' | 'stop_market'
   leverage: number
   grid_size_usdt: number
   margin_type: 'isolated' | 'cross'

@@ -181,6 +181,16 @@ func PlaceOrderBatch(ctx context.Context, creds Credentials, req BatchPlaceReque
 	return out, nil
 }
 
+// CancelOrderBatch cancels up to 20 specific orders in one REST call.
+// Per-item errors do not fail the whole batch — check retExtInfo if needed.
+func CancelOrderBatch(ctx context.Context, creds Credentials, req BatchCancelRequest) error {
+	data, err := doSignedPOST(ctx, creds, "/v5/order/cancel-batch", req)
+	if err != nil {
+		return err
+	}
+	return checkRetCode(data)
+}
+
 func CancelAllOrders(ctx context.Context, creds Credentials, req CancelAllRequest) error {
 	data, err := doSignedPOST(ctx, creds, "/v5/order/cancel-all", req)
 	if err != nil {
@@ -232,6 +242,30 @@ func FetchPositions(ctx context.Context, creds Credentials) ([]Position, error) 
 	return all, nil
 }
 
+// FetchOrderByLinkId looks up a single order by orderLinkId.
+// Checks active orders first; falls back to history if not found.
+// Returns the order, whether it is still open (active), and any error.
+func FetchOrderByLinkId(ctx context.Context, creds Credentials, category, symbol, orderLinkId string) (Order, bool, error) {
+	q := "category=" + category + "&symbol=" + symbol + "&orderLinkId=" + orderLinkId
+	for _, endpoint := range []string{"/v5/order/realtime", "/v5/order/history"} {
+		data, err := doSignedGET(ctx, creds, endpoint, q)
+		if err != nil {
+			continue
+		}
+		var resp struct {
+			Result struct {
+				List []Order `json:"list"`
+			} `json:"result"`
+		}
+		if json.Unmarshal(data, &resp) == nil && len(resp.Result.List) > 0 {
+			o := resp.Result.List[0]
+			o.Category = category
+			return o, endpoint == "/v5/order/realtime", nil
+		}
+	}
+	return Order{}, false, fmt.Errorf("order not found for linkId %s", orderLinkId)
+}
+
 func FetchOpenOrders(ctx context.Context, creds Credentials) ([]Order, error) {
 	type req struct {
 		category    string
@@ -270,6 +304,50 @@ func FetchOpenOrders(ctx context.Context, creds Credentials) ([]Order, error) {
 		}
 	}
 	return all, nil
+}
+
+// FetchOpenOrdersForCategory fetches open orders for a single exchange category
+// (Order + StopOrder filters) using two parallel HTTP requests instead of six sequential ones.
+func FetchOpenOrdersForCategory(ctx context.Context, creds Credentials, category string) ([]Order, error) {
+	type result struct {
+		orders []Order
+		err    error
+	}
+	fetch := func(ch chan<- result, orderFilter string) {
+		q := "category=" + category + "&orderFilter=" + orderFilter + "&limit=50"
+		if category == "linear" {
+			q += "&settleCoin=USDT"
+		}
+		data, err := doSignedGET(ctx, creds, "/v5/order/realtime", q)
+		if err != nil {
+			ch <- result{err: err}
+			return
+		}
+		var resp struct {
+			Result struct {
+				List []Order `json:"list"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(data, &resp); err != nil {
+			ch <- result{err: err}
+			return
+		}
+		orders := resp.Result.List
+		for i := range orders {
+			orders[i].Category = category
+			orders[i].OrderFilter = orderFilter
+		}
+		ch <- result{orders: orders}
+	}
+	ch1 := make(chan result, 1)
+	ch2 := make(chan result, 1)
+	go fetch(ch1, "Order")
+	go fetch(ch2, "StopOrder")
+	r1, r2 := <-ch1, <-ch2
+	if r1.err != nil && r2.err != nil {
+		return nil, r1.err
+	}
+	return append(r1.orders, r2.orders...), nil
 }
 
 func FetchOrderHistory(ctx context.Context, creds Credentials, category, cursor string) ([]Order, string, error) {

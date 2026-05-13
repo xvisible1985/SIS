@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import type { Position, ActiveOrder, WsMsg } from '../../types'
+import type { Position, ActiveOrder, WsMsg, ChartExecution } from '../../types'
 
 export type WsStatus = 'connecting' | 'connected' | 'error' | 'closed'
 export type LogEntry = { time: string; message: string; error?: boolean }
@@ -57,6 +57,7 @@ export function usePositionsWs(accountId: string | null) {
   const fromCache = accountId !== null && accountId === _cacheAccountId
   const [positions, setPositions] = useState<Position[]>(fromCache ? _cachePositions : [])
   const [orders, setOrders] = useState<ActiveOrder[]>(fromCache ? _cacheOrders : [])
+  const [executions, setExecutions] = useState<ChartExecution[]>([])
   const [log, setLog] = useState<LogEntry[]>([])
   const [status, setStatus] = useState<WsStatus>('connecting')
   const [accountName, setAccountName] = useState(fromCache ? _cacheAccountName : '')
@@ -143,6 +144,27 @@ export function usePositionsWs(accountId: string | null) {
                 }
               }
               return next
+            })
+          }
+          return
+        }
+        if (msg.type === 'execution') {
+          const items: ChartExecution[] = ((msg as any).data ?? [])
+            .filter((e: any) => e.execType === 'Trade')
+            .map((e: any) => ({
+              execId: e.execId as string,
+              symbol: e.symbol as string,
+              side: e.side as 'Buy' | 'Sell',
+              price: parseFloat(e.execPrice ?? '0'),
+              qty: (e.execQty ?? '') as string,
+              timeMs: parseInt(e.execTime ?? '0', 10),
+              orderLinkId: (e.orderLinkId as string) || undefined,
+            }))
+          if (items.length > 0) {
+            setExecutions(prev => {
+              const seen = new Set(prev.map(e => e.execId))
+              const fresh = items.filter(e => !seen.has(e.execId))
+              return fresh.length ? [...prev, ...fresh].slice(-500) : prev
             })
           }
           return
@@ -240,5 +262,5 @@ export function usePositionsWs(accountId: string | null) {
     setOrders(prev => prev.filter(o => o.orderId !== orderId))
   }, [])
 
-  return { positions, orders, log, status, accountName, loading, reconnect, removeOrder }
+  return { positions, orders, executions, log, status, accountName, loading, reconnect, removeOrder }
 }

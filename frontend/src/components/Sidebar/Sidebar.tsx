@@ -9,6 +9,7 @@ import {
   Settings,
   ArrowUp,
   Eye,
+  LogOut,
 } from 'lucide-react';
 import { NovaMark } from './NovaMark';
 import { Sparkline } from './Sparkline';
@@ -33,9 +34,10 @@ export function Sidebar({
   onSelectAccount,
   onTopUp,
   onOpenSettings,
+  onLogout,
 }: SidebarProps) {
   return (
-    <aside className="flex h-full w-[284px] flex-col gap-3.5 bg-[#0c1018] p-[18px_14px] font-sans text-slate-200">
+    <aside className="flex h-full w-[256px] flex-col gap-3.5 bg-[#0c1018] p-[18px_14px] font-sans text-slate-200">
       {/* brand */}
       <div className="flex items-center gap-2.5 px-1.5 py-0.5">
         <NovaMark size={28} />
@@ -114,7 +116,7 @@ export function Sidebar({
           </div>
 
           <div className="-mx-0.5 mt-2">
-            <Sparkline data={spark} width={232} height={36} positive={pnl24h.percent >= 0} />
+            <Sparkline data={spark} width={204} height={36} positive={pnl24h.percent >= 0} />
           </div>
         </div>
       </div>
@@ -201,6 +203,15 @@ export function Sidebar({
             <Settings size={15} />
           </button>
         </div>
+
+        <button
+          type="button"
+          onClick={onLogout}
+          className="flex w-full items-center gap-1.5 px-1 text-[11px] text-slate-500 hover:text-rose-400 transition-colors"
+        >
+          <LogOut size={12} strokeWidth={2} />
+          Выйти из аккаунта
+        </button>
       </div>
     </aside>
   );

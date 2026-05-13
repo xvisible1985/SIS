@@ -5,13 +5,23 @@ import { StrategyCard } from '../components/strategies/StrategyCard'
 import { StrategyModal } from '../components/strategies/StrategyModal'
 import type { Strategy, ExchangeAccount } from '../types'
 
+const STATUS_ORDER: Record<string, number> = { active: 0, finishing: 1, stopped: 2 }
+function sortStrategies(list: Strategy[]): Strategy[] {
+  return [...list].sort((a, b) => {
+    const sd = (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9)
+    return sd !== 0 ? sd : a.symbol.localeCompare(b.symbol)
+  })
+}
+
 export function StrategiesPage() {
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Strategy | undefined>()
+  const [editFilledCount, setEditFilledCount] = useState(0)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -28,13 +38,55 @@ export function StrategiesPage() {
 
   useEffect(() => { load() }, [load])
 
+  // Real-time strategy status updates via WebSocket.
+  // Backend pushes [{id, status}] whenever any strategy status changes (2s poll on server).
+  useEffect(() => {
+    let ws: WebSocket | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+    function connect() {
+      const token = localStorage.getItem('token') ?? ''
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      ws = new WebSocket(`${proto}//${window.location.host}/ws/strategies/updates?token=${encodeURIComponent(token)}`)
+
+      ws.onmessage = (evt) => {
+        try {
+          const updates: { id: string; status: string }[] = JSON.parse(evt.data as string)
+          if (updates.length > 0) {
+            setStrategies(prev => prev.map(s => {
+              const upd = updates.find(u => u.id === s.id)
+              return upd ? { ...s, status: upd.status as Strategy['status'] } : s
+            }))
+          }
+        } catch { /* ignore malformed */ }
+      }
+
+      ws.onclose = () => {
+        reconnectTimer = setTimeout(connect, 5000)
+      }
+      ws.onerror = () => ws?.close()
+    }
+
+    connect()
+    return () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (ws) { ws.onclose = null; ws.close() }
+    }
+  }, [])
+
+  function handleSelect(s: Strategy) {
+    setSelectedId(s.id)
+    setExpandedId(prev => (prev !== null && prev !== s.id ? null : prev))
+  }
+
   function openCreate() {
     setEditTarget(undefined)
     setModalOpen(true)
   }
 
-  function openEdit(s: Strategy) {
+  function openEdit(s: Strategy, filledCount = 0) {
     setEditTarget(s)
+    setEditFilledCount(filledCount)
     setModalOpen(true)
   }
 
@@ -44,7 +96,7 @@ export function StrategiesPage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-[739px] mx-auto space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Стратегии</h1>
         <button
@@ -56,7 +108,7 @@ export function StrategiesPage() {
       </div>
 
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow overflow-hidden">
-        {loading ? (
+        {loading && strategies.length === 0 ? (
           <div className="p-10 text-center text-gray-400">Загрузка…</div>
         ) : strategies.length === 0 ? (
           <div className="p-10 text-center text-gray-400">
@@ -64,7 +116,7 @@ export function StrategiesPage() {
           </div>
         ) : (
           <ul className="divide-y divide-gray-100 dark:divide-gray-700">
-            {strategies.map(s => (
+            {sortStrategies(strategies).map(s => (
               <StrategyCard
                 key={s.id}
                 strategy={s}
@@ -72,8 +124,14 @@ export function StrategiesPage() {
                 orders={[]}
                 onEdit={openEdit}
                 onChanged={load}
+                selected={s.id === selectedId}
+                onSelect={handleSelect}
                 isOpen={s.id === expandedId}
-                onToggleOpen={() => setExpandedId(prev => prev === s.id ? null : s.id)}
+                onToggleOpen={() => {
+                  const isExpanding = expandedId !== s.id
+                  setExpandedId(isExpanding ? s.id : null)
+                  if (isExpanding) setSelectedId(s.id)
+                }}
               />
             ))}
           </ul>
@@ -83,6 +141,7 @@ export function StrategiesPage() {
       {modalOpen && (
         <StrategyModal
           strategy={editTarget}
+          filledLevels={editFilledCount}
           onClose={() => setModalOpen(false)}
           onSaved={handleSaved}
         />
