@@ -42,8 +42,8 @@ const (
 )
 
 type SignalConfig struct {
-	Name   string             `json:"name"`
-	Params map[string]float64 `json:"params"`
+	Name   string                 `json:"name"`
+	Params map[string]interface{} `json:"params"`
 }
 
 type GridStep struct {

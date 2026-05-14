@@ -83,7 +83,7 @@ export function PnlTable({ accountId }: Props) {
                   {['Время', 'Инструмент', 'Направление', 'Объём', 'Цена входа', 'Цена выхода'].map(h => (
                     <th key={h} className={`px-3 py-2 font-medium ${h === 'Время' || h === 'Инструмент' || h === 'Направление' ? 'text-left' : 'text-right'}`}>{h}</th>
                   ))}
-                  <th className="px-3 py-2 font-medium text-right cursor-help" title="Торговые комиссии + фандинг за период удержания (= валовый P&L − чистый closedPnl)">Сборы</th>
+                  <th className="px-3 py-2 font-medium text-right cursor-help" title="Торговые комиссии + фандинг за период удержания (= валовый P&L − чистый closedPnl)">Комиссии</th>
                   <th className="px-3 py-2 font-medium text-right">P&L</th>
                 </tr>
               </thead>
@@ -104,7 +104,7 @@ export function PnlTable({ accountId }: Props) {
                       <td className="px-3 py-2 text-right font-mono text-gray-900 dark:text-white">{item.qty}</td>
                       <td className="px-3 py-2 text-right font-mono text-gray-900 dark:text-white">{parseFloat(item.avgEntryPrice).toFixed(4)}</td>
                       <td className="px-3 py-2 text-right font-mono text-gray-900 dark:text-white">{parseFloat(item.avgExitPrice).toFixed(4)}</td>
-                      <td className="px-3 py-2 text-right font-mono text-red-400">−{Math.abs(fee).toFixed(4)}</td>
+                      <td className="px-3 py-2 text-right font-mono text-white">−{Math.abs(fee).toFixed(4)}</td>
                       <td className={`px-3 py-2 text-right font-mono font-semibold ${pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                         {pnl >= 0 ? '+' : ''}{pnl.toFixed(4)}
                       </td>

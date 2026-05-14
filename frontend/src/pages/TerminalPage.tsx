@@ -45,6 +45,8 @@ function sortStrategies<T extends { status: string; symbol: string }>(list: T[])
 }
 
 // ── Strategies tab ───────────────────────────────────────────────────────────
+type LiveSignal = { signal_state: string; signal_values: Record<string, number> }
+
 function TerminalStrategiesTab({ onSymbolChange, orders, positions }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[]; positions: Position[] }) {
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
@@ -53,6 +55,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions }: { onSymbol
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [signalStates, setSignalStates] = useState<Record<string, LiveSignal>>({})
 
   async function load() {
     setLoading(true)
@@ -78,12 +81,25 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions }: { onSymbol
       ws = new WebSocket(`${proto}//${window.location.host}/ws/strategies/updates?token=${encodeURIComponent(token)}`)
       ws.onmessage = (evt) => {
         try {
-          const updates: { id: string; status: string; active_levels: number; volume_usdt: number }[] = JSON.parse(evt.data as string)
+          const updates: { id: string; status: string; active_levels: number; volume_usdt: number; signal_state?: string; signal_values?: Record<string, number> }[] = JSON.parse(evt.data as string)
           if (updates.length > 0) {
             setStrategies(prev => prev.map(s => {
               const upd = updates.find(u => u.id === s.id)
               return upd ? { ...s, status: upd.status as Strategy['status'], active_levels: upd.active_levels, volume_usdt: upd.volume_usdt } : s
             }))
+            const sigUpdates = updates.filter(u => u.signal_state !== undefined)
+            if (sigUpdates.length > 0) {
+              setSignalStates(prev => {
+                const next = { ...prev }
+                for (const u of sigUpdates) {
+                  const newVals = u.signal_values && Object.keys(u.signal_values).length > 0
+                    ? u.signal_values
+                    : prev[u.id]?.signal_values ?? {}
+                  next[u.id] = { signal_state: u.signal_state!, signal_values: newVals }
+                }
+                return next
+              })
+            }
           }
         } catch { /* ignore */ }
       }
@@ -129,6 +145,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions }: { onSymbol
             selected={s.id === selectedId}
             onSelect={handleSelect}
             isOpen={s.id === expandedId}
+            liveSignal={signalStates[s.id]}
             onToggleOpen={() => {
               const isExpanding = expandedId !== s.id
               setExpandedId(isExpanding ? s.id : null)

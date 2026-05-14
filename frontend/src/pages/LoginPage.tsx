@@ -17,7 +17,7 @@ export function LoginPage() {
     setLoading(true)
     try {
       const res = await login(email, password)
-      authLogin(res.token, res.user_id, res.email)
+      authLogin(res.token, res.user_id, res.email, res.is_admin ?? false)
       navigate('/')
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Login failed'

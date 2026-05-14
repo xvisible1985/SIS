@@ -306,6 +306,30 @@ func FetchOpenOrders(ctx context.Context, creds Credentials) ([]Order, error) {
 	return all, nil
 }
 
+// FetchOpenOrdersForSymbol fetches active (non-conditional) orders for a specific symbol.
+// Used to find stale orders that were lost from our tracking (e.g. tpOrderID cleared from DB
+// but the order still exists on the exchange).
+func FetchOpenOrdersForSymbol(ctx context.Context, creds Credentials, category, symbol string) ([]Order, error) {
+	q := "category=" + category + "&symbol=" + symbol + "&orderFilter=Order&limit=50"
+	data, err := doSignedGET(ctx, creds, "/v5/order/realtime", q)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Result struct {
+			List []Order `json:"list"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	for i := range resp.Result.List {
+		resp.Result.List[i].Category = category
+		resp.Result.List[i].OrderFilter = "Order"
+	}
+	return resp.Result.List, nil
+}
+
 // FetchOpenOrdersForCategory fetches open orders for a single exchange category
 // (Order + StopOrder filters) using two parallel HTTP requests instead of six sequential ones.
 func FetchOpenOrdersForCategory(ctx context.Context, creds Credentials, category string) ([]Order, error) {

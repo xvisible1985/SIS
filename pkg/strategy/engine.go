@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"sis/pkg/crypto"
+	"sis/pkg/signal"
 	"sis/pkg/trader"
 )
 
@@ -22,10 +23,19 @@ type orderRef struct {
 
 // Engine coordinates all strategy runners, grouped by account.
 type Engine struct {
-	pool    *pgxpool.Pool
-	encKey  string
-	mu      sync.RWMutex
-	runners map[string]*AccountRunner // accountID → runner
+	pool         *pgxpool.Pool
+	encKey       string
+	mu           sync.RWMutex
+	runners      map[string]*AccountRunner // accountID → runner
+	signalEngine *signal.Engine
+}
+
+// SetSignalEngine wires the signal engine into the strategy engine so runners
+// can subscribe to signals before starting a new cycle.
+func (e *Engine) SetSignalEngine(se *signal.Engine) {
+	e.mu.Lock()
+	e.signalEngine = se
+	e.mu.Unlock()
 }
 
 // New creates a new Engine. Call Start(ctx) to begin.
@@ -39,7 +49,8 @@ func (e *Engine) Start(ctx context.Context) {
 		`SELECT id, owner_id, account_id, symbol, category, direction, status,
 		        grid_levels, grid_active, grid_step_pct, grid_size_usdt,
 		        tp_mode, tp_pct, sl_type, sl_pct, signal_filter, hedge_mode,
-		        entry_order_type, COALESCE(steps::text,'[]')
+		        entry_order_type, COALESCE(steps::text,'[]'),
+		        COALESCE(signal_configs::text,'[]')
 		 FROM strategies WHERE status IN ('active','finishing')`)
 	if err != nil {
 		log.Printf("strategy engine: load: %v", err)
@@ -61,7 +72,8 @@ func (e *Engine) Notify(ctx context.Context, strategyID string) {
 		`SELECT id, owner_id, account_id, symbol, category, direction, status,
 		        grid_levels, grid_active, grid_step_pct, grid_size_usdt,
 		        tp_mode, tp_pct, sl_type, sl_pct, signal_filter, hedge_mode,
-		        entry_order_type, COALESCE(steps::text,'[]')
+		        entry_order_type, COALESCE(steps::text,'[]'),
+		        COALESCE(signal_configs::text,'[]')
 		 FROM strategies WHERE id=$1`, strategyID)
 	if err := scanStrategyRow(row, &s); err != nil {
 		log.Printf("strategy engine: notify %s: %v", strategyID, err)
@@ -81,7 +93,7 @@ func (e *Engine) loadStrategy(ctx context.Context, s Strategy) {
 			return
 		}
 		runCtx, cancel := context.WithCancel(context.Background())
-		runner = newAccountRunner(s.AccountID, creds, e.pool, cancel)
+		runner = newAccountRunner(s.AccountID, creds, e.pool, e.signalEngine, cancel)
 		e.runners[s.AccountID] = runner
 		e.mu.Unlock()
 		go runner.run(runCtx)
@@ -94,6 +106,27 @@ func (e *Engine) loadStrategy(ctx context.Context, s Strategy) {
 // LogUserAction writes a user-initiated action to the strategy event log.
 func (e *Engine) LogUserAction(ctx context.Context, strategyID, msg string) {
 	logEvent(ctx, e.pool, strategyID, "info", msg)
+}
+
+// ActiveStats returns counts of active strategies and active cycles across all accounts.
+func (e *Engine) ActiveStats() (strategies, cycles int) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, runner := range e.runners {
+		runner.mu.RLock()
+		for _, sr := range runner.strategies {
+			if sr.strategy.Status == StatusActive {
+				strategies++
+				sr.mu.Lock()
+				if sr.cycle != nil {
+					cycles++
+				}
+				sr.mu.Unlock()
+			}
+		}
+		runner.mu.RUnlock()
+	}
+	return
 }
 
 // GetTradeStream returns the trade WS stream for an account, or nil if no runner exists.
@@ -151,6 +184,115 @@ func (e *Engine) UpdateTPSL(ctx context.Context, strategyID string) {
 	}
 }
 
+// GetSignalState returns the current signal state string for a running strategy:
+// "buy", "sell", "neutral", or "" (no signal filter / unknown).
+func (e *Engine) GetSignalState(strategyID string) string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, runner := range e.runners {
+		runner.mu.RLock()
+		sr, ok := runner.strategies[strategyID]
+		runner.mu.RUnlock()
+		if ok {
+			sr.mu.Lock()
+			state := sr.currentSignalState
+			sr.mu.Unlock()
+			return state
+		}
+	}
+	return ""
+}
+
+// PushSignalOverride recomputes and directly sets currentSignalState for every
+// strategy that uses the named signal. Works even for stopped strategies and
+// strategies without an active signal-monitor subscription.
+func (e *Engine) PushSignalOverride(signalName string) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, runner := range e.runners {
+		if runner.signalEngine == nil {
+			continue
+		}
+		runner.mu.RLock()
+		var targets []*StrategyRunner
+		for _, sr := range runner.strategies {
+			sr.mu.Lock()
+			for _, cfg := range sr.strategy.SignalConfigs {
+				if cfg.Name == signalName {
+					targets = append(targets, sr)
+					break
+				}
+			}
+			sr.mu.Unlock()
+		}
+		runner.mu.RUnlock()
+
+		for _, sr := range targets {
+			sr.mu.Lock()
+			configs := sr.strategy.SignalConfigs
+			symbol := sr.strategy.Symbol
+			sr.mu.Unlock()
+
+			tf := "60"
+			for _, cfg := range configs {
+				if v, ok := cfg.Params["tf"]; ok {
+					if s, ok2 := v.(string); ok2 && s != "" {
+						tf = s
+						break
+					}
+				}
+			}
+			sigCfgs := make([]signal.Config, len(configs))
+			for i, c := range configs {
+				sigCfgs[i] = signal.Config{Name: c.Name, Params: c.Params}
+			}
+			// ComputeStateForce works even with empty candle snapshot,
+			// so override-aware signals (rsi-test) always return the right state.
+			state := runner.signalEngine.ComputeStateForce(symbol, tf, sigCfgs)
+			sr.mu.Lock()
+			sr.currentSignalState = string(state)
+			sr.mu.Unlock()
+		}
+	}
+}
+
+// GetSignalValues returns per-signal numeric values for a running strategy
+// (e.g. RSI = 49.5). Returns nil when no signal filter is active or no values available.
+func (e *Engine) GetSignalValues(strategyID string) map[string]float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, runner := range e.runners {
+		runner.mu.RLock()
+		sr, ok := runner.strategies[strategyID]
+		runner.mu.RUnlock()
+		if !ok {
+			continue
+		}
+		sr.mu.Lock()
+		configs := sr.strategy.SignalConfigs
+		symbol := sr.strategy.Symbol
+		sr.mu.Unlock()
+		if len(configs) == 0 || runner.signalEngine == nil {
+			return nil
+		}
+		tf := "1h"
+		for _, cfg := range configs {
+			if v, ok2 := cfg.Params["tf"]; ok2 {
+				if s, ok3 := v.(string); ok3 && s != "" {
+					tf = s
+					break
+				}
+			}
+		}
+		sigCfgs := make([]signal.Config, len(configs))
+		for i, c := range configs {
+			sigCfgs[i] = signal.Config{Name: c.Name, Params: c.Params}
+		}
+		return runner.signalEngine.QueryValues(symbol, tf, sigCfgs)
+	}
+	return nil
+}
+
 func (e *Engine) loadCreds(ctx context.Context, accountID string) (trader.Credentials, error) {
 	var apiKeyEnc, secretEnc string
 	if err := e.pool.QueryRow(ctx,
@@ -171,14 +313,14 @@ func (e *Engine) loadCreds(ctx context.Context, accountID string) (trader.Creden
 
 // scanStrategy scans a pgx row into a Strategy.
 func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
-	var dir, stat, tpm, slt, stepsJSON string
+	var dir, stat, tpm, slt, stepsJSON, signalConfigsJSON string
 	var sf, hm bool
 	err := rows.Scan(
 		&s.ID, &s.OwnerID, &s.AccountID, &s.Symbol, &s.Category,
 		&dir, &stat,
 		&s.GridLevels, &s.GridActive, &s.GridStepPct, &s.GridSizeUSDT,
 		&tpm, &s.TPPct, &slt, &s.SLPct, &sf, &hm,
-		&s.EntryOrderType, &stepsJSON,
+		&s.EntryOrderType, &stepsJSON, &signalConfigsJSON,
 	)
 	if err != nil {
 		return err
@@ -192,6 +334,9 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 	if stepsJSON != "" && stepsJSON != "[]" {
 		_ = json.Unmarshal([]byte(stepsJSON), &s.Steps)
 	}
+	if signalConfigsJSON != "" && signalConfigsJSON != "[]" {
+		_ = json.Unmarshal([]byte(signalConfigsJSON), &s.SignalConfigs)
+	}
 	return nil
 }
 
@@ -204,25 +349,27 @@ func scanStrategyRow(row interface{ Scan(...any) error }, s *Strategy) error {
 
 // AccountRunner owns one Bybit private WS and one trade WS connection for one account.
 type AccountRunner struct {
-	accountID   string
-	creds       trader.Credentials
-	pool        *pgxpool.Pool
-	mu          sync.RWMutex
-	strategies  map[string]*StrategyRunner
-	orderIndex  map[string]orderRef // exchangeOrderID → ref
-	tradeStream *trader.TradeStream
-	cancel      context.CancelFunc
+	accountID    string
+	creds        trader.Credentials
+	pool         *pgxpool.Pool
+	signalEngine *signal.Engine
+	mu           sync.RWMutex
+	strategies   map[string]*StrategyRunner
+	orderIndex   map[string]orderRef // exchangeOrderID → ref
+	tradeStream  *trader.TradeStream
+	cancel       context.CancelFunc
 }
 
-func newAccountRunner(accountID string, creds trader.Credentials, pool *pgxpool.Pool, cancel context.CancelFunc) *AccountRunner {
+func newAccountRunner(accountID string, creds trader.Credentials, pool *pgxpool.Pool, signalEngine *signal.Engine, cancel context.CancelFunc) *AccountRunner {
 	return &AccountRunner{
-		accountID:   accountID,
-		creds:       creds,
-		pool:        pool,
-		strategies:  make(map[string]*StrategyRunner),
-		orderIndex:  make(map[string]orderRef),
-		tradeStream: trader.NewTradeStream(creds),
-		cancel:      cancel,
+		accountID:    accountID,
+		creds:        creds,
+		pool:         pool,
+		signalEngine: signalEngine,
+		strategies:   make(map[string]*StrategyRunner),
+		orderIndex:   make(map[string]orderRef),
+		tradeStream:  trader.NewTradeStream(creds),
+		cancel:       cancel,
 	}
 }
 
@@ -238,6 +385,8 @@ func (ar *AccountRunner) addStrategy(s Strategy) {
 	if ok {
 		existing.mu.Lock()
 		prevStatus := existing.strategy.Status
+		prevSignalFilter := existing.strategy.SignalFilter
+		prevConfigsLen := len(existing.strategy.SignalConfigs)
 		if existing.strategy.HedgeMode != s.HedgeMode {
 			existing.positionModeVerified = false
 		}
@@ -251,6 +400,11 @@ func (ar *AccountRunner) addStrategy(s Strategy) {
 		// Stop: cancel placed L-orders but keep TP/SL so the cycle ends naturally.
 		if prevStatus != StatusStopped && s.Status == StatusStopped {
 			go existing.handleStopRequest(context.Background())
+		}
+		// Signal filter or configs changed while the strategy is running.
+		if prevStatus == StatusActive && s.Status == StatusActive &&
+			(prevSignalFilter != s.SignalFilter || len(s.SignalConfigs) != prevConfigsLen) {
+			go existing.handleSignalConfigUpdate(context.Background())
 		}
 		return
 	}

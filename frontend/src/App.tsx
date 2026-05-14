@@ -10,6 +10,8 @@ import { OptimizerPage } from './pages/OptimizerPage'
 import { WebhooksPage } from './pages/WebhooksPage'
 import { AccountsPage } from './pages/AccountsPage'
 import { TerminalPage } from './pages/TerminalPage'
+import { SignalsPage } from './pages/SignalsPage'
+import { AdminPage }   from './pages/AdminPage'
 
 export default function App() {
   return (
@@ -30,8 +32,10 @@ export default function App() {
                     <Route path="signals/:id/backtest" element={<BacktestPage />} />
                     <Route path="signals/:id/optimize" element={<OptimizerPage />} />
                     <Route path="terminal" element={<TerminalPage />} />
+                    <Route path="signals" element={<SignalsPage />} />
                     <Route path="webhooks" element={<WebhooksPage />} />
                     <Route path="accounts" element={<AccountsPage />} />
+                    <Route path="admin"    element={<AdminPage />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
                 </Layout>

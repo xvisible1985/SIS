@@ -9,8 +9,9 @@ interface AuthState {
   token: string | null
   userId: string | null
   email: string | null
+  isAdmin: boolean
   isAuthenticated: boolean
-  login: (token: string, userId: string, email: string, persist?: boolean) => void
+  login: (token: string, userId: string, email: string, isAdmin?: boolean, persist?: boolean) => void
   logout: () => void
 }
 
@@ -26,29 +27,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [email, setEmail] = useState<string | null>(
     () => localStorage.getItem('email') ?? sessionStorage.getItem('email')
   )
+  const [isAdmin, setIsAdmin] = useState<boolean>(
+    () => localStorage.getItem('isAdmin') === 'true' || sessionStorage.getItem('isAdmin') === 'true'
+  )
 
-  function login(newToken: string, newUserId: string, newEmail: string, persist = true) {
+  function login(newToken: string, newUserId: string, newEmail: string, newIsAdmin = false, persist = true) {
     const store = persist ? localStorage : sessionStorage
     store.setItem('token', newToken)
     store.setItem('userId', newUserId)
     store.setItem('email', newEmail)
+    store.setItem('isAdmin', String(newIsAdmin))
     setToken(newToken)
     setUserId(newUserId)
     setEmail(newEmail)
+    setIsAdmin(newIsAdmin)
   }
 
   function logout() {
     localStorage.removeItem('token')
     localStorage.removeItem('userId')
     localStorage.removeItem('email')
+    localStorage.removeItem('isAdmin')
     setToken(null)
     setUserId(null)
     setEmail(null)
+    setIsAdmin(false)
   }
 
   return (
     <AuthContext.Provider
-      value={{ token, userId, email, isAuthenticated: !!token, login, logout }}
+      value={{ token, userId, email, isAdmin, isAuthenticated: !!token, login, logout }}
     >
       {children}
     </AuthContext.Provider>

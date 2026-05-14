@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -9,22 +10,38 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"sis/pkg/signal"
 	"sis/pkg/strategy"
 )
 
 // Server holds shared dependencies for all HTTP handlers.
 type Server struct {
-	pool      *pgxpool.Pool
-	rdb       *redis.Client
-	jwtSecret []byte
-	encKey    string
-	engine    *strategy.Engine
+	pool         *pgxpool.Pool
+	rdb          *redis.Client
+	jwtSecret    []byte
+	encKey       string
+	engine       *strategy.Engine
+	signalEngine *signal.Engine
+	adminEmails  map[string]bool
 }
 
 // NewServer creates a Server.
-func NewServer(pool *pgxpool.Pool, rdb *redis.Client, jwtSecret, encKey string) *Server {
-	s := &Server{pool: pool, rdb: rdb, jwtSecret: []byte(jwtSecret), encKey: encKey}
+func NewServer(ctx context.Context, pool *pgxpool.Pool, rdb *redis.Client, jwtSecret, encKey string, adminEmails map[string]bool) *Server {
+	exec := signal.ExecFn(func(ctx context.Context, sql string, args ...any) error {
+		_, err := pool.Exec(ctx, sql, args...)
+		return err
+	})
+	se := signal.NewEngine(ctx, exec)
+	s := &Server{
+		pool:         pool,
+		rdb:          rdb,
+		jwtSecret:    []byte(jwtSecret),
+		encKey:       encKey,
+		signalEngine: se,
+		adminEmails:  adminEmails,
+	}
 	s.engine = strategy.New(pool, encKey)
+	s.engine.SetSignalEngine(se)
 	return s
 }
 

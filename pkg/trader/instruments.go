@@ -105,5 +105,8 @@ func FormatQty(qty, qtyStep, minQty float64) string {
 		// Snap up to the smallest multiple of qtyStep that satisfies minQty.
 		rounded = math.Ceil(minQty/qtyStep) * qtyStep
 	}
+	if rounded <= 0 {
+		return "0"
+	}
 	return strconv.FormatFloat(rounded, 'f', stepDecimals(qtyStep), 64)
 }

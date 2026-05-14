@@ -143,9 +143,9 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
 
   // Candles: full setData on symbol change, prepend for history, live update() for ticks
   useEffect(() => {
-    if (!seriesRef.current || !candles.length || candleSymbol !== symbol) return
+    if (!seriesRef.current || !candles.length || !candleSymbol || candleSymbol.split(':')[0] !== symbol) return
 
-    const isNewSymbol = loadedSymbolRef.current !== symbol
+    const isNewSymbol = loadedSymbolRef.current !== candleSymbol
     const isPrepend = !isNewSymbol
       && prevFirstTimeRef.current !== null
       && candles[0].time < prevFirstTimeRef.current
@@ -156,7 +156,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       seriesRef.current.setData(candles as any)
       chartRef.current?.priceScale('right').applyOptions({ autoScale: true })
       chartRef.current?.timeScale().fitContent()
-      loadedSymbolRef.current = symbol
+      loadedSymbolRef.current = candleSymbol
       lastLoadMoreRef.current = Date.now() + 2000  // suppress auto-load right after initial load
       setAfterSetData(n => n + 1)
     } else if (isPrepend) {

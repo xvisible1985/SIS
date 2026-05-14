@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	"sis/pkg/auth"
+	"sis/pkg/signal"
 )
 
 // StrategiesUpdatesStream pushes strategy status changes for all strategies
@@ -33,16 +34,19 @@ func (s *Server) StrategiesUpdatesStream(w http.ResponseWriter, r *http.Request)
 	defer conn.Close()
 
 	type statusUpdate struct {
-		ID           string  `json:"id"`
-		Status       string  `json:"status"`
-		ActiveLevels int     `json:"active_levels"`
-		VolumeUSDT   float64 `json:"volume_usdt"`
+		ID           string             `json:"id"`
+		Status       string             `json:"status"`
+		ActiveLevels int                `json:"active_levels"`
+		VolumeUSDT   float64            `json:"volume_usdt"`
+		SignalState  string             `json:"signal_state"`
+		SignalValues map[string]float64 `json:"signal_values,omitempty"`
 	}
 
 	type lastState struct {
 		status       string
 		activeLevels int
 		volumeUSDT   float64
+		signalState  string
 	}
 	lastSeen := map[string]lastState{}
 	ticker := time.NewTicker(2 * time.Second)
@@ -54,7 +58,8 @@ func (s *Server) StrategiesUpdatesStream(w http.ResponseWriter, r *http.Request)
 			return
 		case <-ticker.C:
 			rows, err := s.pool.Query(r.Context(), `
-				SELECT s.id, s.status,
+				SELECT s.id, s.status, s.symbol,
+					COALESCE(s.signal_configs::text, '[]'),
 					COALESCE((
 						SELECT COUNT(*)::int FROM strategy_levels sl
 						JOIN strategy_cycles sc ON sl.cycle_id = sc.id
@@ -71,15 +76,31 @@ func (s *Server) StrategiesUpdatesStream(w http.ResponseWriter, r *http.Request)
 			}
 			var updates []statusUpdate
 			for rows.Next() {
-				var id, status string
+				var id, status, symbol, sigConfigsJSON string
 				var activeLevels int
 				var volumeUSDT float64
-				if rows.Scan(&id, &status, &activeLevels, &volumeUSDT) == nil {
-					prev := lastSeen[id]
-					if prev.status != status || prev.activeLevels != activeLevels || prev.volumeUSDT != volumeUSDT {
-						updates = append(updates, statusUpdate{id, status, activeLevels, volumeUSDT})
-						lastSeen[id] = lastState{status, activeLevels, volumeUSDT}
+				if rows.Scan(&id, &status, &symbol, &sigConfigsJSON, &activeLevels, &volumeUSDT) != nil {
+					continue
+				}
+				// Compute signal state directly — works for active AND stopped strategies
+				sigState := computeSignalState(s.signalEngine, symbol, sigConfigsJSON)
+				prev := lastSeen[id]
+				if prev.status != status || prev.activeLevels != activeLevels || prev.volumeUSDT != volumeUSDT || prev.signalState != sigState {
+					upd := statusUpdate{
+						ID:           id,
+						Status:       status,
+						ActiveLevels: activeLevels,
+						VolumeUSDT:   volumeUSDT,
+						SignalState:  sigState,
 					}
+					if sigState != prev.signalState {
+						upd.SignalValues = s.engine.GetSignalValues(id)
+						if upd.SignalValues == nil {
+							upd.SignalValues = computeSignalValues(s.signalEngine, symbol, sigConfigsJSON)
+						}
+					}
+					updates = append(updates, upd)
+					lastSeen[id] = lastState{status, activeLevels, volumeUSDT, sigState}
 				}
 			}
 			rows.Close()
@@ -169,6 +190,48 @@ func (s *Server) StrategyEventsStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// computeSignalState computes the combined signal state for a strategy directly
+// using the signal engine. Works for both active and stopped strategies.
+func computeSignalState(se *signal.Engine, symbol, sigConfigsJSON string) string {
+	cfgs, tf := parseSignalConfigs(sigConfigsJSON)
+	if len(cfgs) == 0 {
+		return ""
+	}
+	return string(se.ComputeStateForce(symbol, tf, cfgs))
+}
+
+// computeSignalValues queries per-signal numeric values for display.
+func computeSignalValues(se *signal.Engine, symbol, sigConfigsJSON string) map[string]float64 {
+	cfgs, tf := parseSignalConfigs(sigConfigsJSON)
+	if len(cfgs) == 0 {
+		return nil
+	}
+	return se.QueryValues(symbol, tf, cfgs)
+}
+
+// parseSignalConfigs unmarshals the JSON signal_configs column and extracts
+// the timeframe (tf param) from the first config that has one.
+func parseSignalConfigs(sigConfigsJSON string) ([]signal.Config, string) {
+	var raw []struct {
+		Name   string                 `json:"name"`
+		Params map[string]interface{} `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(sigConfigsJSON), &raw); err != nil || len(raw) == 0 {
+		return nil, ""
+	}
+	cfgs := make([]signal.Config, len(raw))
+	tf := "60"
+	for i, r := range raw {
+		cfgs[i] = signal.Config{Name: r.Name, Params: r.Params}
+		if v, ok := r.Params["tf"]; ok {
+			if sv, ok2 := v.(string); ok2 && sv != "" {
+				tf = sv
+			}
+		}
+	}
+	return cfgs, tf
 }
 
 var upgrader = websocket.Upgrader{

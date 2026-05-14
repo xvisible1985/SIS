@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"sis/pkg/signal"
 	"sis/pkg/trader"
 )
 
@@ -38,7 +39,10 @@ type StrategyRunner struct {
 	lastSLPrice          float64 // SL trigger price at last placement
 	positionModeVerified    bool // true after ensurePositionMode succeeded for current HedgeMode value
 	lastVerifiedHedge       bool // HedgeMode value at the time positionModeVerified was set
-	gridChangedWhileStopped bool // restartCycle called while stopped; apply on next loadOrStart
+	gridChangedWhileStopped bool   // restartCycle called while stopped; apply on next loadOrStart
+	signalSubID             string // non-empty while waiting for signal before starting a new cycle
+	signalMonitorID         string // non-empty while continuously monitoring signal during active cycle
+	currentSignalState      string // last observed signal state: "buy","sell","neutral","" (no filter)
 }
 
 // calculateGridLevels returns target prices for all N grid levels.
@@ -90,6 +94,14 @@ func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 	}
 
 	if loadErr != nil {
+		sr.mu.Lock()
+		sf := sr.strategy.SignalFilter
+		configs := sr.strategy.SignalConfigs
+		sr.mu.Unlock()
+		if sf && len(configs) > 0 && sr.runner.signalEngine != nil {
+			go sr.awaitSignal(context.Background())
+			return
+		}
 		sr.startMu.Lock()
 		err2 := sr.startCycle(ctx)
 		sr.startMu.Unlock()
@@ -217,6 +229,13 @@ func (sr *StrategyRunner) checkPositionGone(ctx context.Context) bool {
 	}
 
 	wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
+
+	// Also load minQty for dust detection (best-effort; zero means unknown).
+	sr.mu.Lock()
+	minQty := sr.instr.MinQty
+	sr.mu.Unlock()
+
+	var dustSize float64 // non-zero if a sub-minQty fragment was found
 	positionOpen := false
 	for _, p := range positions {
 		size, _ := strconv.ParseFloat(p.Size, 64)
@@ -227,6 +246,12 @@ func (sr *StrategyRunner) checkPositionGone(ctx context.Context) bool {
 		if sr.strategy.HedgeMode && p.PositionIdx != wantIdx {
 			continue
 		}
+		// If minQty is known and the position is smaller than one lot, treat it as
+		// dust: attempt a market close, then clean up the cycle as if gone.
+		if minQty > 0 && size < minQty {
+			dustSize = size
+			break
+		}
 		positionOpen = true
 		break
 	}
@@ -234,7 +259,31 @@ func (sr *StrategyRunner) checkPositionGone(ctx context.Context) bool {
 		return false
 	}
 
-	// Position is gone — cancel TP, mark filled levels as cancelled, close cycle.
+	// Dust position: close it with a market order using the exact size string so
+	// Bybit accepts it as a full reduce-only close even though size < minQty.
+	if dustSize > 0 {
+		closeSide := "Sell"
+		if sr.strategy.Direction == DirectionShort {
+			closeSide = "Buy"
+		}
+		dustQty := strconv.FormatFloat(dustSize, 'f', -1, 64)
+		_, closeErr := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+			Symbol:      sr.strategy.Symbol,
+			Category:    sr.strategy.Category,
+			Side:        closeSide,
+			OrderType:   "Market",
+			Qty:         dustQty,
+			ReduceOnly:  !sr.strategy.HedgeMode,
+			PositionIdx: wantIdx,
+		})
+		if closeErr != nil {
+			log.Printf("strategy %s: dust close (%.8f %s): %v", sr.strategy.ID, dustSize, sr.strategy.Symbol, closeErr)
+		} else {
+			log.Printf("strategy %s: dust position %.8f %s закрыта маркетом", sr.strategy.ID, dustSize, sr.strategy.Symbol)
+		}
+	}
+
+	// Position is gone (or was dust) — cancel TP, mark filled levels as cancelled, close cycle.
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 
@@ -251,6 +300,64 @@ func (sr *StrategyRunner) checkPositionGone(ctx context.Context) bool {
 	}
 	sr.closeCycle(ctx, "position_gone")
 	return true
+}
+
+// closeDustPosition attempts to close a sub-minQty position fragment that may have been
+// left by a previous cycle. Called at the start of a new cycle before placing any orders,
+// so that SetLeverage / ensurePositionMode don't fail due to a residual open position.
+// Must NOT be called with sr.mu held.
+func (sr *StrategyRunner) closeDustPosition(ctx context.Context) {
+	sr.mu.Lock()
+	symbol := sr.strategy.Symbol
+	category := sr.strategy.Category
+	direction := sr.strategy.Direction
+	hedgeMode := sr.strategy.HedgeMode
+	minQty := sr.instr.MinQty
+	sr.mu.Unlock()
+
+	if minQty == 0 {
+		return // instrument not loaded yet; skip
+	}
+
+	positions, err := trader.FetchPositions(ctx, sr.runner.creds)
+	if err != nil {
+		return
+	}
+
+	wantIdx := positionIdxForClose(hedgeMode, direction)
+	for _, p := range positions {
+		if p.Symbol != symbol {
+			continue
+		}
+		if hedgeMode && p.PositionIdx != wantIdx {
+			continue
+		}
+		size, _ := strconv.ParseFloat(p.Size, 64)
+		if size <= 0 || size >= minQty {
+			continue
+		}
+		// Dust found — attempt market close with exact size.
+		closeSide := "Sell"
+		if direction == DirectionShort {
+			closeSide = "Buy"
+		}
+		dustQty := strconv.FormatFloat(size, 'f', -1, 64)
+		_, closeErr := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+			Symbol:      symbol,
+			Category:    category,
+			Side:        closeSide,
+			OrderType:   "Market",
+			Qty:         dustQty,
+			ReduceOnly:  !hedgeMode,
+			PositionIdx: wantIdx,
+		})
+		if closeErr != nil {
+			log.Printf("strategy %s: closeDust(%.8f %s): %v", sr.strategy.ID, size, symbol, closeErr)
+		} else {
+			log.Printf("strategy %s: dust %.8f %s закрыта перед новым циклом", sr.strategy.ID, size, symbol)
+		}
+		break // only one slot per direction
+	}
 }
 
 // reconcileOrders verifies exchange order state against DB state on startup.
@@ -608,6 +715,10 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 		defer sr.mu.Unlock()
 		return sr.placeNextLevels(ctx)
 	}
+
+	// Close any sub-minQty dust left from a previous cycle before starting fresh.
+	// Must be called without sr.mu held (makes REST calls).
+	sr.closeDustPosition(ctx)
 
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
@@ -1049,6 +1160,10 @@ func (sr *StrategyRunner) handleLevelFill(ctx context.Context, levelID string, f
 // updateTP cancels the existing TP order (if any) and places a new one for the full position.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) updateTP(ctx context.Context) error {
+	if sr.instr.QtyStep == 0 {
+		sr.warn(ctx, "updateTP: инструмент не загружен (QtyStep=0) — TP не выставлен, повтор при следующем событии")
+		return nil
+	}
 	avg, totalQty := sr.avgEntry()
 	if totalQty == 0 || avg == 0 {
 		return nil
@@ -1086,6 +1201,10 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 
 	sr.tpPlaceSeq++
 	tpQty := trader.FormatQty(totalQty, sr.instr.QtyStep, sr.instr.MinQty)
+	if tpQty == "0" {
+		sr.warn(ctx, fmt.Sprintf("updateTP: qty %.8f округляется до нуля (step=%.6f) — TP не выставлен", totalQty, sr.instr.QtyStep))
+		return nil
+	}
 	linkID := fmt.Sprintf("SIS_STR-%s-tp-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, sr.tpPlaceSeq)
 	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:      sr.strategy.Symbol,
@@ -1103,6 +1222,9 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 		if isDuplicateLinkId(err) {
 			sr.recoverDuplicateTP(ctx, linkID)
 			return nil
+		}
+		if isTruncatedToZero(err) {
+			return sr.retryTPAfterCancelStale(ctx, tpSide, tpQty, linkID, tpPrice, totalQty, avg)
 		}
 		return fmt.Errorf("place TP: %w", err)
 	}
@@ -1147,6 +1269,10 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 	if sr.strategy.SLType != SLTypeConditional || sr.strategy.SLPct <= 0 {
 		return nil
 	}
+	if sr.instr.QtyStep == 0 {
+		sr.warn(ctx, "updateSL: инструмент не загружен (QtyStep=0) — SL не выставлен, повтор при следующем событии")
+		return nil
+	}
 	// Do not place SL until the entire grid is filled — wait for no pending/placed levels.
 	for _, l := range sr.levels {
 		if l.Status == LevelPending || l.Status == LevelPlaced {
@@ -1188,6 +1314,10 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 
 	sr.slPlaceSeq++
 	slQty := trader.FormatQty(totalQty, sr.instr.QtyStep, sr.instr.MinQty)
+	if slQty == "0" {
+		sr.warn(ctx, fmt.Sprintf("updateSL: qty %.8f округляется до нуля (step=%.6f) — SL не выставлен", totalQty, sr.instr.QtyStep))
+		return nil
+	}
 	linkID := fmt.Sprintf("SIS_STR-%s-sl-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, sr.slPlaceSeq)
 	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:           sr.strategy.Symbol,
@@ -1287,8 +1417,20 @@ func (sr *StrategyRunner) maybeRestart(ctx context.Context) {
 	switch sr.strategy.Status {
 	case StatusActive:
 		go func() {
-			if err := sr.startCycle(ctx); err != nil {
-				log.Printf("strategy %s: restart cycle: %v", sr.strategy.ID, err)
+			sr.mu.Lock()
+			sf := sr.strategy.SignalFilter
+			configs := sr.strategy.SignalConfigs
+			se := sr.runner.signalEngine
+			sr.mu.Unlock()
+
+			if sf && len(configs) > 0 && se != nil {
+				sr.awaitSignal(context.Background())
+			} else {
+				sr.startMu.Lock()
+				if err := sr.startCycle(ctx); err != nil {
+					log.Printf("strategy %s: restart cycle: %v", sr.strategy.ID, err)
+				}
+				sr.startMu.Unlock()
 			}
 		}()
 	case StatusFinishing:
@@ -1331,6 +1473,14 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 	sr.partialCloseQty = 0
 	sr.lastTPSLQty = 0
 	sr.lastTPSLAvg = 0
+	// Stop continuous signal monitor — the next cycle will start its own.
+	if sr.signalMonitorID != "" {
+		if sr.runner.signalEngine != nil {
+			sr.runner.signalEngine.Unsubscribe(sr.signalMonitorID)
+		}
+		sr.signalMonitorID = ""
+	}
+	sr.currentSignalState = ""
 }
 
 // cancelPlacedLevels cancels only the grid-level orders belonging to this strategy,
@@ -1380,12 +1530,600 @@ func (sr *StrategyRunner) cancelPlacedLevels(ctx context.Context) {
 	}
 }
 
+// awaitSignal subscribes to the signal engine and calls startCycle when the
+// signal state matches the strategy direction. Runs in a goroutine launched from loadOrStart.
+func (sr *StrategyRunner) awaitSignal(ctx context.Context) {
+	sr.mu.Lock()
+	configs := sr.strategy.SignalConfigs
+	symbol := sr.strategy.Symbol
+	stratID := sr.strategy.ID
+	signalEngine := sr.runner.signalEngine
+	sr.mu.Unlock()
+
+	if signalEngine == nil || len(configs) == 0 {
+		sr.startMu.Lock()
+		err := sr.startCycle(ctx)
+		sr.startMu.Unlock()
+		if err != nil {
+			log.Printf("strategy %s: start cycle (no signal engine): %v", stratID, err)
+		}
+		return
+	}
+
+	sigConfigs := make([]signal.Config, len(configs))
+	for i, sc := range configs {
+		sigConfigs[i] = signal.Config{Name: sc.Name, Params: sc.Params}
+	}
+
+	tf := "1h"
+	if len(configs) > 0 {
+		if v, ok := configs[0].Params["tf"]; ok {
+			if s, ok2 := v.(string); ok2 && s != "" {
+				tf = s
+			}
+		}
+	}
+
+	subID := stratID + ":signal"
+	sr.mu.Lock()
+	sr.signalSubID = subID
+	sr.mu.Unlock()
+
+	sr.info(ctx, "Ожидание сигнала для запуска цикла")
+
+	err := signalEngine.Subscribe(subID, symbol, tf, sigConfigs, func(state signal.State) {
+		sr.mu.Lock()
+		status := sr.strategy.Status
+		curDir := sr.strategy.Direction
+		curSubID := sr.signalSubID
+		sr.mu.Unlock()
+
+		if status != StatusActive || curSubID == "" {
+			return
+		}
+
+		var want signal.State
+		switch curDir {
+		case DirectionLong:
+			want = signal.Buy
+		case DirectionShort:
+			want = signal.Sell
+		default: // both
+			if state == signal.Neutral {
+				return
+			}
+			want = state
+		}
+		if state != want {
+			return
+		}
+
+		signalEngine.Unsubscribe(subID)
+		sr.mu.Lock()
+		sr.signalSubID = ""
+		sr.currentSignalState = string(state)
+		sr.mu.Unlock()
+
+		sr.info(context.Background(), fmt.Sprintf("Сигнал получен (%s), запуск цикла", state))
+		sr.startMu.Lock()
+		if err2 := sr.startCycle(context.Background()); err2 != nil {
+			log.Printf("strategy %s: start cycle on signal: %v", stratID, err2)
+		}
+		sr.startMu.Unlock()
+		go sr.launchSignalMonitor(context.Background())
+	})
+	if err != nil {
+		log.Printf("strategy %s: signal subscribe: %v", stratID, err)
+		sr.mu.Lock()
+		sr.signalSubID = ""
+		sr.mu.Unlock()
+		sr.startMu.Lock()
+		if err2 := sr.startCycle(ctx); err2 != nil {
+			log.Printf("strategy %s: start cycle (signal subscribe failed): %v", stratID, err2)
+		}
+		sr.startMu.Unlock()
+		return
+	}
+
+	// Subscribe fires only on state *changes*. If the signal is already in the
+	// desired state when we subscribe, the callback would never fire and the
+	// cycle would never start. Check the current state immediately.
+	sr.mu.Lock()
+	curDir := sr.strategy.Direction
+	curSubID := sr.signalSubID
+	sr.mu.Unlock()
+
+	if curSubID == subID {
+		curState, known := signalEngine.QueryState(symbol, tf, sigConfigs)
+		if known {
+			matches := false
+			switch curDir {
+			case DirectionLong:
+				matches = curState == signal.Buy
+			case DirectionShort:
+				matches = curState == signal.Sell
+			default: // both
+				matches = curState != signal.Neutral
+			}
+			if matches {
+				signalEngine.Unsubscribe(subID)
+				sr.mu.Lock()
+				sr.signalSubID = ""
+				sr.currentSignalState = string(curState)
+				sr.mu.Unlock()
+				sr.info(ctx, fmt.Sprintf("Текущий сигнал (%s) уже соответствует направлению — запуск цикла", curState))
+				sr.startMu.Lock()
+				if err2 := sr.startCycle(ctx); err2 != nil {
+					log.Printf("strategy %s: start cycle on current signal: %v", stratID, err2)
+				}
+				sr.startMu.Unlock()
+				go sr.launchSignalMonitor(ctx)
+			}
+		}
+	}
+}
+
+// handleSignalConfigUpdate is called when signal_filter or signal_configs change on
+// an already-active strategy (detected in addStrategy).
+//
+// Two cases:
+//   - awaiting signal (signalSubID != ""): unsubscribe, re-evaluate with new configs;
+//     if matches → resume/start grid, otherwise re-subscribe with new configs.
+//   - grid running (signalSubID == ""): check current signal state;
+//     if matches → keep grid unchanged, if not → cancel orders and await signal.
+//
+// In both cases, if a position is already open (filled levels), the cycle is left untouched.
+func (sr *StrategyRunner) handleSignalConfigUpdate(ctx context.Context) {
+	sr.mu.Lock()
+
+	sf := sr.strategy.SignalFilter
+	configs := sr.strategy.SignalConfigs
+	symbol := sr.strategy.Symbol
+	dir := sr.strategy.Direction
+	signalEngine := sr.runner.signalEngine
+	subID := sr.signalSubID
+	monitorID := sr.signalMonitorID
+	hasCycle := sr.cycle != nil
+	wasAwaiting := subID != ""
+
+	// Stop the continuous monitor — we'll restart it with updated configs below.
+	if monitorID != "" && signalEngine != nil {
+		signalEngine.Unsubscribe(monitorID)
+		sr.signalMonitorID = ""
+	}
+
+	if wasAwaiting {
+		// Unsubscribe from the old pre-cycle subscription and re-evaluate.
+		if signalEngine != nil {
+			signalEngine.Unsubscribe(subID)
+		}
+		sr.signalSubID = ""
+		sr.mu.Unlock()
+
+		if !sf || len(configs) == 0 {
+			sr.info(ctx, "Фильтр сигнала отключён — запускаю сетку")
+			sr.startMu.Lock()
+			sr.resumeGridAfterSignal(ctx)
+			sr.startMu.Unlock()
+			return
+		}
+	} else {
+		if !hasCycle {
+			sr.mu.Unlock()
+			return
+		}
+		hasFills := false
+		for _, l := range sr.levels {
+			if l.Status == LevelFilled {
+				hasFills = true
+				break
+			}
+		}
+		sr.mu.Unlock()
+
+		if hasFills {
+			sr.info(ctx, "Сигнал изменён — позиция открыта, текущий цикл продолжается")
+			// Restart monitor with updated configs even with open position.
+			go sr.launchSignalMonitor(ctx)
+			return
+		}
+		if !sf || len(configs) == 0 {
+			return
+		}
+	}
+
+	if signalEngine == nil || len(configs) == 0 {
+		return
+	}
+
+	tf := "1h"
+	if v, ok := configs[0].Params["tf"]; ok {
+		if s, ok2 := v.(string); ok2 && s != "" {
+			tf = s
+		}
+	}
+	sigConfigs := make([]signal.Config, len(configs))
+	for i, sc := range configs {
+		sigConfigs[i] = signal.Config{Name: sc.Name, Params: sc.Params}
+	}
+
+	state, known := signalEngine.QueryState(symbol, tf, sigConfigs)
+
+	if !known {
+		// Hub has no candle data yet — re-subscribe and wait for first candle.
+		if wasAwaiting {
+			sr.info(ctx, "Конфигурация сигнала изменена — состояние неизвестно, ожидаю нового сигнала")
+			go sr.awaitSignalResumeCycle(ctx)
+		} else {
+			sr.info(ctx, "Конфигурация сигнала изменена — состояние сигнала неизвестно, сетка продолжает работать")
+			go sr.launchSignalMonitor(ctx)
+		}
+		return
+	}
+
+	matches := false
+	switch dir {
+	case DirectionLong:
+		matches = state == signal.Buy
+	case DirectionShort:
+		matches = state == signal.Sell
+	default:
+		matches = state != signal.Neutral
+	}
+
+	if matches {
+		if wasAwaiting {
+			sr.info(ctx, fmt.Sprintf("Конфигурация сигнала изменена — текущий сигнал (%s) соответствует направлению, запускаю сетку", state))
+			sr.startMu.Lock()
+			sr.resumeGridAfterSignal(ctx)
+			sr.startMu.Unlock()
+		} else {
+			sr.info(ctx, fmt.Sprintf("Конфигурация сигнала изменена — текущий сигнал (%s) соответствует направлению, сетка продолжает работать", state))
+		}
+		sr.mu.Lock()
+		sr.currentSignalState = string(state)
+		sr.mu.Unlock()
+		go sr.launchSignalMonitor(ctx)
+		return
+	}
+
+	sr.info(ctx, fmt.Sprintf("Конфигурация сигнала изменена — текущий сигнал (%s) не соответствует направлению (%s), приостанавливаю сетку", state, dir))
+
+	if !wasAwaiting {
+		sr.mu.Lock()
+		sr.cancelPlacedLevels(ctx)
+		for i := range sr.levels {
+			l := &sr.levels[i]
+			if (l.Status == LevelPlaced || l.Status == LevelPending) && l.FilledPrice == 0 {
+				l.Status = LevelCancelled
+				l.ExchangeOrderID = ""
+			}
+		}
+		sr.mu.Unlock()
+	}
+
+	go sr.awaitSignalResumeCycle(ctx)
+}
+
+// awaitSignalResumeCycle is like awaitSignal but resumes the existing cycle instead
+// of starting a new one. Used when signal_filter is added to a running strategy that
+// had its grid orders cancelled because the signal didn't match.
+func (sr *StrategyRunner) awaitSignalResumeCycle(ctx context.Context) {
+	sr.mu.Lock()
+	configs := sr.strategy.SignalConfigs
+	symbol := sr.strategy.Symbol
+	stratID := sr.strategy.ID
+	signalEngine := sr.runner.signalEngine
+	sr.mu.Unlock()
+
+	if signalEngine == nil || len(configs) == 0 {
+		sr.startMu.Lock()
+		sr.resumeGridAfterSignal(ctx)
+		sr.startMu.Unlock()
+		return
+	}
+
+	tf := "1h"
+	if v, ok := configs[0].Params["tf"]; ok {
+		if s, ok2 := v.(string); ok2 && s != "" {
+			tf = s
+		}
+	}
+	sigConfigs := make([]signal.Config, len(configs))
+	for i, sc := range configs {
+		sigConfigs[i] = signal.Config{Name: sc.Name, Params: sc.Params}
+	}
+
+	subID := stratID + ":signal"
+	sr.mu.Lock()
+	sr.signalSubID = subID
+	sr.mu.Unlock()
+
+	sr.info(ctx, "Ожидание сигнала — сетка приостановлена")
+
+	err := signalEngine.Subscribe(subID, symbol, tf, sigConfigs, func(state signal.State) {
+		sr.mu.Lock()
+		status := sr.strategy.Status
+		curDir := sr.strategy.Direction
+		curSubID := sr.signalSubID
+		sr.mu.Unlock()
+
+		if status != StatusActive || curSubID == "" {
+			return
+		}
+
+		var want signal.State
+		switch curDir {
+		case DirectionLong:
+			want = signal.Buy
+		case DirectionShort:
+			want = signal.Sell
+		default:
+			if state == signal.Neutral {
+				return
+			}
+			want = state
+		}
+		if state != want {
+			return
+		}
+
+		signalEngine.Unsubscribe(subID)
+		sr.mu.Lock()
+		sr.signalSubID = ""
+		sr.currentSignalState = string(state)
+		sr.mu.Unlock()
+
+		sr.info(context.Background(), fmt.Sprintf("Сигнал получен (%s), возобновляю сетку", state))
+		sr.startMu.Lock()
+		sr.resumeGridAfterSignal(context.Background())
+		sr.startMu.Unlock()
+		go sr.launchSignalMonitor(context.Background())
+	})
+	if err != nil {
+		log.Printf("strategy %s: signal subscribe (resume cycle): %v", stratID, err)
+		sr.mu.Lock()
+		sr.signalSubID = ""
+		sr.mu.Unlock()
+		sr.startMu.Lock()
+		sr.resumeGridAfterSignal(ctx)
+		sr.startMu.Unlock()
+	}
+}
+
+// launchSignalMonitor subscribes to the signal engine for the duration of the active
+// cycle. Unlike awaitSignal (which fires once and starts the cycle), this subscription
+// stays alive and acts as a continuous filter:
+//   - signal drops (mismatch)  → cancel placed orders, log "приостанавливаю сетку"
+//   - signal returns (match)   → resume cancelled orders, log "возобновляю сетку"
+//
+// Must be called WITHOUT sr.mu or sr.startMu held. Replaces any prior monitor.
+func (sr *StrategyRunner) launchSignalMonitor(ctx context.Context) {
+	sr.mu.Lock()
+	sf := sr.strategy.SignalFilter
+	configs := sr.strategy.SignalConfigs
+	symbol := sr.strategy.Symbol
+	stratID := sr.strategy.ID
+	signalEngine := sr.runner.signalEngine
+	// Clear any existing monitor subscription before registering a new one.
+	if sr.signalMonitorID != "" && signalEngine != nil {
+		signalEngine.Unsubscribe(sr.signalMonitorID)
+		sr.signalMonitorID = ""
+	}
+	sr.mu.Unlock()
+
+	if !sf || len(configs) == 0 || signalEngine == nil {
+		return
+	}
+
+	tf := "1h"
+	if v, ok := configs[0].Params["tf"]; ok {
+		if s, ok2 := v.(string); ok2 && s != "" {
+			tf = s
+		}
+	}
+	sigConfigs := make([]signal.Config, len(configs))
+	sigParts := make([]string, len(configs))
+	for i, sc := range configs {
+		sigConfigs[i] = signal.Config{Name: sc.Name, Params: sc.Params}
+		sigParts[i] = sc.Name
+	}
+	sigLabel := strings.Join(sigParts, "+")
+
+	monitorID := stratID + ":monitor"
+	sr.mu.Lock()
+	sr.signalMonitorID = monitorID
+	sr.mu.Unlock()
+
+	err := signalEngine.Subscribe(monitorID, symbol, tf, sigConfigs, func(state signal.State) {
+		sr.mu.Lock()
+		status := sr.strategy.Status
+		curDir := sr.strategy.Direction
+		curMonitorID := sr.signalMonitorID
+		hasCycle := sr.cycle != nil
+		hasPlaced := false
+		hasCancelled := false
+		for _, l := range sr.levels {
+			if l.Status == LevelPlaced {
+				hasPlaced = true
+			}
+			if l.Status == LevelCancelled && l.FilledPrice == 0 {
+				hasCancelled = true
+			}
+		}
+		prevState := sr.currentSignalState
+		curStateStr := string(state)
+		sr.currentSignalState = curStateStr
+		sr.mu.Unlock()
+
+		if status != StatusActive || curMonitorID != monitorID {
+			return
+		}
+		if curStateStr == prevState {
+			return
+		}
+
+		sr.info(context.Background(), fmt.Sprintf("Сигнал [%s]: %s → %s", sigLabel, prevState, curStateStr))
+
+		matches := false
+		switch curDir {
+		case DirectionLong:
+			matches = state == signal.Buy
+		case DirectionShort:
+			matches = state == signal.Sell
+		default:
+			matches = state != signal.Neutral
+		}
+
+		if matches {
+			if hasCycle && hasCancelled && !hasPlaced {
+				sr.info(context.Background(), "Возобновляю сетку")
+				go func() {
+					sr.startMu.Lock()
+					sr.resumeGridAfterSignal(context.Background())
+					sr.startMu.Unlock()
+				}()
+			}
+		} else {
+			if hasPlaced {
+				sr.info(context.Background(), "Приостанавливаю сетку")
+				go func() {
+					sr.mu.Lock()
+					sr.cancelPlacedLevels(context.Background())
+					for i := range sr.levels {
+						l := &sr.levels[i]
+						if (l.Status == LevelPlaced || l.Status == LevelPending) && l.FilledPrice == 0 {
+							l.Status = LevelCancelled
+							l.ExchangeOrderID = ""
+						}
+					}
+					sr.mu.Unlock()
+				}()
+			}
+		}
+	})
+
+	if err != nil {
+		log.Printf("strategy %s: signal monitor subscribe: %v", stratID, err)
+		sr.mu.Lock()
+		sr.signalMonitorID = ""
+		sr.mu.Unlock()
+	}
+}
+
+// resumeGridAfterSignal resumes the current cycle after the signal arrived while
+// the grid was paused. Levels that were cancelled are reset to pending; any level
+// whose target price has already been passed by the market is filled immediately
+// at market price, and the rest are placed as limits via placeNextLevels.
+// Must be called with startMu held and WITHOUT sr.mu held.
+func (sr *StrategyRunner) resumeGridAfterSignal(ctx context.Context) {
+	sr.mu.Lock()
+	hasCycle := sr.cycle != nil
+	sr.mu.Unlock()
+
+	if !hasCycle {
+		if err := sr.startCycle(ctx); err != nil {
+			log.Printf("strategy %s: resumeGridAfterSignal: start cycle: %v", sr.strategy.ID, err)
+		}
+		return
+	}
+
+	price, err := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	if err != nil {
+		log.Printf("strategy %s: resumeGridAfterSignal: fetch price: %v", sr.strategy.ID, err)
+		return
+	}
+
+	sr.resetCancelledLevels(ctx)
+
+	sr.mu.Lock()
+
+	if sr.cycle == nil {
+		sr.mu.Unlock()
+		if err := sr.startCycle(ctx); err != nil {
+			log.Printf("strategy %s: resumeGridAfterSignal: start cycle: %v", sr.strategy.ID, err)
+		}
+		return
+	}
+
+	sr.repriceGen++
+
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Status != LevelPending {
+			continue
+		}
+		passed := (l.Side == "Buy" && price <= l.TargetPrice) ||
+			(l.Side == "Sell" && price >= l.TargetPrice)
+		if !passed {
+			continue
+		}
+		linkID := fmt.Sprintf("SIS_STR-%s-%d-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, sr.repriceGen)
+		ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
+		sr.runner.RegisterOrder(linkID, ref)
+		result, placeErr := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+			Symbol:      sr.strategy.Symbol,
+			Category:    sr.strategy.Category,
+			Side:        l.Side,
+			OrderType:   "Market",
+			Qty:         l.Qty,
+			PositionIdx: positionIdxForOpen(sr.strategy.HedgeMode, l.Side),
+			OrderLinkId: linkID,
+		})
+		if placeErr != nil {
+			sr.runner.UnregisterOrder(linkID)
+			sr.errlog(ctx, fmt.Sprintf("Сигнал: market L%d: %v", l.LevelIdx, placeErr))
+			continue
+		}
+		l.Status = LevelFilled
+		l.FilledPrice = price
+		l.ExchangeOrderID = result.OrderId
+		sr.runner.RegisterOrder(result.OrderId, ref)
+		sr.runner.pool.Exec(ctx, //nolint:errcheck
+			`UPDATE strategy_levels SET status='filled', filled_price=$1, filled_at=NOW(), exchange_order_id=$2 WHERE id=$3`,
+			price, result.OrderId, l.ID)
+		sr.info(ctx, fmt.Sprintf("Сигнал: L%d %s @ %.4f (маркет, цена прошла уровень)", l.LevelIdx, l.Side, price))
+	}
+
+	if err := sr.placeNextLevels(ctx); err != nil {
+		sr.errlog(ctx, fmt.Sprintf("Ошибка выставления уровней после сигнала: %v", err))
+	}
+	if err := sr.updateTP(ctx); err != nil {
+		sr.errlog(ctx, fmt.Sprintf("Ошибка обновления TP: %v", err))
+	}
+	if err := sr.updateSL(ctx); err != nil {
+		sr.errlog(ctx, fmt.Sprintf("Ошибка обновления SL: %v", err))
+	}
+
+	sr.mu.Unlock()
+}
+
 // handleStopRequest cancels placed L-orders but keeps TP and SL active so the
 // current cycle ends naturally. Called when status transitions to stopped.
 // Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) handleStopRequest(ctx context.Context) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
+
+	// Cancel continuous signal monitor if active.
+	if sr.signalMonitorID != "" {
+		if sr.runner.signalEngine != nil {
+			sr.runner.signalEngine.Unsubscribe(sr.signalMonitorID)
+		}
+		sr.signalMonitorID = ""
+		sr.currentSignalState = ""
+	}
+
+	// Cancel any pending signal subscription (awaiting first signal before cycle start).
+	if sr.signalSubID != "" {
+		if sr.runner.signalEngine != nil {
+			sr.runner.signalEngine.Unsubscribe(sr.signalSubID)
+		}
+		sr.signalSubID = ""
+		sr.info(ctx, "Стратегия остановлена (ожидание сигнала отменено)")
+		return
+	}
+
 	if sr.cycle == nil {
 		sr.info(ctx, "Стратегия остановлена (нет активного цикла)")
 		return
@@ -1785,6 +2523,13 @@ func isDuplicateLinkId(err error) bool {
 	return strings.Contains(err.Error(), "retCode=110072")
 }
 
+// isTruncatedToZero returns true for Bybit retCode=110017 (orderQty truncated to zero).
+// Typically caused by a stale close order on the exchange that was lost from our tracking,
+// consuming the entire reduce-only or position-close budget.
+func isTruncatedToZero(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "retCode=110017")
+}
+
 // recoverDuplicateLevel fetches the already-placed order for level idx by linkID,
 // updates DB and in-memory state, and registers the order for WS routing.
 // Must be called with sr.mu held.
@@ -2122,6 +2867,69 @@ func (sr *StrategyRunner) recoverDuplicateTP(ctx context.Context, linkID string)
 	sr.info(ctx, fmt.Sprintf("TP восстановлен после дублирования linkId (orderId=%s)", existing.OrderId[:8]))
 }
 
+// retryTPAfterCancelStale handles Bybit retCode=110017 (orderQty truncated to zero) for TP orders.
+// Root cause: a stale close-side order on the exchange was lost from our DB tracking, consuming
+// the position-close budget so a new TP cannot be placed. We fetch all open orders for the
+// symbol, cancel any close-side limit orders we don't recognise, then retry TP placement.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) retryTPAfterCancelStale(ctx context.Context, tpSide, tpQty, linkID string, tpPrice, totalQty, avg float64) error {
+	openOrders, err := trader.FetchOpenOrdersForSymbol(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	if err != nil {
+		return fmt.Errorf("place TP (110017, fetch orders): %w", err)
+	}
+
+	// Collect IDs we already track so we don't accidentally cancel live grid levels.
+	known := map[string]bool{sr.tpOrderID: true, sr.slOrderID: true}
+	for _, l := range sr.levels {
+		if l.ExchangeOrderID != "" {
+			known[l.ExchangeOrderID] = true
+		}
+	}
+	known[""] = false // empty string is never a valid order ID
+
+	cancelled := 0
+	for _, o := range openOrders {
+		if o.Side != tpSide || known[o.OrderId] {
+			continue
+		}
+		if e := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category, OrderId: o.OrderId,
+		}); e != nil && !isOrderGone(e) {
+			sr.warn(ctx, fmt.Sprintf("retryTP: cancel stale %s: %v", o.OrderId[:8], e))
+		} else {
+			cancelled++
+		}
+	}
+	if cancelled > 0 {
+		sr.info(ctx, fmt.Sprintf("TP (110017): отменено %d стейл-ордеров, повторная попытка", cancelled))
+	}
+
+	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+		Symbol:      sr.strategy.Symbol,
+		Category:    sr.strategy.Category,
+		Side:        tpSide,
+		OrderType:   "Limit",
+		Qty:         tpQty,
+		Price:       trader.FormatPrice(tpPrice, sr.instr.TickSize),
+		TimeInForce: "GTC",
+		ReduceOnly:  !sr.strategy.HedgeMode,
+		PositionIdx: positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
+		OrderLinkId: linkID,
+	})
+	if err != nil {
+		return fmt.Errorf("place TP (retry after stale cancel): %w", err)
+	}
+	sr.tpOrderID = result.OrderId
+	sr.lastTPSLQty = totalQty
+	sr.lastTPSLAvg = avg
+	sr.lastTPPrice = tpPrice
+	sr.runner.RegisterOrder(result.OrderId, orderRef{strategyID: sr.strategy.ID, refType: "tp"})
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategy_cycles SET tp_order_id=$1 WHERE id=$2`, result.OrderId, sr.cycle.ID)
+	sr.info(ctx, fmt.Sprintf("TP выставлен @ %.4f qty=%s", tpPrice, tpQty))
+	return nil
+}
+
 // recoverDuplicateSL handles Bybit retCode=110072 for SL orders.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) recoverDuplicateSL(ctx context.Context, linkID string) {
@@ -2280,7 +3088,6 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 	}
 	switch refType {
 	case "tp":
-		sr.warn(ctx, "TP ордер был отменён вручную — выставляем повторно")
 		sr.tpOrderID = "" // already unregistered by OnOrderEvent
 		if err := sr.updateTP(ctx); err != nil {
 			if isPositionZero(err) {
@@ -2291,9 +3098,10 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 				return
 			}
 			sr.errlog(ctx, fmt.Sprintf("Ошибка повторного выставления TP: %v", err))
+		} else {
+			sr.warn(ctx, "TP ордер был отменён вручную — выставляем повторно")
 		}
 	case "sl":
-		sr.warn(ctx, "SL ордер был отменён вручную — выставляем повторно")
 		sr.slOrderID = ""
 		if err := sr.updateSL(ctx); err != nil {
 			if isPositionZero(err) {
@@ -2301,6 +3109,8 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 				return
 			}
 			sr.errlog(ctx, fmt.Sprintf("Ошибка повторного выставления SL: %v", err))
+		} else {
+			sr.warn(ctx, "SL ордер был отменён вручную — выставляем повторно")
 		}
 	}
 }

@@ -19,7 +19,11 @@
       "Bash(git -C \"c:\\\\Users\\\\123\\\\Projects\\\\sis\" add frontend/src/components/terminal/Chart.tsx frontend/src/hooks/terminal/usePositionsWs.ts)",
       "PowerShell(Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue | Select-Object LocalPort, OwningProcess | ForEach-Object { $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; [PSCustomObject]@{Port=$_.LocalPort; PID=$_.OwningProcess; Name=$p.Name; Path=$p.Path} })",
       "WebFetch(domain:bybit-exchange.github.io)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Read(//c/Users/123/**)",
+      "Bash(Get-Command psql *)",
+      "Bash(Get-ChildItem \"C:\\\\Program Files\\\\PostgreSQL\" -ErrorAction SilentlyContinue)",
+      "Bash(Select-Object Name)"
     ]
   }
 }

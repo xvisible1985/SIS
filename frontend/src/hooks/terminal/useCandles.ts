@@ -35,7 +35,7 @@ export function useCandles(symbol: string, timeframe: string) {
     const cached = cache.get(key)
     if (cached && Date.now() - cached.ts < CACHE_TTL) {
       setCandles(cached.candles)
-      setCandleSymbol(symbol)
+      setCandleSymbol(`${symbol}:${timeframe}`)
       const last = cached.candles[cached.candles.length - 1]
       const prev = cached.candles[cached.candles.length - 2]
       if (last && prev) {
@@ -53,7 +53,7 @@ export function useCandles(symbol: string, timeframe: string) {
         const cs = parseKline(json.result.list as string[][])
         cache.set(key, { candles: cs, ts: Date.now() })
         setCandles(cs)
-        setCandleSymbol(symbol)
+        setCandleSymbol(`${symbol}:${timeframe}`)
         const last = cs[cs.length - 1]
         const prev = cs[cs.length - 2]
         if (last && prev) {

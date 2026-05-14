@@ -3,6 +3,7 @@ export interface AuthResponse {
   token: string
   user_id: string
   email: string
+  is_admin?: boolean
 }
 
 // Signals
@@ -230,7 +231,7 @@ export type WsMsg =
 // Strategies
 export interface SignalConfig {
   name: string
-  params: Record<string, number>
+  params: Record<string, unknown>
 }
 
 export interface GridStep {
@@ -297,6 +298,8 @@ export interface StrategyState {
   levels: StrategyLevel[]
   volume_usdt: number
   avg_entry: number
+  signal_state?: 'buy' | 'sell' | 'neutral' | ''
+  signal_values?: Record<string, number>
 }
 
 export interface StrategyTemplate {
@@ -312,6 +315,8 @@ export interface StrategyFormData {
   category: string
   direction: 'long' | 'short'
   strategy_type: 'grid' | 'dca' | 'manual'
+  robot_enabled: boolean
+  virtual_orders: boolean
   entry_order_type: 'limit' | 'stop_market'
   leverage: number
   grid_size_usdt: number

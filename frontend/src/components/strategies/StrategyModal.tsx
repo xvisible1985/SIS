@@ -4,13 +4,52 @@ import { TemplateSelector } from './TemplateSelector'
 import { createStrategy, updateStrategy, getStrategyState } from '../../api/strategies'
 import { listAccounts } from '../../api/accounts'
 import { CoinPicker } from '../common/CoinPicker'
+import { SIGNALS } from '../../features/indicators/signals'
+import { INDICATORS } from '../../features/indicators/indicators'
 import type { Strategy, StrategyFormData, GridStep, SignalConfig, ExchangeAccount } from '../../types'
+import { apiClient } from '../../api/client'
 
-const AVAILABLE_SIGNALS = [
-  'RSI', 'MACD', 'EMA', 'SMA', 'Bollinger', 'Stochastic', 'ADX',
-  'CCI', 'ATR', 'OBV', 'Williams %R', 'MFI', 'SAR', 'Ichimoku',
-  'Supertrend', 'Volume Spike', 'ATR Breakout', 'Divergence',
-]
+function useAllowedSignalIds(): { ids: Set<string> | null; loading: boolean } {
+  const [ids, setIds] = useState<Set<string> | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    setLoading(true)
+    // Always try admin endpoint first; if 403 (not admin) fall back to user endpoint.
+    apiClient.get<{ id: string; status: string }[]>('/admin/signal-types')
+      .then(res => {
+        setIds(new Set(res.data.filter(s => s.status !== 'disabled').map(s => s.id)))
+        setLoading(false)
+      })
+      .catch(() =>
+        apiClient.get<{ id: string }[]>('/signal-types')
+          .then(res => {
+            setIds(new Set(res.data.map(s => s.id)))
+          })
+          .catch(() => setIds(null))
+          .finally(() => setLoading(false))
+      )
+  }, [])
+
+  return { ids, loading }
+}
+
+const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1D'] as const
+
+function inferSignalDir(sc: { name: string; params?: Record<string, unknown> }): 'buy' | 'sell' | 'neutral' {
+  const dir = sc.params?.dir as string | undefined
+  if (dir === 'вверх' || dir === 'up' || dir === 'bull') return 'buy'
+  if (dir === 'вниз' || dir === 'down' || dir === 'bear') return 'sell'
+  if (dir === 'оба') return 'neutral'
+  const sig = SIGNALS.find(s => s.id === sc.name)
+  return (sig?.state as 'buy' | 'sell' | 'neutral' | undefined) ?? 'neutral'
+}
+
+const SIG_CHIP: Record<'buy' | 'sell' | 'neutral', { wrap: string; abbr: string; label: string }> = {
+  buy:     { wrap: 'bg-emerald-950/[.5] border-emerald-500/[.3]',   abbr: 'bg-emerald-900/[.4] text-emerald-300', label: 'text-emerald-200' },
+  sell:    { wrap: 'bg-rose-950/[.5] border-rose-500/[.3]',         abbr: 'bg-rose-900/[.4] text-rose-300',       label: 'text-rose-200'    },
+  neutral: { wrap: 'bg-[#0f1a38] border-[rgba(91,140,255,.35)]',    abbr: 'bg-[#1a2545] text-[#8babff]',          label: 'text-blue-200'    },
+}
 
 function Toggle({ options, value, onChange }: {
   options: { label: string; value: string }[]
@@ -78,6 +117,300 @@ function Tip({ text }: { text: string }) {
   )
 }
 
+function SignalPickerField({ configs, onChange, onAutoSave }: {
+  configs: SignalConfig[]
+  onChange: (configs: SignalConfig[]) => void
+  onAutoSave?: (configs: SignalConfig[]) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [step, setStep] = useState<'list' | 'config' | 'edit'>('list')
+  const [picked, setPicked] = useState<typeof SIGNALS[0] | typeof INDICATORS[0] | null>(null)
+  const [params, setParams] = useState<Record<string, unknown>>({})
+  const [editingName, setEditingName] = useState<string | null>(null)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const h = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false); setStep('list'); setPicked(null); setEditingName(null)
+      }
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [open])
+
+  function selectSignal(sig: typeof SIGNALS[0] | typeof INDICATORS[0]) {
+    setPicked(sig)
+    setParams({ ...sig.defaults })
+    setStep('config')
+  }
+
+  function openEdit(sc: SignalConfig) {
+    const allPickable = [...SIGNALS, ...(INDICATORS as unknown as typeof SIGNALS)]
+    const sig = allPickable.find(s => s.id === sc.name)
+    if (!sig) return
+    setPicked(sig)
+    setParams({ ...(sc.params ?? {}) })
+    setEditingName(sc.name)
+    setStep('edit')
+    setOpen(true)
+  }
+
+  function handleAdd() {
+    if (!picked) return
+    onChange([...configs, { name: picked.id, params }])
+    setOpen(false); setStep('list'); setPicked(null); setEditingName(null)
+  }
+
+  function handleApplyEdit() {
+    if (!editingName) return
+    const newConfigs = configs.map(c => c.name === editingName ? { ...c, params } : c)
+    onChange(newConfigs)
+    onAutoSave?.(newConfigs)
+    setOpen(false); setStep('list'); setPicked(null); setEditingName(null)
+  }
+
+  function remove(id: string) {
+    onChange(configs.filter(c => c.name !== id))
+  }
+
+  const { ids: allowedIds, loading: allowedLoading } = useAllowedSignalIds()
+  // Merge SIGNALS and INDICATORS so indicator IDs moved to the signals panel by admin are pickable.
+  const allPickable = [...SIGNALS, ...(INDICATORS as unknown as typeof SIGNALS)]
+  const available = allowedLoading
+    ? []
+    : allPickable.filter(s =>
+        !configs.find(c => c.name === s.id) &&
+        (allowedIds === null || allowedIds.has(s.id))
+      )
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      {configs.map(sc => {
+        const sig = SIGNALS.find(s => s.id === sc.name) ?? (INDICATORS as any[]).find(i => i.id === sc.name)
+        const tf = sc.params?.tf as string | undefined
+        const statusKey = inferSignalDir(sc)
+        const CARD_STYLE = {
+          buy:     { bg: 'rgba(65,210,139,.07)',  border: 'rgba(65,210,139,.22)',  name: '#a7f3d0' },
+          sell:    { bg: 'rgba(248,113,113,.07)', border: 'rgba(248,113,113,.22)', name: '#fca5a5' },
+          neutral: { bg: 'rgba(91,140,255,.06)',  border: 'rgba(91,140,255,.13)',  name: '#c4d2ff' },
+        }
+        const cs = CARD_STYLE[statusKey]
+        const paramBadge = (sc.params?.dir ?? sc.params?.kind) as string | undefined
+        return (
+          <div key={sc.name} className="flex items-center gap-2 min-w-0">
+            {/* card */}
+            <div
+              className="flex-1 flex items-center gap-3 px-3 py-2.5 rounded-[9px] min-w-0"
+              style={{ background: cs.bg, border: `1px solid ${cs.border}` }}
+            >
+              <span className="shrink-0 text-[15px] font-semibold" style={{ color: cs.name }}>
+                {sig?.name ?? sc.name}
+              </span>
+              {sig?.desc
+                ? <span className="flex-1 min-w-0 text-[12px] text-[#8b9ab8] truncate">{sig.desc}</span>
+                : <span className="flex-1" />
+              }
+              {tf && (
+                <span className="shrink-0 inline-flex items-center gap-[3px] text-[12px] font-mono">
+                  <span className="text-[#5b6479]">TF</span>
+                  <span className="text-[#8babff] font-semibold">{tf}</span>
+                </span>
+              )}
+              {paramBadge && (
+                <span className="shrink-0 px-2 py-[3px] rounded-[5px] text-[10px] font-mono text-[#8b9ab8] bg-black/20 border border-white/[.07]">
+                  {paramBadge}
+                </span>
+              )}
+              <button
+                onClick={() => openEdit(sc)}
+                className="shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-[6px] text-slate-500 hover:text-[#8babff] hover:bg-black/20 transition-colors"
+                title="Редактировать"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+              </button>
+            </div>
+            {/* delete — outside */}
+            <button
+              onClick={() => remove(sc.name)}
+              className="shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-[6px] text-slate-500 hover:text-rose-300 hover:bg-rose-400/[.10] transition-colors"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/>
+              </svg>
+            </button>
+          </div>
+        )
+      })}
+
+      <div ref={ref} className="relative">
+        <button
+          onClick={() => { setOpen(v => !v); if (!open) { setStep('list'); setPicked(null) } }}
+          className="w-full border border-dashed border-blue-800 text-blue-500 rounded-md py-1.5 text-[11px] hover:border-blue-600 hover:text-blue-400 transition-colors"
+        >
+          + Добавить сигнал
+        </button>
+
+        {open && (
+          <div className="absolute bottom-full mb-1.5 left-0 bg-[#0d1628] border border-white/[.10] rounded-xl shadow-2xl z-20 w-72">
+            {step === 'list' ? (
+              <div className="max-h-64 overflow-y-auto p-1">
+                {allowedLoading ? (
+                  <div className="py-5 text-center text-[11px] text-slate-500">Загрузка...</div>
+                ) : available.length === 0 ? (
+                  <div className="py-5 text-center text-[11px] text-slate-500">Все сигналы добавлены</div>
+                ) : available.map(sig => (
+                  <button key={sig.id} onClick={() => selectSignal(sig)}
+                    className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-white/[.05] flex items-start gap-2.5 transition-colors">
+                    <span className="shrink-0 mt-px w-8 h-6 rounded-[4px] bg-[#1a2545] border border-[rgba(91,140,255,.3)] text-[#8babff] font-bold text-[9px] flex items-center justify-center tracking-[.3px]">
+                      {sig.abbr}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="text-[12px] font-semibold text-[#e6ebf5] leading-none mb-0.5">{sig.name}</div>
+                      <div className="text-[10px] text-slate-500 leading-snug">{sig.desc}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : step === 'config' && picked ? (
+              <div className="p-3 space-y-3">
+                <div className="flex items-center gap-2">
+                  <span className="w-8 h-6 shrink-0 rounded-[4px] bg-[#1a2545] border border-[rgba(91,140,255,.3)] text-[#8babff] font-bold text-[9px] flex items-center justify-center">
+                    {picked.abbr}
+                  </span>
+                  <span className="text-[12px] font-semibold text-[#e6ebf5]">{picked.name}</span>
+                  <button onClick={() => setStep('list')} className="ml-auto text-[11px] text-slate-500 hover:text-slate-300 transition-colors">← назад</button>
+                </div>
+
+                <div>
+                  <div className="text-[10px] text-slate-500 mb-1.5">Таймфрейм</div>
+                  <div className="flex gap-1 flex-wrap">
+                    {TIMEFRAMES.map(tf => (
+                      <button key={tf}
+                        onClick={() => setParams(p => ({ ...p, tf }))}
+                        className={`px-2 py-1 rounded-[5px] text-[10px] font-semibold transition-colors ${
+                          params.tf === tf ? 'bg-blue-700 text-white' : 'bg-[#0e1525] text-slate-400 hover:bg-white/[.06]'
+                        }`}
+                      >
+                        {tf}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {picked.params.filter(p => p.key !== 'tf').map(p => {
+                  const val = params[p.key]
+                  return (
+                    <div key={p.key}>
+                      <div className="text-[10px] text-slate-500 mb-1.5">{p.label}</div>
+                      {p.kind === 'number' ? (
+                        <input
+                          type="number"
+                          step={p.step ?? 1}
+                          value={typeof val === 'number' ? val : 0}
+                          onChange={e => setParams(pr => ({ ...pr, [p.key]: Number(e.target.value) }))}
+                          className="w-full bg-[#0e1525] border border-white/10 rounded-md px-2.5 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+                        />
+                      ) : p.kind === 'segmented' && p.options ? (
+                        <div className="flex gap-1 flex-wrap">
+                          {p.options.map(opt => (
+                            <button key={opt}
+                              onClick={() => setParams(pr => ({ ...pr, [p.key]: opt }))}
+                              className={`px-2.5 py-1 rounded-[5px] text-[11px] font-medium transition-colors ${
+                                val === opt ? 'bg-blue-700 text-white' : 'bg-[#0e1525] text-slate-400 hover:bg-white/[.06]'
+                              }`}
+                            >
+                              {opt}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })}
+
+                <button onClick={handleAdd}
+                  className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white text-[12px] font-semibold rounded-lg transition-colors">
+                  Добавить сигнал
+                </button>
+              </div>
+            ) : step === 'edit' && picked ? (
+              <div className="p-3 space-y-3">
+                <div className="flex items-center gap-2">
+                  <span className="w-8 h-6 shrink-0 rounded-[4px] bg-[#1a2545] border border-[rgba(91,140,255,.3)] text-[#8babff] font-bold text-[9px] flex items-center justify-center">
+                    {picked.abbr}
+                  </span>
+                  <span className="text-[12px] font-semibold text-[#e6ebf5]">{picked.name}</span>
+                  <button
+                    onClick={() => { setOpen(false); setStep('list'); setPicked(null); setEditingName(null) }}
+                    className="ml-auto text-slate-500 hover:text-slate-300 text-[13px] leading-none transition-colors"
+                  >✕</button>
+                </div>
+
+                <div>
+                  <div className="text-[10px] text-slate-500 mb-1.5">Таймфрейм</div>
+                  <div className="flex gap-1 flex-wrap">
+                    {TIMEFRAMES.map(tf => (
+                      <button key={tf}
+                        onClick={() => setParams(p => ({ ...p, tf }))}
+                        className={`px-2 py-1 rounded-[5px] text-[10px] font-semibold transition-colors ${
+                          params.tf === tf ? 'bg-blue-700 text-white' : 'bg-[#0e1525] text-slate-400 hover:bg-white/[.06]'
+                        }`}
+                      >
+                        {tf}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {picked.params.filter(p => p.key !== 'tf').map(p => {
+                  const val = params[p.key]
+                  return (
+                    <div key={p.key}>
+                      <div className="text-[10px] text-slate-500 mb-1.5">{p.label}</div>
+                      {p.kind === 'number' ? (
+                        <input
+                          type="number"
+                          step={p.step ?? 1}
+                          value={typeof val === 'number' ? val : 0}
+                          onChange={e => setParams(pr => ({ ...pr, [p.key]: Number(e.target.value) }))}
+                          className="w-full bg-[#0e1525] border border-white/10 rounded-md px-2.5 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+                        />
+                      ) : p.kind === 'segmented' && p.options ? (
+                        <div className="flex gap-1 flex-wrap">
+                          {p.options.map(opt => (
+                            <button key={opt}
+                              onClick={() => setParams(pr => ({ ...pr, [p.key]: opt }))}
+                              className={`px-2.5 py-1 rounded-[5px] text-[11px] font-medium transition-colors ${
+                                val === opt ? 'bg-blue-700 text-white' : 'bg-[#0e1525] text-slate-400 hover:bg-white/[.06]'
+                              }`}
+                            >
+                              {opt}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })}
+
+                <button onClick={handleApplyEdit}
+                  className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white text-[12px] font-semibold rounded-lg transition-colors">
+                  Применить
+                </button>
+              </div>
+            ) : null}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function defaultForm(): StrategyFormData {
   return {
     account_id: '',
@@ -85,6 +418,8 @@ function defaultForm(): StrategyFormData {
     category: 'linear',
     direction: 'long',
     strategy_type: 'grid',
+    robot_enabled: true,
+    virtual_orders: false,
     entry_order_type: 'limit' as const,
     leverage: 5,
     grid_size_usdt: 100,
@@ -114,6 +449,8 @@ function strategyToForm(s: Strategy): StrategyFormData {
     category: s.category,
     direction: s.direction === 'short' ? 'short' : 'long',
     strategy_type: s.strategy_type,
+    robot_enabled: true,
+    virtual_orders: false,
     entry_order_type: s.entry_order_type ?? 'limit',
     leverage: s.leverage,
     grid_size_usdt: s.grid_size_usdt,
@@ -147,7 +484,6 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, on
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [signalPickerOpen, setSignalPickerOpen] = useState(false)
   const [filledLevels, setFilledLevels] = useState(filledLevelsProp)
 
   useEffect(() => {
@@ -181,16 +517,6 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, on
     patch({ steps })
   }
 
-  function addSignal(name: string) {
-    if (form.signal_configs.find(s => s.name === name)) return
-    patch({ signal_configs: [...form.signal_configs, { name, params: {} }] })
-    setSignalPickerOpen(false)
-  }
-
-  function removeSignal(name: string) {
-    patch({ signal_configs: form.signal_configs.filter(s => s.name !== name) })
-  }
-
   function loadTemplate(config: Partial<StrategyFormData>) {
     setForm(f => ({ ...f, ...config }))
   }
@@ -208,7 +534,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, on
         grid_levels: form.steps.length || 1,
         grid_active: form.grid_active > 0 ? form.grid_active : form.steps.length || 1,
         grid_step_pct: form.steps[0]?.price_move_pct ?? 0,
-        signal_filter: false,
+        signal_filter: form.signal_configs.length > 0,
       }
       if (strategy) {
         await updateStrategy(strategy.id, payload as any)
@@ -232,7 +558,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, on
     }
   }
 
-  const tabLabels = ['1. Вход', '2. Усреднение', '3. Выход']
+  const tabLabels = ['1. Базовые', '2. Сетка ордеров', '3. Завершение']
   const inputCls = 'w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-blue-500'
   const labelCls = 'flex items-center text-xs text-gray-500 mb-1'
 
@@ -307,16 +633,53 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, on
               </div>
 
               <div>
-                <label className={labelCls}>Тип стратегии<Tip text="Grid — сетка лимитных ордеров: стратегия сама расставляет уровни и усредняет позицию по мере движения цены. DCA — усреднение по сигналам индикаторов. Manual — ручное управление без автоматики." /></label>
+                <label className={labelCls}>Тип стратегии<Tip text="Grid — сетка лимитных ордеров: стратегия сама расставляет уровни и усредняет позицию по мере движения цены. Matrix — усреднение по сигналам индикаторов." /></label>
                 <Toggle
                   options={[
                     { label: 'Grid', value: 'grid' },
-                    { label: 'DCA', value: 'dca' },
-                    { label: 'Manual', value: 'manual' },
+                    { label: 'Matrix', value: 'dca' },
                   ]}
                   value={form.strategy_type}
                   onChange={v => patch({ strategy_type: v as StrategyFormData['strategy_type'] })}
                 />
+              </div>
+
+              <div>
+                <label className={labelCls}>Робот<Tip text="Разрешить или запретить боту управлять стратегией автоматически." /></label>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => patch({ robot_enabled: !form.robot_enabled })}
+                    className={`w-10 h-5 rounded-full relative transition-colors ${
+                      form.robot_enabled ? 'bg-blue-600' : 'bg-gray-700'
+                    }`}
+                  >
+                    <span className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                      form.robot_enabled ? 'translate-x-5' : 'translate-x-0'
+                    }`} />
+                  </button>
+                  <span className={`text-xs ${form.robot_enabled ? 'text-blue-400' : 'text-gray-500'}`}>
+                    {form.robot_enabled ? 'Разрешить управление бота' : 'Запретить управление бота'}
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className={labelCls}>Виртуальные ордера<Tip text="Когда включено — ордера не отправляются на биржу, исполнение симулируется внутри системы. Полезно для тестирования стратегии без реальных средств." /></label>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => patch({ virtual_orders: !form.virtual_orders })}
+                    className={`w-10 h-5 rounded-full relative transition-colors ${
+                      form.virtual_orders ? 'bg-blue-600' : 'bg-gray-700'
+                    }`}
+                  >
+                    <span className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                      form.virtual_orders ? 'translate-x-5' : 'translate-x-0'
+                    }`} />
+                  </button>
+                  <span className={`text-xs ${form.virtual_orders ? 'text-blue-400' : 'text-gray-500'}`}>
+                    {form.virtual_orders ? 'Включены' : 'Выключены'}
+                  </span>
+                </div>
               </div>
 
               <div>
@@ -456,47 +819,23 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, on
               </div>
 
               <div className="flex items-center gap-1 text-[10px] text-gray-500 uppercase tracking-wider pb-1 border-b border-gray-800 mt-2">
-                Сигналы для усреднения<Tip text="Технические индикаторы, которые должны совпасть, чтобы стратегия разрешила выставить следующий ордер усреднения. Если сигналов нет — усреднение происходит только по сетке." />
+                Сигналы для входа<Tip text="Технические индикаторы, сигнал которых должен совпасть для запуска цикла. Если сигналов нет — цикл стартует сразу. AND-логика: все добавленные сигналы должны совпасть одновременно." />
               </div>
-              <div className="flex flex-wrap gap-2">
-                {form.signal_configs.map(sc => (
-                  <div
-                    key={sc.name}
-                    className="flex items-center gap-1.5 bg-blue-900/20 border border-blue-800/50 rounded-md px-2.5 py-1"
-                  >
-                    <span className="text-blue-300 text-[11px]">{sc.name}</span>
-                    <button
-                      onClick={() => removeSignal(sc.name)}
-                      className="text-gray-600 hover:text-gray-400 text-xs"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                ))}
-                <div className="relative">
-                  <button
-                    onClick={() => setSignalPickerOpen(v => !v)}
-                    className="border border-dashed border-blue-800 text-blue-500 rounded-md px-2.5 py-1 text-[11px] hover:border-blue-600 transition-colors"
-                  >
-                    + Добавить
-                  </button>
-                  {signalPickerOpen && (
-                    <div className="absolute bottom-full mb-1 left-0 bg-gray-800 border border-gray-600 rounded-lg z-10 w-48 shadow-xl max-h-48 overflow-y-auto">
-                      {AVAILABLE_SIGNALS
-                        .filter(name => !form.signal_configs.find(s => s.name === name))
-                        .map(name => (
-                          <button
-                            key={name}
-                            onClick={() => addSignal(name)}
-                            className="w-full text-left px-3 py-1.5 text-[11px] text-gray-300 hover:bg-gray-700 border-b border-gray-700/50 last:border-0"
-                          >
-                            {name}
-                          </button>
-                        ))}
-                    </div>
-                  )}
-                </div>
-              </div>
+              <SignalPickerField
+                configs={form.signal_configs}
+                onChange={v => patch({ signal_configs: v })}
+                onAutoSave={strategy ? (newConfigs) => {
+                  const payload = {
+                    ...form,
+                    signal_configs: newConfigs,
+                    grid_levels: form.steps.length || 1,
+                    grid_active: form.grid_active > 0 ? form.grid_active : form.steps.length || 1,
+                    grid_step_pct: form.steps[0]?.price_move_pct ?? 0,
+                    signal_filter: newConfigs.length > 0,
+                  }
+                  updateStrategy(strategy.id, payload as any).catch(() => {})
+                } : undefined}
+              />
             </>
           )}
 
@@ -566,8 +905,8 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, on
                       form.trailing_stop_enabled ? 'bg-green-600' : 'bg-gray-700'
                     }`}
                   >
-                    <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
-                      form.trailing_stop_enabled ? 'translate-x-5' : 'translate-x-0.5'
+                    <span className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                      form.trailing_stop_enabled ? 'translate-x-5' : 'translate-x-0'
                     }`} />
                   </button>
                   <span className={`text-xs ${form.trailing_stop_enabled ? 'text-green-400' : 'text-gray-500'}`}>

@@ -1,11 +1,18 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { getStrategyState, getStrategyEvents, setStrategyStatus, deleteStrategy } from '../../api/strategies'
+import { getStrategyState, getStrategyEvents, setStrategyStatus, deleteStrategy, updateStrategy } from '../../api/strategies'
 import { placeOrder } from '../../api/trader'
 import { ClosePositionModal, makeCloseConfirm, type CloseConfirm } from '../common/ClosePositionModal'
 import { useStrategyEventsWs } from '../../hooks/useStrategyEventsWs'
 import { DebugCycleWindow } from './DebugCycleWindow'
 
+import { SIGNALS } from '../../features/indicators/signals'
+import { INDICATORS } from '../../features/indicators/indicators'
 import type { Strategy, StrategyState, StrategyEvent, ExchangeAccount, ActiveOrder, Position } from '../../types'
+
+interface LiveSignal {
+  signal_state: string
+  signal_values: Record<string, number>
+}
 
 interface Props {
   strategy: Strategy
@@ -18,6 +25,7 @@ interface Props {
   onSelect?: (s: Strategy) => void
   isOpen?: boolean
   onToggleOpen?: () => void
+  liveSignal?: LiveSignal
 }
 
 interface CardState {
@@ -38,12 +46,12 @@ const IcUp     = (p: IcProps) => <Ic {...p}><path d="M7 14l5-5 5 5"/></Ic>
 const IcDown   = (p: IcProps) => <Ic {...p}><path d="M7 10l5 5 5-5"/></Ic>
 const IcSpark  = (p: IcProps) => <Ic {...p}><path d="M3 17l4-6 4 4 4-8 6 10"/></Ic>
 const IcBolt   = (p: IcProps) => <Ic {...p}><path d="M13 3L4 14h7l-1 7 9-11h-7l1-7z"/></Ic>
-const IcSignal = (p: IcProps) => <Ic {...p}><path d="M3 12l4-4 3 3 5-5 6 6"/><circle cx="20" cy="12" r="1.4" fill="currentColor"/></Ic>
 const IcLog    = (p: IcProps) => <Ic {...p}><path d="M4 6h16M4 12h16M4 18h10"/></Ic>
 const IcCheck  = (p: IcProps) => <Ic {...p}><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></Ic>
 const IcCopy   = (p: IcProps) => <Ic {...p}><rect x="8" y="3" width="12" height="14" rx="2"/><path d="M16 21H6a2 2 0 0 1-2-2V8"/></Ic>
 const IcTrash  = (p: IcProps) => <Ic {...p}><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/></Ic>
 const IcBug    = (p: IcProps) => <Ic {...p}><path d="M8 2l1.5 1.5M16 2l-1.5 1.5M9 9h6M9 13h6M3 9l3 1M21 9l-3 1M3 17l3-1M21 17l-3-1"/><path d="M6.5 6.5A5.5 5.5 0 0 1 17.5 6.5V17a5.5 5.5 0 0 1-11 0V6.5z"/></Ic>
+
 const IcChev   = (_: { open: boolean }) => (
   <svg width={9} height={9} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.6}
     strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block', opacity: 0.6 }}>
@@ -140,6 +148,16 @@ function StatusPicker({ value, acting, onChange, onInteract }: { value: StratSta
   )
 }
 
+// ── signal direction helper ────────────────────────────────────────────────────
+function inferSignalDir(sc: { name: string; params?: Record<string, unknown> }): 'buy' | 'sell' | 'neutral' {
+  const dir = sc.params?.dir as string | undefined
+  if (dir === 'вверх' || dir === 'up' || dir === 'bull') return 'buy'
+  if (dir === 'вниз' || dir === 'down' || dir === 'bear') return 'sell'
+  if (dir === 'оба') return 'neutral'
+  const sig = SIGNALS.find(s => s.id === sc.name) ?? (INDICATORS as any[]).find(s => s.id === sc.name)
+  return (sig?.state as 'buy' | 'sell' | 'neutral' | undefined) ?? 'neutral'
+}
+
 // ── helpers ────────────────────────────────────────────────────────────────────
 function relTime(iso: string) {
   const d = (Date.now() - new Date(iso).getTime()) / 1000
@@ -163,7 +181,7 @@ function logLvlStyle(lvl: string) {
 }
 
 // ── main component ─────────────────────────────────────────────────────────────
-export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit, onChanged, selected, onSelect, isOpen, onToggleOpen }: Props) {
+export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit, onChanged, selected, onSelect, isOpen, onToggleOpen, liveSignal }: Props) {
   const [cs, setCs] = useState<CardState>({ state: null, events: [], loading: false, acting: false })
   const [localEvents, setLocalEvents] = useState<StrategyEvent[] | null>(null)
   const [copiedLogIdx, setCopiedLogIdx] = useState<number | null>(null)
@@ -174,7 +192,6 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
 
   const accountName = accounts.find(a => a.id === s.account_id)?.label ?? s.account_id.slice(0, 8)
   const isLong = s.direction === 'long'
-  const isRunning = s.status === 'active' || s.status === 'finishing'
 
   // ── data loading ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -369,11 +386,6 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
     onSelect?.(s)
   }
 
-  function signalLabel(sc: { name: string; params: Record<string, number> }) {
-    const pv = Object.values(sc.params ?? {})
-    return pv.length ? `${sc.name}(${pv.join(',')})` : sc.name
-  }
-
   const displayEvents = localEvents ?? cs.events
 
   async function copyLog() {
@@ -407,8 +419,6 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
     border: `1px solid ${selected ? 'rgba(255,255,255,.08)' : baseBorder}`,
     ...(selected ? { boxShadow: '0 0 0 1.5px rgba(91,140,255,.45)' } : {}),
   }
-
-  const firstSignal = s.signal_configs?.[0]
 
   // ────────────────────────────────────────────────────────────────────────────
   return (
@@ -512,34 +522,88 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
 
             {!cs.loading && (
               <>
-                {/* signal card */}
-                {firstSignal && (
-                  <div className="bg-[linear-gradient(180deg,rgba(91,140,255,.10),rgba(123,91,255,.06))] border border-[rgba(91,140,255,.25)] rounded-[10px] px-3 py-2.5">
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <IcSignal s={14} c="#b8c8ff" />
-                      <span className="text-[11px] text-[#b8c8ff] font-bold uppercase tracking-[1px]">Сигнал входа</span>
-                      <span className={`ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-[.4px] border ${
-                        isRunning
-                          ? 'bg-emerald-400/[.14] border-emerald-400/28 text-emerald-300'
-                          : 'bg-white/[.06] border-white/10 text-slate-400'
-                      }`}>
-                        <span className={`w-1 h-1 rounded-full ${isRunning ? 'bg-emerald-400 animate-pulse' : 'bg-slate-400'}`} />
-                        {isRunning ? 'сработал' : 'неактивен'}
-                      </span>
-                    </div>
-                    <div className="flex items-baseline gap-2 flex-wrap">
-                      <span className="font-display text-[16px] font-bold text-white tracking-[-0.3px]">{signalLabel(firstSignal)}</span>
-                      {s.signal_configs.slice(1).map(sc => (
-                        <span key={sc.name} className="font-mono text-[13px] text-[#cfd5e1] font-semibold">{signalLabel(sc)}</span>
-                      ))}
-                    </div>
-                    <div className="flex items-center gap-2.5 mt-2 text-[10px] text-slate-500 font-mono flex-wrap">
-                      <span className="inline-flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-[#5b8cff]" />{s.symbol}
-                      </span>
-                      <span>{s.direction === 'long' ? 'Long grid' : 'Short grid'}</span>
-                      <span>{s.grid_levels} уровней</span>
-                    </div>
+                {/* signal rows */}
+                {s.signal_configs?.length > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    {s.signal_configs.map((sc, idx) => {
+                      const sig = SIGNALS.find(x => x.id === sc.name) ?? (INDICATORS as any[]).find(x => x.id === sc.name)
+                      const tf = sc.params?.tf as string | undefined
+
+                      const liveStateRaw = liveSignal?.signal_state ?? cs.state?.signal_state
+                      const statusKey: 'buy' | 'sell' | 'neutral' =
+                        liveStateRaw === 'buy' || liveStateRaw === 'sell' || liveStateRaw === 'neutral'
+                          ? liveStateRaw
+                          : inferSignalDir(sc)
+
+                      const CARD_STYLE = {
+                        buy:     { bg: 'rgba(65,210,139,.07)',  border: 'rgba(65,210,139,.22)',  name: '#a7f3d0' },
+                        sell:    { bg: 'rgba(248,113,113,.07)', border: 'rgba(248,113,113,.22)', name: '#fca5a5' },
+                        neutral: { bg: 'rgba(91,140,255,.06)',  border: 'rgba(91,140,255,.13)',  name: '#c4d2ff' },
+                      }
+                      const cs_ = CARD_STYLE[statusKey]
+
+                      const liveVals = liveSignal?.signal_values ?? cs.state?.signal_values
+                      const liveVal = liveVals?.[sc.name]
+                      const paramBadge = liveVal != null
+                        ? String(liveVal)
+                        : ((sc.params?.dir ?? sc.params?.kind) as string | undefined)
+
+                      async function handleDeleteSignal(e: React.MouseEvent) {
+                        e.stopPropagation()
+                        const newConfigs = s.signal_configs.filter((_, i) => i !== idx)
+                        await updateStrategy(s.id, {
+                          ...s,
+                          steps: s.steps ?? [],
+                          signal_configs: newConfigs,
+                          signal_filter: newConfigs.length > 0,
+                          grid_levels: s.steps?.length || s.grid_levels || 1,
+                          grid_active: s.grid_active || s.steps?.length || 1,
+                          grid_step_pct: s.steps?.[0]?.price_move_pct ?? s.grid_step_pct ?? 0,
+                          trailing_activation_pct: s.trailing_activation_pct ?? 0,
+                          trailing_callback_pct: s.trailing_callback_pct ?? 0,
+                        } as any)
+                        onChanged()
+                      }
+
+                      return (
+                        <div key={sc.name + idx} className="flex items-center gap-2 min-w-0">
+                          {/* card */}
+                          <div
+                            className="flex-1 flex items-center gap-3 px-3 py-2.5 rounded-[9px] min-w-0"
+                            style={{ background: cs_.bg, border: `1px solid ${cs_.border}` }}
+                          >
+                            <span className="shrink-0 text-[15px] font-semibold" style={{ color: cs_.name }}>
+                              {sig?.name ?? sc.name}
+                            </span>
+                            {sig?.desc && (
+                              <span className="flex-1 min-w-0 text-[12px] text-[#8b9ab8] truncate">
+                                {sig.desc}
+                              </span>
+                            )}
+                            {!sig?.desc && <span className="flex-1" />}
+                            {tf && (
+                              <span className="shrink-0 inline-flex items-center gap-[3px] text-[12px] font-mono">
+                                <span className="text-[#5b6479]">TF</span>
+                                <span className="text-[#8babff] font-semibold">{tf}</span>
+                              </span>
+                            )}
+                            {paramBadge && (
+                              <span className="shrink-0 px-2 py-[3px] rounded-[5px] text-[10px] font-mono text-[#8b9ab8] bg-black/20 border border-white/[.07]">
+                                {paramBadge}
+                              </span>
+                            )}
+                          </div>
+                          {/* delete — outside the card */}
+                          <button
+                            type="button"
+                            onClick={handleDeleteSignal}
+                            className="shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-[6px] text-slate-500 hover:text-rose-300 hover:bg-rose-400/[.10] transition-colors"
+                          >
+                            <IcTrash s={14} w={1.8} />
+                          </button>
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
 
@@ -729,7 +793,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
       )}
 
       {debugOpen && (
-        <DebugCycleWindow strategy={s} orders={strategyOrders} onClose={() => setDebugOpen(false)} />
+        <DebugCycleWindow strategy={s} orders={strategyOrders} onClose={() => setDebugOpen(false)} liveSignal={liveSignal} />
       )}
     </li>
   )

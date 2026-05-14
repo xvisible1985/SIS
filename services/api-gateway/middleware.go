@@ -37,3 +37,27 @@ func UserIDFromCtx(ctx context.Context) string {
 	v, _ := ctx.Value(ctxUserID).(string)
 	return v
 }
+
+// RequireAdmin checks that the authenticated user's email is in the admin list.
+// Must be used after RequireAuth.
+func (s *Server) RequireAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userID := UserIDFromCtx(r.Context())
+		if userID == "" {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		var email string
+		if err := s.pool.QueryRow(r.Context(),
+			`SELECT email FROM users WHERE id = $1`, userID,
+		).Scan(&email); err != nil {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		if !s.adminEmails[strings.ToLower(email)] {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}

@@ -1,11 +1,19 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { getStrategyState } from '../../api/strategies'
+import { apiClient } from '../../api/client'
+import { setRsiTestOverride } from '../../features/indicators/signals'
 import type { Strategy, StrategyState, ActiveOrder } from '../../types'
+
+interface LiveSignal {
+  signal_state: string
+  signal_values: Record<string, number>
+}
 
 interface Props {
   strategy: Strategy
   orders: ActiveOrder[]   // live WS orders — already filtered to this strategy by parent
   onClose: () => void
+  liveSignal?: LiveSignal
 }
 
 function shortId(id?: string | null) { return id ? id.slice(0, 8) : '—' }
@@ -33,10 +41,17 @@ function exchStatusColor(s: string) {
   return 'text-slate-300'
 }
 
-export function DebugCycleWindow({ strategy, orders, onClose }: Props) {
+interface OverrideState { active: boolean; value: number }
+
+export function DebugCycleWindow({ strategy, orders, onClose, liveSignal }: Props) {
   const [state, setState] = useState<StrategyState | null>(null)
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
   const [fetchError, setFetchError] = useState<string | null>(null)
+
+  // Signal overrides keyed by signal name
+  const [overrides, setOverrides] = useState<Record<string, OverrideState>>({})
+  const [saving, setSaving] = useState<Record<string, boolean>>({})
+  const debounceRefs = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
 
   // Dragging
   const [pos, setPos] = useState({ left: Math.max(40, window.innerWidth / 2 - 480), top: 80 })
@@ -58,6 +73,50 @@ export function DebugCycleWindow({ strategy, orders, onClose }: Props) {
     const t = setInterval(refresh, 3000)
     return () => clearInterval(t)
   }, [refresh])
+
+  // Load current override values for test signals on mount
+  const testSignals = (strategy.signal_configs ?? []).filter(sc => sc.name.endsWith('-test'))
+  useEffect(() => {
+    for (const sc of testSignals) {
+      apiClient.get<{ active: boolean; value: number }>(`/admin/signal-override/${sc.name}`)
+        .then(r => {
+          setOverrides(prev => ({ ...prev, [sc.name]: { active: r.data.active, value: r.data.active ? r.data.value : 50 } }))
+          if (r.data.active && sc.name === 'rsi-test') setRsiTestOverride(r.data.value)
+        })
+        .catch(() => {})
+    }
+    return () => {
+      for (const sc of testSignals) {
+        if (sc.name === 'rsi-test') setRsiTestOverride(null)
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [strategy.id])
+
+  async function sendOverride(name: string, value: number | null) {
+    setSaving(prev => ({ ...prev, [name]: true }))
+    try {
+      await apiClient.put(`/admin/signal-override/${name}`, { value })
+    } finally {
+      setSaving(prev => ({ ...prev, [name]: false }))
+    }
+  }
+
+  function handleSlider(name: string, v: number) {
+    setOverrides(prev => ({ ...prev, [name]: { ...prev[name], value: v } }))
+    if (name === 'rsi-test') setRsiTestOverride(v)
+    if (debounceRefs.current[name]) clearTimeout(debounceRefs.current[name])
+    debounceRefs.current[name] = setTimeout(() => sendOverride(name, v), 200)
+  }
+
+  async function handleToggle(name: string) {
+    const cur = overrides[name] ?? { active: false, value: 50 }
+    const nextActive = !cur.active
+    setOverrides(prev => ({ ...prev, [name]: { ...cur, active: nextActive } }))
+    const nextValue = nextActive ? cur.value : null
+    if (name === 'rsi-test') setRsiTestOverride(nextValue)
+    await sendOverride(name, nextValue)
+  }
 
   useEffect(() => {
     function onMove(e: MouseEvent) {
@@ -127,6 +186,88 @@ export function DebugCycleWindow({ strategy, orders, onClose }: Props) {
           className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-slate-100 text-xs rounded"
         >✕</button>
       </div>
+
+      {/* Signal panel */}
+      {strategy.signal_configs && strategy.signal_configs.length > 0 && (() => {
+        const sigState  = liveSignal?.signal_state ?? state?.signal_state ?? ''
+        const sigValues = liveSignal?.signal_values ?? state?.signal_values ?? {}
+        const stateColor = sigState === 'buy' ? '#5be0a0' : sigState === 'sell' ? '#fca5a5' : '#8b9ab8'
+        const stateBg    = sigState === 'buy' ? 'rgba(65,210,139,.08)' : sigState === 'sell' ? 'rgba(248,113,113,.08)' : 'rgba(91,100,140,.08)'
+
+        return (
+          <div className="shrink-0 border-b" style={{ borderColor: '#2e2e48', background: stateBg }}>
+            {/* state header */}
+            <div className="flex items-center gap-3 px-4 py-1.5">
+              <span className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Сигнал</span>
+              <span className="font-mono font-bold text-[12px]" style={{ color: stateColor }}>
+                {sigState || '—'}
+              </span>
+              {strategy.signal_configs.filter(sc => !sc.name.endsWith('-test')).map(sc => {
+                const val = sigValues[sc.name]
+                return (
+                  <span key={sc.name} className="inline-flex items-center gap-1 ml-2">
+                    <span className="text-[10px] text-slate-500 font-mono">{sc.name}</span>
+                    <span className="text-[11px] font-mono font-semibold text-slate-200">
+                      {val != null ? val.toFixed(1) : '—'}
+                    </span>
+                  </span>
+                )
+              })}
+            </div>
+
+            {/* sliders for test signals */}
+            {testSignals.map(sc => {
+              const ov = overrides[sc.name] ?? { active: false, value: 50 }
+              const val = ov.value
+              const isSaving = saving[sc.name] ?? false
+              const liveVal = sigValues[sc.name]
+              const dispVal = ov.active ? val : (liveVal ?? val)
+              const threshold = (sc.params?.threshold as number) ?? 30
+              const stLabel = dispVal < threshold ? { label: 'Buy', color: '#5be0a0' }
+                            :                       { label: 'Neutral', color: '#8babff' }
+
+              return (
+                <div key={sc.name} className="px-4 pb-2.5 flex flex-col gap-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-[.5px] font-mono">{sc.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleToggle(sc.name)}
+                      disabled={isSaving}
+                      className={`text-[9px] font-bold px-1.5 py-[2px] rounded-[4px] transition-colors disabled:opacity-50 ${
+                        ov.active
+                          ? 'bg-amber-400/20 border border-amber-400/40 text-amber-300'
+                          : 'bg-white/[.05] border border-white/[.10] text-slate-500'
+                      }`}
+                    >
+                      {ov.active ? 'ON' : 'OFF'}
+                    </button>
+                    <span className="font-mono text-[12px] font-bold ml-auto" style={{ color: stLabel.color }}>
+                      {dispVal.toFixed(1)}
+                    </span>
+                    <span className="text-[10px] font-semibold w-12 text-right" style={{ color: stLabel.color }}>
+                      {stLabel.label}
+                    </span>
+                  </div>
+                  <input
+                    type="range" min={0} max={100} step={0.5}
+                    value={ov.active ? val : (liveVal ?? val)}
+                    disabled={!ov.active}
+                    onChange={e => handleSlider(sc.name, Number(e.target.value))}
+                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    style={{ accentColor: stLabel.color }}
+                  />
+                  <div className="flex justify-between text-[9px] text-slate-600">
+                    <span>0 · Buy</span>
+                    <span style={{ color: '#5be0a0' }}>{threshold}</span>
+                    <span>100 · Neutral</span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )
+      })()}
 
       {/* Body */}
       <div className="flex-1 overflow-auto">

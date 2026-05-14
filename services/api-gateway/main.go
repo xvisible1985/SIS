@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"strings"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/joho/godotenv"
@@ -52,7 +54,15 @@ func main() {
 	}
 	defer rdb.Close()
 
-	s := NewServer(pool, rdb, jwtSecret, encKey)
+	adminEmails := make(map[string]bool)
+	for _, e := range strings.Split(os.Getenv("ADMIN_EMAILS"), ",") {
+		e = strings.TrimSpace(strings.ToLower(e))
+		if e != "" {
+			adminEmails[e] = true
+		}
+	}
+
+	s := NewServer(ctx, pool, rdb, jwtSecret, encKey, adminEmails)
 
 	// Start strategy engine
 	go s.engine.Start(ctx)
@@ -123,6 +133,24 @@ func main() {
 		r.Get("/trader/executions", s.ListTraderExecutions)
 		r.Get("/trader/pnl", s.GetClosedPnl)
 		r.Get("/trader/stats", s.GetTraderStats)
+
+		// Signal/indicator types — enabled list (all authenticated users)
+		r.Get("/signal-types", s.ListEnabledSignalTypes)
+		r.Get("/indicator-types", s.ListEnabledIndicatorTypes)
+
+		// Admin
+		r.Get("/admin/metrics", s.GetAdminMetrics)
+
+		// Admin: signal and indicator types management (admin only)
+		r.Group(func(r chi.Router) {
+			r.Use(s.RequireAdmin)
+			r.Get("/admin/signal-types", s.ListSignalTypes)
+			r.Patch("/admin/signal-types/{id}", s.ToggleSignalType)
+			r.Get("/admin/indicator-types", s.ListIndicatorTypes)
+			r.Patch("/admin/indicator-types/{id}", s.ToggleIndicatorType)
+			r.Get("/admin/signal-override/{name}", s.GetSignalOverride)
+			r.Put("/admin/signal-override/{name}", s.SetSignalOverride)
+		})
 	})
 
 	// WebSocket endpoints — auth via ?token= query param

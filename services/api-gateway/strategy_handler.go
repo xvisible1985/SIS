@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -353,21 +354,30 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		oldEntryOrderType != req.EntryOrderType ||
 		!stepsEqual(oldStepsJSON, newStepsJSON)
 
-	s.engine.Notify(r.Context(), id)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+
+	// Notify the engine asynchronously so the HTTP response is not blocked by
+	// strategy runner mutexes that may be held during live Bybit API calls.
+	logMsg := fmt.Sprintf(
+		"Настройки обновлены (TP/SL): tp=%.2f%% sl=%.2f%%",
+		req.TPPct, req.SLPct,
+	)
 	if gridChanged {
-		s.engine.RestartCycle(r.Context(), id)
-		s.engine.LogUserAction(r.Context(), id, fmt.Sprintf(
+		logMsg = fmt.Sprintf(
 			"Настройки обновлены (сетка): symbol=%s dir=%s step=%.2f%% size=%.2f USDT active=%d entryType=%s tp=%.2f%% sl=%.2f%%",
 			req.Symbol, req.Direction, req.GridStepPct, req.GridSizeUSDT, req.GridActive, req.EntryOrderType, req.TPPct, req.SLPct,
-		))
-	} else {
-		s.engine.UpdateTPSL(r.Context(), id)
-		s.engine.LogUserAction(r.Context(), id, fmt.Sprintf(
-			"Настройки обновлены (TP/SL): tp=%.2f%% sl=%.2f%%",
-			req.TPPct, req.SLPct,
-		))
+		)
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	go func() {
+		ctx := context.Background()
+		s.engine.Notify(ctx, id)
+		if gridChanged {
+			s.engine.RestartCycle(ctx, id)
+		} else {
+			s.engine.UpdateTPSL(ctx, id)
+		}
+		s.engine.LogUserAction(ctx, id, logMsg)
+	}()
 }
 
 // SetStrategyStatus changes strategy status: active | finishing | stopped.
@@ -394,14 +404,19 @@ func (s *Server) SetStrategyStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "strategy not found")
 		return
 	}
-	s.engine.Notify(r.Context(), id)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+
 	statusLabel := map[string]string{
 		"active":    "запущена",
 		"finishing": "завершение",
 		"stopped":   "остановлена",
 	}[req.Status]
-	s.engine.LogUserAction(r.Context(), id, fmt.Sprintf("Статус изменён пользователем: %s", statusLabel))
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	logMsg := fmt.Sprintf("Статус изменён пользователем: %s", statusLabel)
+	go func() {
+		ctx := context.Background()
+		s.engine.Notify(ctx, id)
+		s.engine.LogUserAction(ctx, id, logMsg)
+	}()
 }
 
 // DeleteStrategy deletes a strategy (only if stopped).
@@ -545,13 +560,15 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"cycle_num":   cycle.CycleNum,
-		"start_price": cycle.StartPrice,
-		"tp_order_id": cycle.TPOrderID,
-		"sl_order_id": cycle.SLOrderID,
-		"started_at":  cycle.StartedAt,
-		"levels":      levels,
-		"volume_usdt": volumeUSDT,
-		"avg_entry":   avgEntry,
+		"cycle_num":     cycle.CycleNum,
+		"start_price":   cycle.StartPrice,
+		"tp_order_id":   cycle.TPOrderID,
+		"sl_order_id":   cycle.SLOrderID,
+		"started_at":    cycle.StartedAt,
+		"levels":        levels,
+		"volume_usdt":   volumeUSDT,
+		"avg_entry":     avgEntry,
+		"signal_state":  s.engine.GetSignalState(id),
+		"signal_values": s.engine.GetSignalValues(id),
 	})
 }
