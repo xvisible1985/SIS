@@ -1,5 +1,5 @@
 // frontend/src/pages/AccountPage.tsx
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../hooks/useAuth'
 import {
   getProfile, updateProfile, changePassword, getTelegramLink,
@@ -329,6 +329,15 @@ function IntegrationsTab({
   const [disconnecting, setDisconnecting] = useState(false)
   const [connectError, setConnectError] = useState('')
   const [polling, setPolling] = useState(false)
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current !== null) {
+        clearInterval(intervalRef.current)
+      }
+    }
+  }, [])
 
   async function handleConnect() {
     setConnectError('')
@@ -336,15 +345,14 @@ function IntegrationsTab({
     try {
       const { url } = await getTelegramLink()
       window.open(url, '_blank')
-      // Poll for connection up to 30 seconds
-      setPolling(true)
       let attempts = 0
-      const interval = setInterval(async () => {
+      intervalRef.current = setInterval(async () => {
         attempts++
         try {
           const updated = await getProfile()
           if (updated.telegram_username) {
-            clearInterval(interval)
+            if (intervalRef.current !== null) clearInterval(intervalRef.current)
+            intervalRef.current = null
             setPolling(false)
             onProfileUpdate(updated)
           }
@@ -352,10 +360,12 @@ function IntegrationsTab({
           // ignore
         }
         if (attempts >= 10) {
-          clearInterval(interval)
+          if (intervalRef.current !== null) clearInterval(intervalRef.current)
+          intervalRef.current = null
           setPolling(false)
         }
       }, 3000)
+      setPolling(true)
     } catch (e: unknown) {
       setConnectError(e instanceof Error ? e.message : 'Ошибка')
     } finally {
