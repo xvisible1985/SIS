@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"sis/pkg/auth"
@@ -142,8 +143,8 @@ func maskEmail(email string) string {
 		return "***"
 	}
 	local := parts[0]
-	if len(local) > 2 {
-		local = local[:2] + "***"
+	if len(local) >= 1 {
+		local = local[:1] + "***"
 	}
 	return local + "@" + parts[1]
 }
@@ -311,7 +312,7 @@ func (s *Server) GetReferral(w http.ResponseWriter, r *http.Request) {
 		EmailMasked string `json:"email_masked"`
 		Active      bool   `json:"active"`
 	}
-	rows, _ := s.pool.Query(r.Context(),
+	rows, err := s.pool.Query(r.Context(),
 		`SELECT rs.created_at, u.email,
 		        (SELECT COUNT(*) > 0 FROM exchange_accounts ea WHERE ea.owner_id = u.id) AS active
 		 FROM referral_signups rs
@@ -320,16 +321,26 @@ func (s *Server) GetReferral(w http.ResponseWriter, r *http.Request) {
 		 ORDER BY rs.created_at DESC
 		 LIMIT 100`, userID,
 	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer rows.Close()
 	var signups []signup
-	if rows != nil {
-		defer rows.Close()
-		for rows.Next() {
-			var su signup
-			var email string
-			rows.Scan(&su.Date, &email, &su.Active)
-			su.EmailMasked = maskEmail(email)
-			signups = append(signups, su)
+	for rows.Next() {
+		var su signup
+		var email string
+		var createdAt time.Time
+		if err := rows.Scan(&createdAt, &email, &su.Active); err != nil {
+			continue
 		}
+		su.Date = createdAt.UTC().Format(time.RFC3339)
+		su.EmailMasked = maskEmail(email)
+		signups = append(signups, su)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
 	}
 	if signups == nil {
 		signups = []signup{}
