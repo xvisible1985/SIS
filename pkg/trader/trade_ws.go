@@ -91,13 +91,17 @@ func (ts *TradeStream) runOnce(ctx context.Context) error {
 				errCh <- err
 				return
 			}
-			msgCh <- data
+			select {
+			case msgCh <- data:
+			default:
+			}
 		}
 	}()
 
 	for {
 		select {
 		case <-ctx.Done():
+			conn.Close()
 			return nil
 		case <-ping.C:
 			p, _ := json.Marshal(map[string]string{"op": "ping"})

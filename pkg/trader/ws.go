@@ -67,7 +67,10 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 				bybitErrCh <- err
 				return
 			}
-			bybitCh <- data
+			select {
+			case bybitCh <- data:
+			default:
+			}
 		}
 	}()
 
@@ -77,6 +80,7 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 	for {
 		select {
 		case <-ctx.Done():
+			bwsConn.Close()
 			return
 
 		case <-pingTicker.C:
