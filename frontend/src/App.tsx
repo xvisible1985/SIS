@@ -12,6 +12,7 @@ import { AccountsPage } from './pages/AccountsPage'
 import { TerminalPage } from './pages/TerminalPage'
 import { SignalsPage } from './pages/SignalsPage'
 import { AdminPage }   from './pages/AdminPage'
+import { SignalChartPage } from './pages/SignalChartPage'
 
 export default function App() {
   return (
@@ -20,6 +21,7 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<AuthPage defaultTab="login" />} />
           <Route path="/register" element={<AuthPage defaultTab="register" />} />
+          <Route path="/signal-chart" element={<SignalChartPage />} />
           <Route
             path="/*"
             element={
