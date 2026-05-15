@@ -67,6 +67,9 @@ func main() {
 	// Start strategy engine
 	go s.engine.Start(ctx)
 
+	// Start coin icon cache refresher
+	s.coinIcons.StartRefresher(ctx)
+
 	// Start background syncer
 	syncer := traderPkg.NewSyncer(pool, encKey, syncDays)
 	syncer.Start(ctx)
@@ -83,6 +86,7 @@ func main() {
 	r.Group(func(r chi.Router) {
 		r.Use(s.RequireAuth)
 
+		r.Get("/signals/chart-history", s.SignalChartHistory)
 		r.Get("/signals", s.ListSignals)
 		r.Post("/signals", s.CreateSignal)
 		r.Get("/signals/{id}", s.GetSignal)
@@ -134,6 +138,9 @@ func main() {
 		r.Get("/trader/pnl", s.GetClosedPnl)
 		r.Get("/trader/stats", s.GetTraderStats)
 
+		// Instrument constraints (leverage, lot size limits)
+		r.Get("/instrument-info", s.GetInstrumentConstraints)
+
 		// Signal/indicator types — enabled list (all authenticated users)
 		r.Get("/signal-types", s.ListEnabledSignalTypes)
 		r.Get("/indicator-types", s.ListEnabledIndicatorTypes)
@@ -152,6 +159,9 @@ func main() {
 			r.Put("/admin/signal-override/{name}", s.SetSignalOverride)
 		})
 	})
+
+	// Coin icons — public, no auth
+	r.Get("/coin-icon/{symbol}", s.GetCoinIcon)
 
 	// WebSocket endpoints — auth via ?token= query param
 	r.Get("/ws/jobs/{id}/progress", s.JobProgress)
