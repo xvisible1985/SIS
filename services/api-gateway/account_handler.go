@@ -4,10 +4,12 @@ package main
 import (
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"regexp"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"sis/pkg/auth"
 )
 
@@ -61,6 +63,11 @@ func (s *Server) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		req.Username, userID,
 	).Scan(&email, &plan)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			writeError(w, http.StatusConflict, "username already taken")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -70,7 +77,7 @@ func (s *Server) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	).Scan(&telegramUsername)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"email":             email,
-		"username":          &req.Username,
+		"username":          req.Username,
 		"plan":              plan,
 		"telegram_username": telegramUsername,
 	})
@@ -100,7 +107,7 @@ func (s *Server) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !auth.CheckPassword(hash, req.CurrentPassword) {
-		writeError(w, http.StatusBadRequest, "current password is incorrect")
+		writeError(w, http.StatusUnauthorized, "current password is incorrect")
 		return
 	}
 	newHash, err := auth.HashPassword(req.NewPassword)

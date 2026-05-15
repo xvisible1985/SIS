@@ -101,7 +101,7 @@ func TestChangePassword_WrongCurrent(t *testing.T) {
 	req2.Header.Set("Content-Type", "application/json")
 	req2 = withUserID(req2, userID)
 	s.ChangePassword(rec2, req2)
-	if rec2.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec2.Code)
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec2.Code)
 	}
 }
