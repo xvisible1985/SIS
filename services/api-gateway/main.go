@@ -109,6 +109,12 @@ func main() {
 		r.Patch("/account/profile", s.UpdateProfile)
 		r.Post("/account/change-password", s.ChangePassword)
 
+		r.Get("/account/telegram-link", s.GetTelegramLink)
+		r.Delete("/account/telegram", s.TelegramDisconnect)
+		r.Get("/account/notifications", s.GetNotifications)
+		r.Patch("/account/notifications", s.UpdateNotifications)
+		r.Get("/account/referral", s.GetReferral)
+
 		// Exchange accounts
 		r.Get("/accounts", s.ListAccounts)
 		r.Post("/accounts", s.CreateAccount)
@@ -164,6 +170,9 @@ func main() {
 			r.Put("/admin/signal-override/{name}", s.SetSignalOverride)
 		})
 	})
+
+	// Telegram bot callback — no auth, token is the secret
+	r.Post("/account/telegram-verify", s.TelegramVerify)
 
 	// Coin icons — public, no auth
 	r.Get("/coin-icon/{symbol}", s.GetCoinIcon)
