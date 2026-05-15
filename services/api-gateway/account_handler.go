@@ -278,3 +278,69 @@ func (s *Server) UpdateNotifications(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// GetReferral returns (creating if needed) the user's referral code, link, and stats.
+// GET /account/referral
+func (s *Server) GetReferral(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+
+	// Get or create referral code atomically.
+	// ON CONFLICT DO UPDATE SET code=existing keeps the original value,
+	// and RETURNING always gives us the winning code.
+	var code string
+	err := s.pool.QueryRow(r.Context(),
+		`INSERT INTO referral_codes (user_id, code) VALUES ($1, $2)
+		 ON CONFLICT (user_id) DO UPDATE SET code = referral_codes.code
+		 RETURNING code`,
+		userID, generateReferralCode(),
+	).Scan(&code)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// Stats
+	var count int
+	s.pool.QueryRow(r.Context(),
+		`SELECT COUNT(*) FROM referral_signups WHERE referrer_id=$1`, userID,
+	).Scan(&count)
+
+	// Signups list
+	type signup struct {
+		Date        string `json:"date"`
+		EmailMasked string `json:"email_masked"`
+		Active      bool   `json:"active"`
+	}
+	rows, _ := s.pool.Query(r.Context(),
+		`SELECT rs.created_at, u.email,
+		        (SELECT COUNT(*) > 0 FROM exchange_accounts ea WHERE ea.owner_id = u.id) AS active
+		 FROM referral_signups rs
+		 JOIN users u ON u.id = rs.referee_id
+		 WHERE rs.referrer_id=$1
+		 ORDER BY rs.created_at DESC
+		 LIMIT 100`, userID,
+	)
+	var signups []signup
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var su signup
+			var email string
+			rows.Scan(&su.Date, &email, &su.Active)
+			su.EmailMasked = maskEmail(email)
+			signups = append(signups, su)
+		}
+	}
+	if signups == nil {
+		signups = []signup{}
+	}
+
+	appURL := getEnv("APP_URL", "https://app.novabot.io")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"code":          code,
+		"link":          appURL + "/r/" + code,
+		"count":         count,
+		"total_rewards": 0,
+		"signups":       signups,
+	})
+}

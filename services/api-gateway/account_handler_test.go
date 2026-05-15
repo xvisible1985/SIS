@@ -188,3 +188,34 @@ func TestGetUpdateNotifications(t *testing.T) {
 		t.Fatalf("patch got %d: %s", rec2.Code, rec2.Body.String())
 	}
 }
+
+func TestGetReferral(t *testing.T) {
+	s, userID := newAccTestServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/account/referral", nil)
+	req = withUserID(req, userID)
+	s.GetReferral(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	json.NewDecoder(rec.Body).Decode(&body)
+	code, _ := body["code"].(string)
+	if len(code) != 8 {
+		t.Errorf("expected 8-char code, got %q", code)
+	}
+	link, _ := body["link"].(string)
+	if !strings.Contains(link, code) {
+		t.Errorf("link %q does not contain code %q", link, code)
+	}
+	// Second call returns same code
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/account/referral", nil)
+	req2 = withUserID(req2, userID)
+	s.GetReferral(rec2, req2)
+	var body2 map[string]any
+	json.NewDecoder(rec2.Body).Decode(&body2)
+	if body2["code"] != body["code"] {
+		t.Error("second call returned different code")
+	}
+}
