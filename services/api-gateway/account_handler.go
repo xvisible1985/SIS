@@ -180,6 +180,10 @@ func (s *Server) TelegramVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
+	if req.Token == "" || req.ChatID == 0 {
+		writeError(w, http.StatusBadRequest, "token and chat_id are required")
+		return
+	}
 	var userID string
 	err := s.pool.QueryRow(r.Context(),
 		`DELETE FROM telegram_pending_tokens
@@ -208,8 +212,12 @@ func (s *Server) TelegramVerify(w http.ResponseWriter, r *http.Request) {
 // DELETE /account/telegram
 func (s *Server) TelegramDisconnect(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
-	s.pool.Exec(r.Context(),
-		`DELETE FROM telegram_connections WHERE user_id=$1`, userID)
+	if _, err := s.pool.Exec(r.Context(),
+		`DELETE FROM telegram_connections WHERE user_id=$1`, userID,
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -243,8 +251,8 @@ func (s *Server) UpdateNotifications(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	// Read current values first (default true for new rows)
-	var onTrade, onSignal, onBalance bool
+	// Read current values, defaulting to true for new users
+	onTrade, onSignal, onBalance := true, true, true
 	s.pool.QueryRow(r.Context(),
 		`SELECT on_trade, on_signal, on_balance
 		 FROM telegram_notification_settings WHERE user_id=$1`, userID,
