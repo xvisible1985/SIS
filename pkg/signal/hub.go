@@ -126,7 +126,7 @@ func (h *KlineHub) SnapshotOrFetch(symbol, interval string) []Candle {
 	if len(snap) >= 2 {
 		return snap
 	}
-	candles, err := fetchKlineHistory(symbol, bybitInterval(interval), candleBufferSize)
+	candles, err := FetchKlineHistory(symbol, bybitInterval(interval), candleBufferSize)
 	if err != nil || len(candles) < 2 {
 		return nil
 	}
@@ -144,7 +144,7 @@ func (h *KlineHub) SnapshotOrFetch(symbol, interval string) []Candle {
 
 func (h *KlineHub) prefetchAndConnect(symbol, interval, bybitIv, topic, key string) {
 	// 1. Fetch REST history
-	candles, err := fetchKlineHistory(symbol, bybitIv, candleBufferSize)
+	candles, err := FetchKlineHistory(symbol, bybitIv, candleBufferSize)
 	if err != nil {
 		log.Printf("kline hub: REST prefetch %s/%s: %v", symbol, interval, err)
 	}
@@ -337,7 +337,7 @@ func (h *KlineHub) handleMessage(data []byte) {
 
 // ── REST history prefetch ─────────────────────────────────────────────────
 
-func fetchKlineHistory(symbol, bybitInterval string, limit int) ([]Candle, error) {
+func FetchKlineHistory(symbol, bybitInterval string, limit int) ([]Candle, error) {
 	url := fmt.Sprintf("%s?category=linear&symbol=%s&interval=%s&limit=%d",
 		bybitKlineREST, symbol, bybitInterval, limit)
 
