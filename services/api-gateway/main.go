@@ -104,6 +104,11 @@ func main() {
 		r.Put("/webhooks/{id}", s.UpdateWebhook)
 		r.Delete("/webhooks/{id}", s.DeleteWebhook)
 
+		// User profile
+		r.Get("/account/profile", s.GetProfile)
+		r.Patch("/account/profile", s.UpdateProfile)
+		r.Post("/account/change-password", s.ChangePassword)
+
 		// Exchange accounts
 		r.Get("/accounts", s.ListAccounts)
 		r.Post("/accounts", s.CreateAccount)
