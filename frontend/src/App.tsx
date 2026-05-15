@@ -21,7 +21,6 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<AuthPage defaultTab="login" />} />
           <Route path="/register" element={<AuthPage defaultTab="register" />} />
-          <Route path="/signal-chart" element={<SignalChartPage />} />
           <Route
             path="/*"
             element={
@@ -38,6 +37,7 @@ export default function App() {
                     <Route path="webhooks" element={<WebhooksPage />} />
                     <Route path="accounts" element={<AccountsPage />} />
                     <Route path="admin"    element={<AdminPage />} />
+                    <Route path="signal-chart" element={<SignalChartPage />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
                 </Layout>

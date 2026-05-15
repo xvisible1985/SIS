@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { createChart, CandlestickSeries, createSeriesMarkers, ColorType } from 'lightweight-charts'
 import type { IChartApi } from 'lightweight-charts'
 import { popSignalChartIntent } from '../stores/signalChartStore'
@@ -24,7 +23,6 @@ function toBybitTF(tf: string): string {
 }
 
 export function SignalChartPage() {
-  const navigate = useNavigate()
   const intent = popSignalChartIntent()
 
   const [signalId, setSignalId] = useState(intent?.signalId ?? SIGNALS[0]!.id)
@@ -176,21 +174,9 @@ export function SignalChartPage() {
   const sellEvents = events.filter(e => e.state === 'sell')
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-[#0a0d14] text-white font-sans">
+    <div className="h-full flex flex-col bg-[#0a0d14] text-white font-sans">
       {/* Top bar */}
       <div className="flex items-center gap-3 px-4 py-2 border-b border-white/[.07] bg-[#0d1117] flex-wrap flex-shrink-0">
-        <button
-          onClick={() => navigate(-1)}
-          className="flex items-center gap-1.5 text-[12px] text-slate-400 hover:text-white transition-colors"
-        >
-          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
-            <path d="M19 12H5M12 5l-7 7 7 7"/>
-          </svg>
-          Назад
-        </button>
-
-        <div className="w-px h-5 bg-white/[.08]" />
-
         <select
           value={signalId}
           onChange={e => setSignalId(e.target.value)}
