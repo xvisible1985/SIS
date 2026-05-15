@@ -37,3 +37,10 @@ CREATE TABLE IF NOT EXISTS referral_signups (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(referee_id)
 );
+
+-- Add indexes for query performance
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users (username) WHERE username IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS referral_signups_referrer_idx ON referral_signups (referrer_id);
+
+CREATE INDEX IF NOT EXISTS telegram_pending_tokens_user_idx ON telegram_pending_tokens (user_id);
