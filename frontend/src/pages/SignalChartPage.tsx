@@ -59,7 +59,10 @@ export function SignalChartPage() {
       url.searchParams.set('limit',    '500')
       url.searchParams.set('params',   JSON.stringify(params))
 
-      const res = await fetch(url.toString())
+      const token = localStorage.getItem('token') ?? sessionStorage.getItem('token') ?? ''
+      const res = await fetch(url.toString(), {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      })
       if (!res.ok) throw new Error(await res.text())
       const json = await res.json()
       setEvents(json.events ?? [])
