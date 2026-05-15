@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { ChevronUp, Settings } from 'lucide-react';
+import { ChevronUp, Settings, LineChart } from 'lucide-react';
 import { CAT_STYLES, TFS } from '../categories';
 import type { SignalDef, Candle, SignalState } from '../types';
 import { SignalPill } from './SignalPill';
@@ -13,6 +13,7 @@ type Props<P extends Record<string, unknown>> = {
   defaultExpanded?: boolean;
   onSettingsClick?: (rect: DOMRect) => void;
   hideBadge?: boolean;
+  onChartClick?: () => void;
 };
 
 function cardBg(state?: 'buy' | 'sell' | 'neutral') {
@@ -23,7 +24,7 @@ function cardBg(state?: 'buy' | 'sell' | 'neutral') {
   return 'border-white/[.06] bg-white/[.08]';
 }
 
-export function SignalCard<P extends Record<string, unknown>>({ signal, candles, value, onChange, defaultExpanded, onSettingsClick, hideBadge }: Props<P>) {
+export function SignalCard<P extends Record<string, unknown>>({ signal, candles, value, onChange, defaultExpanded, onSettingsClick, hideBadge, onChartClick }: Props<P>) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(defaultExpanded ?? false);
   const [innerParams, setInner] = useParams<P>(signal.defaults);
@@ -44,11 +45,19 @@ export function SignalCard<P extends Record<string, unknown>>({ signal, candles,
           <div className="truncate text-[14px] font-bold leading-tight tracking-tight text-slate-50">{signal.name}</div>
           <div className="mt-1 min-h-[30px] text-[11px] leading-snug text-slate-400 line-clamp-2">{signal.desc}</div>
         </div>
-        {!hideBadge && (
-          <div className="shrink-0">
-            {liveState && <SignalPill signal={{ state: liveState }} />}
-          </div>
-        )}
+        <div className="shrink-0 flex items-center gap-1.5">
+          {!hideBadge && liveState && <SignalPill signal={{ state: liveState }} />}
+          {onChartClick && (
+            <button
+              type="button"
+              onClick={e => { e.stopPropagation(); onChartClick() }}
+              className="w-7 h-7 inline-flex items-center justify-center rounded-[7px] bg-white/[.04] border border-white/[.08] text-slate-400 hover:text-[#5b8cff] hover:bg-[#5b8cff]/[.10] hover:border-[#5b8cff]/30 transition-colors"
+              title="Открыть график"
+            >
+              <LineChart size={13} />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="px-3 pb-2.5">

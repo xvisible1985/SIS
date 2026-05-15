@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { setSignalChartIntent } from '../stores/signalChartStore'
 import { useMarketIndicators } from '../hooks/useMarketIndicators'
 import { SignalChartModal } from '../components/signals/SignalChartModal'
 import type { IndicatorMarker } from '../hooks/useMarketIndicators'
@@ -107,6 +109,7 @@ function HSplit({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void })
 }
 
 export function SignalsPage() {
+  const navigate = useNavigate()
   const { isAdmin } = useAuth()
   const enabledSignals    = useEnabledContent('/signal-types',    '/admin/signal-types')
   const enabledIndicators = useEnabledContent('/indicator-types', '/admin/indicator-types')
@@ -142,6 +145,17 @@ export function SignalsPage() {
   }
   function setP(id: string, next: Record<string, unknown>) {
     setParamsMap(prev => ({ ...prev, [id]: next }))
+  }
+
+  function openSignalChart(sig: SignalDef<Record<string, unknown>>, params?: Record<string, unknown>) {
+    setSignalChartIntent({
+      signalId: sig.id,
+      signalName: sig.name,
+      params: params ?? (sig.defaults as Record<string, unknown>),
+      symbol: selectedCoin,
+      tf: selectedTf,
+    })
+    navigate('/signal-chart')
   }
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -266,6 +280,7 @@ export function SignalsPage() {
                       value={getP(sig.id, sig.defaults)}
                       onChange={p => setP(sig.id, p)}
                       onSettingsClick={rect => setFlyingCard({ item: { type: 'signal', def: sig as SignalDef<Record<string, unknown>> }, sourceRect: rect })}
+                      onChartClick={() => openSignalChart(sig as SignalDef<Record<string,unknown>>, getP(sig.id, sig.defaults))}
                     />
                   </div>
                 ))}
@@ -294,6 +309,7 @@ export function SignalsPage() {
                       value={getP(sig.id, sig.defaults)}
                       onChange={p => setP(sig.id, p)}
                       onSettingsClick={rect => setFlyingCard({ item: { type: 'signal', def: sig as SignalDef<Record<string, unknown>> }, sourceRect: rect })}
+                      onChartClick={() => openSignalChart(sig as SignalDef<Record<string,unknown>>, getP(sig.id, sig.defaults))}
                     />
                   </div>
                 ))}
@@ -369,6 +385,7 @@ export function SignalsPage() {
                               value={getP(sig.id, sig.defaults)}
                               onChange={p => setP(sig.id, p)}
                               onSettingsClick={rect => setFlyingCard({ item: { type: 'signal', def: sig as SignalDef<Record<string, unknown>> }, sourceRect: rect })}
+                              onChartClick={() => openSignalChart(sig as SignalDef<Record<string,unknown>>, getP(sig.id, sig.defaults))}
                             />
                           )}
                           <button type="button" onClick={() => removeItem(item.id)}

@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { setSignalChartIntent } from '../stores/signalChartStore'
 import { ToggleLeft, ToggleRight, FlaskConical, X } from 'lucide-react'
 import { apiClient } from '../api/client'
 import { SIGNALS, setRsiTestOverride } from '../features/indicators/signals'
@@ -540,6 +542,19 @@ function SignalTypesTab() {
   function getP(id: string, defaults: Record<string, unknown>) { return paramsMap[id] ?? defaults }
   function setP(id: string, next: Record<string, unknown>)     { setParamsMap(p => ({ ...p, [id]: next })) }
 
+  const navigate = useNavigate()
+
+  function openSignalChart(sig: SignalDef<Record<string, unknown>>, params?: Record<string, unknown>) {
+    setSignalChartIntent({
+      signalId: sig.id,
+      signalName: sig.name,
+      params: params ?? (sig.defaults as Record<string, unknown>),
+      symbol: selectedCoin,
+      tf: selectedTf,
+    })
+    navigate('/signal-chart')
+  }
+
   const containerRef = useRef<HTMLDivElement>(null)
   const [topLeftPct, setTopLeftPct] = useState(50)
   const [bottomPx,   setBottomPx]   = useState(280)
@@ -643,6 +658,7 @@ function SignalTypesTab() {
                 onChange={p => setP(item.def.id, p)}
                 onSettingsClick={rect => setFlyingCard({ item: { type: 'signal', def: item.def }, sourceRect: rect })}
                 hideBadge
+                onChartClick={() => openSignalChart(item.def as SignalDef<Record<string,unknown>>, getP(item.def.id, item.def.defaults))}
               />
               {item.def.id === 'rsi-test' && <RsiTestOverride />}
             </>
@@ -801,6 +817,7 @@ function SignalTypesTab() {
                             onChange={p => setP(sig.id, p)}
                             onSettingsClick={rect => setFlyingCard({ item: { type: 'signal', def: sig as SignalDef<Record<string, unknown>> }, sourceRect: rect })}
                             hideBadge
+                            onChartClick={() => openSignalChart(sig as SignalDef<Record<string,unknown>>, getP(sig.id, sig.defaults))}
                           />
                         )}
                         <button type="button" onClick={() => removeItem(item.id)}
