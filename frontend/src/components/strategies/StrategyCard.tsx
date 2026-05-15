@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { setSignalChartIntent } from '../../stores/signalChartStore'
 import { getStrategyState, getStrategyEvents, setStrategyStatus, deleteStrategy, updateStrategy } from '../../api/strategies'
 import { placeOrder } from '../../api/trader'
 import { ClosePositionModal, makeCloseConfirm, type CloseConfirm } from '../common/ClosePositionModal'
 import { useStrategyEventsWs } from '../../hooks/useStrategyEventsWs'
 import { DebugCycleWindow } from './DebugCycleWindow'
+import { CoinIcon } from '../common/CoinIcon'
 
 import { SIGNALS } from '../../features/indicators/signals'
 import { INDICATORS } from '../../features/indicators/indicators'
@@ -182,6 +185,7 @@ function logLvlStyle(lvl: string) {
 
 // ── main component ─────────────────────────────────────────────────────────────
 export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit, onChanged, selected, onSelect, isOpen, onToggleOpen, liveSignal }: Props) {
+  const navigate = useNavigate()
   const [cs, setCs] = useState<CardState>({ state: null, events: [], loading: false, acting: false })
   const [localEvents, setLocalEvents] = useState<StrategyEvent[] | null>(null)
   const [copiedLogIdx, setCopiedLogIdx] = useState<number | null>(null)
@@ -408,9 +412,9 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
 
   // ── card border/bg — colour matches strategy status ──────────────────────────
   const isActive = s.status === 'active'
-  const baseBg = isActive && isLong  ? 'rgba(65,210,139,.055)'
-               : isActive && !isLong ? 'rgba(248,113,113,.055)'
-               :                       'rgba(255,255,255,.025)'
+  const baseBg = isActive && isLong  ? 'rgba(65,210,139,.09)'
+               : isActive && !isLong ? 'rgba(248,113,113,.09)'
+               :                       'rgba(255,255,255,.05)'
   const baseBorder = isActive && isLong  ? 'rgba(65,210,139,.18)'
                    : isActive && !isLong ? 'rgba(248,113,113,.18)'
                    :                       'rgba(255,255,255,.07)'
@@ -433,6 +437,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
         <div className="flex items-center gap-2 flex-wrap">
           {/* left: symbol + badges */}
           <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
+            <CoinIcon symbol={s.symbol} className="w-5 h-5" />
             <span className="font-display font-bold text-[15px] text-[#f2f5fb] tracking-[-0.2px] leading-none">{s.symbol}</span>
             <span
               className="inline-flex items-center gap-[3px] px-1.5 py-[2px] rounded-[5px] text-[10px] font-bold uppercase tracking-[.5px] leading-none"
@@ -481,8 +486,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
           <div className="relative group/ctip flex items-baseline gap-1.5">
             <span className="text-[10px] text-[#5b6479] uppercase tracking-[.8px] font-semibold">Объём</span>
             <span className={`font-mono text-[12px] font-semibold ${s.volume_usdt > 0 ? 'text-[#e6ebf5]' : 'text-[#5b6479]'}`}>
-              {s.volume_usdt > 0 ? s.volume_usdt.toFixed(0) : '0'}
-              <span className="text-[10px] text-[#5b6479] ml-0.5">USDT</span>
+              {s.volume_usdt > 0 ? `${s.volume_usdt.toFixed(1)}$` : '0$'}
             </span>
             <CardTip text="Суммарный объём открытой позиции — сумма всех взятых уровней в USDT" />
           </div>
@@ -593,6 +597,25 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
                               </span>
                             )}
                           </div>
+                          {/* chart icon — outside the card */}
+                          <button
+                            type="button"
+                            onClick={e => {
+                              e.stopPropagation()
+                              setSignalChartIntent({
+                                signalId: sc.name,
+                                signalName: sig?.name ?? sc.name,
+                                params: (sc.params ?? {}) as Record<string, unknown>,
+                                symbol: s.symbol,
+                                tf: (sc.params?.tf as string) ?? '1h',
+                              })
+                              navigate('/signal-chart')
+                            }}
+                            className="shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-[6px] text-slate-500 hover:text-[#5b8cff] hover:bg-[#5b8cff]/[.10] transition-colors"
+                            title="График сигнала"
+                          >
+                            <IcSpark s={13} w={1.8} />
+                          </button>
                           {/* delete — outside the card */}
                           <button
                             type="button"
