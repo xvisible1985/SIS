@@ -13,6 +13,7 @@ import { TerminalPage } from './pages/TerminalPage'
 import { SignalsPage } from './pages/SignalsPage'
 import { AdminPage }   from './pages/AdminPage'
 import { SignalChartPage } from './pages/SignalChartPage'
+import { AccountPage } from './pages/AccountPage'
 
 export default function App() {
   return (
@@ -38,6 +39,7 @@ export default function App() {
                     <Route path="accounts" element={<AccountsPage />} />
                     <Route path="admin"    element={<AdminPage />} />
                     <Route path="signal-chart" element={<SignalChartPage />} />
+                    <Route path="account" element={<AccountPage />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
                 </Layout>
