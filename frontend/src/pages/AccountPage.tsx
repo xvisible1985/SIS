@@ -67,7 +67,7 @@ export function AccountPage() {
   const displayName = profile?.username ?? email?.split('@')[0] ?? ''
 
   return (
-    <div className="p-6 max-w-2xl">
+    <div className="pl-10 pr-6 py-6 max-w-2xl">
       <div className="mb-5">
         <h1 className="text-lg font-semibold text-slate-100">Аккаунт</h1>
         <p className="text-sm text-slate-500 mt-0.5">Управление профилем и настройками</p>

@@ -18,11 +18,11 @@ import { Sparkline } from './Sparkline';
 import type { SidebarProps } from './Sidebar.types';
 
 const NAV = [
+  { to: '/accounts',  label: 'Api key',   icon: Users,    badge: 'count' as const, key: 'accounts' },
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/terminal',  label: 'Terminal',  icon: Terminal, badge: 'live' as const },
   { to: '/signals',   label: 'Сигналы',   icon: BarChart2 },
   { to: '/webhooks',  label: 'Webhooks',  icon: Webhook,  badge: 'count' as const, key: 'webhooks' },
-  { to: '/accounts',  label: 'Аккаунты',  icon: Users,    badge: 'count' as const, key: 'accounts' },
   { to: '/admin',     label: 'Админка',   icon: Shield },
 ];
 
