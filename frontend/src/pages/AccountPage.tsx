@@ -24,6 +24,8 @@ export function AccountPage() {
   const [referral, setReferral] = useState<ReferralInfo | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [notificationsError, setNotificationsError] = useState('')
+  const [referralError, setReferralError] = useState('')
 
   useEffect(() => {
     getProfile()
@@ -34,10 +36,16 @@ export function AccountPage() {
 
   useEffect(() => {
     if (tab === 'integrations' && notifications === null) {
-      getNotifications().then(setNotifications).catch(() => {})
+      setNotificationsError('')
+      getNotifications()
+        .then(setNotifications)
+        .catch((e: unknown) => setNotificationsError(e instanceof Error ? e.message : 'Ошибка загрузки'))
     }
     if (tab === 'referrals' && referral === null) {
-      getReferral().then(setReferral).catch(() => {})
+      setReferralError('')
+      getReferral()
+        .then(setReferral)
+        .catch((e: unknown) => setReferralError(e instanceof Error ? e.message : 'Ошибка загрузки'))
     }
   }, [tab])
 
@@ -101,12 +109,18 @@ export function AccountPage() {
           onNotificationsUpdate={setNotifications}
         />
       )}
-      {tab === 'integrations' && notifications === null && (
+      {tab === 'integrations' && notifications === null && !notificationsError && (
         <div className="text-slate-500 text-sm">Загрузка...</div>
       )}
+      {tab === 'integrations' && notificationsError && (
+        <div className="text-rose-400 text-sm">{notificationsError}</div>
+      )}
       {tab === 'referrals' && referral !== null && <ReferralsTab referral={referral} />}
-      {tab === 'referrals' && referral === null && (
+      {tab === 'referrals' && referral === null && !referralError && (
         <div className="text-slate-500 text-sm">Загрузка...</div>
+      )}
+      {tab === 'referrals' && referralError && (
+        <div className="text-rose-400 text-sm">{referralError}</div>
       )}
     </div>
   )
