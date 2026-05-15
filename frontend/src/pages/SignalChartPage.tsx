@@ -52,7 +52,7 @@ export function SignalChartPage() {
     setLoading(true)
     setError(null)
     try {
-      const url = new URL('/api/signals/chart-history', window.location.origin)
+      const url = new URL('/signals/chart-history', window.location.origin)
       url.searchParams.set('signal',   signalId)
       url.searchParams.set('symbol',   symbol)
       url.searchParams.set('interval', tf)
