@@ -147,3 +147,126 @@ func maskEmail(email string) string {
 	}
 	return local + "@" + parts[1]
 }
+
+// GetTelegramLink generates a one-time deep-link token.
+// GET /account/telegram-link
+func (s *Server) GetTelegramLink(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	token := newUUID() + newUUID() // 72-char token
+	_, err := s.pool.Exec(r.Context(),
+		`INSERT INTO telegram_pending_tokens (token, user_id)
+		 VALUES ($1, $2)
+		 ON CONFLICT (token) DO NOTHING`,
+		token, userID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	botName := getEnv("TELEGRAM_BOT_NAME", "novabot")
+	url := "https://t.me/" + botName + "?start=" + token
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+}
+
+// TelegramVerify is called by the Telegram bot after the user clicks the deep link.
+// POST /account/telegram-verify  (no auth — token IS the secret)
+func (s *Server) TelegramVerify(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token    string `json:"token"`
+		ChatID   int64  `json:"chat_id"`
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	var userID string
+	err := s.pool.QueryRow(r.Context(),
+		`DELETE FROM telegram_pending_tokens
+		 WHERE token=$1 AND expires_at > NOW()
+		 RETURNING user_id`,
+		req.Token,
+	).Scan(&userID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "token invalid or expired")
+		return
+	}
+	_, err = s.pool.Exec(r.Context(),
+		`INSERT INTO telegram_connections (user_id, chat_id, username)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (user_id) DO UPDATE SET chat_id=$2, username=$3, connected_at=NOW()`,
+		userID, req.ChatID, req.Username,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// TelegramDisconnect removes the Telegram connection.
+// DELETE /account/telegram
+func (s *Server) TelegramDisconnect(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	s.pool.Exec(r.Context(),
+		`DELETE FROM telegram_connections WHERE user_id=$1`, userID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// GetNotifications returns notification settings (defaults TRUE if row not yet created).
+// GET /account/notifications
+func (s *Server) GetNotifications(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	var onTrade, onSignal, onBalance bool
+	err := s.pool.QueryRow(r.Context(),
+		`SELECT on_trade, on_signal, on_balance
+		 FROM telegram_notification_settings WHERE user_id=$1`, userID,
+	).Scan(&onTrade, &onSignal, &onBalance)
+	if err != nil {
+		onTrade, onSignal, onBalance = true, true, true
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"on_trade": onTrade, "on_signal": onSignal, "on_balance": onBalance,
+	})
+}
+
+// UpdateNotifications upserts notification settings.
+// PATCH /account/notifications
+func (s *Server) UpdateNotifications(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	var req struct {
+		OnTrade   *bool `json:"on_trade"`
+		OnSignal  *bool `json:"on_signal"`
+		OnBalance *bool `json:"on_balance"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	// Read current values first (default true for new rows)
+	var onTrade, onSignal, onBalance bool
+	s.pool.QueryRow(r.Context(),
+		`SELECT on_trade, on_signal, on_balance
+		 FROM telegram_notification_settings WHERE user_id=$1`, userID,
+	).Scan(&onTrade, &onSignal, &onBalance)
+	if req.OnTrade != nil {
+		onTrade = *req.OnTrade
+	}
+	if req.OnSignal != nil {
+		onSignal = *req.OnSignal
+	}
+	if req.OnBalance != nil {
+		onBalance = *req.OnBalance
+	}
+	_, err := s.pool.Exec(r.Context(),
+		`INSERT INTO telegram_notification_settings (user_id, on_trade, on_signal, on_balance)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (user_id) DO UPDATE SET on_trade=$2, on_signal=$3, on_balance=$4`,
+		userID, onTrade, onSignal, onBalance,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
