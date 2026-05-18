@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { getCycleAudit } from '../../api/strategies'
 import type { CycleAuditData } from '../../types'
 
@@ -55,18 +55,25 @@ export function CycleAuditModal({ strategyId, strategySymbol, onClose }: Props) 
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [spinning, setSpinning] = useState(false)
 
+  const requestIdRef = useRef(0)
+
   const fetchData = useCallback(async () => {
+    const currentId = ++requestIdRef.current
     setSpinning(true)
     try {
       const d = await getCycleAudit(strategyId)
+      if (currentId !== requestIdRef.current) return
       setData(d)
       setLastUpdated(new Date())
       setError(null)
     } catch (e: any) {
+      if (currentId !== requestIdRef.current) return
       setError(e?.message ?? 'ошибка')
     } finally {
-      setSpinning(false)
-      setLoading(false)
+      if (currentId === requestIdRef.current) {
+        setSpinning(false)
+        setLoading(false)
+      }
     }
   }, [strategyId])
 
