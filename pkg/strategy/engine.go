@@ -293,6 +293,14 @@ func (e *Engine) GetSignalValues(strategyID string) map[string]float64 {
 	return nil
 }
 
+// GetAccountRunner returns the AccountRunner for the given account, or nil if not found.
+func (e *Engine) GetAccountRunner(accountID string) *AccountRunner {
+	e.mu.RLock()
+	r := e.runners[accountID]
+	e.mu.RUnlock()
+	return r
+}
+
 func (e *Engine) loadCreds(ctx context.Context, accountID string) (trader.Credentials, error) {
 	var apiKeyEnc, secretEnc string
 	if err := e.pool.QueryRow(ctx,
@@ -371,6 +379,17 @@ func newAccountRunner(accountID string, creds trader.Credentials, pool *pgxpool.
 		tradeStream:  trader.NewTradeStream(creds),
 		cancel:       cancel,
 	}
+}
+
+// SnapshotOrderIndex returns a copy of the in-memory order index as a set of orderIDs.
+func (ar *AccountRunner) SnapshotOrderIndex() map[string]bool {
+	ar.mu.RLock()
+	defer ar.mu.RUnlock()
+	snap := make(map[string]bool, len(ar.orderIndex))
+	for id := range ar.orderIndex {
+		snap[id] = true
+	}
+	return snap
 }
 
 func (ar *AccountRunner) run(ctx context.Context) {
