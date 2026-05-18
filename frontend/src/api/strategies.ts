@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { Strategy, StrategyState, StrategyEvent, StrategyFormData } from '../types'
+import type { Strategy, StrategyState, StrategyEvent, StrategyFormData, CycleAuditData } from '../types'
 
 export async function listStrategies(): Promise<Strategy[]> {
   const res = await apiClient.get<Strategy[]>('/strategies')
@@ -33,5 +33,29 @@ export async function getStrategyState(id: string): Promise<StrategyState> {
 
 export async function getStrategyEvents(id: string): Promise<StrategyEvent[]> {
   const res = await apiClient.get<StrategyEvent[]>(`/strategies/${id}/events`)
+  return res.data
+}
+
+export async function getCycleAudit(id: string): Promise<CycleAuditData> {
+  const res = await apiClient.get<CycleAuditData>(`/strategies/${id}/cycle-audit`)
+  return res.data
+}
+
+export interface InstrumentConstraints {
+  tick_size: number
+  qty_step: number
+  min_qty: number
+  max_leverage: number
+  min_notional_value: number
+}
+
+const instrConstraintsCache = new Map<string, { data: InstrumentConstraints; ts: number }>()
+
+export async function getInstrumentConstraints(symbol: string, category = 'linear'): Promise<InstrumentConstraints> {
+  const key = `${category}:${symbol}`
+  const cached = instrConstraintsCache.get(key)
+  if (cached && Date.now() - cached.ts < 5 * 60_000) return cached.data
+  const res = await apiClient.get<InstrumentConstraints>(`/instrument-info?symbol=${symbol}&category=${category}`)
+  instrConstraintsCache.set(key, { data: res.data, ts: Date.now() })
   return res.data
 }

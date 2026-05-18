@@ -333,3 +333,37 @@ export interface StrategyFormData {
   trailing_activation_pct: number
   trailing_callback_pct: number
 }
+
+// Cycle Audit
+export interface CycleAuditLevel {
+  idx: number
+  side: string
+  target_price: number
+  size_usdt: number
+  qty: string
+  db_status: string
+  filled_price: number
+  exchange_order_id: string
+  live_on_exchange: boolean
+  in_order_index: boolean
+  flag: 'ok' | 'pending' | 'missing_fill' | 'cancelled' | 'orphan'
+}
+
+export interface CycleAuditTPSL {
+  order_id: string
+  live_on_exchange: boolean
+  in_order_index: boolean
+  flag: 'ok' | 'not_placed' | 'missing' | 'orphan'
+}
+
+export interface CycleAuditData {
+  no_active_cycle?: boolean
+  cycle_num: number
+  started_at: string
+  position: { size: string; avg_entry: string; side: string; unrealised_pnl: string } | null
+  expected_qty_from_fills: string
+  qty_discrepancy: string
+  levels: CycleAuditLevel[]
+  tp: CycleAuditTPSL | null
+  sl: CycleAuditTPSL | null
+}
