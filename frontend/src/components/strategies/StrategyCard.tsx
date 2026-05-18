@@ -6,6 +6,7 @@ import { placeOrder } from '../../api/trader'
 import { ClosePositionModal, makeCloseConfirm, type CloseConfirm } from '../common/ClosePositionModal'
 import { useStrategyEventsWs } from '../../hooks/useStrategyEventsWs'
 import { DebugCycleWindow } from './DebugCycleWindow'
+import { CycleAuditModal } from './CycleAuditModal'
 import { CoinIcon } from '../common/CoinIcon'
 
 import { SIGNALS } from '../../features/indicators/signals'
@@ -54,6 +55,7 @@ const IcCheck  = (p: IcProps) => <Ic {...p}><circle cx="12" cy="12" r="9"/><path
 const IcCopy   = (p: IcProps) => <Ic {...p}><rect x="8" y="3" width="12" height="14" rx="2"/><path d="M16 21H6a2 2 0 0 1-2-2V8"/></Ic>
 const IcTrash  = (p: IcProps) => <Ic {...p}><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/></Ic>
 const IcBug    = (p: IcProps) => <Ic {...p}><path d="M8 2l1.5 1.5M16 2l-1.5 1.5M9 9h6M9 13h6M3 9l3 1M21 9l-3 1M3 17l3-1M21 17l-3-1"/><path d="M6.5 6.5A5.5 5.5 0 0 1 17.5 6.5V17a5.5 5.5 0 0 1-11 0V6.5z"/></Ic>
+const IcScope  = (p: IcProps) => <Ic {...p}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/><path d="M8 11h6M11 8v6"/></Ic>
 
 const IcChev   = (_: { open: boolean }) => (
   <svg width={9} height={9} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.6}
@@ -193,6 +195,8 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
   const [closeConfirm, setCloseConfirm] = useState<CloseConfirm | null>(null)
   const [closing, setClosing] = useState(false)
   const [debugOpen, setDebugOpen] = useState(false)
+  const [auditOpen, setAuditOpen] = useState(false)
+  const [hovered, setHovered] = useState(false)
 
   const accountName = accounts.find(a => a.id === s.account_id)?.label ?? s.account_id.slice(0, 8)
   const isLong = s.direction === 'long'
@@ -410,23 +414,22 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
     setTimeout(() => setCopiedLogIdx(null), 1400)
   }
 
-  // ── card border/bg — colour matches strategy status ──────────────────────────
+  // ── card border/bg — matches AccountCard style ───────────────────────────────
   const isActive = s.status === 'active'
-  const baseBg = isActive && isLong  ? 'rgba(65,210,139,.09)'
-               : isActive && !isLong ? 'rgba(248,113,113,.09)'
-               :                       'rgba(255,255,255,.05)'
-  const baseBorder = isActive && isLong  ? 'rgba(65,210,139,.18)'
-                   : isActive && !isLong ? 'rgba(248,113,113,.18)'
-                   :                       'rgba(255,255,255,.07)'
+  const baseBg     = isActive ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.02)'
+  const hoverBg    = isActive ? 'rgba(255,255,255,.08)' : 'rgba(255,255,255,.045)'
+  const baseBorder = isActive ? 'rgba(255,255,255,.10)' : 'rgba(255,255,255,.06)'
   const cardStyle: React.CSSProperties = {
-    background: selected ? 'rgba(255,255,255,.07)' : baseBg,
-    border: `1px solid ${selected ? 'rgba(255,255,255,.08)' : baseBorder}`,
-    ...(selected ? { boxShadow: '0 0 0 1.5px rgba(91,140,255,.45)' } : {}),
+    background: selected
+      ? 'linear-gradient(90deg,rgba(74,125,255,.18),rgba(74,125,255,.04))'
+      : hovered ? hoverBg : baseBg,
+    border: `1px solid ${selected ? 'rgba(74,125,255,.22)' : baseBorder}`,
+    ...(selected ? { boxShadow: 'inset 2px 0 0 #5b8cff' } : {}),
   }
 
   // ────────────────────────────────────────────────────────────────────────────
   return (
-    <li className="rounded-xl overflow-visible transition-all font-sans" style={cardStyle}>
+    <li className="rounded-xl overflow-visible transition-all font-sans" style={cardStyle} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
 
       {/* ── collapsed header ── */}
       <div
@@ -466,6 +469,14 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
           </button>
           <button
             type="button"
+            onClick={e => { e.stopPropagation(); setAuditOpen(o => !o) }}
+            className={`w-7 h-7 inline-flex items-center justify-center rounded-[7px] border transition-colors shrink-0 ${auditOpen ? 'bg-blue-400/[.15] border-blue-400/40 text-blue-400' : 'text-slate-500 bg-white/[.04] border-white/[.08] hover:bg-white/[.08]'}`}
+            title="Аудит цикла"
+          >
+            <IcScope s={13} w={1.6} />
+          </button>
+          <button
+            type="button"
             onClick={e => { e.stopPropagation(); onSelect?.(s); onEdit(s, cs.state?.levels.filter(l => l.status === 'filled').length ?? 0) }}
             className="w-7 h-7 inline-flex items-center justify-center text-slate-400 rounded-[7px] bg-white/[.04] border border-white/[.08] hover:bg-white/[.08] transition-colors shrink-0"
           >
@@ -476,25 +487,25 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
         {/* row 2: metrics · chev */}
         <div className="flex items-center gap-3.5 flex-wrap">
           <div className="relative group/ctip flex items-baseline gap-1.5">
-            <span className="text-[10px] text-[#5b6479] uppercase tracking-[.8px] font-semibold">Grid</span>
-            <span className={`font-mono text-[12px] font-semibold ${s.active_levels > 0 ? 'text-[#e6ebf5]' : 'text-[#5b6479]'}`}>
+            <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">Grid</span>
+            <span className={`text-[13px] font-semibold ${s.active_levels > 0 ? 'text-slate-200' : 'text-slate-500'}`}>
               {s.active_levels}/{s.grid_levels}
             </span>
             <CardTip text="Исполненных уровней сетки / всего уровней в текущем цикле" />
           </div>
           <div className="w-px h-2.5 bg-white/[.08]" />
           <div className="relative group/ctip flex items-baseline gap-1.5">
-            <span className="text-[10px] text-[#5b6479] uppercase tracking-[.8px] font-semibold">Объём</span>
-            <span className={`font-mono text-[12px] font-semibold ${s.volume_usdt > 0 ? 'text-[#e6ebf5]' : 'text-[#5b6479]'}`}>
+            <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">Объём</span>
+            <span className={`text-[13px] font-semibold ${s.volume_usdt > 0 ? 'text-slate-200' : 'text-slate-500'}`}>
               {s.volume_usdt > 0 ? `${s.volume_usdt.toFixed(1)}$` : '0$'}
             </span>
             <CardTip text="Суммарный объём открытой позиции — сумма всех взятых уровней в USDT" />
           </div>
           <div className="w-px h-2.5 bg-white/[.08]" />
           <div className="relative group/ctip flex items-baseline gap-1.5">
-            <span className="text-[10px] text-[#5b6479] uppercase tracking-[.8px] font-semibold">P&L</span>
-            <span className={`font-mono text-[12px] font-semibold ${
-              pnlUsdt === null ? 'text-[#5b6479]' : pnlUsdt > 0 ? 'text-emerald-300' : pnlUsdt < 0 ? 'text-rose-300' : 'text-[#5b6479]'
+            <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">P&L</span>
+            <span className={`text-[13px] font-semibold ${
+              pnlUsdt === null ? 'text-slate-500' : pnlUsdt > 0 ? 'text-emerald-300' : pnlUsdt < 0 ? 'text-rose-300' : 'text-slate-500'
             }`}>
               {pnlUsdt === null
                 ? '—'
@@ -817,6 +828,10 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
 
       {debugOpen && (
         <DebugCycleWindow strategy={s} orders={strategyOrders} onClose={() => setDebugOpen(false)} liveSignal={liveSignal} />
+      )}
+
+      {auditOpen && (
+        <CycleAuditModal strategyId={s.id} strategySymbol={s.symbol} onClose={() => setAuditOpen(false)} />
       )}
     </li>
   )
