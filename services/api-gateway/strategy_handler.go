@@ -268,19 +268,6 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 	req.applyDefaults()
 
-	var existing int
-	if err := s.pool.QueryRow(r.Context(),
-		`SELECT COUNT(*) FROM strategies WHERE owner_id=$1 AND symbol=$2 AND direction=$3 AND status != 'deleted'`,
-		userID, req.Symbol, req.Direction,
-	).Scan(&existing); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if existing > 0 {
-		writeError(w, http.StatusConflict, "стратегия "+req.Symbol+"/"+req.Direction+" уже существует")
-		return
-	}
-
 	var id string
 	err := s.pool.QueryRow(r.Context(), `
 		INSERT INTO strategies
@@ -667,6 +654,10 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	lrows.Close()
+	if lrows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
 	if levels == nil {
 		levels = []levelRow{}
 	}
@@ -679,7 +670,7 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Fetch live open orders.
-	exchangeOrders, err := trader.FetchOpenOrders(r.Context(), creds)
+	exchangeOrders, err := trader.FetchOpenOrdersForSymbolAll(r.Context(), creds, category, symbol)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "exchange error: "+err.Error())
 		return
