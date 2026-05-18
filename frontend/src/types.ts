@@ -358,12 +358,12 @@ export interface CycleAuditTPSL {
 
 export interface CycleAuditData {
   no_active_cycle?: boolean
-  cycle_num: number
-  started_at: string
-  position: { size: string; avg_entry: string; side: string; unrealised_pnl: string } | null
-  expected_qty_from_fills: string
-  qty_discrepancy: string
-  levels: CycleAuditLevel[]
-  tp: CycleAuditTPSL | null
-  sl: CycleAuditTPSL | null
+  cycle_num?: number
+  started_at?: string
+  position?: { size: string; avg_entry: string; side: string; unrealised_pnl: string } | null
+  expected_qty_from_fills?: string
+  qty_discrepancy?: string
+  levels?: CycleAuditLevel[]
+  tp?: CycleAuditTPSL | null
+  sl?: CycleAuditTPSL | null
 }
