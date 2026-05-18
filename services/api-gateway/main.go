@@ -132,6 +132,7 @@ func main() {
 
 		// Strategy state and events
 		r.Get("/strategies/{id}/state", s.GetStrategyState)
+		r.Get("/strategies/{id}/cycle-audit", s.GetCycleAudit)
 		r.Get("/strategies/{id}/events", s.GetStrategyEvents)
 
 		// Strategy templates

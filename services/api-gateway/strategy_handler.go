@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"sis/pkg/trader"
 )
 
 // nullableJSONB converts json.RawMessage to *string for nullable JSONB params.
@@ -265,6 +267,19 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.applyDefaults()
+
+	var existing int
+	if err := s.pool.QueryRow(r.Context(),
+		`SELECT COUNT(*) FROM strategies WHERE owner_id=$1 AND symbol=$2 AND direction=$3 AND status != 'deleted'`,
+		userID, req.Symbol, req.Direction,
+	).Scan(&existing); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing > 0 {
+		writeError(w, http.StatusConflict, "стратегия "+req.Symbol+"/"+req.Direction+" уже существует")
+		return
+	}
 
 	var id string
 	err := s.pool.QueryRow(r.Context(), `
@@ -570,5 +585,221 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 		"avg_entry":     avgEntry,
 		"signal_state":  s.engine.GetSignalState(id),
 		"signal_values": s.engine.GetSignalValues(id),
+	})
+}
+
+func computeTPSLFlag(orderID string, live, inIndex bool) string {
+	if orderID == "" {
+		return "not_placed"
+	}
+	if live && inIndex {
+		return "ok"
+	}
+	if !live {
+		return "missing"
+	}
+	return "orphan"
+}
+
+// GetCycleAudit returns a real-time audit snapshot of the active cycle:
+// DB levels, live exchange orders, in-memory orderIndex, and computed flags.
+// GET /strategies/{id}/cycle-audit
+func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	id := chi.URLParam(r, "id")
+
+	// 1. Verify ownership + load strategy meta.
+	var accountID, symbol, category, direction string
+	err := s.pool.QueryRow(r.Context(),
+		`SELECT account_id, symbol, category, direction FROM strategies WHERE id=$1 AND owner_id=$2`,
+		id, userID,
+	).Scan(&accountID, &symbol, &category, &direction)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "strategy not found")
+		return
+	}
+
+	// 2. Load the active cycle.
+	var cycleID, tpOrderID, slOrderID string
+	var cycleNum int
+	var startedAt time.Time
+	err = s.pool.QueryRow(r.Context(),
+		`SELECT id, cycle_num, started_at, COALESCE(tp_order_id,''), COALESCE(sl_order_id,'')
+		 FROM strategy_cycles WHERE strategy_id=$1 AND ended_at IS NULL
+		 ORDER BY cycle_num DESC LIMIT 1`,
+		id,
+	).Scan(&cycleID, &cycleNum, &startedAt, &tpOrderID, &slOrderID)
+	if err != nil {
+		// No active cycle.
+		writeJSON(w, http.StatusOK, map[string]any{"no_active_cycle": true})
+		return
+	}
+
+	// 3. Load DB levels.
+	type levelRow struct {
+		Idx             int     `json:"idx"`
+		Side            string  `json:"side"`
+		TargetPrice     float64 `json:"target_price"`
+		SizeUSDT        float64 `json:"size_usdt"`
+		Qty             string  `json:"qty"`
+		DbStatus        string  `json:"db_status"`
+		FilledPrice     float64 `json:"filled_price"`
+		ExchangeOrderID string  `json:"exchange_order_id"`
+		LiveOnExchange  bool    `json:"live_on_exchange"`
+		InOrderIndex    bool    `json:"in_order_index"`
+		Flag            string  `json:"flag"`
+	}
+	lrows, err := s.pool.Query(r.Context(),
+		`SELECT level_idx, side, target_price, size_usdt, qty, status,
+		        COALESCE(filled_price,0), COALESCE(exchange_order_id,'')
+		 FROM strategy_levels WHERE cycle_id=$1 ORDER BY level_idx`,
+		cycleID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	var levels []levelRow
+	for lrows.Next() {
+		var l levelRow
+		if lrows.Scan(&l.Idx, &l.Side, &l.TargetPrice, &l.SizeUSDT, &l.Qty,
+			&l.DbStatus, &l.FilledPrice, &l.ExchangeOrderID) == nil {
+			levels = append(levels, l)
+		}
+	}
+	lrows.Close()
+	if levels == nil {
+		levels = []levelRow{}
+	}
+
+	// 4. Load exchange credentials.
+	creds, err := s.loadCreds(r, accountID, userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "creds error")
+		return
+	}
+
+	// 5. Fetch live open orders.
+	exchangeOrders, err := trader.FetchOpenOrders(r.Context(), creds)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "exchange error: "+err.Error())
+		return
+	}
+	liveOrders := make(map[string]bool, len(exchangeOrders))
+	for _, o := range exchangeOrders {
+		liveOrders[o.OrderId] = true
+	}
+
+	// 6. Fetch current position.
+	positions, err := trader.FetchPositions(r.Context(), creds)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "exchange error: "+err.Error())
+		return
+	}
+	wantSide := "Buy"
+	if direction == "short" {
+		wantSide = "Sell"
+	}
+	var matchedPos *trader.Position
+	for i := range positions {
+		p := &positions[i]
+		if p.Symbol == symbol && p.Side == wantSide {
+			sz, _ := strconv.ParseFloat(p.Size, 64)
+			if sz > 0 {
+				matchedPos = p
+				break
+			}
+		}
+	}
+
+	// 7. Snapshot in-memory orderIndex.
+	var orderIndex map[string]bool
+	if runner := s.engine.GetAccountRunner(accountID); runner != nil {
+		orderIndex = runner.SnapshotOrderIndex()
+	} else {
+		orderIndex = map[string]bool{}
+	}
+
+	// 8. Compute qty discrepancy.
+	var posSize float64
+	if matchedPos != nil {
+		posSize, _ = strconv.ParseFloat(matchedPos.Size, 64)
+	}
+	var filledQtySum float64
+	for _, l := range levels {
+		if l.DbStatus == "filled" {
+			q, _ := strconv.ParseFloat(l.Qty, 64)
+			filledQtySum += q
+		}
+	}
+	qtyDiscrepancy := posSize - filledQtySum
+
+	// 9. Compute per-level flags.
+	for i := range levels {
+		l := &levels[i]
+		if l.ExchangeOrderID != "" {
+			l.LiveOnExchange = liveOrders[l.ExchangeOrderID]
+			l.InOrderIndex = orderIndex[l.ExchangeOrderID]
+		}
+		switch l.DbStatus {
+		case "filled":
+			l.Flag = "ok"
+		case "pending":
+			l.Flag = "pending"
+		case "cancelled":
+			l.Flag = "cancelled"
+		case "placed":
+			if l.LiveOnExchange && l.InOrderIndex {
+				l.Flag = "ok"
+			} else if l.LiveOnExchange && !l.InOrderIndex {
+				l.Flag = "orphan"
+			} else { // !l.LiveOnExchange
+				if qtyDiscrepancy > 0.000001 {
+					l.Flag = "missing_fill"
+				} else {
+					l.Flag = "cancelled"
+				}
+			}
+		default:
+			l.Flag = "ok"
+		}
+	}
+
+	// 10. Build position output.
+	type tpslOut struct {
+		OrderID        string `json:"order_id"`
+		LiveOnExchange bool   `json:"live_on_exchange"`
+		InOrderIndex   bool   `json:"in_order_index"`
+		Flag           string `json:"flag"`
+	}
+	var posOut any
+	if matchedPos != nil {
+		posOut = map[string]any{
+			"size":           matchedPos.Size,
+			"avg_entry":      matchedPos.EntryPrice,
+			"side":           matchedPos.Side,
+			"unrealised_pnl": matchedPos.UnrealisedPnl,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"no_active_cycle":         false,
+		"cycle_num":               cycleNum,
+		"started_at":              startedAt,
+		"position":                posOut,
+		"expected_qty_from_fills": fmt.Sprintf("%.6f", filledQtySum),
+		"qty_discrepancy":         fmt.Sprintf("%.6f", qtyDiscrepancy),
+		"levels":                  levels,
+		"tp": tpslOut{
+			OrderID:        tpOrderID,
+			LiveOnExchange: liveOrders[tpOrderID],
+			InOrderIndex:   orderIndex[tpOrderID],
+			Flag:           computeTPSLFlag(tpOrderID, liveOrders[tpOrderID], orderIndex[tpOrderID]),
+		},
+		"sl": tpslOut{
+			OrderID:        slOrderID,
+			LiveOnExchange: liveOrders[slOrderID],
+			InOrderIndex:   orderIndex[slOrderID],
+			Flag:           computeTPSLFlag(slOrderID, liveOrders[slOrderID], orderIndex[slOrderID]),
+		},
 	})
 }
