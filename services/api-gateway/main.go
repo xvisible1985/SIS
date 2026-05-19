@@ -161,6 +161,18 @@ func main() {
 		r.Get("/signal-types", s.ListEnabledSignalTypes)
 		r.Get("/indicator-types", s.ListEnabledIndicatorTypes)
 
+		// Bots
+		r.Get("/bots", s.ListBots)
+		r.Post("/bots", s.CreateBot)
+		r.Get("/bots/{id}", s.GetBot)
+		r.Patch("/bots/{id}", s.PatchBot)
+		r.Delete("/bots/{id}", s.DeleteBot)
+		r.Post("/bots/{id}/deploy", s.DeployBot)
+		r.Post("/bots/{id}/fork", s.ForkBot)
+		r.Post("/bots/{id}/start", s.StartBot)
+		r.Post("/bots/{id}/stop", s.StopBot)
+		r.Post("/bots/{id}/publish", s.PublishBot)
+
 		// Admin
 		r.Get("/admin/metrics", s.GetAdminMetrics)
 
@@ -175,6 +187,7 @@ func main() {
 			r.Post("/admin/users/{id}/email/resend", s.AdminResendEmail)
 			r.Post("/admin/users/{id}/password", s.AdminSetPassword)
 			r.Post("/admin/users/{id}/balance/adjust", s.AdjustNovabotBalance)
+			r.Get("/admin/users/{id}/transactions", s.ListNovabotTransactions)
 			r.Post("/admin/users/{id}/block", s.BlockAdminUser)
 			r.Post("/admin/users/{id}/unblock", s.UnblockAdminUser)
 			r.Delete("/admin/users/{id}/accounts/{aid}", s.DeleteAdminAccount)
