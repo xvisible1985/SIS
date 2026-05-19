@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"sis/pkg/cache"
 	"sis/pkg/db"
@@ -63,6 +64,7 @@ func main() {
 	}
 
 	s := NewServer(ctx, pool, rdb, jwtSecret, encKey, adminEmails)
+	bootstrapAdmins(ctx, pool, adminEmails)
 
 	// Start strategy engine
 	go s.engine.Start(ctx)
@@ -133,6 +135,8 @@ func main() {
 		// Strategy state and events
 		r.Get("/strategies/{id}/state", s.GetStrategyState)
 		r.Get("/strategies/{id}/cycle-audit", s.GetCycleAudit)
+		r.Post("/strategies/{id}/cycle-restart", s.RestartCycle)
+		r.Post("/strategies/{id}/dismiss-alert", s.DismissManualAlert)
 		r.Get("/strategies/{id}/events", s.GetStrategyEvents)
 
 		// Strategy templates
@@ -159,6 +163,18 @@ func main() {
 
 		// Admin
 		r.Get("/admin/metrics", s.GetAdminMetrics)
+
+		// Admin: user management
+		r.Get("/admin/users", s.ListAdminUsers)
+		r.Patch("/admin/users/{id}", s.PatchAdminUser)
+		r.Post("/admin/users/{id}/email/verify", s.AdminVerifyEmail)
+		r.Post("/admin/users/{id}/email/reset", s.AdminResetEmail)
+		r.Post("/admin/users/{id}/email/resend", s.AdminResendEmail)
+		r.Post("/admin/users/{id}/password", s.AdminSetPassword)
+		r.Post("/admin/users/{id}/balance/adjust", s.AdjustNovabotBalance)
+		r.Post("/admin/users/{id}/block", s.BlockAdminUser)
+		r.Post("/admin/users/{id}/unblock", s.UnblockAdminUser)
+		r.Delete("/admin/users/{id}/accounts/{aid}", s.DeleteAdminAccount)
 
 		// Admin: signal and indicator types management (admin only)
 		r.Group(func(r chi.Router) {
@@ -213,4 +229,12 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// bootstrapAdmins upgrades users from ADMIN_EMAILS env to role='admin' in the DB.
+// Allows a smooth migration from env-based to DB-based admin check.
+func bootstrapAdmins(ctx context.Context, pool *pgxpool.Pool, adminEmails map[string]bool) {
+	for email := range adminEmails {
+		pool.Exec(ctx, `UPDATE users SET role='admin' WHERE email=$1 AND role!='admin'`, email)
+	}
 }
