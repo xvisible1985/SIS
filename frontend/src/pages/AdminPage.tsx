@@ -10,6 +10,8 @@ import { IndicatorCard } from '../features/indicators/components/IndicatorCard'
 import { SignalCard }    from '../features/indicators/components/SignalCard'
 import { FlyingCardOverlay } from '../features/indicators/components/FlyingCardOverlay'
 import type { IndicatorDef, BaseParams, SignalDef } from '../features/indicators/types'
+import { AdminUsersPage } from '../features/admin-users'
+import { useAdminUsers } from '../features/admin-users/api'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -859,17 +861,38 @@ function SignalTypesTab() {
   )
 }
 
+// ── Users tab ──────────────────────────────────────────────────────────────
+
+function UsersTab() {
+  const { users, loading, action, refresh } = useAdminUsers()
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-slate-500">
+        Загрузка...
+      </div>
+    )
+  }
+  return (
+    <AdminUsersPage
+      users={users}
+      onAction={action}
+      onRefresh={refresh}
+    />
+  )
+}
+
 // ── Page ───────────────────────────────────────────────────────────────────
 
 const TABS = [
-  { id: 'monitoring', label: 'Мониторинг' },
-  { id: 'signals',    label: 'Сигналы'    },
+  { id: 'users',      label: 'Пользователи' },
+  { id: 'monitoring', label: 'Мониторинг'   },
+  { id: 'signals',    label: 'Сигналы'      },
 ] as const
 
 type TabId = typeof TABS[number]['id']
 
 export function AdminPage() {
-  const [tab, setTab] = useState<TabId>('monitoring')
+  const [tab, setTab] = useState<TabId>('users')
   const { metrics, error } = useAdminMetrics()
 
   return (
@@ -896,6 +919,11 @@ export function AdminPage() {
       </div>
 
       {/* Content */}
+      {tab === 'users' && (
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <UsersTab />
+        </div>
+      )}
       {tab === 'monitoring' && (
         <div className="flex-1 overflow-auto p-5">
           <MonitoringTab metrics={metrics} error={error} />
