@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './hooks/useAuth'
+import { AccountProvider } from './contexts/AccountContext'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { Layout } from './components/Layout'
 import { AuthPage } from './pages/AuthPage'
@@ -14,10 +15,12 @@ import { SignalsPage } from './pages/SignalsPage'
 import { AdminPage }   from './pages/AdminPage'
 import { SignalChartPage } from './pages/SignalChartPage'
 import { AccountPage } from './pages/AccountPage'
+import { BotsPage } from './pages/BotsPage'
 
 export default function App() {
   return (
     <AuthProvider>
+      <AccountProvider>
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<AuthPage defaultTab="login" />} />
@@ -35,6 +38,7 @@ export default function App() {
                     <Route path="signals/:id/optimize" element={<OptimizerPage />} />
                     <Route path="terminal" element={<TerminalPage />} />
                     <Route path="signals" element={<SignalsPage />} />
+                    <Route path="bots" element={<BotsPage />} />
                     <Route path="webhooks" element={<WebhooksPage />} />
                     <Route path="accounts" element={<AccountsPage />} />
                     <Route path="admin"    element={<AdminPage />} />
@@ -48,6 +52,7 @@ export default function App() {
           />
         </Routes>
       </BrowserRouter>
+      </AccountProvider>
     </AuthProvider>
   )
 }
