@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { apiClient } from '../../api/client';
 import type { Bot, BotAction, Trigger, StrategyConfig } from './types';
 
@@ -27,18 +27,22 @@ function parseBot(raw: RawBot): Bot {
 }
 
 export function useBots() {
-  const [catalog, setCatalog] = useState<Bot[]>([]);
-  const [mine, setMine]       = useState<Bot[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [catalog, setCatalog]       = useState<Bot[]>([]);
+  const [mine, setMine]             = useState<Bot[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const initializedRef              = useRef(false);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!initializedRef.current) setLoading(true);
     try {
       const res = await apiClient.get<{ catalog: RawBot[]; mine: RawBot[] }>('/bots');
       setCatalog(res.data.catalog.map(parseBot));
       setMine(res.data.mine.map(parseBot));
     } finally {
-      setLoading(false);
+      if (!initializedRef.current) {
+        initializedRef.current = true;
+        setLoading(false);
+      }
     }
   }, []);
 
