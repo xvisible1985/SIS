@@ -10,8 +10,10 @@ export default defineConfig({
     setupFiles: ['./src/setupTests.ts'],
   },
   server: {
-    port: 5173,
+    port: 4000,
     strictPort: true,
+    host: true,
+    allowedHosts: true,
     proxy: {
       '/auth': { target: 'http://localhost:8080', changeOrigin: true },
       '/signals': { target: 'http://localhost:8080', changeOrigin: true },
@@ -23,6 +25,7 @@ export default defineConfig({
       '^/admin/': { target: 'http://localhost:8080', changeOrigin: true },
       '/signal-types': { target: 'http://localhost:8080', changeOrigin: true },
       '/indicator-types': { target: 'http://localhost:8080', changeOrigin: true },
+      '/bots': { target: 'http://localhost:8080', changeOrigin: true },
       '/instrument-info': { target: 'http://localhost:8080', changeOrigin: true },
       '/account': { target: 'http://localhost:8080', changeOrigin: true },
       '/coin-icon': { target: 'http://localhost:8080', changeOrigin: true },
