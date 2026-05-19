@@ -38,7 +38,7 @@ func UserIDFromCtx(ctx context.Context) string {
 	return v
 }
 
-// RequireAdmin checks that the authenticated user's email is in the admin list.
+// RequireAdmin checks that the authenticated user has role='admin' in the DB.
 // Must be used after RequireAuth.
 func (s *Server) RequireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -47,14 +47,14 @@ func (s *Server) RequireAdmin(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "forbidden")
 			return
 		}
-		var email string
+		var role string
 		if err := s.pool.QueryRow(r.Context(),
-			`SELECT email FROM users WHERE id = $1`, userID,
-		).Scan(&email); err != nil {
+			`SELECT role FROM users WHERE id = $1`, userID,
+		).Scan(&role); err != nil {
 			writeError(w, http.StatusForbidden, "forbidden")
 			return
 		}
-		if !s.adminEmails[strings.ToLower(email)] {
+		if role != "admin" {
 			writeError(w, http.StatusForbidden, "forbidden")
 			return
 		}
