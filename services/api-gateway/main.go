@@ -164,21 +164,21 @@ func main() {
 		// Admin
 		r.Get("/admin/metrics", s.GetAdminMetrics)
 
-		// Admin: user management
-		r.Get("/admin/users", s.ListAdminUsers)
-		r.Patch("/admin/users/{id}", s.PatchAdminUser)
-		r.Post("/admin/users/{id}/email/verify", s.AdminVerifyEmail)
-		r.Post("/admin/users/{id}/email/reset", s.AdminResetEmail)
-		r.Post("/admin/users/{id}/email/resend", s.AdminResendEmail)
-		r.Post("/admin/users/{id}/password", s.AdminSetPassword)
-		r.Post("/admin/users/{id}/balance/adjust", s.AdjustNovabotBalance)
-		r.Post("/admin/users/{id}/block", s.BlockAdminUser)
-		r.Post("/admin/users/{id}/unblock", s.UnblockAdminUser)
-		r.Delete("/admin/users/{id}/accounts/{aid}", s.DeleteAdminAccount)
-
 		// Admin: signal and indicator types management (admin only)
 		r.Group(func(r chi.Router) {
 			r.Use(s.RequireAdmin)
+			// Admin: user management
+			r.Get("/admin/users", s.ListAdminUsers)
+			r.Patch("/admin/users/{id}", s.PatchAdminUser)
+			r.Post("/admin/users/{id}/email/verify", s.AdminVerifyEmail)
+			r.Post("/admin/users/{id}/email/reset", s.AdminResetEmail)
+			r.Post("/admin/users/{id}/email/resend", s.AdminResendEmail)
+			r.Post("/admin/users/{id}/password", s.AdminSetPassword)
+			r.Post("/admin/users/{id}/balance/adjust", s.AdjustNovabotBalance)
+			r.Post("/admin/users/{id}/block", s.BlockAdminUser)
+			r.Post("/admin/users/{id}/unblock", s.UnblockAdminUser)
+			r.Delete("/admin/users/{id}/accounts/{aid}", s.DeleteAdminAccount)
+			// Admin: signal and indicator types management
 			r.Get("/admin/signal-types", s.ListSignalTypes)
 			r.Patch("/admin/signal-types/{id}", s.ToggleSignalType)
 			r.Get("/admin/indicator-types", s.ListIndicatorTypes)
