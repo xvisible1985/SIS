@@ -43,6 +43,7 @@ export type Bot = {
   id: string;
   name: string;
   description: string;
+  avatarUrl?: string;
   ownerId: string;
   ownerName: string;
   isOwn: boolean;
@@ -62,6 +63,7 @@ export type CreateBotInput = {
   name: string;
   description?: string;
   isPublic?: boolean;
+  avatarUrl?: string;
   symbolWhitelist?: string[];
   symbolBlacklist?: string[];
   triggers?: Trigger[];

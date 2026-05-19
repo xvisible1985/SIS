@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { X, Bot, ToggleLeft, ToggleRight } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { X, Bot, ToggleLeft, ToggleRight, Camera, Trash2 } from 'lucide-react';
 import { CoinPicker } from '../../../components/common/CoinPicker';
 import { CoinMultiPicker } from '../../../components/common/CoinMultiPicker';
 import { Toggle, Tip, SignalPickerField } from '../../../components/strategies/FormWidgets';
@@ -47,6 +47,27 @@ function defaultConfig(bot?: BotType): StrategyConfig {
   };
 }
 
+// ─── Image compression ────────────────────────────────────────────────────────
+
+function compressImage(file: File, maxPx = 300, quality = 0.82): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
+      const w = Math.round(img.width  * scale);
+      const h = Math.round(img.height * scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d')!.drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
 // ─── BotForm ─────────────────────────────────────────────────────────────────
 
 export function BotForm({ bot, onSubmit, onClose }: Props) {
@@ -56,15 +77,31 @@ export function BotForm({ bot, onSubmit, onClose }: Props) {
   const [name,        setName]        = useState(bot?.name        ?? '');
   const [description, setDescription] = useState(bot?.description ?? '');
   const [isPublic,    setIsPublic]    = useState(bot?.isPublic    ?? false);
+  const [avatarUrl,   setAvatarUrl]   = useState<string>(bot?.avatarUrl ?? '');
   const [whitelist,   setWhitelist]   = useState<string[]>(bot?.symbolWhitelist ?? []);
   const [blacklist,   setBlacklist]   = useState<string[]>(bot?.symbolBlacklist ?? []);
   const [config,      setConfig]      = useState<StrategyConfig>(defaultConfig(bot));
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const fn = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', fn);
     return () => window.removeEventListener('keydown', fn);
   }, [onClose]);
+
+  async function handleAvatarFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await compressImage(file);
+      setAvatarUrl(dataUrl);
+    } catch {
+      // ignore — user can retry
+    }
+    // reset so the same file can be re-selected
+    e.target.value = '';
+  }
 
   function patch(partial: Partial<StrategyConfig>) {
     setConfig(c => ({ ...c, ...partial }));
@@ -92,6 +129,7 @@ export function BotForm({ bot, onSubmit, onClose }: Props) {
       name: name.trim(),
       description: description.trim(),
       isPublic,
+      avatarUrl: avatarUrl || undefined,
       symbolWhitelist: whitelist,
       symbolBlacklist: blacklist,
       strategyConfig: {
@@ -127,8 +165,11 @@ export function BotForm({ bot, onSubmit, onClose }: Props) {
       >
         {/* header */}
         <div className="flex items-center gap-3 border-b border-white/[.06] px-5 py-4">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] border border-[#5b8cff]/30 bg-[#5b8cff]/[.12] text-[#5b8cff]">
-            <Bot size={16} strokeWidth={2} />
+          <div className="h-9 w-9 shrink-0 overflow-hidden rounded-[9px] border border-[#5b8cff]/30">
+            {avatarUrl
+              ? <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
+              : <div className="flex h-full w-full items-center justify-center bg-[#5b8cff]/[.12] text-[#5b8cff]"><Bot size={16} strokeWidth={2} /></div>
+            }
           </div>
           <div className="min-w-0 flex-1">
             <h2 className="font-display text-[16px] font-bold tracking-tight text-slate-50">
@@ -170,6 +211,58 @@ export function BotForm({ bot, onSubmit, onClose }: Props) {
 
           {outerTab === 'basic' && (
             <div className="flex flex-col gap-4">
+
+              {/* Avatar upload */}
+              <div className="flex items-center gap-4">
+                <div className="relative shrink-0 group">
+                  <div className="h-[72px] w-[72px] overflow-hidden rounded-[14px] border border-white/[.08] bg-black/[.3]">
+                    {avatarUrl
+                      ? <img src={avatarUrl} alt="avatar" className="h-full w-full object-cover" />
+                      : <div className="flex h-full w-full items-center justify-center text-slate-600">
+                          <Bot size={26} strokeWidth={1.5} />
+                        </div>
+                    }
+                  </div>
+                  {/* hover overlay */}
+                  <div
+                    onClick={() => fileInputRef.current?.click()}
+                    className="absolute inset-0 flex cursor-pointer items-center justify-center rounded-[14px] bg-black/55 opacity-0 transition-opacity group-hover:opacity-100"
+                  >
+                    <Camera size={18} className="text-white" />
+                  </div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleAvatarFile}
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <div className="text-[13px] font-semibold text-slate-200">Аватар бота</div>
+                  <div className="text-[11px] text-slate-500">PNG, JPG, GIF, WebP · сжимается до 300×300</div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-white/[.08] bg-white/[.04] px-3 py-1 text-[11px] font-semibold text-slate-300 hover:bg-white/[.08]"
+                    >
+                      <Camera size={11} /> Загрузить
+                    </button>
+                    {avatarUrl && (
+                      <button
+                        type="button"
+                        onClick={() => setAvatarUrl('')}
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-rose-400 hover:text-rose-300"
+                      >
+                        <Trash2 size={11} /> Удалить
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
               <Field label="Название" required>
                 <input
                   type="text"
