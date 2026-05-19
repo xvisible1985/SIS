@@ -74,10 +74,11 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 
 	var userID, hash string
+	var isBlocked bool
 	err := s.pool.QueryRow(r.Context(),
-		`SELECT id, password_hash FROM users WHERE email = $1`,
+		`SELECT id, password_hash, is_blocked FROM users WHERE email = $1`,
 		req.Email,
-	).Scan(&userID, &hash)
+	).Scan(&userID, &hash, &isBlocked)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
@@ -85,6 +86,11 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 
 	if !auth.CheckPassword(hash, req.Password) {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+
+	if isBlocked {
+		writeError(w, http.StatusForbidden, "account blocked")
 		return
 	}
 

@@ -12,6 +12,7 @@ import (
 
 	"sis/pkg/cache"
 	"sis/pkg/db"
+	_ "embed"
 )
 
 func newTestServer(t *testing.T) *Server {
@@ -22,6 +23,12 @@ func newTestServer(t *testing.T) *Server {
 		t.Skipf("timescaledb unavailable: %v", err)
 	}
 	t.Cleanup(func() { pool.Close() })
+
+	// Run migrations
+	if err := db.Migrate(ctx, pool, "../../migrations"); err != nil {
+		t.Fatalf("migrations failed: %v", err)
+	}
+
 	rdb, err := cache.Connect(ctx, "redis://localhost:6379")
 	if err != nil {
 		t.Skipf("redis unavailable: %v", err)
@@ -113,5 +120,33 @@ func TestLogin_WrongPassword(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("got %d, want 401", rec.Code)
 	}
+	s.pool.Exec(context.Background(), "DELETE FROM users WHERE email=$1", email)
+}
+
+func TestLogin_BlockedUser(t *testing.T) {
+	s := newTestServer(t)
+	email := "blocked_user@example.com"
+
+	// Register
+	regBody := `{"email":"` + email + `","password":"pass1234"}`
+	recR := httptest.NewRecorder()
+	reqR := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewBufferString(regBody))
+	reqR.Header.Set("Content-Type", "application/json")
+	s.Register(recR, reqR)
+
+	// Block the user directly in DB
+	s.pool.Exec(context.Background(),
+		`UPDATE users SET is_blocked=true WHERE email=$1`, email)
+
+	// Login should fail with 403
+	loginBody := `{"email":"` + email + `","password":"pass1234"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewBufferString(loginBody))
+	req.Header.Set("Content-Type", "application/json")
+	s.Login(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("got %d, want 403", rec.Code)
+	}
+
 	s.pool.Exec(context.Background(), "DELETE FROM users WHERE email=$1", email)
 }
