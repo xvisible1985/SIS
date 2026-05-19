@@ -9,6 +9,7 @@ function parseBot(raw: RawBot): Bot {
     id:              raw.id              as string,
     name:            raw.name            as string,
     description:     raw.description     as string,
+    avatarUrl:       (raw.avatarUrl as string) || undefined,
     ownerId:         raw.ownerId         as string,
     ownerName:       raw.ownerName       as string,
     isOwn:           raw.isOwn           as boolean,

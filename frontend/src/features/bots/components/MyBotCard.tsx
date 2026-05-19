@@ -39,10 +39,13 @@ export function MyBotCard({ bot, onToggle, onEdit, onMore }: Props) {
       {/* head */}
       <div className="mb-3 flex items-start gap-2.5">
         <div
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] border"
+          className="h-9 w-9 shrink-0 overflow-hidden rounded-[9px] border"
           style={{ background: m.bg, borderColor: m.border, color: m.color }}
         >
-          <Icon size={16} strokeWidth={2} />
+          {bot.avatarUrl
+            ? <img src={bot.avatarUrl} alt="" className="h-full w-full object-cover" />
+            : <div className="flex h-full w-full items-center justify-center"><Icon size={16} strokeWidth={2} /></div>
+          }
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">

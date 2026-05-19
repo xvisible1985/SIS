@@ -50,6 +50,7 @@ export type MyBot = {
   /** ID шаблона из библиотеки или null для кастомных */
   tplId: string | null;
   name: string;
+  avatarUrl?: string;
   strategy: BotStrategy;
   status: RunStatus;
   pair: string;

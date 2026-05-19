@@ -18,10 +18,12 @@ type botResp struct {
 	ID              string          `json:"id"`
 	Name            string          `json:"name"`
 	Description     string          `json:"description"`
+	AvatarURL       string          `json:"avatarUrl"`
 	OwnerID         string          `json:"ownerId"`
 	OwnerName       string          `json:"ownerName"`
 	IsOwn           bool            `json:"isOwn"`
 	IsPublic        bool            `json:"isPublic"`
+	IsOfficial      bool            `json:"isOfficial"`
 	Status          string          `json:"status"`
 	SourceBotID     *string         `json:"sourceBotId"`
 	IsFork          bool            `json:"isFork"`
@@ -40,8 +42,8 @@ type listBotsResp struct {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-const botCols = `b.id, b.name, b.description, b.owner_id, u.email,
-	b.is_public, b.status, b.source_bot_id, b.is_fork,
+const botCols = `b.id, b.name, b.description, b.avatar_url, b.owner_id, u.email,
+	b.is_public, b.is_official, b.status, b.source_bot_id, b.is_fork,
 	b.symbol_whitelist, b.symbol_blacklist,
 	b.triggers, b.strategy_config, b.deploy_count, b.created_at`
 
@@ -55,8 +57,8 @@ func collectBots(rows pgx.Rows, callerID string) ([]botResp, error) {
 		var b botResp
 		var triggers, stratCfg []byte
 		if err := rows.Scan(
-			&b.ID, &b.Name, &b.Description, &b.OwnerID, &b.OwnerName,
-			&b.IsPublic, &b.Status, &b.SourceBotID, &b.IsFork,
+			&b.ID, &b.Name, &b.Description, &b.AvatarURL, &b.OwnerID, &b.OwnerName,
+			&b.IsPublic, &b.IsOfficial, &b.Status, &b.SourceBotID, &b.IsFork,
 			&b.SymbolWhitelist, &b.SymbolBlacklist,
 			&triggers, &stratCfg, &b.DeployCount, &b.CreatedAt,
 		); err != nil {
@@ -150,6 +152,7 @@ func (s *Server) CreateBot(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name            string          `json:"name"`
 		Description     string          `json:"description"`
+		AvatarURL       string          `json:"avatarUrl"`
 		IsPublic        bool            `json:"isPublic"`
 		SymbolWhitelist []string        `json:"symbolWhitelist"`
 		SymbolBlacklist []string        `json:"symbolBlacklist"`
@@ -179,11 +182,11 @@ func (s *Server) CreateBot(w http.ResponseWriter, r *http.Request) {
 
 	var id string
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO bots (owner_id, name, description, is_public,
+		INSERT INTO bots (owner_id, name, description, avatar_url, is_public,
 		                  symbol_whitelist, symbol_blacklist, triggers, strategy_config)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id`,
-		callerID, req.Name, req.Description, req.IsPublic,
+		callerID, req.Name, req.Description, req.AvatarURL, req.IsPublic,
 		req.SymbolWhitelist, req.SymbolBlacklist,
 		[]byte(req.Triggers), []byte(req.StrategyConfig),
 	).Scan(&id)
@@ -286,6 +289,7 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 
 	addStr("name", "name")
 	addStr("description", "description")
+	addStr("avatarUrl", "avatar_url")
 	addBool("isPublic", "is_public")
 	addSlice("symbolWhitelist", "symbol_whitelist")
 	addSlice("symbolBlacklist", "symbol_blacklist")
@@ -293,7 +297,11 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 	addRaw("strategyConfig", "strategy_config")
 
 	if len(sets) == 0 {
-		bot, _ := fetchBot(s, r, botID, callerID)
+		bot, ok := fetchBot(s, r, botID, callerID)
+		if !ok {
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
 		writeJSON(w, http.StatusOK, bot)
 		return
 	}
@@ -470,4 +478,80 @@ func (s *Server) PublishBot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ── Admin handlers ───────────────────────────────────────────────────────────
+
+// GET /admin/bots — list all bots (admin only)
+func (s *Server) ListAdminBots(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+botCols+botFrom+`ORDER BY b.is_official DESC, b.created_at DESC`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	bots, err := collectBots(rows, "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan error")
+		return
+	}
+	writeJSON(w, http.StatusOK, bots)
+}
+
+// POST /admin/bots — create an official NovaBot (admin only)
+func (s *Server) CreateOfficialBot(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	callerID := UserIDFromCtx(ctx)
+
+	var req struct {
+		Name            string          `json:"name"`
+		Description     string          `json:"description"`
+		SymbolWhitelist []string        `json:"symbolWhitelist"`
+		SymbolBlacklist []string        `json:"symbolBlacklist"`
+		Triggers        json.RawMessage `json:"triggers"`
+		StrategyConfig  json.RawMessage `json:"strategyConfig"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name required")
+		return
+	}
+	if len(req.Triggers) == 0 {
+		req.Triggers = json.RawMessage("[]")
+	}
+	if len(req.StrategyConfig) == 0 {
+		req.StrategyConfig = json.RawMessage("{}")
+	}
+	if req.SymbolWhitelist == nil {
+		req.SymbolWhitelist = []string{}
+	}
+	if req.SymbolBlacklist == nil {
+		req.SymbolBlacklist = []string{}
+	}
+
+	var id string
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO bots (owner_id, name, description, is_public, is_official,
+		                  symbol_whitelist, symbol_blacklist, triggers, strategy_config)
+		VALUES ($1, $2, $3, true, true, $4, $5, $6, $7)
+		RETURNING id`,
+		callerID, req.Name, req.Description,
+		req.SymbolWhitelist, req.SymbolBlacklist,
+		[]byte(req.Triggers), []byte(req.StrategyConfig),
+	).Scan(&id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	bot, ok := fetchBot(s, r, id, callerID)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeJSON(w, http.StatusCreated, bot)
 }

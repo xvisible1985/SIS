@@ -8,9 +8,10 @@ import type { MyBot, FeaturedBot, BotStrategy, RiskLevel, TradeMode } from '../f
 
 function toMyBot(b: Bot): MyBot {
   return {
-    id:       b.id,
-    tplId:    b.sourceBotId,
-    name:     b.name,
+    id:        b.id,
+    tplId:     b.sourceBotId,
+    name:      b.name,
+    avatarUrl: b.avatarUrl,
     strategy: (b.strategyConfig.direction === 'long'
       ? 'trend'
       : b.strategyConfig.direction === 'short'
