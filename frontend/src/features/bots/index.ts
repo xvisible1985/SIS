@@ -1,5 +1,5 @@
 export { useBots } from './api';
 export type {
-  Bot, BotAction, BotFilters, BotStatus,
+  Bot, BotAction, BotStatus,
   CreateBotInput, Trigger, StrategyConfig,
 } from './types';

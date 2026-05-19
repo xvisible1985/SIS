@@ -23,7 +23,7 @@ function toMyBot(b: Bot): MyBot {
     trades:   0,
     winRate:  0,
     started:  new Date(b.createdAt),
-    lev:      b.strategyConfig.grid_levels ?? 1,
+    lev:      1,
     mode:     'futures' as TradeMode,
     custom:   !b.sourceBotId,
     config:   b.strategyConfig as Record<string, unknown>,
@@ -83,7 +83,7 @@ export function BotsPage() {
         })
       }
       onEditBot={() => {}}
-      onMoreBot={(id) => action({ type: 'delete', botId: id })}
+      onMoreBot={() => {}}
       onLaunchTpl={(tplId) => action({ type: 'deploy', botId: tplId })}
       onConfigureTpl={() => {}}
       onCloneTpl={(tplId) => action({ type: 'fork', botId: tplId })}
