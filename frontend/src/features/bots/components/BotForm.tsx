@@ -8,7 +8,7 @@ import type { SignalConfig } from '../../../types';
 
 type Props = {
   bot?: BotType;
-  onSubmit: (data: CreateBotInput) => void;
+  onSubmit: (data: CreateBotInput) => Promise<void> | void;
   onClose: () => void;
 };
 
@@ -122,10 +122,10 @@ export function BotForm({ bot, onSubmit, onClose }: Props) {
     patch({ steps: (config.steps ?? []).filter((_, idx) => idx !== i) });
   }
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!name.trim()) return;
     const steps = config.steps ?? [];
-    onSubmit({
+    await onSubmit({
       name: name.trim(),
       description: description.trim(),
       isPublic,

@@ -13,6 +13,7 @@ function parseBot(raw: RawBot): Bot {
     ownerName:       raw.ownerName       as string,
     isOwn:           raw.isOwn           as boolean,
     isPublic:        raw.isPublic        as boolean,
+    isOfficial:      raw.isOfficial      as boolean,
     status:          raw.status          as Bot['status'],
     sourceBotId:     raw.sourceBotId     as string | null,
     isFork:          raw.isFork          as boolean,
@@ -44,20 +45,23 @@ export function useBots() {
   useEffect(() => { load(); }, [load]);
 
   const action = useCallback(async (a: BotAction) => {
-    switch (a.type) {
-      case 'start':   await apiClient.post(`/bots/${a.botId}/start`); break;
-      case 'stop':    await apiClient.post(`/bots/${a.botId}/stop`); break;
-      case 'deploy':  await apiClient.post(`/bots/${a.botId}/deploy`, {
-        symbolWhitelist: a.symbolWhitelist,
-        symbolBlacklist: a.symbolBlacklist,
-      }); break;
-      case 'fork':    await apiClient.post(`/bots/${a.botId}/fork`); break;
-      case 'publish': await apiClient.post(`/bots/${a.botId}/publish`); break;
-      case 'update':  await apiClient.patch(`/bots/${a.botId}`, a.data); break;
-      case 'delete':  await apiClient.delete(`/bots/${a.botId}`); break;
-      case 'create':  await apiClient.post('/bots', a.data); break;
+    try {
+      switch (a.type) {
+        case 'start':   await apiClient.post(`/bots/${a.botId}/start`); break;
+        case 'stop':    await apiClient.post(`/bots/${a.botId}/stop`); break;
+        case 'deploy':  await apiClient.post(`/bots/${a.botId}/deploy`, {
+          symbolWhitelist: a.symbolWhitelist,
+          symbolBlacklist: a.symbolBlacklist,
+        }); break;
+        case 'fork':    await apiClient.post(`/bots/${a.botId}/fork`); break;
+        case 'publish': await apiClient.post(`/bots/${a.botId}/publish`); break;
+        case 'update':  await apiClient.patch(`/bots/${a.botId}`, a.data); break;
+        case 'delete':  await apiClient.delete(`/bots/${a.botId}`); break;
+        case 'create':  await apiClient.post('/bots', a.data); break;
+      }
+    } finally {
+      await load();
     }
-    await load();
   }, [load]);
 
   return { catalog, mine, loading, action, refresh: load };

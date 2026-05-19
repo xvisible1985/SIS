@@ -40,7 +40,7 @@ function toFeaturedBot(b: Bot): FeaturedBot {
     author:    b.ownerName,
     strategy:  'grid' as BotStrategy,
     risk:      'medium' as RiskLevel,
-    verified:  false,
+    verified:  b.isOfficial,
     fire:      b.deployCount > 10,
     price:     0,
     desc:      b.description,
@@ -88,11 +88,11 @@ export function BotsPage() {
     setFormMode('edit');
   };
 
-  const handleFormSubmit = (data: CreateBotInput) => {
+  const handleFormSubmit = async (data: CreateBotInput) => {
     if (formMode === 'create') {
-      action({ type: 'create', data });
+      await action({ type: 'create', data });
     } else if (formMode === 'edit' && editBot) {
-      action({ type: 'update', botId: editBot.id, data });
+      await action({ type: 'update', botId: editBot.id, data });
     }
   };
 
