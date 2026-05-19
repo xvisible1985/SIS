@@ -91,6 +91,11 @@ func (s *Server) ListAdminUsers(w http.ResponseWriter, r *http.Request) {
 		users = append(users, u)
 	}
 
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
 	accRows, err := s.pool.Query(ctx, `
 		SELECT id, owner_id, exchange, label, api_key_enc, created_at
 		FROM exchange_accounts
@@ -124,6 +129,11 @@ func (s *Server) ListAdminUsers(w http.ResponseWriter, r *http.Request) {
 			Perms:    []string{},
 			Added:    added,
 		})
+	}
+
+	if err := accRows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
 	}
 
 	writeJSON(w, http.StatusOK, users)
@@ -292,7 +302,10 @@ func (s *Server) BlockAdminUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Reason string `json:"reason"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && r.ContentLength > 0 {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
 	if _, err := s.pool.Exec(r.Context(),
 		`UPDATE users SET is_blocked=true, block_reason=$1 WHERE id=$2`,
 		req.Reason, id,
