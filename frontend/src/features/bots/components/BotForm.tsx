@@ -10,6 +10,7 @@ type Props = {
   bot?: BotType;
   onSubmit: (data: CreateBotInput) => Promise<void> | void;
   onClose: () => void;
+  mode?: 'user' | 'admin';
 };
 
 type OuterTab = 'basic' | 'strategy' | 'symbols';
@@ -70,7 +71,7 @@ function compressImage(file: File, maxPx = 300, quality = 0.82): Promise<string>
 
 // ─── BotForm ─────────────────────────────────────────────────────────────────
 
-export function BotForm({ bot, onSubmit, onClose }: Props) {
+export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
   const [outerTab, setOuterTab]   = useState<OuterTab>('basic');
   const [stratTab, setStratTab]   = useState<StrategySubTab>('entry');
 
@@ -81,6 +82,8 @@ export function BotForm({ bot, onSubmit, onClose }: Props) {
   const [whitelist,   setWhitelist]   = useState<string[]>(bot?.symbolWhitelist ?? []);
   const [blacklist,   setBlacklist]   = useState<string[]>(bot?.symbolBlacklist ?? []);
   const [config,      setConfig]      = useState<StrategyConfig>(defaultConfig(bot));
+  const [submitting,  setSubmitting]  = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -124,22 +127,30 @@ export function BotForm({ bot, onSubmit, onClose }: Props) {
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
+    setSubmitting(true);
+    setSubmitError(null);
     const steps = config.steps ?? [];
-    await onSubmit({
-      name: name.trim(),
-      description: description.trim(),
-      isPublic,
-      avatarUrl: avatarUrl || undefined,
-      symbolWhitelist: whitelist,
-      symbolBlacklist: blacklist,
-      strategyConfig: {
-        ...config,
-        grid_levels: steps.length || 1,
-        grid_step_pct: steps[0]?.price_move_pct ?? 1.0,
-        signal_filter: (config.signal_configs?.length ?? 0) > 0,
-      },
-    });
-    onClose();
+    try {
+      await onSubmit({
+        name: name.trim(),
+        description: description.trim(),
+        isPublic,
+        avatarUrl: avatarUrl || undefined,
+        symbolWhitelist: whitelist,
+        symbolBlacklist: blacklist,
+        strategyConfig: {
+          ...config,
+          grid_levels: steps.length || 1,
+          grid_step_pct: steps[0]?.price_move_pct ?? 1.0,
+          signal_filter: (config.signal_configs?.length ?? 0) > 0,
+        },
+      });
+      onClose();
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : 'Неизвестная ошибка');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const outerTabs: { id: OuterTab; label: string }[] = [
@@ -173,9 +184,10 @@ export function BotForm({ bot, onSubmit, onClose }: Props) {
           </div>
           <div className="min-w-0 flex-1">
             <h2 className="font-display text-[16px] font-bold tracking-tight text-slate-50">
-              {bot ? 'Редактировать бота' : 'Создать бота'}
+              {bot ? (mode === 'admin' ? 'Редактировать NovaBot' : 'Редактировать бота')
+                   : (mode === 'admin' ? 'Создать NovaBot' : 'Создать бота')}
             </h2>
-            <p className="text-[11px] text-slate-400">{bot ? bot.name : 'Новый торговый бот'}</p>
+            <p className="text-[11px] text-slate-400">{bot ? bot.name : (mode === 'admin' ? 'Новый официальный бот' : 'Новый торговый бот')}</p>
           </div>
           <button
             type="button"
@@ -281,19 +293,21 @@ export function BotForm({ bot, onSubmit, onClose }: Props) {
                   className={`${inputCls} resize-none`}
                 />
               </Field>
-              <div className="flex items-center justify-between rounded-lg border border-white/[.06] bg-white/[.02] px-4 py-3">
-                <div>
-                  <div className="text-[13px] font-semibold text-slate-200">Публичный бот</div>
-                  <div className="mt-0.5 text-[11px] text-slate-400">
-                    Другие пользователи смогут подписаться на этого бота
+              {mode !== 'admin' && (
+                <div className="flex items-center justify-between rounded-lg border border-white/[.06] bg-white/[.02] px-4 py-3">
+                  <div>
+                    <div className="text-[13px] font-semibold text-slate-200">Публичный бот</div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">
+                      Другие пользователи смогут подписаться на этого бота
+                    </div>
                   </div>
+                  <button type="button" onClick={() => setIsPublic(v => !v)} className="text-slate-400">
+                    {isPublic
+                      ? <ToggleRight size={28} className="text-[#5b8cff]" />
+                      : <ToggleLeft size={28} />}
+                  </button>
                 </div>
-                <button type="button" onClick={() => setIsPublic(v => !v)} className="text-slate-400">
-                  {isPublic
-                    ? <ToggleRight size={28} className="text-[#5b8cff]" />
-                    : <ToggleLeft size={28} />}
-                </button>
-              </div>
+              )}
             </div>
           )}
 
@@ -692,22 +706,30 @@ export function BotForm({ bot, onSubmit, onClose }: Props) {
         </div>
 
         {/* footer */}
-        <div className="flex items-center justify-end gap-2 border-t border-white/[.06] px-5 py-3.5">
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/[.08] bg-white/[.03] px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-white/[.06]"
-          >
-            Отмена
-          </button>
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={!name.trim()}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[linear-gradient(180deg,#4a7dff,#3a67e6)] px-4 py-2 text-xs font-semibold text-white shadow-[inset_0_1px_0_rgba(255,255,255,.18),0_4px_12px_-6px_rgba(74,125,255,.6)] disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {bot ? 'Сохранить' : 'Создать'}
-          </button>
+        <div className="border-t border-white/[.06] px-5 py-3.5">
+          {submitError && (
+            <div className="mb-2.5 rounded-lg border border-rose-500/30 bg-rose-500/[.1] px-3 py-2 text-[12px] text-rose-300">
+              {submitError}
+            </div>
+          )}
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/[.08] bg-white/[.03] px-4 py-2 text-xs font-semibold text-slate-200 hover:bg-white/[.06] disabled:opacity-40"
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={!name.trim() || submitting}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[linear-gradient(180deg,#4a7dff,#3a67e6)] px-4 py-2 text-xs font-semibold text-white shadow-[inset_0_1px_0_rgba(255,255,255,.18),0_4px_12px_-6px_rgba(74,125,255,.6)] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {submitting ? 'Сохранение...' : (bot ? 'Сохранить' : 'Создать')}
+            </button>
+          </div>
         </div>
       </div>
     </div>
