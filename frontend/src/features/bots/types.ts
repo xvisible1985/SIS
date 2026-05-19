@@ -67,7 +67,7 @@ export type BotFilters = {
 export type BotAction =
   | { type: 'start';   botId: string }
   | { type: 'stop';    botId: string }
-  | { type: 'deploy';  botId: string }
+  | { type: 'deploy';  botId: string; symbolWhitelist?: string[]; symbolBlacklist?: string[] }
   | { type: 'fork';    botId: string }
   | { type: 'publish'; botId: string }
   | { type: 'update';  botId: string; data: Partial<CreateBotInput> }

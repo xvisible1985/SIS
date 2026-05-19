@@ -1,6 +1,9 @@
+import { useState } from 'react';
 import { BotsPage as BotsPageUI } from '../features/bots/BotsPage';
+import { BotForm } from '../features/bots/components/BotForm';
+import { DeployModal } from '../features/bots/components/DeployModal';
 import { useBots } from '../features/bots/api';
-import type { Bot } from '../features/bots/types';
+import type { Bot, CreateBotInput } from '../features/bots/types';
 import type { MyBot, FeaturedBot, BotStrategy, RiskLevel, TradeMode } from '../features/bots/ui-types';
 
 function toMyBot(b: Bot): MyBot {
@@ -62,6 +65,10 @@ function toFeaturedBot(b: Bot): FeaturedBot {
 export function BotsPage() {
   const { catalog, mine, loading, action } = useBots();
 
+  const [formMode, setFormMode] = useState<'create' | 'edit' | null>(null);
+  const [editBot, setEditBot] = useState<Bot | null>(null);
+  const [deployBot, setDeployBot] = useState<Bot | null>(null);
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-slate-500">
@@ -70,23 +77,79 @@ export function BotsPage() {
     );
   }
 
+  const handleCreate = () => {
+    setEditBot(null);
+    setFormMode('create');
+  };
+
+  const handleEditBot = (id: string) => {
+    const bot = mine.find((b) => b.id === id) ?? null;
+    setEditBot(bot);
+    setFormMode('edit');
+  };
+
+  const handleFormSubmit = (data: CreateBotInput) => {
+    if (formMode === 'create') {
+      action({ type: 'create', data });
+    } else if (formMode === 'edit' && editBot) {
+      action({ type: 'update', botId: editBot.id, data });
+    }
+  };
+
+  const handleLaunchTpl = (tplId: string) => {
+    const bot = catalog.find((b) => b.id === tplId) ?? null;
+    if (bot) {
+      setDeployBot(bot);
+    } else {
+      action({ type: 'deploy', botId: tplId });
+    }
+  };
+
+  const handleDeploy = (whitelist: string[], blacklist: string[]) => {
+    if (!deployBot) return;
+    action({
+      type: 'deploy',
+      botId: deployBot.id,
+      symbolWhitelist: whitelist.length > 0 ? whitelist : undefined,
+      symbolBlacklist: blacklist.length > 0 ? blacklist : undefined,
+    });
+  };
+
   return (
-    <BotsPageUI
-      myBots={mine.map(toMyBot)}
-      featured={catalog.map(toFeaturedBot)}
-      onCreateBot={() => {}}
-      onExportBots={() => {}}
-      onToggleBot={(id, next) =>
-        action({
-          type: next === 'running' ? 'start' : 'stop',
-          botId: id,
-        })
-      }
-      onEditBot={() => {}}
-      onMoreBot={() => {}}
-      onLaunchTpl={(tplId) => action({ type: 'deploy', botId: tplId })}
-      onConfigureTpl={() => {}}
-      onCloneTpl={(tplId) => action({ type: 'fork', botId: tplId })}
-    />
+    <>
+      <BotsPageUI
+        myBots={mine.map(toMyBot)}
+        featured={catalog.map(toFeaturedBot)}
+        onCreateBot={handleCreate}
+        onExportBots={() => {}}
+        onToggleBot={(id, next) =>
+          action({
+            type: next === 'running' ? 'start' : 'stop',
+            botId: id,
+          })
+        }
+        onEditBot={handleEditBot}
+        onMoreBot={() => {}}
+        onLaunchTpl={handleLaunchTpl}
+        onConfigureTpl={handleLaunchTpl}
+        onCloneTpl={(tplId) => action({ type: 'fork', botId: tplId })}
+      />
+
+      {formMode !== null && (
+        <BotForm
+          bot={editBot ?? undefined}
+          onSubmit={handleFormSubmit}
+          onClose={() => { setFormMode(null); setEditBot(null); }}
+        />
+      )}
+
+      {deployBot && (
+        <DeployModal
+          bot={deployBot}
+          onDeploy={handleDeploy}
+          onClose={() => setDeployBot(null)}
+        />
+      )}
+    </>
   );
 }

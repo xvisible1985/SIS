@@ -47,7 +47,10 @@ export function useBots() {
     switch (a.type) {
       case 'start':   await apiClient.post(`/bots/${a.botId}/start`); break;
       case 'stop':    await apiClient.post(`/bots/${a.botId}/stop`); break;
-      case 'deploy':  await apiClient.post(`/bots/${a.botId}/deploy`); break;
+      case 'deploy':  await apiClient.post(`/bots/${a.botId}/deploy`, {
+        symbolWhitelist: a.symbolWhitelist,
+        symbolBlacklist: a.symbolBlacklist,
+      }); break;
       case 'fork':    await apiClient.post(`/bots/${a.botId}/fork`); break;
       case 'publish': await apiClient.post(`/bots/${a.botId}/publish`); break;
       case 'update':  await apiClient.patch(`/bots/${a.botId}`, a.data); break;
