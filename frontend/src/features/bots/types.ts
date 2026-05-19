@@ -18,15 +18,25 @@ export type StrategyConfig = {
   symbol?: string;
   category?: string;
   direction?: 'long' | 'short' | 'both';
+  strategy_type?: 'grid' | 'dca';
+  entry_order_type?: 'limit' | 'stop_market';
+  leverage?: number;
+  margin_type?: 'isolated' | 'cross';
+  hedge_mode?: boolean;
   grid_levels?: number;
   grid_active?: number;
   grid_step_pct?: number;
   grid_size_usdt?: number;
+  steps?: { price_move_pct: number; lots: number }[];
+  signal_configs?: { name: string; params?: Record<string, unknown> }[];
   tp_mode?: 'per_level' | 'total';
   tp_pct?: number;
   sl_type?: 'conditional' | 'programmatic';
   sl_pct?: number;
   signal_filter?: boolean;
+  trailing_stop_enabled?: boolean;
+  trailing_activation_pct?: number;
+  trailing_callback_pct?: number;
 };
 
 export type Bot = {
