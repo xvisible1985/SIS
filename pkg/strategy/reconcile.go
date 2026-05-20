@@ -260,6 +260,18 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 				}
 				sr.mu.Unlock()
 			}
+		} else if c.slOrderID == "" && ok {
+			// SL was never placed (same gap as TP: instrument not loaded at fill time, etc.).
+			sr := snap.sr
+			sr.mu.Lock()
+			_, posQty := sr.avgEntry()
+			if posQty > 0 && sr.slOrderID == "" && sr.strategy.SLPct > 0 {
+				log.Printf("strategy reconcile: cycle %s has position (qty=%.6f) but no SL — placing", c.cycleID, posQty)
+				if err := sr.updateSL(ctx); err != nil {
+					log.Printf("strategy reconcile: SL missing-place cycle %s: %v", c.cycleID, err)
+				}
+			}
+			sr.mu.Unlock()
 		}
 	}
 
