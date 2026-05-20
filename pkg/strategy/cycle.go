@@ -149,6 +149,10 @@ func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 		return
 	}
 
+	// Cancel exchange orders that belong to this cycle but are not tracked
+	// in our orderIndex (orphans left by missed events or restarts).
+	sr.sweepOrphanOrders(ctx)
+
 	// Reprice any pending levels that the market has already passed.
 	sr.repriceStale(ctx)
 
@@ -382,8 +386,7 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 		return false
 	}
 
-	// Fetch mark price and open orders concurrently (order fetch uses category-only
-	// query: 2 parallel requests instead of the 6-request FetchOpenOrders).
+	// Fetch mark price and open orders concurrently.
 	type priceRes struct {
 		p   float64
 		err error
@@ -399,7 +402,7 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 		prCh <- priceRes{p, e}
 	}()
 	go func() {
-		o, e := trader.FetchOpenOrdersForCategory(ctx, sr.runner.creds, sr.strategy.Category)
+		o, e := trader.FetchOpenOrdersForSymbolAll(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
 		orCh <- ordersRes{o, e}
 	}()
 	pr := <-prCh
@@ -498,7 +501,10 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 	// opening a duplicate position via market order.
 	var stillMissing []*GridLevel
 	for _, l := range passedLevels {
-		linkID := fmt.Sprintf("SIS_STR-%s-%d-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, sr.repriceGen)
+		linkID := l.ExchangeLinkID
+		if linkID == "" {
+			linkID = fmt.Sprintf("SIS_STR-%s-%d-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, sr.repriceGen)
+		}
 		existing, _, err := trader.FetchOrderByLinkId(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol, linkID)
 		if err == nil && existing.OrderStatus == "Filled" {
 			filledPrice, _ := strconv.ParseFloat(existing.Price, 64)
@@ -566,6 +572,97 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 	return false
 }
 
+// sweepOrphanOrders cancels open exchange orders that belong to this cycle but
+// are not tracked in our orderIndex (orphans), and resets placed levels that
+// are tracked but missing from the exchange (ghosts from missed events).
+func (sr *StrategyRunner) sweepOrphanOrders(ctx context.Context) {
+	sr.mu.Lock()
+	if sr.cycle == nil {
+		sr.mu.Unlock()
+		return
+	}
+	stratID8 := sr.strategy.ID
+	if len(stratID8) > 8 {
+		stratID8 = stratID8[:8]
+	}
+	prefix := fmt.Sprintf("SIS_STR-%s-%d-", stratID8, sr.cycle.CycleNum)
+	category := sr.strategy.Category
+	symbol := sr.strategy.Symbol
+	sr.mu.Unlock()
+
+	openOrders, err := trader.FetchOpenOrdersForSymbolAll(ctx, sr.runner.creds, category, symbol)
+	if err != nil {
+		log.Printf("strategy %s: sweep orphans fetch: %v", stratID8, err)
+		return
+	}
+
+	live := make(map[string]bool, len(openOrders)*2)
+	for _, o := range openOrders {
+		live[o.OrderId] = true
+		live[o.OrderLinkId] = true
+	}
+
+	sr.runner.mu.RLock()
+	known := make(map[string]bool, len(sr.runner.orderIndex))
+	for id := range sr.runner.orderIndex {
+		known[id] = true
+	}
+	sr.runner.mu.RUnlock()
+
+	// Cancel orphan orders on exchange (not in our index)
+	cancelled := 0
+	for _, o := range openOrders {
+		if !strings.HasPrefix(o.OrderLinkId, prefix) {
+			continue
+		}
+		if known[o.OrderId] || known[o.OrderLinkId] {
+			continue
+		}
+		orderFilter := ""
+		if o.OrderFilter == "StopOrder" {
+			orderFilter = "StopOrder"
+		}
+		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+			Symbol:      symbol,
+			Category:    category,
+			OrderId:     o.OrderId,
+			OrderFilter: orderFilter,
+		}); err != nil && !isOrderGone(err) {
+			log.Printf("strategy %s: sweep orphan cancel %s: %v", stratID8, o.OrderId, err)
+		} else {
+			cancelled++
+		}
+	}
+	if cancelled > 0 {
+		sr.info(ctx, fmt.Sprintf("Отменено %d потерянных ордеров при загрузке", cancelled))
+	}
+
+	// Reset ghost levels that are in our index but missing from exchange
+	sr.mu.Lock()
+	var resetCount int
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Status != LevelPlaced || l.ExchangeOrderID == "" {
+			continue
+		}
+		if live[l.ExchangeOrderID] || live[l.ExchangeLinkID] {
+			continue
+		}
+		oldOrderID := l.ExchangeOrderID
+		oldLinkID := l.ExchangeLinkID
+		l.Status = LevelPending
+		l.ExchangeOrderID = ""
+		l.ExchangeLinkID = ""
+		sr.runner.UnregisterOrder(oldOrderID)
+		sr.runner.UnregisterOrder(oldLinkID)
+		sr.runner.pool.Exec(ctx, //nolint:errcheck
+			`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL, exchange_link_id=NULL WHERE id=$1`, l.ID)
+		sr.info(ctx, fmt.Sprintf("Уровень L%d не найден на бирже при загрузке — сброшен в ожидание", l.LevelIdx))
+		resetCount++
+	}
+	sr.mu.Unlock()
+}
+
 // closePositionAtMarket places a market close order for the full position and closes the cycle.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) closePositionAtMarket(ctx context.Context, reason string) {
@@ -594,6 +691,37 @@ func (sr *StrategyRunner) closePositionAtMarket(ctx context.Context, reason stri
 	sr.closedBySelf = true
 	sr.cancelPlacedLevels(ctx)
 	sr.closeCycle(ctx, reason)
+	sr.maybeRestart(ctx)
+}
+
+// closeGhostPosition closes a position that exists on the exchange but is not tracked
+// by any filled level (e.g. a remnant after a partial TP due to qty discrepancy).
+// Uses exchangeSize directly instead of avgEntry(). Must be called with sr.mu held.
+func (sr *StrategyRunner) closeGhostPosition(ctx context.Context, exchangeSize float64) {
+	closeSide := "Sell"
+	if sr.strategy.Direction == DirectionShort {
+		closeSide = "Buy"
+	}
+	qty := trader.FormatQty(exchangeSize, sr.instr.QtyStep, sr.instr.MinQty)
+	if qty == "" || qty == "0" {
+		return
+	}
+	_, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+		Symbol:      sr.strategy.Symbol,
+		Category:    sr.strategy.Category,
+		Side:        closeSide,
+		OrderType:   "Market",
+		Qty:         qty,
+		ReduceOnly:  !sr.strategy.HedgeMode,
+		PositionIdx: positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
+	})
+	if err != nil {
+		sr.errlog(ctx, fmt.Sprintf("closeGhostPosition: %v", err))
+		return
+	}
+	sr.closedBySelf = true
+	sr.cancelPlacedLevels(ctx)
+	sr.closeCycle(ctx, "ghost_close")
 	sr.maybeRestart(ctx)
 }
 
@@ -627,7 +755,7 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 
 	rows, err := sr.runner.pool.Query(ctx,
 		`SELECT id, level_idx, side, target_price, size_usdt, qty, status,
-		        COALESCE(exchange_order_id,''), COALESCE(filled_price,0)
+		        COALESCE(exchange_order_id,''), COALESCE(filled_price,0), COALESCE(exchange_link_id,'')
 		 FROM strategy_levels WHERE cycle_id=$1 ORDER BY level_idx ASC`,
 		c.ID,
 	)
@@ -639,7 +767,7 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 		var l GridLevel
 		var stat string
 		if err := rows.Scan(&l.ID, &l.LevelIdx, &l.Side, &l.TargetPrice, &l.SizeUSDT,
-			&l.Qty, &stat, &l.ExchangeOrderID, &l.FilledPrice); err != nil {
+			&l.Qty, &stat, &l.ExchangeOrderID, &l.FilledPrice, &l.ExchangeLinkID); err != nil {
 			continue
 		}
 		l.Status = LevelStatus(stat)
@@ -651,12 +779,48 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 				refType:    "level",
 			})
 		}
+		if l.Status == LevelPlaced && l.ExchangeLinkID != "" {
+			sr.runner.RegisterOrder(l.ExchangeLinkID, orderRef{
+				strategyID: sr.strategy.ID,
+				levelID:    l.ID,
+				refType:    "level",
+			})
+		}
+		// Restore repriceGen from the saved linkId so we don't reuse a number
+		// Bybit has already seen (avoids duplicate linkId 110072 after restart).
+		if l.ExchangeLinkID != "" {
+			parts := strings.Split(l.ExchangeLinkID, "-")
+			if len(parts) >= 5 {
+				if gen, err := strconv.Atoi(parts[len(parts)-1]); err == nil && gen > sr.repriceGen {
+					sr.repriceGen = gen
+				}
+			}
+		}
 	}
 	if sr.tpOrderID != "" {
 		sr.runner.RegisterOrder(sr.tpOrderID, orderRef{strategyID: sr.strategy.ID, refType: "tp"})
 	}
 	if sr.slOrderID != "" {
 		sr.runner.RegisterOrder(sr.slOrderID, orderRef{strategyID: sr.strategy.ID, refType: "sl"})
+	}
+	// Restore lastTPSL* so updateTP/updateSL deduplication works correctly after
+	// service restart. Without this the first call after reload always re-places
+	// TP/SL because lastTPSLQty==0 ≠ actualQty, causing unnecessary replacements
+	// and potential duplicates if the cancel fails mid-flight.
+	if sr.tpOrderID != "" || sr.slOrderID != "" {
+		avg, totalQty := sr.avgEntry()
+		if totalQty > 0 && avg > 0 {
+			sr.lastTPSLQty = totalQty
+			sr.lastTPSLAvg = avg
+			if sr.tpOrderID != "" && sr.strategy.TPPct > 0 {
+				_, tpPrice := tpParams(sr.strategy.Direction, avg, sr.strategy.TPPct)
+				sr.lastTPPrice = tpPrice
+			}
+			if sr.slOrderID != "" && sr.strategy.SLPct > 0 {
+				_, slTrigger, _ := slParams(sr.strategy.Direction, avg, sr.strategy.SLPct)
+				sr.lastSLPrice = slTrigger
+			}
+		}
 	}
 	sr.info(ctx, fmt.Sprintf("Цикл %d возобновлён, уровней: %d", c.CycleNum, len(sr.levels)))
 	return nil
@@ -765,13 +929,17 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 			prevPrice := price
 			for _, step := range sr.strategy.Steps {
 				var targetPrice float64
+				prev := prevPrice
 				if step.PriceMovePct == 0 {
 					targetPrice = 0 // market order
 				} else if side == "Buy" {
 					targetPrice = prevPrice * (1 - step.PriceMovePct/100)
-					prevPrice = targetPrice
 				} else {
 					targetPrice = prevPrice * (1 + step.PriceMovePct/100)
+				}
+				log.Printf("strategy %s: level L%d %s target=%.4f (step %.2f%% from prev=%.4f)",
+					sr.strategy.ID, levelIdx, side, targetPrice, step.PriceMovePct, prev)
+				if targetPrice > 0 {
 					prevPrice = targetPrice
 				}
 				sizeUSDT := step.Lots * sr.strategy.GridSizeUSDT
@@ -825,6 +993,7 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 
 	sr.info(ctx, fmt.Sprintf("Цикл %d запущен @ %.4f, уровней: %d",
 		sr.cycle.CycleNum, price, len(sr.levels)))
+	sr.clearManualAlert(ctx)
 	return sr.placeNextLevels(ctx)
 }
 
@@ -1171,6 +1340,7 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 
 	tpSide, tpPrice := tpParams(sr.strategy.Direction, avg, sr.strategy.TPPct)
 	if tpSide == "" {
+		sr.warn(ctx, fmt.Sprintf("updateTP: направление '%s' не поддерживается для TP — пропускаем", sr.strategy.Direction))
 		return nil
 	}
 
@@ -1447,8 +1617,11 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 	if sr.cycle == nil {
 		return
 	}
-	sr.runner.pool.Exec(ctx, //nolint:errcheck
-		`UPDATE strategy_cycles SET ended_at=NOW(), result=$1, tp_order_id=NULL, sl_order_id=NULL WHERE id=$2`, result, sr.cycle.ID)
+	sr.clearManualAlert(ctx)
+	if _, err := sr.runner.pool.Exec(ctx,
+		`UPDATE strategy_cycles SET ended_at=NOW(), result=$1, tp_order_id=NULL, sl_order_id=NULL WHERE id=$2`, result, sr.cycle.ID); err != nil {
+		log.Printf("strategy %s: closeCycle: failed to end cycle %s: %v", sr.strategy.ID, sr.cycle.ID, err)
+	}
 	if sr.tpOrderID != "" {
 		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
 			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category, OrderId: sr.tpOrderID,
@@ -1468,6 +1641,48 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 		sr.runner.UnregisterOrder(sr.slOrderID)
 		sr.slOrderID = ""
 	}
+	// Variant А: safety sweep for Grid strategies — cancel any remaining
+	// SIS_STR-{stratID8} orders for this symbol that slipped the explicit cancels.
+	if sr.strategy.StrategyType == "grid" {
+		stratID8 := sr.strategy.ID
+		if len(stratID8) > 8 {
+			stratID8 = stratID8[:8]
+		}
+		prefix := "SIS_STR-" + stratID8 + "-"
+		symbol := sr.strategy.Symbol
+		category := sr.strategy.Category
+		creds := sr.runner.creds
+		ts := sr.runner.tradeStream
+		go func() {
+			sweepCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			orders, err := trader.FetchOpenOrdersForSymbolAll(sweepCtx, creds, category, symbol)
+			if err != nil {
+				log.Printf("strategy %s: closeCycle sweep: %v", stratID8, err)
+				return
+			}
+			for _, o := range orders {
+				if !strings.HasPrefix(o.OrderLinkId, prefix) {
+					continue
+				}
+				orderFilter := ""
+				if o.OrderFilter == "StopOrder" {
+					orderFilter = "StopOrder"
+				}
+				if err := ts.CancelOrder(sweepCtx, trader.CancelRequest{
+					Symbol:      symbol,
+					Category:    category,
+					OrderId:     o.OrderId,
+					OrderFilter: orderFilter,
+				}); err != nil && !isOrderGone(err) {
+					log.Printf("strategy %s: closeCycle sweep: cancel %s: %v", stratID8, o.OrderId, err)
+				} else {
+					log.Printf("strategy %s: closeCycle sweep: orphan %s (linkId=%s) отменён", stratID8, o.OrderId, o.OrderLinkId)
+				}
+			}
+		}()
+	}
+
 	sr.cycle = nil
 	sr.levels = nil
 	sr.partialCloseQty = 0
@@ -2166,6 +2381,7 @@ func (sr *StrategyRunner) cancelAllPlaced(ctx context.Context) {
 func (sr *StrategyRunner) restartCycle(ctx context.Context) {
 	sr.startMu.Lock()
 	defer sr.startMu.Unlock()
+	sr.clearManualAlert(ctx)
 
 	sr.mu.Lock()
 	if sr.strategy.Status != StatusActive {
@@ -2355,7 +2571,9 @@ func (sr *StrategyRunner) repriceRemainingFromFills(ctx context.Context) {
 			sr.runner.pool.Exec(ctx, //nolint:errcheck
 				`UPDATE strategy_levels SET target_price=$1, qty=$2, size_usdt=$3 WHERE id=$4`,
 				target, qty, sizeUSDT, l.ID)
-			prevPrice = target
+			if target > 0 {
+				prevPrice = target
+			}
 			stepIdx++
 			repriced++
 		}
@@ -2397,7 +2615,9 @@ func (sr *StrategyRunner) repriceRemainingFromFills(ctx context.Context) {
 					Qty:         qty,
 					Status:      LevelPending,
 				})
-				prevPrice = target
+				if target > 0 {
+					prevPrice = target
+				}
 				created++
 			}
 		}
@@ -2796,7 +3016,9 @@ func (sr *StrategyRunner) repriceStale(ctx context.Context) {
 				} else {
 					p = prevPrice * (1 + step.PriceMovePct/100)
 				}
-				prevPrice = p
+				if p > 0 {
+					prevPrice = p
+				}
 				newPrices = append(newPrices, p)
 			}
 		} else {
@@ -3041,6 +3263,16 @@ func (sr *StrategyRunner) handlePartialPositionChange(ctx context.Context, excha
 	}
 	avg, ourQty := sr.avgEntry()
 	if ourQty == 0 {
+		// Ghost position: exchange shows a non-zero position but we have no filled levels
+		// tracking it. Happens when a fill was missed and the previous cycle's TP only
+		// partially closed the real position. Close the remainder at market to flatten it.
+		if exchangeSize > 0 {
+			sr.warn(ctx, fmt.Sprintf(
+				"Ghost-позиция обнаружена: биржа=%.6f, наш учёт=0 — закрываю маркетом",
+				exchangeSize,
+			))
+			sr.closeGhostPosition(ctx, exchangeSize)
+		}
 		return
 	}
 	// Allow small rounding differences (1%).
@@ -3113,4 +3345,69 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 			sr.warn(ctx, "SL ордер был отменён вручную — выставляем повторно")
 		}
 	}
+}
+
+func (sr *StrategyRunner) handleLevelCancelled(ctx context.Context, levelID string) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+
+	if sr.cycle == nil {
+		return
+	}
+
+	var lvl *GridLevel
+	for i := range sr.levels {
+		if sr.levels[i].ID == levelID {
+			lvl = &sr.levels[i]
+			break
+		}
+	}
+	if lvl == nil {
+		return
+	}
+
+	status := sr.strategy.Status
+	if status != StatusActive {
+		msg := fmt.Sprintf("Уровень L%d отменён вручную на бирже (стратегия %s)", lvl.LevelIdx, status)
+		sr.info(ctx, msg)
+		sr.setManualAlert(ctx, msg)
+		return
+	}
+
+	if lvl.Status != LevelFilled {
+		lvl.Status = LevelPending
+		lvl.ExchangeOrderID = ""
+		sr.runner.pool.Exec(ctx, //nolint:errcheck
+			`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL WHERE id=$1`, lvl.ID)
+	}
+
+	msg := fmt.Sprintf("Уровень L%d был отменён вручную на бирже — перевыставляем, так как стратегия активна", lvl.LevelIdx)
+	sr.warn(ctx, msg)
+	sr.setManualAlert(ctx, msg)
+
+	// Bump repriceGen so the new order gets a fresh linkId Bybit has never seen.
+	// Without this Bybit returns 110072 (duplicate linkId) because the cancelled
+	// order's linkId is still retained by the exchange for some time.
+	sr.repriceGen++
+
+	if err := sr.placeLevel(ctx, lvl.LevelIdx-1); err != nil {
+		sr.errlog(ctx, fmt.Sprintf("Ошибка повторного выставления L%d: %v", lvl.LevelIdx, err))
+	} else {
+		sr.info(ctx, fmt.Sprintf("L%d перевыставлен", lvl.LevelIdx))
+	}
+}
+
+func (sr *StrategyRunner) setManualAlert(ctx context.Context, msg string) {
+	sr.strategy.ManualAlert = msg
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategies SET manual_alert=$1 WHERE id=$2`, msg, sr.strategy.ID)
+}
+
+func (sr *StrategyRunner) clearManualAlert(ctx context.Context) {
+	if sr.strategy.ManualAlert == "" {
+		return
+	}
+	sr.strategy.ManualAlert = ""
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategies SET manual_alert=NULL WHERE id=$1`, sr.strategy.ID)
 }
