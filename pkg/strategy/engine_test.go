@@ -193,3 +193,29 @@ func TestMatrixSafeZoneCreation(t *testing.T) {
 		t.Error("90 should be outside zone")
 	}
 }
+
+func TestMatrixStopCondThreshold(t *testing.T) {
+	// Long: stop_cond_pct=3.0 (move up 3% from fill is the trigger)
+	threshold := matrixStopCondThreshold(DirectionLong, 100.0, 3.0)
+	if math.Abs(threshold-103.0) > 0.0001 {
+		t.Errorf("Long threshold: want 103, got %.4f", threshold)
+	}
+	// Short: stop_cond_pct=3.0 (move down 3% from fill is the trigger)
+	threshold = matrixStopCondThreshold(DirectionShort, 100.0, 3.0)
+	if math.Abs(threshold-97.0) > 0.0001 {
+		t.Errorf("Short threshold: want 97, got %.4f", threshold)
+	}
+}
+
+func TestMatrixStopReplaceNewTrigger(t *testing.T) {
+	// Long: stop_replace_pct=0.5 → new SL above fill (breakeven+)
+	trigger := matrixStopReplaceTrigger(DirectionLong, 100.0, 0.5)
+	if math.Abs(trigger-100.5) > 0.0001 {
+		t.Errorf("Long replace trigger: want 100.5, got %.4f", trigger)
+	}
+	// Short: stop_replace_pct=0.5 → new SL below fill
+	trigger = matrixStopReplaceTrigger(DirectionShort, 100.0, 0.5)
+	if math.Abs(trigger-99.5) > 0.0001 {
+		t.Errorf("Short replace trigger: want 99.5, got %.4f", trigger)
+	}
+}
