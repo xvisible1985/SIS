@@ -119,6 +119,7 @@ export interface ExchangeAccount {
   label: string
   is_active: boolean
   created_at: string
+  expires_at?: string
 }
 
 // Job progress (WebSocket frame)
@@ -157,6 +158,7 @@ export interface ActiveOrder {
   triggerPrice: string
   category: string
   orderFilter: string
+  createdTime?: string
 }
 
 // Trader — history (from REST)
@@ -237,6 +239,8 @@ export interface SignalConfig {
 export interface GridStep {
   price_move_pct: number
   lots: number
+  order_type?: 'exchange' | 'virtual'
+  use_signal?: boolean
 }
 
 export interface Strategy {
@@ -262,15 +266,23 @@ export interface Strategy {
   entry_order_type: 'limit' | 'stop_market'
   signal_configs: SignalConfig[]
   steps: GridStep[] | null
+  matrix_levels?: MatrixLevel[] | null
+  safe_zone_pct?: number | null
+  matrix_entry_level?: MatrixEntryLevel | null
   trailing_stop_enabled: boolean
   trailing_activation_pct: number | null
   trailing_callback_pct: number | null
+  after_stop_mode: 'delete' | 'restart' | null
   created_at: string
   updated_at: string
   // Computed by server
   volume_usdt: number
   active_levels: number
   last_pnl: number
+  manual_alert?: string
+  bot_id?: string | null
+  bot_name?: string | null
+  current_cycle_num?: number
 }
 
 export interface StrategyLevel {
@@ -278,9 +290,13 @@ export interface StrategyLevel {
   side: string
   target_price: number
   size_usdt: number
-  status: 'pending' | 'placed' | 'filled' | 'cancelled'
+  status: 'pending' | 'placed' | 'filled' | 'cancelled' | 'sl_closed'
   filled_price: number
   exchange_order_id: string
+  slot?: number | null
+  sl_order_id?: string
+  sl_price?: number
+  sl_replaced?: boolean
 }
 
 export interface StrategyEvent {
@@ -300,6 +316,7 @@ export interface StrategyState {
   avg_entry: number
   signal_state?: 'buy' | 'sell' | 'neutral' | ''
   signal_values?: Record<string, number>
+  safe_zone?: { low: number; high: number } | null
 }
 
 export interface StrategyTemplate {
@@ -307,6 +324,28 @@ export interface StrategyTemplate {
   name: string
   config: Partial<Strategy>
   created_at: string
+}
+
+export interface MatrixLevel {
+  direction: 'above' | 'below'
+  price_step_pct: number
+  size_pct: number
+  stop_pct: number | null
+  stop_cond_pct: number | null
+  stop_replace_pct: number | null
+  tp_pct: number | null
+  order_type?: 'exchange' | 'virtual'
+  use_signal?: boolean
+}
+
+export interface MatrixEntryLevel {
+  size_pct: number
+  stop_pct: number | null
+  stop_cond_pct: number | null
+  stop_replace_pct: number | null
+  tp_pct: number | null
+  order_type?: 'exchange' | 'virtual'
+  use_signal?: boolean
 }
 
 export interface StrategyFormData {
@@ -332,6 +371,10 @@ export interface StrategyFormData {
   trailing_stop_enabled: boolean
   trailing_activation_pct: number
   trailing_callback_pct: number
+  after_stop_mode: 'delete' | 'restart'
+  matrix_levels: MatrixLevel[]
+  safe_zone_pct: number
+  matrix_entry_level: MatrixEntryLevel
 }
 
 // Cycle Audit

@@ -3,6 +3,7 @@ import { listStrategies } from '../api/strategies'
 import { listAccounts } from '../api/accounts'
 import { StrategyCard } from '../components/strategies/StrategyCard'
 import { StrategyModal } from '../components/strategies/StrategyModal'
+import { MatrixDebugOverlay } from '../components/strategies/MatrixDebugOverlay'
 import type { Strategy, ExchangeAccount } from '../types'
 
 const STATUS_ORDER: Record<string, number> = { active: 0, finishing: 1, stopped: 2 }
@@ -22,6 +23,7 @@ export function StrategiesPage() {
   const [editFilledCount, setEditFilledCount] = useState(0)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [matrixDebugOpen, setMatrixDebugOpen] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -51,11 +53,11 @@ export function StrategiesPage() {
 
       ws.onmessage = (evt) => {
         try {
-          const updates: { id: string; status: string }[] = JSON.parse(evt.data as string)
+          const updates: { id: string; status: string; manual_alert?: string }[] = JSON.parse(evt.data as string)
           if (updates.length > 0) {
             setStrategies(prev => prev.map(s => {
               const upd = updates.find(u => u.id === s.id)
-              return upd ? { ...s, status: upd.status as Strategy['status'] } : s
+              return upd ? { ...s, status: upd.status as Strategy['status'], manual_alert: upd.manual_alert } : s
             }))
           }
         } catch { /* ignore malformed */ }
@@ -99,12 +101,23 @@ export function StrategiesPage() {
     <div className="max-w-[739px] mx-auto space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Стратегии</h1>
-        <button
-          onClick={openCreate}
-          className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
-        >
-          + Новая стратегия
-        </button>
+        <div className="flex items-center gap-2">
+          {strategies.some(s => s.strategy_type === 'dca') && (
+            <button
+              onClick={() => setMatrixDebugOpen(true)}
+              className="px-3 py-2 bg-gray-700 text-gray-200 text-sm rounded-lg hover:bg-gray-600 transition-colors border border-gray-600"
+              title="Matrix Debug Overlay"
+            >
+              ⊞ Matrix Debug
+            </button>
+          )}
+          <button
+            onClick={openCreate}
+            className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            + Новая стратегия
+          </button>
+        </div>
       </div>
 
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow overflow-hidden">
@@ -144,6 +157,13 @@ export function StrategiesPage() {
           filledLevels={editFilledCount}
           onClose={() => setModalOpen(false)}
           onSaved={handleSaved}
+        />
+      )}
+
+      {matrixDebugOpen && (
+        <MatrixDebugOverlay
+          strategies={strategies}
+          onClose={() => setMatrixDebugOpen(false)}
         />
       )}
     </div>

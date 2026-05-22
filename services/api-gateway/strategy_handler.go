@@ -110,7 +110,11 @@ type strategyPayload struct {
 	TrailingStopEnabled   bool            `json:"trailing_stop_enabled"`
 	TrailingActivationPct *float64        `json:"trailing_activation_pct"`
 	TrailingCallbackPct   *float64        `json:"trailing_callback_pct"`
+	AfterStopMode         string          `json:"after_stop_mode"`
 	EntryOrderType        string          `json:"entry_order_type"`
+	MatrixLevels          json.RawMessage `json:"matrix_levels"`
+	SafeZonePct           float64         `json:"safe_zone_pct"`
+	MatrixEntryLevel      json.RawMessage `json:"matrix_entry_level"`
 }
 
 func (p *strategyPayload) applyDefaults() {
@@ -147,6 +151,9 @@ func (p *strategyPayload) applyDefaults() {
 	if p.EntryOrderType == "" {
 		p.EntryOrderType = "limit"
 	}
+	if p.AfterStopMode == "" {
+		p.AfterStopMode = "restart"
+	}
 }
 
 // ListStrategies returns all strategies for the authenticated user with computed fields.
@@ -161,7 +168,8 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 			s.leverage, s.margin_type, s.hedge_mode, s.strategy_type, s.entry_order_type,
 			s.signal_configs::text, (s.steps::text),
 			s.trailing_stop_enabled, s.trailing_activation_pct, s.trailing_callback_pct,
-			s.created_at, s.updated_at,
+			s.after_stop_mode, (s.matrix_levels::text), COALESCE(s.safe_zone_pct,0), (s.matrix_entry_level::text),
+			s.created_at, s.updated_at, s.manual_alert,
 			COALESCE((
 				SELECT SUM(sl.size_usdt)
 				FROM strategy_levels sl
@@ -178,9 +186,20 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 				SELECT realized_pnl FROM strategy_cycles
 				WHERE strategy_id = s.id AND ended_at IS NOT NULL
 				ORDER BY cycle_num DESC LIMIT 1
-			), 0)
+			), 0),
+			s.bot_id, b.name
 		FROM strategies s
+		LEFT JOIN bots b ON b.id = s.bot_id
 		WHERE s.owner_id = $1
+		  AND NOT (
+		    s.status = 'stopped'
+		    AND s.bot_id IS NOT NULL
+		    AND NOT EXISTS (
+		      SELECT 1 FROM strategy_cycles sc
+		      JOIN strategy_levels sl ON sl.cycle_id = sc.id
+		      WHERE sc.strategy_id = s.id AND sl.status = 'filled'
+		    )
+		  )
 		ORDER BY s.created_at DESC`, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -214,18 +233,25 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 		TrailingStopEnabled   bool            `json:"trailing_stop_enabled"`
 		TrailingActivationPct *float64        `json:"trailing_activation_pct"`
 		TrailingCallbackPct   *float64        `json:"trailing_callback_pct"`
+		AfterStopMode         string          `json:"after_stop_mode"`
+		MatrixLevels          json.RawMessage `json:"matrix_levels,omitempty"`
+		SafeZonePct           float64         `json:"safe_zone_pct"`
+		MatrixEntryLevel      json.RawMessage `json:"matrix_entry_level,omitempty"`
 		CreatedAt             time.Time       `json:"created_at"`
 		UpdatedAt             time.Time       `json:"updated_at"`
+		ManualAlert           *string         `json:"manual_alert"`
 		VolumeUSDT            float64         `json:"volume_usdt"`
 		ActiveLevels          int             `json:"active_levels"`
 		LastPnl               float64         `json:"last_pnl"`
+		BotID                 *string         `json:"bot_id"`
+		BotName               *string         `json:"bot_name"`
 	}
 
 	var result []row
 	for rows.Next() {
 		var r row
 		var scStr string
-		var stepsStr *string
+		var stepsStr, matrixStr, entryLevelStr *string
 		if err := rows.Scan(
 			&r.ID, &r.AccountID, &r.Symbol, &r.Category, &r.Direction, &r.Status,
 			&r.GridLevels, &r.GridActive, &r.GridStepPct, &r.GridSizeUSDT,
@@ -233,12 +259,20 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 			&r.Leverage, &r.MarginType, &r.HedgeMode, &r.StrategyType, &r.EntryOrderType,
 			&scStr, &stepsStr,
 			&r.TrailingStopEnabled, &r.TrailingActivationPct, &r.TrailingCallbackPct,
-			&r.CreatedAt, &r.UpdatedAt,
+			&r.AfterStopMode, &matrixStr, &r.SafeZonePct, &entryLevelStr,
+			&r.CreatedAt, &r.UpdatedAt, &r.ManualAlert,
 			&r.VolumeUSDT, &r.ActiveLevels, &r.LastPnl,
+			&r.BotID, &r.BotName,
 		); err == nil {
 			r.SignalConfigs = json.RawMessage(scStr)
 			if stepsStr != nil {
 				r.Steps = json.RawMessage(*stepsStr)
+			}
+			if matrixStr != nil {
+				r.MatrixLevels = json.RawMessage(*matrixStr)
+			}
+			if entryLevelStr != nil {
+				r.MatrixEntryLevel = json.RawMessage(*entryLevelStr)
 			}
 			result = append(result, r)
 		}
@@ -276,18 +310,21 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		   tp_mode, tp_pct, sl_type, sl_pct, signal_filter,
 		   leverage, margin_type, hedge_mode, strategy_type, entry_order_type,
 		   signal_configs, steps,
-		   trailing_stop_enabled, trailing_activation_pct, trailing_callback_pct)
+		   trailing_stop_enabled, trailing_activation_pct, trailing_callback_pct, after_stop_mode,
+		   matrix_levels, safe_zone_pct, matrix_entry_level)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
 		        $15,$16,$17,$18,$19,
 		        $20::jsonb, ($21::text)::jsonb,
-		        $22,$23,$24)
+		        $22,$23,$24,$25,
+		        ($26::text)::jsonb, $27, ($28::text)::jsonb)
 		RETURNING id`,
 		userID, req.AccountID, req.Symbol, req.Category, req.Direction,
 		req.GridLevels, req.GridActive, req.GridStepPct, req.GridSizeUSDT,
 		req.TPMode, req.TPPct, req.SLType, req.SLPct, req.SignalFilter,
 		req.Leverage, req.MarginType, req.HedgeMode, req.StrategyType, req.EntryOrderType,
 		string(req.SignalConfigs), nullableJSONB(req.Steps),
-		req.TrailingStopEnabled, req.TrailingActivationPct, req.TrailingCallbackPct,
+		req.TrailingStopEnabled, req.TrailingActivationPct, req.TrailingCallbackPct, req.AfterStopMode,
+		nullableJSONB(req.MatrixLevels), req.SafeZonePct, nullableJSONB(req.MatrixEntryLevel),
 	).Scan(&id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -328,14 +365,18 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		  leverage=$13, margin_type=$14, hedge_mode=$15, strategy_type=$16, entry_order_type=$17,
 		  signal_configs=$18::jsonb, steps=($19::text)::jsonb,
 		  trailing_stop_enabled=$20, trailing_activation_pct=$21, trailing_callback_pct=$22,
+		  after_stop_mode=$23, matrix_levels=($24::text)::jsonb,
+		  safe_zone_pct=$25, matrix_entry_level=($26::text)::jsonb,
 		  updated_at=NOW()
-		WHERE id=$23 AND owner_id=$24`,
+		WHERE id=$27 AND owner_id=$28`,
 		req.Symbol, req.Category, req.Direction,
 		req.GridLevels, req.GridActive, req.GridStepPct, req.GridSizeUSDT,
 		req.TPMode, req.TPPct, req.SLType, req.SLPct, req.SignalFilter,
 		req.Leverage, req.MarginType, req.HedgeMode, req.StrategyType, req.EntryOrderType,
 		string(req.SignalConfigs), nullableJSONB(req.Steps),
-		req.TrailingStopEnabled, req.TrailingActivationPct, req.TrailingCallbackPct,
+		req.TrailingStopEnabled, req.TrailingActivationPct, req.TrailingCallbackPct, req.AfterStopMode,
+		nullableJSONB(req.MatrixLevels),
+		req.SafeZonePct, nullableJSONB(req.MatrixEntryLevel),
 		id, userID,
 	)
 	if err != nil {
@@ -399,7 +440,7 @@ func (s *Server) SetStrategyStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tag, err := s.pool.Exec(r.Context(),
-		`UPDATE strategies SET status=$1, updated_at=NOW() WHERE id=$2 AND owner_id=$3`,
+		`UPDATE strategies SET status=$1, updated_at=NOW(), manual_alert=NULL WHERE id=$2 AND owner_id=$3`,
 		req.Status, id, userID,
 	)
 	if err != nil || tag.RowsAffected() == 0 {
@@ -437,7 +478,8 @@ func (s *Server) DeleteStrategy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// GetStrategyEvents returns the last 200 events for a strategy.
+// GetStrategyEvents returns events for a strategy with optional filters, pagination and total count.
+// Query params: level (error|warn|info), date (YYYY-MM-DD), limit (max 500), offset.
 // GET /strategies/{id}/events
 func (s *Server) GetStrategyEvents(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
@@ -451,11 +493,53 @@ func (s *Server) GetStrategyEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.pool.Query(r.Context(), `
-		SELECT message, level, created_at
-		FROM strategy_events
-		WHERE strategy_id=$1
-		ORDER BY created_at DESC LIMIT 200`, id)
+	// parse query params
+	levelFilter := r.URL.Query().Get("level")
+	dateFilter := r.URL.Query().Get("date")
+	limit := 200
+	if v, _ := strconv.Atoi(r.URL.Query().Get("limit")); v > 0 && v <= 500 {
+		limit = v
+	}
+	offset := 0
+	if v, _ := strconv.Atoi(r.URL.Query().Get("offset")); v > 0 {
+		offset = v
+	}
+
+	// build WHERE clause
+	whereParts := []string{"strategy_id=$1"}
+	args := []interface{}{id}
+	argIdx := 1
+
+	if levelFilter != "" && levelFilter != "all" {
+		argIdx++
+		whereParts = append(whereParts, fmt.Sprintf("level=$%d", argIdx))
+		args = append(args, levelFilter)
+	}
+	if dateFilter != "" {
+		argIdx++
+		whereParts = append(whereParts, fmt.Sprintf("DATE(created_at)=$%d", argIdx))
+		args = append(args, dateFilter)
+	}
+
+	whereSQL := strings.Join(whereParts, " AND ")
+
+	// total with filters
+	var total int
+	_ = s.pool.QueryRow(r.Context(),
+		fmt.Sprintf("SELECT COUNT(*) FROM strategy_events WHERE %s", whereSQL),
+		args...,
+	).Scan(&total)
+
+	// fetch events
+	queryArgs := append([]interface{}{}, args...)
+	queryArgs = append(queryArgs, limit, offset)
+	rows, err := s.pool.Query(r.Context(),
+		fmt.Sprintf(`SELECT message, level, created_at
+			FROM strategy_events
+			WHERE %s
+			ORDER BY created_at DESC LIMIT $%d OFFSET $%d`, whereSQL, argIdx+1, argIdx+2),
+		queryArgs...,
+	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -467,17 +551,17 @@ func (s *Server) GetStrategyEvents(w http.ResponseWriter, r *http.Request) {
 		Level     string    `json:"level"`
 		CreatedAt time.Time `json:"created_at"`
 	}
-	var result []eventRow
+	var events []eventRow
 	for rows.Next() {
 		var e eventRow
 		if rows.Scan(&e.Message, &e.Level, &e.CreatedAt) == nil {
-			result = append(result, e)
+			events = append(events, e)
 		}
 	}
-	if result == nil {
-		result = []eventRow{}
+	if events == nil {
+		events = []eventRow{}
 	}
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "events": events})
 }
 
 // GetStrategyState returns the active cycle's levels plus computed volume and avg entry.
@@ -521,6 +605,13 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 		cycle.StartPrice = 0
 	}
 
+	// Read strategy_type and safe_zone_pct for matrix-specific fields.
+	var strategyType string
+	var safeZonePct float64
+	s.pool.QueryRow(r.Context(), //nolint:errcheck
+		`SELECT strategy_type, COALESCE(safe_zone_pct,0) FROM strategies WHERE id=$1`, id,
+	).Scan(&strategyType, &safeZonePct)
+
 	type levelInfo struct {
 		LevelIdx        int     `json:"level_idx"`
 		Side            string  `json:"side"`
@@ -529,25 +620,31 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 		Status          string  `json:"status"`
 		FilledPrice     float64 `json:"filled_price"`
 		ExchangeOrderID string  `json:"exchange_order_id"`
+		Slot            *int16  `json:"slot,omitempty"`
+		SLOrderID       string  `json:"sl_order_id,omitempty"`
+		SLPrice         float64 `json:"sl_price,omitempty"`
+		SLReplaced      bool    `json:"sl_replaced,omitempty"`
 	}
 	var levels []levelInfo
 	var volumeUSDT, totalCost, totalCoins float64
 
 	if err == nil {
 		lrows, lErr := s.pool.Query(r.Context(), `
-			SELECT level_idx, side, target_price, size_usdt, status, COALESCE(filled_price,0), COALESCE(exchange_order_id,'')
+			SELECT level_idx, side, target_price, size_usdt, status, COALESCE(filled_price,0), COALESCE(exchange_order_id,''),
+			       slot, COALESCE(sl_order_id,''), COALESCE(sl_price,0), COALESCE(sl_replaced,false)
 			FROM strategy_levels WHERE cycle_id=$1 ORDER BY level_idx`, cycleID)
 		if lErr == nil && lrows != nil {
 			defer lrows.Close()
 			for lrows.Next() {
 				var l levelInfo
 				if lrows.Scan(&l.LevelIdx, &l.Side, &l.TargetPrice,
-					&l.SizeUSDT, &l.Status, &l.FilledPrice, &l.ExchangeOrderID) == nil {
+					&l.SizeUSDT, &l.Status, &l.FilledPrice, &l.ExchangeOrderID,
+					&l.Slot, &l.SLOrderID, &l.SLPrice, &l.SLReplaced) == nil {
 					levels = append(levels, l)
 					if l.Status == "filled" && l.FilledPrice > 0 {
 						volumeUSDT += l.SizeUSDT
-						totalCost += l.SizeUSDT                 // total cost (USDT)
-						totalCoins += l.SizeUSDT / l.FilledPrice // total coins bought
+						totalCost += l.SizeUSDT
+						totalCoins += l.SizeUSDT / l.FilledPrice
 					}
 				}
 			}
@@ -561,6 +658,27 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 		avgEntry = totalCost / totalCoins
 	}
 
+	// Compute safe zone from last sl_closed level (matrix only).
+	type safeZoneInfo struct {
+		Low  float64 `json:"low"`
+		High float64 `json:"high"`
+	}
+	var safeZone *safeZoneInfo
+	if strategyType == "dca" && safeZonePct > 0 && err == nil {
+		var lastSLPrice float64
+		s.pool.QueryRow(r.Context(), //nolint:errcheck
+			`SELECT COALESCE(sl_price,0) FROM strategy_levels
+			 WHERE cycle_id=$1 AND status='sl_closed' AND sl_price IS NOT NULL
+			 ORDER BY COALESCE(filled_at, placed_at) DESC NULLS LAST LIMIT 1`, cycleID,
+		).Scan(&lastSLPrice)
+		if lastSLPrice > 0 {
+			safeZone = &safeZoneInfo{
+				Low:  lastSLPrice * (1 - safeZonePct/100),
+				High: lastSLPrice * (1 + safeZonePct/100),
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cycle_num":     cycle.CycleNum,
 		"start_price":   cycle.StartPrice,
@@ -570,6 +688,7 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 		"levels":        levels,
 		"volume_usdt":   volumeUSDT,
 		"avg_entry":     avgEntry,
+		"safe_zone":     safeZone,
 		"signal_state":  s.engine.GetSignalState(id),
 		"signal_values": s.engine.GetSignalValues(id),
 	})
@@ -586,6 +705,59 @@ func computeTPSLFlag(orderID string, live, inIndex bool) string {
 		return "missing"
 	}
 	return "orphan"
+}
+
+// RestartCycle force-restarts the active cycle for a strategy: cancels placed orders,
+// closes the current cycle in DB, and starts a fresh one.
+// POST /strategies/{id}/cycle-restart
+func (s *Server) RestartCycle(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	id := chi.URLParam(r, "id")
+
+	var exists bool
+	if err := s.pool.QueryRow(r.Context(),
+		`SELECT true FROM strategies WHERE id=$1 AND owner_id=$2`, id, userID,
+	).Scan(&exists); err != nil {
+		writeError(w, http.StatusNotFound, "strategy not found")
+		return
+	}
+
+	s.pool.Exec(r.Context(), //nolint:errcheck
+		`UPDATE strategies SET manual_alert=NULL WHERE id=$1 AND owner_id=$2`, id, userID)
+	s.engine.RestartCycle(r.Context(), id)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// DetachFromBot removes bot management from a strategy (sets bot_id = NULL).
+// POST /strategies/{id}/detach
+func (s *Server) DetachFromBot(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	id := chi.URLParam(r, "id")
+	tag, err := s.pool.Exec(r.Context(),
+		`UPDATE strategies SET bot_id=NULL, updated_at=NOW() WHERE id=$1 AND owner_id=$2`,
+		id, userID,
+	)
+	if err != nil || tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "strategy not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// DismissManualAlert clears the manual intervention alert on a strategy.
+// POST /strategies/{id}/dismiss-alert
+func (s *Server) DismissManualAlert(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	id := chi.URLParam(r, "id")
+	tag, err := s.pool.Exec(r.Context(),
+		`UPDATE strategies SET manual_alert=NULL WHERE id=$1 AND owner_id=$2`,
+		id, userID,
+	)
+	if err != nil || tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "strategy not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // GetCycleAudit returns a real-time audit snapshot of the active cycle:
