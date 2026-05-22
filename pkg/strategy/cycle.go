@@ -1007,7 +1007,8 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 
 	rows, err := sr.runner.pool.Query(ctx,
 		`SELECT id, level_idx, side, target_price, size_usdt, qty, status,
-		        COALESCE(exchange_order_id,''), COALESCE(filled_price,0), COALESCE(exchange_link_id,'')
+		        COALESCE(exchange_order_id,''), COALESCE(filled_price,0), COALESCE(exchange_link_id,''),
+		        COALESCE(sl_order_id,''), COALESCE(sl_price,0), COALESCE(sl_replaced,false), slot
 		 FROM strategy_levels WHERE cycle_id=$1 ORDER BY level_idx ASC`,
 		c.ID,
 	)
@@ -1018,9 +1019,15 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 	for rows.Next() {
 		var l GridLevel
 		var stat string
+		var slotVal *int16
 		if err := rows.Scan(&l.ID, &l.LevelIdx, &l.Side, &l.TargetPrice, &l.SizeUSDT,
-			&l.Qty, &stat, &l.ExchangeOrderID, &l.FilledPrice, &l.ExchangeLinkID); err != nil {
+			&l.Qty, &stat, &l.ExchangeOrderID, &l.FilledPrice, &l.ExchangeLinkID,
+			&l.SLOrderID, &l.SLPrice, &l.SLReplaced, &slotVal); err != nil {
 			continue
+		}
+		if slotVal != nil {
+			s := int(*slotVal)
+			l.Slot = &s
 		}
 		l.Status = LevelStatus(stat)
 		sr.levels = append(sr.levels, l)
@@ -1047,6 +1054,14 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 					sr.repriceGen = gen
 				}
 			}
+		}
+		// Register per-level matrix SL orders on service restart
+		if l.SLOrderID != "" {
+			sr.runner.RegisterOrder(l.SLOrderID, orderRef{
+				strategyID: sr.strategy.ID,
+				levelID:    l.ID,
+				refType:    "matrix_sl",
+			})
 		}
 	}
 	if sr.tpOrderID != "" {
