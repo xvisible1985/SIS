@@ -1632,6 +1632,12 @@ func (sr *StrategyRunner) handleLevelFill(ctx context.Context, levelID string, f
 		}
 	}
 
+	// Matrix strategies use their own fill handler.
+	if sr.strategy.StrategyType == "dca" {
+		sr.handleMatrixLevelFill(ctx, levelID, filledPrice)
+		return
+	}
+
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
 		`UPDATE strategy_levels SET status='filled', filled_price=$1, filled_at=NOW() WHERE id=$2`,
 		filledPrice, levelID,

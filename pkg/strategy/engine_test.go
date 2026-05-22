@@ -162,3 +162,17 @@ func TestMatrixSafeZoneContains(t *testing.T) {
 		t.Error("120 should be outside [90,110]")
 	}
 }
+
+func TestMatrixPerLevelSLTrigger(t *testing.T) {
+	// Long: stop_pct = -2.0, fill_price = 100 → trigger = 100 * (1 - 0.02) = 98
+	stopPct := -2.0
+	trigger := matrixSLTrigger(DirectionLong, 100.0, stopPct)
+	if math.Abs(trigger-98.0) > 0.0001 {
+		t.Errorf("Long SL trigger: want 98, got %.4f", trigger)
+	}
+	// Short: stop_pct = -2.0, fill_price = 100 → trigger = 100 * (1 + 0.02) = 102
+	trigger = matrixSLTrigger(DirectionShort, 100.0, stopPct)
+	if math.Abs(trigger-102.0) > 0.0001 {
+		t.Errorf("Short SL trigger: want 102, got %.4f", trigger)
+	}
+}

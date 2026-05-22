@@ -474,6 +474,206 @@ func (sr *StrategyRunner) launchMatrixPriceMonitor() {
 	// TODO: implemented in Task 8
 }
 
+// matrixSLTrigger computes the per-level SL trigger price.
+// stopPct is expected negative (e.g. -2.0 means 2% adverse from fill).
+func matrixSLTrigger(dir Direction, fillPrice, stopPct float64) float64 {
+	if dir == DirectionLong {
+		return fillPrice * (1 + stopPct/100) // stopPct < 0 → trigger below fill
+	}
+	return fillPrice * (1 - stopPct/100) // stopPct < 0 → trigger above fill
+}
+
+// handleMatrixLevelFill is the matrix-specific handler called when a level fill event arrives
+// for a strategy_type="dca" strategy.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) handleMatrixLevelFill(ctx context.Context, levelID string, filledPrice float64) {
+	// Idempotency guard
+	for _, l := range sr.levels {
+		if l.ID == levelID && l.Status == LevelFilled {
+			return
+		}
+	}
+
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategy_levels SET status='filled', filled_price=$1, filled_at=NOW() WHERE id=$2`,
+		filledPrice, levelID,
+	)
+	var filled *GridLevel
+	for i := range sr.levels {
+		if sr.levels[i].ID == levelID {
+			sr.runner.UnregisterOrder(sr.levels[i].ExchangeOrderID)
+			sr.levels[i].Status = LevelFilled
+			sr.levels[i].FilledPrice = filledPrice
+			filled = &sr.levels[i]
+			sr.info(ctx, fmt.Sprintf("Matrix L%d (slot %v) %s @ %.4f исполнен",
+				sr.levels[i].LevelIdx, sr.levels[i].Slot, sr.levels[i].Side, filledPrice))
+			break
+		}
+	}
+	if filled == nil {
+		return
+	}
+
+	// Place per-level SL if configured for this slot
+	if filled.Slot != nil {
+		_, stopPct, _, _ := sr.matrixLevelConfig(*filled.Slot)
+		if stopPct != nil {
+			sr.matrixPlacePerLevelSL(ctx, filled, filledPrice, *stopPct)
+		}
+	}
+
+	// Update global TP based on latest active fill
+	sr.matrixUpdateTP(ctx)
+}
+
+// matrixPlacePerLevelSL places a reduce-only stop-market SL for one filled level.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixPlacePerLevelSL(ctx context.Context, l *GridLevel, fillPrice, stopPct float64) {
+	trigger := matrixSLTrigger(sr.strategy.Direction, fillPrice, stopPct)
+
+	var slSide string
+	var trigDir int
+	if sr.strategy.Direction == DirectionLong {
+		slSide, trigDir = "Sell", 2 // fires when price falls to/below trigger
+	} else {
+		slSide, trigDir = "Buy", 1 // fires when price rises to/above trigger
+	}
+
+	sr.matrixSLSeq++
+	linkID := fmt.Sprintf("SIS_STR-%s-msl-%s-%d",
+		sr.strategy.ID[:8], l.ID[:8], sr.matrixSLSeq)
+
+	qty, _ := strconv.ParseFloat(l.Qty, 64)
+	fmtQty := trader.FormatQty(qty, sr.instr.QtyStep, sr.instr.MinQty)
+	if fmtQty == "0" || fmtQty == "" {
+		sr.warn(ctx, fmt.Sprintf("matrixPlacePerLevelSL: qty rounds to zero for L%d", l.LevelIdx))
+		return
+	}
+
+	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "matrix_sl"}
+	sr.runner.RegisterOrder(linkID, ref)
+
+	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+		Symbol:           sr.strategy.Symbol,
+		Category:         sr.strategy.Category,
+		Side:             slSide,
+		OrderType:        "Market",
+		Qty:              fmtQty,
+		TriggerPrice:     trader.FormatPrice(trigger, sr.instr.TickSize),
+		TriggerBy:        "LastPrice",
+		TriggerDirection: trigDir,
+		OrderFilter:      "StopOrder",
+		ReduceOnly:       !sr.strategy.HedgeMode,
+		PositionIdx:      positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
+		OrderLinkId:      linkID,
+	})
+	if err != nil {
+		sr.runner.UnregisterOrder(linkID)
+		sr.errlog(ctx, fmt.Sprintf("Matrix per-level SL для L%d: %v", l.LevelIdx, err))
+		return
+	}
+
+	l.SLOrderID = result.OrderId
+	l.SLPrice = trigger
+	sr.runner.RegisterOrder(result.OrderId, ref)
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategy_levels SET sl_order_id=$1, sl_price=$2 WHERE id=$3`,
+		result.OrderId, trigger, l.ID,
+	)
+	sr.info(ctx, fmt.Sprintf("Matrix SL для L%d @ %.4f выставлен", l.LevelIdx, trigger))
+}
+
+// matrixUpdateTP cancels the existing global TP and places a new one based on the
+// latest active filled level's fill_price and that level's tp_pct config.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
+	if sr.instr.QtyStep == 0 {
+		return
+	}
+	latest, ok := sr.matrixLatestActiveFill()
+	if !ok {
+		// No active fills — cancel TP if it exists
+		if sr.tpOrderID != "" {
+			old := sr.tpOrderID
+			sr.runner.UnregisterOrder(old)
+			sr.tpOrderID = ""
+			sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{ //nolint:errcheck
+				Symbol:   sr.strategy.Symbol,
+				Category: sr.strategy.Category,
+				OrderId:  old,
+			})
+			sr.runner.pool.Exec(ctx, //nolint:errcheck
+				`UPDATE strategy_cycles SET tp_order_id=NULL WHERE id=$1`, sr.cycle.ID)
+		}
+		return
+	}
+
+	var tpPctVal *float64
+	if latest.Slot != nil {
+		tpPctVal, _, _, _ = sr.matrixLevelConfig(*latest.Slot)
+	}
+	if tpPctVal == nil {
+		return // this level has no TP configured
+	}
+
+	var tpPrice float64
+	var tpSide string
+	if sr.strategy.Direction == DirectionLong {
+		tpSide = "Sell"
+		tpPrice = latest.FilledPrice * (1 + *tpPctVal/100)
+	} else {
+		tpSide = "Buy"
+		tpPrice = latest.FilledPrice * (1 - *tpPctVal/100)
+	}
+
+	activeQty := sr.matrixActiveQty()
+	if activeQty == 0 {
+		return
+	}
+	tpQty := trader.FormatQty(activeQty, sr.instr.QtyStep, sr.instr.MinQty)
+	if tpQty == "0" || tpQty == "" {
+		return
+	}
+
+	// Cancel existing TP
+	if sr.tpOrderID != "" {
+		old := sr.tpOrderID
+		sr.runner.UnregisterOrder(old)
+		sr.tpOrderID = ""
+		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+			Symbol:   sr.strategy.Symbol,
+			Category: sr.strategy.Category,
+			OrderId:  old,
+		}); err != nil && !isOrderGone(err) {
+			sr.warn(ctx, fmt.Sprintf("matrixUpdateTP: cancel old TP: %v", err))
+		}
+	}
+
+	sr.tpPlaceSeq++
+	linkID := fmt.Sprintf("SIS_STR-%s-tp-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, sr.tpPlaceSeq)
+	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+		Symbol:      sr.strategy.Symbol,
+		Category:    sr.strategy.Category,
+		Side:        tpSide,
+		OrderType:   "Limit",
+		Qty:         tpQty,
+		Price:       trader.FormatPrice(tpPrice, sr.instr.TickSize),
+		TimeInForce: "GTC",
+		ReduceOnly:  !sr.strategy.HedgeMode,
+		PositionIdx: positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
+		OrderLinkId: linkID,
+	})
+	if err != nil {
+		sr.errlog(ctx, fmt.Sprintf("matrixUpdateTP: place TP: %v", err))
+		return
+	}
+	sr.tpOrderID = result.OrderId
+	sr.runner.RegisterOrder(result.OrderId, orderRef{strategyID: sr.strategy.ID, refType: "tp"})
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategy_cycles SET tp_order_id=$1 WHERE id=$2`, result.OrderId, sr.cycle.ID)
+	sr.info(ctx, fmt.Sprintf("Matrix TP @ %.4f qty=%s выставлен", tpPrice, tpQty))
+}
+
 // Stubs — implemented in Task 7.
 func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string, filledPrice float64) {}
 func (sr *StrategyRunner) handleMatrixSLCancelled(ctx context.Context, levelID string)                 {}
