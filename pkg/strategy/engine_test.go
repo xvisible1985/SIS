@@ -78,3 +78,22 @@ func TestAvgEntry(t *testing.T) {
 		t.Errorf("want total 2.0, got %.4f", total)
 	}
 }
+
+func TestLevelSLClosedConstant(t *testing.T) {
+	if LevelSLClosed != "sl_closed" {
+		t.Errorf("want sl_closed, got %s", LevelSLClosed)
+	}
+}
+
+func TestMatrixSafeZoneContains(t *testing.T) {
+	z := &MatrixSafeZone{Low: 90.0, High: 110.0}
+	if !z.Contains(100.0) {
+		t.Error("100 should be inside [90,110]")
+	}
+	if z.Contains(80.0) {
+		t.Error("80 should be outside [90,110]")
+	}
+	if z.Contains(120.0) {
+		t.Error("120 should be outside [90,110]")
+	}
+}

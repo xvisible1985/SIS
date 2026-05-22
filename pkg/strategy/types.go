@@ -32,6 +32,13 @@ const (
 	SLTypeProgrammatic SLType = "programmatic"
 )
 
+type AfterStopMode string
+
+const (
+	AfterStopModeDelete  AfterStopMode = "delete"
+	AfterStopModeRestart AfterStopMode = "restart"
+)
+
 type LevelStatus string
 
 const (
@@ -39,6 +46,7 @@ const (
 	LevelPlaced    LevelStatus = "placed"
 	LevelFilled    LevelStatus = "filled"
 	LevelCancelled LevelStatus = "cancelled"
+	LevelSLClosed  LevelStatus = "sl_closed"
 )
 
 type SignalConfig struct {
@@ -51,10 +59,31 @@ type GridStep struct {
 	Lots         float64 `json:"lots"`
 }
 
+type MatrixLevel struct {
+	Direction      string   `json:"direction"`                  // "above" | "below"
+	PriceStepPct   float64  `json:"price_step_pct"`
+	SizePct        float64  `json:"size_pct"`
+	StopPct        *float64 `json:"stop_pct,omitempty"`
+	StopCondPct    *float64 `json:"stop_cond_pct,omitempty"`
+	StopReplacePct *float64 `json:"stop_replace_pct,omitempty"`
+	TPPct          *float64 `json:"tp_pct,omitempty"`
+	OrderType      string   `json:"order_type,omitempty"` // "exchange" | "virtual"
+}
+
+type MatrixEntryLevel struct {
+	SizePct        float64  `json:"size_pct"`
+	StopPct        *float64 `json:"stop_pct,omitempty"`
+	StopCondPct    *float64 `json:"stop_cond_pct,omitempty"`
+	StopReplacePct *float64 `json:"stop_replace_pct,omitempty"`
+	TPPct          *float64 `json:"tp_pct,omitempty"`
+	OrderType      string   `json:"order_type,omitempty"` // "exchange" | "virtual"
+}
+
 type Strategy struct {
 	ID                    string
 	OwnerID               string
 	AccountID             string
+	BotID                 *string
 	Symbol                string
 	Category              string
 	Direction             Direction
@@ -77,7 +106,14 @@ type Strategy struct {
 	TrailingStopEnabled   bool
 	TrailingActivationPct float64
 	TrailingCallbackPct   float64
+	AfterStopMode         AfterStopMode
+	MaxCycles             int
+	CycleCount            int
 	EntryOrderType        string
+	ManualAlert           string
+	MatrixLevels          []MatrixLevel
+	SafeZonePct           float64
+	MatrixEntryLevel      *MatrixEntryLevel
 }
 
 type Cycle struct {
@@ -90,6 +126,16 @@ type Cycle struct {
 	StartedAt  time.Time
 }
 
+type MatrixSafeZone struct {
+	Low, High float64
+	CreatedAt time.Time
+}
+
+// Contains reports whether price falls within the Safe Zone bounds (inclusive).
+func (z *MatrixSafeZone) Contains(price float64) bool {
+	return price >= z.Low && price <= z.High
+}
+
 type GridLevel struct {
 	ID              string
 	LevelIdx        int
@@ -99,5 +145,11 @@ type GridLevel struct {
 	Qty             string
 	Status          LevelStatus
 	ExchangeOrderID string
+	ExchangeLinkID  string
 	FilledPrice     float64
+	// Matrix-only fields (nil/zero for grid strategies)
+	SLOrderID  string
+	SLPrice    float64
+	SLReplaced bool
+	Slot       *int // nil = grid; matrix slot index: -N…0…+N
 }
