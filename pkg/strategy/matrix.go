@@ -618,6 +618,10 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 			sr.strategy.ID[:8], l.ID[:8], sr.matrixSLSeq)
 		qty, _ := strconv.ParseFloat(l.Qty, 64)
 		fmtQty := trader.FormatQty(qty, sr.instr.QtyStep, sr.instr.MinQty)
+		if fmtQty == "0" || fmtQty == "" {
+			sr.warn(ctx, fmt.Sprintf("matrixPriceTick: stop-cond SL replace L%d: qty rounds to zero, skipping", l.LevelIdx))
+			continue
+		}
 		ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "matrix_sl"}
 		sr.runner.RegisterOrder(linkID, ref)
 
