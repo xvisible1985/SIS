@@ -5,6 +5,71 @@ import (
 	"testing"
 )
 
+func TestCalculateMatrixPrices(t *testing.T) {
+	above := []MatrixLevel{
+		{Direction: "above", PriceStepPct: 2.0},
+		{Direction: "above", PriceStepPct: 3.0},
+	}
+	below := []MatrixLevel{
+		{Direction: "below", PriceStepPct: 2.0},
+		{Direction: "below", PriceStepPct: 3.0},
+	}
+	prices := calculateMatrixPrices(100.0, above, below)
+	cases := []struct {
+		slot int
+		want float64
+	}{
+		{0, 100.0},
+		{-1, 98.0},
+		{-2, 95.06},
+		{1, 102.0},
+		{2, 105.06},
+	}
+	for _, c := range cases {
+		got, ok := prices[c.slot]
+		if !ok {
+			t.Errorf("slot %d not in result", c.slot)
+			continue
+		}
+		if math.Abs(got-c.want) > 0.001 {
+			t.Errorf("slot %d: want %.4f, got %.4f", c.slot, c.want, got)
+		}
+	}
+}
+
+func TestMatrixPlacementDecision(t *testing.T) {
+	// Long: target below current → Limit
+	orderType, trigDir := matrixEntryOrderType("long", 95.0, 100.0)
+	if orderType != "Limit" {
+		t.Errorf("below-current Long: want Limit, got %s", orderType)
+	}
+	_ = trigDir
+
+	// Long: target above current → StopMarket
+	orderType, trigDir = matrixEntryOrderType("long", 105.0, 100.0)
+	if orderType != "StopMarket" {
+		t.Errorf("above-current Long: want StopMarket, got %s", orderType)
+	}
+	if trigDir != 1 {
+		t.Errorf("above-current Long: want trigDir=1, got %d", trigDir)
+	}
+
+	// Short: target above current → Limit
+	orderType, trigDir = matrixEntryOrderType("short", 105.0, 100.0)
+	if orderType != "Limit" {
+		t.Errorf("above-current Short: want Limit, got %s", orderType)
+	}
+
+	// Short: target below current → StopMarket
+	orderType, trigDir = matrixEntryOrderType("short", 95.0, 100.0)
+	if orderType != "StopMarket" {
+		t.Errorf("below-current Short: want StopMarket, got %s", orderType)
+	}
+	if trigDir != 2 {
+		t.Errorf("below-current Short: want trigDir=2, got %d", trigDir)
+	}
+}
+
 func TestCalculateGridLevels_Long(t *testing.T) {
 	prices := calculateGridLevels(100.0, 1.0, 5, "Buy")
 	expected := []float64{99.0, 98.01, 97.0299, 96.0596, 95.0990}
