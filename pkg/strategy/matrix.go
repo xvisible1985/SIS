@@ -271,6 +271,11 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 			continue
 		}
 		sizeUSDT := sizePctForSlot(slot) / 100 * sr.strategy.GridSizeUSDT
+		// Guard: skip slots with zero quantity (prevents zero-qty orders to exchange)
+		if sizeUSDT == 0 {
+			levelIdx++
+			continue
+		}
 		priceForQty := targetPrice
 		if priceForQty == 0 {
 			priceForQty = price // market entry: use current price for qty calc
@@ -347,6 +352,11 @@ func (sr *StrategyRunner) placeMatrixLevel(ctx context.Context, l *GridLevel, cu
 		return nil
 	}
 
+	// Guard: only place if level is pending (prevent duplicate orders)
+	if l.Status != LevelPending {
+		return nil
+	}
+
 	// Safe zone suppression.
 	if sr.matrixSafeZone != nil && l.TargetPrice > 0 && sr.matrixSafeZone.Contains(l.TargetPrice) {
 		return nil
@@ -397,6 +407,7 @@ func (sr *StrategyRunner) placeMatrixLevel(ctx context.Context, l *GridLevel, cu
 			Qty:              l.Qty,
 			TriggerPrice:     formattedPrice,
 			TriggerDirection: trigDir,
+			TriggerBy:        "LastPrice",
 			OrderFilter:      "StopOrder",
 			PositionIdx:      positionIdxForOpen(sr.strategy.HedgeMode, l.Side),
 			OrderLinkId:      linkID,
