@@ -465,9 +465,11 @@ func (sr *StrategyRunner) placeMatrixLevel(ctx context.Context, l *GridLevel, cu
 	return nil
 }
 
-// loadMatrixCycle resumes an active matrix cycle after service restart.
-// Calls loadActiveCycle to read levels (which now includes SL columns),
-// restores safe zone, and re-launches the price monitor.
+// loadMatrixCycle loads an existing cycle when startMatrixCycle detects
+// active levels already in DB (the guard path). It calls loadActiveCycle
+// to read levels, restores the safe zone, and re-launches the price monitor.
+// Service-restart resumption goes through loadOrStart → directly calls
+// restoreMatrixSafeZone + launchMatrixPriceMonitor.
 // Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) loadMatrixCycle(ctx context.Context) error {
 	if err := sr.loadActiveCycle(ctx); err != nil {
@@ -513,6 +515,9 @@ func (sr *StrategyRunner) restoreMatrixSafeZone(ctx context.Context) {
 
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
+	if sr.cycle == nil {
+		return
+	}
 	zone := createMatrixSafeZone(slPrice, sr.strategy.SafeZonePct)
 	if zone.Contains(price) {
 		sr.matrixSafeZone = zone
