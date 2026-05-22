@@ -465,9 +465,59 @@ func (sr *StrategyRunner) placeMatrixLevel(ctx context.Context, l *GridLevel, cu
 	return nil
 }
 
-// loadMatrixCycle is a stub — fully implemented in Task 9.
+// loadMatrixCycle resumes an active matrix cycle after service restart.
+// Calls loadActiveCycle to read levels (which now includes SL columns),
+// restores safe zone, and re-launches the price monitor.
+// Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) loadMatrixCycle(ctx context.Context) error {
-	return sr.loadActiveCycle(ctx)
+	if err := sr.loadActiveCycle(ctx); err != nil {
+		return err
+	}
+	sr.restoreMatrixSafeZone(ctx)
+	sr.launchMatrixPriceMonitor()
+	return nil
+}
+
+// restoreMatrixSafeZone checks the last sl_closed level in the current cycle
+// and rebuilds the safe zone if it is recent (< 1 hour) and price is still inside.
+// Must NOT be called with sr.mu held.
+func (sr *StrategyRunner) restoreMatrixSafeZone(ctx context.Context) {
+	sr.mu.Lock()
+	if sr.cycle == nil || sr.strategy.SafeZonePct <= 0 {
+		sr.mu.Unlock()
+		return
+	}
+	cycleID := sr.cycle.ID
+	sr.mu.Unlock()
+
+	var slPrice float64
+	var closedAt time.Time
+	err := sr.runner.pool.QueryRow(ctx,
+		`SELECT COALESCE(sl_price,0), COALESCE(filled_at, placed_at, NOW())
+         FROM strategy_levels
+         WHERE cycle_id=$1 AND status='sl_closed' AND sl_price IS NOT NULL
+         ORDER BY filled_at DESC NULLS LAST LIMIT 1`,
+		cycleID,
+	).Scan(&slPrice, &closedAt)
+	if err != nil || slPrice == 0 {
+		return
+	}
+	if time.Since(closedAt) > time.Hour {
+		return
+	}
+
+	price, err := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	if err != nil {
+		return
+	}
+
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	zone := createMatrixSafeZone(slPrice, sr.strategy.SafeZonePct)
+	if zone.Contains(price) {
+		sr.matrixSafeZone = zone
+		log.Printf("strategy %s: restored Safe Zone [%.4f, %.4f]", sr.strategy.ID, zone.Low, zone.High)
+	}
 }
 
 // matrixStopCondThreshold computes the price level that must be crossed to

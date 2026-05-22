@@ -181,11 +181,23 @@ func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 			return
 		}
 		sr.startMu.Lock()
-		err2 := sr.startCycle(ctx)
+		var err2 error
+		if sr.strategy.StrategyType == "dca" {
+			err2 = sr.startMatrixCycle(ctx)
+		} else {
+			err2 = sr.startCycle(ctx)
+		}
 		sr.startMu.Unlock()
 		if err2 != nil {
 			log.Printf("strategy %s: start cycle: %v", sr.strategy.ID, err2)
 		}
+		return
+	}
+
+	// Matrix strategies use their own load path.
+	if sr.strategy.StrategyType == "dca" {
+		sr.restoreMatrixSafeZone(ctx)
+		sr.launchMatrixPriceMonitor()
 		return
 	}
 
