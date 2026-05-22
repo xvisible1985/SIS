@@ -176,3 +176,20 @@ func TestMatrixPerLevelSLTrigger(t *testing.T) {
 		t.Errorf("Short SL trigger: want 102, got %.4f", trigger)
 	}
 }
+
+func TestMatrixSafeZoneCreation(t *testing.T) {
+	// safe_zone_pct=5, sl_trigger=100 → Low=95, High=105
+	zone := createMatrixSafeZone(100.0, 5.0)
+	if math.Abs(zone.Low-95.0) > 0.0001 {
+		t.Errorf("Low: want 95, got %.4f", zone.Low)
+	}
+	if math.Abs(zone.High-105.0) > 0.0001 {
+		t.Errorf("High: want 105, got %.4f", zone.High)
+	}
+	if !zone.Contains(100.0) {
+		t.Error("100 should be inside zone")
+	}
+	if zone.Contains(90.0) {
+		t.Error("90 should be outside zone")
+	}
+}

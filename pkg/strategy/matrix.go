@@ -674,6 +674,111 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	sr.info(ctx, fmt.Sprintf("Matrix TP @ %.4f qty=%s выставлен", tpPrice, tpQty))
 }
 
-// Stubs — implemented in Task 7.
-func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string, filledPrice float64) {}
-func (sr *StrategyRunner) handleMatrixSLCancelled(ctx context.Context, levelID string)                 {}
+// createMatrixSafeZone builds a safe zone centered on slTrigger with ±safeZonePct.
+func createMatrixSafeZone(slTrigger, safeZonePct float64) *MatrixSafeZone {
+	return &MatrixSafeZone{
+		Low:       slTrigger * (1 - safeZonePct/100),
+		High:      slTrigger * (1 + safeZonePct/100),
+		CreatedAt: time.Now(),
+	}
+}
+
+// handleMatrixSLFill is called when a per-level SL fires (refType="matrix_sl").
+// Must NOT be called with sr.mu held (submitted to worker via sr.submit).
+func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string, filledPrice float64) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+
+	if sr.cycle == nil {
+		return
+	}
+
+	// Find and mark the level sl_closed
+	var closed *GridLevel
+	for i := range sr.levels {
+		if sr.levels[i].ID == levelID {
+			closed = &sr.levels[i]
+			break
+		}
+	}
+	if closed == nil {
+		return
+	}
+
+	slTrigger := closed.SLPrice
+	if slTrigger == 0 {
+		slTrigger = filledPrice
+	}
+
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategy_levels SET status='sl_closed' WHERE id=$1`, levelID,
+	)
+	closed.Status = LevelSLClosed
+	closed.SLOrderID = ""
+	sr.warn(ctx, fmt.Sprintf("Matrix SL сработал L%d (slot %v) @ %.4f",
+		closed.LevelIdx, closed.Slot, slTrigger))
+
+	// Create Safe Zone
+	if sr.strategy.SafeZonePct > 0 {
+		sr.matrixSafeZone = createMatrixSafeZone(slTrigger, sr.strategy.SafeZonePct)
+		sr.info(ctx, fmt.Sprintf("Safe Zone создана: [%.4f, %.4f]",
+			sr.matrixSafeZone.Low, sr.matrixSafeZone.High))
+	}
+
+	// Recalculate global TP
+	sr.matrixUpdateTP(ctx)
+
+	// If no active filled levels remain → close cycle
+	if sr.matrixActiveQty() == 0 {
+		sr.info(ctx, "Все уровни закрыты по SL — цикл завершается")
+		sr.closedBySelf = true
+		sr.closeCycle(ctx, "sl")
+		sr.maybeRestart(ctx)
+	}
+}
+
+// handleMatrixSLCancelled re-places the per-level SL when it is externally cancelled.
+// Must NOT be called with sr.mu held.
+func (sr *StrategyRunner) handleMatrixSLCancelled(ctx context.Context, levelID string) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.ID == levelID && l.Status == LevelFilled && l.FilledPrice > 0 {
+			if l.Slot == nil {
+				return
+			}
+			_, stopPct, _, _ := sr.matrixLevelConfig(*l.Slot)
+			if stopPct == nil {
+				return
+			}
+			l.SLOrderID = ""
+			sr.warn(ctx, fmt.Sprintf("Matrix SL для L%d отменён биржей — переставляю", l.LevelIdx))
+			sr.matrixPlacePerLevelSL(ctx, l, l.FilledPrice, *stopPct)
+			return
+		}
+	}
+}
+
+// matrixCancelPerLevelSLs cancels all active per-level SL orders.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixCancelPerLevelSLs(ctx context.Context) {
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.SLOrderID == "" {
+			continue
+		}
+		orderID := l.SLOrderID
+		sr.runner.UnregisterOrder(orderID)
+		l.SLOrderID = ""
+		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+			Symbol:      sr.strategy.Symbol,
+			Category:    sr.strategy.Category,
+			OrderId:     orderID,
+			OrderFilter: "StopOrder",
+		}); err != nil && !isOrderGone(err) {
+			sr.warn(ctx, fmt.Sprintf("matrixCancelPerLevelSLs: %s: %v", orderID, err))
+		}
+	}
+}

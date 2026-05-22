@@ -2099,6 +2099,15 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 		}()
 	}
 
+	// Cancel per-level matrix SL orders and stop price monitor (noop for grid strategies)
+	if sr.strategy.StrategyType == "dca" {
+		sr.matrixCancelPerLevelSLs(ctx)
+		if sr.matrixMonitorStop != nil {
+			sr.matrixMonitorStop()
+			sr.matrixMonitorStop = nil
+		}
+		sr.matrixSafeZone = nil
+	}
 	sr.cycle = nil
 	sr.levels = nil
 	sr.partialCloseQty = 0
@@ -2762,6 +2771,14 @@ func (sr *StrategyRunner) handleStopRequest(ctx context.Context) {
 	if sr.cycle == nil {
 		sr.info(ctx, "Стратегия остановлена (нет активного цикла)")
 		return
+	}
+	if sr.strategy.StrategyType == "dca" {
+		sr.matrixCancelPerLevelSLs(ctx)
+		if sr.matrixMonitorStop != nil {
+			sr.matrixMonitorStop()
+			sr.matrixMonitorStop = nil
+		}
+		sr.matrixSafeZone = nil
 	}
 	sr.cancelPlacedLevels(ctx)
 
