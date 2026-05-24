@@ -3104,7 +3104,7 @@ func (sr *StrategyRunner) restartCycle(ctx context.Context) {
 	}
 
 	log.Printf("strategy %s: starting new cycle with updated settings", sr.strategy.ID)
-	if err := sr.startCycle(ctx); err != nil {
+	if err := sr.startCycleByType(ctx); err != nil {
 		log.Printf("strategy %s: start cycle after settings update: %v", sr.strategy.ID, err)
 	}
 }

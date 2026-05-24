@@ -844,7 +844,10 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
                       style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,.14) transparent' }}
                     >
                       {cs.state && cs.state.levels.length > 0 ? (
-                        cs.state.levels.map(l => {
+                        (s.strategy_type === 'dca'
+                          ? [...cs.state.levels].sort((a, b) => (b.slot ?? 0) - (a.slot ?? 0))
+                          : cs.state.levels
+                        ).map(l => {
                           const tag = lvlTag(l.status)
                           const isFilled = l.status === 'filled' || l.status === 'sl_closed'
                           // find matching active order for filled levels to show real executed volume
@@ -860,19 +863,16 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
                           return (
                             <div key={l.level_idx} data-lvl-status={l.status}
                               className="grid gap-2 items-center px-1 py-[5px] rounded-[5px] font-mono text-[11px]"
-                              style={{ gridTemplateColumns: isMatrix ? 'auto auto 1fr auto' : 'auto 1fr auto' }}
+                              style={{ gridTemplateColumns: 'auto 1fr auto' }}
                             >
-                              <span className="text-[10px] text-[#5b6479] w-[18px]">L{l.level_idx}</span>
-                              {isMatrix && (
-                                <span className={`text-[9px] px-[4px] py-[1px] rounded-[3px] font-bold ${
-                                  l.slot == null ? 'text-slate-600' :
-                                  l.slot === 0   ? 'bg-violet-500/20 text-violet-300' :
-                                  l.slot < 0     ? 'bg-blue-500/20 text-blue-300' :
+                              {isMatrix && l.slot != null
+                                ? <span className={`text-[9px] px-[4px] py-[1px] rounded-[3px] font-bold ${
+                                    l.slot === 0 ? 'bg-violet-500/20 text-violet-300' :
+                                    l.slot < 0   ? 'bg-blue-500/20 text-blue-300' :
                                                    'bg-amber-500/20 text-amber-300'
-                                }`}>
-                                  {l.slot != null ? (l.slot > 0 ? '+' : '') + l.slot : '—'}
-                                </span>
-                              )}
+                                  }`}>L({l.slot})</span>
+                                : <span className="text-[10px] text-[#5b6479] w-[18px]">L{l.level_idx}</span>
+                              }
                               <span>
                                 <span className="text-[#e6ebf5] font-bold">{usdtVal}$</span>
                                 {priceVal > 0 && <span className="text-[#5b6479] font-normal"> ({priceVal.toFixed(2)})</span>}

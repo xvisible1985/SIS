@@ -316,6 +316,17 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         .filter(l => l.status === 'pending' || l.force_virtual)
         .map(l => l.level_idx)
     )
+    const levelSlotMap = new Map<number, number>(
+      (strategyLevels ?? [])
+        .filter(l => l.slot != null)
+        .map(l => [l.level_idx, l.slot as number])
+    )
+    const resolveLabel = (lbl: string): string => {
+      const m = lbl.match(/^L(\d+)$/)
+      if (!m) return lbl
+      const slot = levelSlotMap.get(parseInt(m[1]))
+      return slot != null ? `L(${slot})` : lbl
+    }
 
     for (const ord of orders.filter(o => {
       if (o.symbol !== symbol) return false
@@ -345,7 +356,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       return true
     })) {
       const isLong = ord.side === 'Buy'
-      const label = parseOrderLabel(ord.orderLinkId, ord.side)
+      const label = resolveLabel(parseOrderLabel(ord.orderLinkId, ord.side))
       const color = label.startsWith('TP') ? '#5b8cff' : label.startsWith('SL') ? '#f59e0b' : (isLong ? '#34d399' : '#f87171')
       if (ord.triggerPrice && parseFloat(ord.triggerPrice) > 0) {
         const p = parseFloat(ord.triggerPrice)
@@ -395,7 +406,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
           lineWidth: 1,
           lineStyle: 3,
           axisLabelVisible: true,
-          title: `L${lv.level_idx}${pct}${usdt} [V]`,
+          title: `${lv.slot != null ? `L(${lv.slot})` : `L${lv.level_idx}`}${pct}${usdt} [V]`,
         }))
       }
     }
@@ -436,7 +447,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         if (!e.price || e.price <= 0) continue
         const isTP = isTPLinkId(e.orderLinkId)
         const isBuy = e.side === 'Buy'
-        const label = parseOrderLabel(e.orderLinkId ?? '', e.side)
+        const label = resolveLabel(parseOrderLabel(e.orderLinkId ?? '', e.side))
         const color = isTP ? '#5b8cff' : isBuy ? '#059669' : '#dc2626'
         const usdt = (e.price * parseFloat(e.qty || '0')).toFixed(0)
         const levelLabel = label || (isBuy ? 'Buy' : 'Sell')
@@ -457,6 +468,17 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
   useEffect(() => {
     const plugin = markersPluginRef.current
     if (!plugin || !candles.length) return
+    const markerSlotMap = new Map<number, number>(
+      (strategyLevels ?? [])
+        .filter(l => l.slot != null)
+        .map(l => [l.level_idx, l.slot as number])
+    )
+    const resolveMarkerLabel = (lbl: string): string => {
+      const m = lbl.match(/^L(\d+)$/)
+      if (!m) return lbl
+      const slot = markerSlotMap.get(parseInt(m[1]))
+      return slot != null ? `L(${slot})` : lbl
+    }
     const dirFilter = overlaySettings && !overlaySettings.bothDirections && effectiveDir ? effectiveDir : null
     const relevant = (executions ?? []).filter(e => {
       if (e.symbol !== symbol || e.timeMs <= 0) return false
@@ -507,7 +529,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       const color = isTP ? '#5b8cff' : isBuy ? '#00DC82' : '#ef4444'
 
       const usdt = (e.price * parseFloat(e.qty || '0')).toFixed(0)
-      const levelLabel = parseOrderLabel(e.orderLinkId ?? '', e.side)
+      const levelLabel = resolveMarkerLabel(parseOrderLabel(e.orderLinkId ?? '', e.side))
       const markerText = levelLabel ? `${levelLabel}:${usdt}$` : `${usdt}$`
       markers.push({
         time: candleTime,
@@ -519,7 +541,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       })
     }
     plugin.setMarkers(markers.sort((a: M, b: M) => a.time - b.time))
-  }, [executions, candles, symbol, overlaySettings, effectiveDir, orders, stratIdShort, currentCycleNum])
+  }, [executions, candles, symbol, overlaySettings, effectiveDir, orders, stratIdShort, currentCycleNum, strategyLevels])
 
   // Position overlays (Bybit-style rectangles with P&L)
   useEffect(() => {

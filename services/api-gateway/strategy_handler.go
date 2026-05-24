@@ -408,12 +408,12 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 	// Notify the engine asynchronously so the HTTP response is not blocked by
 	// strategy runner mutexes that may be held during live Bybit API calls.
 	logMsg := fmt.Sprintf(
-		"РќР°СЃС‚СЂРѕР№РєРё РѕР±РЅРѕРІР»РµРЅС‹ (TP/SL): tp=%.2f%% sl=%.2f%%",
+		"Настройки обновлены (TP/SL): tp=%.2f%% sl=%.2f%%",
 		req.TPPct, req.SLPct,
 	)
 	if gridChanged {
 		logMsg = fmt.Sprintf(
-			"РќР°СЃС‚СЂРѕР№РєРё РѕР±РЅРѕРІР»РµРЅС‹ (СЃРµС‚РєР°): symbol=%s dir=%s step=%.2f%% size=%.2f USDT active=%d entryType=%s tp=%.2f%% sl=%.2f%%",
+			"Настройки обновлены (сетка): symbol=%s dir=%s step=%.2f%% size=%.2f USDT active=%d entryType=%s tp=%.2f%% sl=%.2f%%",
 			req.Symbol, req.Direction, req.GridStepPct, req.GridSizeUSDT, req.GridActive, req.EntryOrderType, req.TPPct, req.SLPct,
 		)
 	}
@@ -456,11 +456,11 @@ func (s *Server) SetStrategyStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 
 	statusLabel := map[string]string{
-		"active":    "Р·Р°РїСѓС‰РµРЅР°",
-		"finishing": "Р·Р°РІРµСЂС€РµРЅРёРµ",
-		"stopped":   "РѕСЃС‚Р°РЅРѕРІР»РµРЅР°",
+		"active":    "запущена",
+		"finishing": "завершение",
+		"stopped":   "остановлена",
 	}[req.Status]
-	logMsg := fmt.Sprintf("РЎС‚Р°С‚СѓСЃ РёР·РјРµРЅС‘РЅ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј: %s", statusLabel)
+	logMsg := fmt.Sprintf("Статус изменён пользователем: %s", statusLabel)
 	go func() {
 		ctx := context.Background()
 		s.engine.Notify(ctx, id)

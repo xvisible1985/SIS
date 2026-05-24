@@ -984,7 +984,7 @@ export function TerminalPage() {
           </div>
           <div className="flex-1 overflow-auto">
             {mobileTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} tickerPrices={tickerPrices} />}
-            {mobileTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} onRemoveOrder={removeOrder} />}
+            {mobileTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} onRemoveOrder={removeOrder} strategyLevels={strategyLevels} />}
             {mobileTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} />}
             {mobileTab === 'trade' && (
               <div className="flex flex-col gap-2 p-2 overflow-y-auto">
@@ -1076,7 +1076,7 @@ export function TerminalPage() {
           </div>
           <div className="flex-1 overflow-auto">
             {bottomTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} tickerPrices={tickerPrices} />}
-            {bottomTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} onRemoveOrder={removeOrder} />}
+            {bottomTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} onRemoveOrder={removeOrder} strategyLevels={strategyLevels} />}
             {bottomTab === 'history' && <HistoryTable accountId={accountId ?? undefined} symbol={symbol} />}
             {bottomTab === 'executions' && <ExecutionsTable accountId={accountId ?? undefined} />}
             {bottomTab === 'log' && <TradeLog log={log} />}

@@ -1,4 +1,4 @@
-import type { ActiveOrder } from '../../types'
+import type { ActiveOrder, StrategyLevel } from '../../types'
 import { cancelOrder } from '../../api/trader'
 import { useState } from 'react'
 
@@ -8,9 +8,10 @@ interface Props {
   loading: boolean
   onSelect?: (symbol: string) => void
   onRemoveOrder?: (orderId: string) => void
+  strategyLevels?: StrategyLevel[]
 }
 
-function orderLabel(ord: ActiveOrder): string {
+function orderLabel(ord: ActiveOrder, slotMap: Map<number, number>): string {
   const id = ord.orderLinkId ?? ''
   const type = ord.orderType?.toLowerCase() ?? ''
   // TP: SIS_STR-id-tp-cycle-seq
@@ -21,7 +22,11 @@ function orderLabel(ord: ActiveOrder): string {
     return 'SL'
   // Limit: SIS_STR-id-cycle-level-reprice
   const lvl = id.match(/^(SIS_STR|STR)-[a-f0-9]+-\d+-(\d+)-\d+$/)
-  if (lvl) return `Limit L${lvl[2]}`
+  if (lvl) {
+    const idx = parseInt(lvl[2])
+    const slot = slotMap.get(idx)
+    return slot != null ? `L(${slot})` : `Limit L${lvl[2]}`
+  }
   return type || '—'
 }
 
@@ -45,8 +50,14 @@ function coinIcon(s: string) {
   return `https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons/32/color/${s.replace(/USDT|USDC|USD$/, '').toLowerCase()}.png`
 }
 
-export function OrdersTable({ accountId, orders, loading, onSelect, onRemoveOrder }: Props) {
+export function OrdersTable({ accountId, orders, loading, onSelect, onRemoveOrder, strategyLevels }: Props) {
   const [cancelling, setCancelling] = useState<string | null>(null)
+
+  const slotMap = new Map<number, number>(
+    (strategyLevels ?? [])
+      .filter(l => l.slot != null)
+      .map(l => [l.level_idx, l.slot as number])
+  )
 
   async function handleCancel(ord: ActiveOrder) {
     if (cancelling === ord.orderId) return
@@ -100,7 +111,7 @@ export function OrdersTable({ accountId, orders, loading, onSelect, onRemoveOrde
                 {ord.side}
               </span>
             </td>
-            <td className="px-3 py-2 text-gray-500 dark:text-gray-400 font-mono">{orderLabel(ord)}</td>
+            <td className="px-3 py-2 text-gray-500 dark:text-gray-400 font-mono">{orderLabel(ord, slotMap)}</td>
             <td className="px-3 py-2 text-left font-mono text-[10px] text-slate-400">
               {extractCycle(ord.orderLinkId ?? '') ?? <span className="text-slate-600">—</span>}
             </td>

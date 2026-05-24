@@ -242,10 +242,7 @@ export function CycleAuditModal({ strategyId, strategySymbol, onClose }: Props) 
               <table className="w-full text-[11px] font-mono">
                 <thead>
                   <tr className="border-b border-white/[.06]" style={{ background: 'rgba(255,255,255,.03)' }}>
-                    <th className="px-3 py-2 text-left text-[10px] text-slate-500 font-semibold uppercase tracking-wide">#</th>
-                    {isMatrix && (
-                      <th className="px-3 py-2 text-center text-[10px] text-slate-500 font-semibold uppercase tracking-wide">Слот</th>
-                    )}
+                    <th className="px-3 py-2 text-left text-[10px] text-slate-500 font-semibold uppercase tracking-wide">{isMatrix ? 'Уровень' : '#'}</th>
                     <th className="px-3 py-2 text-left text-[10px] text-slate-500 font-semibold uppercase tracking-wide">Сторона</th>
                     <th className="px-3 py-2 text-right text-[10px] text-slate-500 font-semibold uppercase tracking-wide">Цена цели</th>
                     <th className="px-3 py-2 text-right text-[10px] text-slate-500 font-semibold uppercase tracking-wide">Кол-во</th>
@@ -267,36 +264,38 @@ export function CycleAuditModal({ strategyId, strategySymbol, onClose }: Props) 
                   </tr>
                 </thead>
                 <tbody>
-                  {(data.levels ?? []).map(l => (
+                  {(isMatrix
+                    ? [...(data.levels ?? [])].sort((a, b) => (b.slot ?? 0) - (a.slot ?? 0))
+                    : (data.levels ?? [])
+                  ).map(l => (
                     <tr key={l.idx} className={`border-b border-white/[.04] ${rowBg(l.flag, l.db_status)}`}>
-                      <td className="px-3 py-2 text-slate-400">L{l.idx}</td>
-                      {isMatrix && (
-                        <td className="px-3 py-2 text-center">
-                          {l.slot != null
+                      <td className="px-3 py-2">
+                        {isMatrix
+                          ? l.slot != null
                             ? <span className={`text-[10px] font-semibold px-1.5 py-[2px] rounded-[4px] ${
                                 l.slot === 0 ? 'bg-violet-500/20 text-violet-300' :
                                 l.slot < 0  ? 'bg-blue-500/20 text-blue-300' :
                                               'bg-amber-500/20 text-amber-300'
                               }`}>
-                                {l.slot > 0 ? '+' : ''}{l.slot}
+                                L({l.slot})
                               </span>
                             : <span className="text-slate-600">—</span>
-                          }
-                        </td>
-                      )}
+                          : <span className="text-slate-400">L{l.idx}</span>
+                        }
+                      </td>
                       <td className={`px-3 py-2 font-semibold ${l.side === 'Buy' ? 'text-emerald-400' : 'text-red-400'}`}>
                         {l.side}
                       </td>
-                      <td className="px-3 py-2 text-right text-slate-200">{l.target_price.toFixed(2)}</td>
+                      <td className="px-3 py-2 text-right text-slate-200">{l.target_price.toFixed(4)}</td>
                       <td className="px-3 py-2 text-right text-slate-300">{l.qty}</td>
                       <td className="px-3 py-2 text-center"><DbStatusBadge status={l.db_status} /></td>
                       <td className="px-3 py-2 text-right text-slate-300">
-                        {l.filled_price > 0 ? l.filled_price.toFixed(2) : '—'}
+                        {l.filled_price > 0 ? l.filled_price.toFixed(4) : '—'}
                       </td>
                       {isMatrix ? (
                         <>
                           <td className="px-3 py-2 text-right text-slate-300">
-                            {(l.sl_price ?? 0) > 0 ? l.sl_price!.toFixed(2) : '—'}
+                            {(l.sl_price ?? 0) > 0 ? l.sl_price!.toFixed(4) : '—'}
                           </td>
                           <td className="px-3 py-2 text-center">
                             <SlStatusCell l={l} />

@@ -18,7 +18,7 @@ func calculateMatrixPrices(startPrice float64, above, below []MatrixLevel) map[i
 	prices := map[int]float64{0: startPrice}
 	prev := startPrice
 	for i, lvl := range below {
-		prev = prev * (1 - lvl.PriceStepPct/100)
+		prev = prev * (1 + lvl.PriceStepPct/100)
 		prices[-(i + 1)] = prev
 	}
 	prev = startPrice
@@ -113,9 +113,7 @@ func (sr *StrategyRunner) matrixIsVirtual(l *GridLevel) bool {
 		return e != nil && e.OrderType == "virtual"
 	}
 	if slot > 0 {
-		above := filterMatrixLevels(sr.strategy.MatrixLevels, "above")
-		idx := slot - 1
-		return idx < len(above) && above[idx].OrderType == "virtual"
+		return true // above levels are always virtual — fired by price monitor when price rises
 	}
 	below := filterMatrixLevels(sr.strategy.MatrixLevels, "below")
 	idx := -slot - 1
@@ -208,6 +206,8 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 	if sr.strategy.Status == StatusStopped {
 		return nil
 	}
+
+	sr.matrixSafeZone = nil // defensive reset for fresh cycle
 
 	var maxCycle int
 	sr.runner.pool.QueryRow(ctx,

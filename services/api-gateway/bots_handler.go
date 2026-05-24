@@ -390,7 +390,7 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	s.logBotEvent(ctx, botID, "РќР°СЃС‚СЂРѕР№РєРё Р±РѕС‚Р° РёР·РјРµРЅРµРЅС‹ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј", "info", "user")
+	s.logBotEvent(ctx, botID, "Настройки бота изменены пользователем", "info", "user")
 
 	// If strategyConfig changed, sync params to all active bot strategies and notify the engine.
 	if _, cfgChanged := body["strategyConfig"]; cfgChanged {
@@ -660,9 +660,9 @@ func (s *Server) setBotStatus(w http.ResponseWriter, r *http.Request, status str
 		writeError(w, http.StatusNotFound, "bot not found")
 		return
 	}
-	msg := "Р‘РѕС‚ РѕСЃС‚Р°РЅРѕРІР»РµРЅ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј"
+	msg := "Бот остановлен пользователем"
 	if status == "active" {
-		msg = "Р‘РѕС‚ Р·Р°РїСѓС‰РµРЅ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј"
+		msg = "Бот запущен пользователем"
 	}
 	s.logBotEvent(r.Context(), botID, msg, "info", "user")
 	if status == "stopped" {
@@ -705,7 +705,7 @@ func (s *Server) stopBotStrategiesWithoutPosition(ctx context.Context, botID str
 	}
 	if len(ids) > 0 {
 		s.logBotEvent(ctx, botID,
-			fmt.Sprintf("РћСЃС‚Р°РЅРѕРІР»РµРЅРѕ %d СЃС‚СЂР°С‚РµРіРёР№ Р±РµР· РѕС‚РєСЂС‹С‚РѕР№ РїРѕР·РёС†РёРё", len(ids)), "info", "strategy")
+			fmt.Sprintf("Остановлено %d стратегий без открытой позиции", len(ids)), "info", "strategy")
 	}
 }
 
@@ -1097,7 +1097,7 @@ func (s *Server) TriggerBot(w http.ResponseWriter, r *http.Request) {
 			`SELECT COUNT(*) FROM strategies WHERE bot_id = $1 AND status IN ('active', 'finishing')`,
 			botID,
 		).Scan(&activeCount); err == nil && activeCount >= b.maxStrat {
-			writeError(w, http.StatusConflict, fmt.Sprintf("Р»РёРјРёС‚ СЃС‚СЂР°С‚РµРіРёР№ Р±РѕС‚Р° РґРѕСЃС‚РёРіРЅСѓС‚ (%d/%d)", activeCount, b.maxStrat))
+			writeError(w, http.StatusConflict, fmt.Sprintf("лимит стратегий бота достигнут (%d/%d)", activeCount, b.maxStrat))
 			return
 		}
 	}
@@ -1112,7 +1112,7 @@ func (s *Server) TriggerBot(w http.ResponseWriter, r *http.Request) {
 			`SELECT COUNT(*) FROM strategies WHERE bot_id = $1 AND direction = $2 AND status IN ('active', 'finishing')`,
 			botID, req.Direction,
 		).Scan(&dirCount); err == nil && dirCount >= dirLimit {
-			writeError(w, http.StatusConflict, fmt.Sprintf("Р»РёРјРёС‚ %s СЃС‚СЂР°С‚РµРіРёР№ Р±РѕС‚Р° РґРѕСЃС‚РёРіРЅСѓС‚ (%d/%d)", req.Direction, dirCount, dirLimit))
+			writeError(w, http.StatusConflict, fmt.Sprintf("лимит %s стратегий бота достигнут (%d/%d)", req.Direction, dirCount, dirLimit))
 			return
 		}
 	}
@@ -1125,7 +1125,7 @@ func (s *Server) TriggerBot(w http.ResponseWriter, r *http.Request) {
 		   AND (bot_id = $3 OR (bot_id IS NULL AND owner_id = $4 AND account_id = $5))`,
 		req.Symbol, req.Direction, botID, b.ownerID, b.accountID,
 	).Scan(&existing); err == nil && existing > 0 {
-		writeError(w, http.StatusConflict, "СЃС‚СЂР°С‚РµРіРёСЏ РґР»СЏ СЌС‚РѕР№ РїР°СЂС‹ СѓР¶Рµ РѕС‚РєСЂС‹С‚Р°")
+		writeError(w, http.StatusConflict, "стратегия для этой пары уже открыта")
 		return
 	}
 
@@ -1135,7 +1135,7 @@ func (s *Server) TriggerBot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logBotEvent(ctx, botID,
-		fmt.Sprintf("Р—Р°РїСѓС‰РµРЅР° СЃС‚СЂР°С‚РµРіРёСЏ РІСЂСѓС‡РЅСѓСЋ: %s %s", req.Symbol, req.Direction), "info", "user")
+		fmt.Sprintf("Запущена стратегия вручную: %s %s", req.Symbol, req.Direction), "info", "user")
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
 }
 
