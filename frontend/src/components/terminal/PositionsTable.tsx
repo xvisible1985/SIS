@@ -65,7 +65,8 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
           closing={closing}
         />
       )}
-      <table className="w-full text-xs">
+      <div className="overflow-x-auto">
+      <table className="w-full text-xs min-w-[640px]">
         <thead className="sticky top-0 z-10 bg-white dark:bg-gray-900">
           <tr className="text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
             {['Символ', 'Сторона', 'Размер', 'Цена входа', 'Mark Price', 'PnL', 'Плечо', ''].map(h => (
@@ -117,6 +118,7 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
           })}
         </tbody>
       </table>
+      </div>
     </>
   )
 }

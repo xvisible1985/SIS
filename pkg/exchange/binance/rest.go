@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"sis/pkg/models"
+	"sis/pkg/proxy"
 )
 
 const (
@@ -38,7 +39,7 @@ func FetchCandles(ctx context.Context, symbol string, market models.Market, tf m
 	if err != nil {
 		return nil, fmt.Errorf("binance rest: new request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := proxy.HTTPClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("binance rest: do: %w", err)
 	}

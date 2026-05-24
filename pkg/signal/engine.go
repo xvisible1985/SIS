@@ -24,6 +24,8 @@ type computeUnit struct {
 	lastState       State
 	lastComputedAt  time.Time
 	subs            map[string]func(State) // subscriptionID → callback
+
+	emitFn func(symbol, interval, hash string, state State) // set by Engine; may be nil
 }
 
 func newComputeUnit(hash, symbol, interval string, configs []Config) (*computeUnit, error) {
@@ -38,13 +40,14 @@ func newComputeUnit(hash, symbol, interval string, configs []Config) (*computeUn
 		labels = append(labels, labelFor(cfg))
 	}
 	return &computeUnit{
-		hash:     hash,
-		symbol:   symbol,
-		interval: interval,
-		configs:  configs,
-		signals:  sigs,
-		sigLabel: strings.Join(labels, " + "),
-		subs:     make(map[string]func(State)),
+		hash:      hash,
+		symbol:    symbol,
+		interval:  interval,
+		configs:   configs,
+		signals:   sigs,
+		sigLabel:  strings.Join(labels, " + "),
+		lastState: Neutral, // Safe default — overwritten on first kline close
+		subs:      make(map[string]func(State)),
 	}, nil
 }
 
@@ -77,11 +80,17 @@ func (u *computeUnit) compute(candles []Candle, m *Metrics) {
 	for _, cb := range u.subs {
 		cbs = append(cbs, cb)
 	}
+	emitFn := u.emitFn
 	u.mu.Unlock()
 
 	if changed {
 		for _, cb := range cbs {
-			go cb(combined)
+			if cb != nil {
+				go cb(combined)
+			}
+		}
+		if emitFn != nil {
+			go emitFn(u.symbol, u.interval, u.hash, combined)
 		}
 	}
 }
@@ -116,6 +125,9 @@ type Engine struct {
 	mu    sync.RWMutex
 	units map[string]*computeUnit // hash → unit
 	subs  map[string]string       // subscriptionID → hash
+
+	globalCbsMu sync.RWMutex
+	globalCbs   []func(symbol, interval, hash string, state State)
 }
 
 // NewEngine creates a SignalEngine. Pass a non-nil exec to persist metrics to DB.
@@ -127,6 +139,25 @@ func NewEngine(ctx context.Context, exec ExecFn) *Engine {
 		metrics: m,
 		units:   make(map[string]*computeUnit),
 		subs:    make(map[string]string),
+	}
+}
+
+// OnStateChange registers a global callback that fires whenever any compute unit
+// changes state. The callback is invoked in its own goroutine.
+func (e *Engine) OnStateChange(cb func(symbol, interval, hash string, state State)) {
+	e.globalCbsMu.Lock()
+	e.globalCbs = append(e.globalCbs, cb)
+	e.globalCbsMu.Unlock()
+}
+
+// emitGlobal calls all registered global callbacks in separate goroutines.
+func (e *Engine) emitGlobal(symbol, interval, hash string, state State) {
+	e.globalCbsMu.RLock()
+	cbs := make([]func(string, string, string, State), len(e.globalCbs))
+	copy(cbs, e.globalCbs)
+	e.globalCbsMu.RUnlock()
+	for _, cb := range cbs {
+		go cb(symbol, interval, hash, state)
 	}
 }
 
@@ -147,6 +178,7 @@ func (e *Engine) Subscribe(
 
 	e.mu.Lock()
 	unit, exists := e.units[hash]
+	isNew := false
 	if !exists {
 		var err error
 		unit, err = newComputeUnit(hash, symbol, interval, configs)
@@ -156,20 +188,24 @@ func (e *Engine) Subscribe(
 		}
 		e.units[hash] = unit
 		e.metrics.unitAdded()
+		isNew = true
 	}
 	e.subs[subID] = hash
 	e.mu.Unlock()
 
 	unit.mu.Lock()
 	unit.subs[subID] = cb
+	unit.emitFn = e.emitGlobal
 	unit.mu.Unlock()
 
 	e.metrics.subAdded()
 
-	// Register hub listener (idempotent — hub deduplicates by key internally)
-	e.hub.Subscribe(symbol, interval, func(candles []Candle) {
-		unit.compute(candles, e.metrics)
-	})
+	// Register hub listener only when the unit is newly created to avoid duplicates.
+	if isNew {
+		e.hub.Subscribe(symbol, interval, func(candles []Candle) {
+			unit.compute(candles, e.metrics)
+		})
+	}
 
 	return nil
 }
@@ -234,7 +270,9 @@ func (e *Engine) ForceRecompute(signalName string) {
 // "need at least 2 candles" guard. Override-aware signals (e.g. rsiTest) work
 // with an empty snapshot; other signals return Neutral when data is absent.
 func (e *Engine) ComputeStateForce(symbol, interval string, configs []Config) State {
-	// Fast path: return cached state from an active compute unit
+	// Fast path: return cached state only if the unit has been computed at least once.
+	// A freshly subscribed unit has lastComputedAt.IsZero() — fall through to fresh
+	// computation so callers never see the uninitialised Neutral placeholder.
 	hash := HashConfigs(symbol, interval, configs)
 	e.mu.RLock()
 	unit, exists := e.units[hash]
@@ -242,8 +280,11 @@ func (e *Engine) ComputeStateForce(symbol, interval string, configs []Config) St
 	if exists {
 		unit.mu.Lock()
 		state := unit.lastState
+		computed := !unit.lastComputedAt.IsZero()
 		unit.mu.Unlock()
-		return state
+		if computed {
+			return state
+		}
 	}
 	// Get whatever snapshot is available (may be nil)
 	snap := e.hub.SnapshotOrFetch(symbol, interval)
@@ -268,6 +309,31 @@ func (e *Engine) ComputeStateForce(symbol, interval string, configs []Config) St
 		}
 	}
 	return combined
+}
+
+// QueryTTLRemaining returns the minimum TTL remaining in seconds across all TTLAware
+// signals in the compute unit for the given (symbol, interval, configs) key.
+// Returns -1 if the unit doesn't exist, no TTL is configured, or the signal hasn't fired yet.
+func (e *Engine) QueryTTLRemaining(symbol, interval string, configs []Config) float64 {
+	hash := HashConfigs(symbol, interval, configs)
+	e.mu.RLock()
+	unit, exists := e.units[hash]
+	e.mu.RUnlock()
+	if !exists {
+		return -1
+	}
+	min := -1.0
+	for _, sig := range unit.signals {
+		ta, ok := sig.(TTLAware)
+		if !ok {
+			continue
+		}
+		rem := ta.TTLRemainingSec()
+		if rem >= 0 && (min < 0 || rem < min) {
+			min = rem
+		}
+	}
+	return min
 }
 
 // Hub returns the underlying KlineHub (for conn count metrics).

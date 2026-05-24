@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -293,6 +294,65 @@ func (s *Server) AdjustNovabotBalance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// ListNovabotTransactions returns the transaction history for a user.
+// Query params: limit (default 50, max 200), offset (default 0), type (all|credit|debit, default all)
+// GET /admin/users/{id}/transactions
+func (s *Server) ListNovabotTransactions(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	limit := 50
+	if v, _ := strconv.Atoi(r.URL.Query().Get("limit")); v > 0 && v <= 200 {
+		limit = v
+	}
+	offset := 0
+	if v, _ := strconv.Atoi(r.URL.Query().Get("offset")); v > 0 {
+		offset = v
+	}
+	txType := r.URL.Query().Get("type")
+	if txType == "" {
+		txType = "all"
+	}
+
+	var where string
+	var args []any
+	args = append(args, id)
+	switch txType {
+	case "credit":
+		where = " AND amount > 0"
+	case "debit":
+		where = " AND amount < 0"
+	}
+
+	rows, err := s.pool.Query(r.Context(),
+		`SELECT id, admin_id, amount, note, created_at
+		 FROM novabot_transactions WHERE user_id=$1`+where+
+		` ORDER BY created_at DESC LIMIT $2 OFFSET $3`, append(args, limit, offset)...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	defer rows.Close()
+	type txRow struct {
+		ID        string    `json:"id"`
+		AdminID   *string   `json:"admin_id"`
+		Amount    float64   `json:"amount"`
+		Note      string    `json:"note"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	var result []txRow
+	for rows.Next() {
+		var t txRow
+		var adminID *string
+		if err := rows.Scan(&t.ID, &adminID, &t.Amount, &t.Note, &t.CreatedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "scan error")
+			return
+		}
+		t.AdminID = adminID
+		result = append(result, t)
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // BlockAdminUser sets is_blocked=true with a reason.

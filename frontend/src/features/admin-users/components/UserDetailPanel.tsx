@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   X, User, Shield, Star, Mail, CheckCircle2, Check, Lock,
-  Plus, Minus, Ban, Calendar, ArrowUpRight, MoreHorizontal,
+  Plus, Minus, Ban, ArrowUpRight, MoreHorizontal, RefreshCw,
+  // FileSignature,
 } from 'lucide-react';
-import type { AdminAction, AdminUser } from '../types';
-import { daysSince, exchangeStyle, fmtDate, fmtMoney, generatePassword } from '../utils';
+import type { AdminAction, AdminUser, NovaBotTransaction } from '../types';
+import { exchangeStyle, fmtDate, fmtDateTime, fmtMoney, generatePassword } from '../utils';
 import { Avatar } from './Avatar';
 import { StatusPill } from './StatusPill';
 import { Segmented } from './Segmented';
@@ -18,12 +19,17 @@ type Props = {
   onClose: () => void;
   /** Дать наружу действия — реализуй через axios/mutation */
   onAction: (action: AdminAction) => Promise<void> | void;
+  /** Загрузить историю транзакций NovaBot */
+  fetchTransactions?: (
+    userId: string,
+    params?: { limit?: number; offset?: number; type?: 'all' | 'credit' | 'debit' },
+  ) => Promise<NovaBotTransaction[]>;
 };
 
 /** Draft holds the editable subset that survives until "Save" — role/curator/refererId */
 type Draft = Pick<AdminUser, 'role' | 'curator' | 'refererId'>;
 
-export function UserDetailPanel({ user, users, onClose, onAction }: Props) {
+export function UserDetailPanel({ user, users, onClose, onAction, fetchTransactions }: Props) {
   const initialDraft: Draft = { role: user.role, curator: user.curator, refererId: user.refererId };
   const [draft, setDraft] = useState<Draft>(initialDraft);
 
@@ -33,10 +39,42 @@ export function UserDetailPanel({ user, users, onClose, onAction }: Props) {
   const [newPw, setNewPw] = useState('');
   const [requirePwChange, setRequirePwChange] = useState(true);
 
+  // transaction history
+  const [txs, setTxs] = useState<NovaBotTransaction[]>([]);
+  const [txLoading, setTxLoading] = useState(false);
+  const [txFilter, setTxFilter] = useState<'all' | 'credit' | 'debit'>('all');
+  const [txOffset, setTxOffset] = useState(0);
+  const TX_PAGE = 20;
+
+  const loadTxs = useCallback(async () => {
+    if (!fetchTransactions) return;
+    setTxLoading(true);
+    try {
+      const data = await fetchTransactions(user.id, {
+        limit: TX_PAGE,
+        offset: txOffset,
+        type: txFilter,
+      });
+      setTxs(data);
+    } catch {
+      setTxs([]);
+    } finally {
+      setTxLoading(false);
+    }
+  }, [fetchTransactions, user.id, txFilter, txOffset]);
+
   useEffect(() => {
     setDraft({ role: user.role, curator: user.curator, refererId: user.refererId });
     setBonus(''); setBonusNote(''); setNewPw('');
-  }, [user.id]);
+  }, [user.id, user.role, user.curator, user.refererId]);
+
+  useEffect(() => {
+    setTxOffset(0);
+  }, [user.id, txFilter]);
+
+  useEffect(() => {
+    loadTxs();
+  }, [loadTxs]);
 
   const dirty = JSON.stringify(draft) !== JSON.stringify(initialDraft);
 
@@ -55,7 +93,7 @@ export function UserDetailPanel({ user, users, onClose, onAction }: Props) {
   const validBonus = !isNaN(bonusNum) && bonusNum !== 0;
 
   return (
-    <aside className="flex h-full w-[520px] shrink-0 flex-col overflow-auto border-l border-white/[.06] bg-[#0c1018]">
+    <aside className="flex h-full w-[520px] shrink-0 flex-col overflow-auto border-l border-white/[.06] bg-[#0c1018] pb-20">
       {/* HEADER */}
       <div className="border-b border-white/[.05] px-5 pb-4 pt-4">
         <div className="flex items-start gap-3.5">
@@ -74,13 +112,6 @@ export function UserDetailPanel({ user, users, onClose, onAction }: Props) {
               ) : (
                 <span className="ml-2 text-amber-400">не подтверждён</span>
               )}
-            </div>
-            <div className="mt-2 flex items-center gap-3.5 text-[11px] text-slate-400">
-              <span className="inline-flex items-center gap-1"><Calendar size={11} />с {fmtDate(user.joined)}</span>
-              <span className="h-[3px] w-[3px] rounded-full bg-slate-500" />
-              <span>был {fmtDate(user.lastActive)}</span>
-              <span className="h-[3px] w-[3px] rounded-full bg-slate-500" />
-              <span className="font-mono">{user.id}</span>
             </div>
           </div>
           <button
@@ -247,13 +278,30 @@ export function UserDetailPanel({ user, users, onClose, onAction }: Props) {
                       <span>с {fmtDate(acc.added)}</span>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    className="flex h-[30px] w-[30px] items-center justify-center rounded-md border border-white/[.08] bg-white/[.04] text-slate-300 hover:text-slate-100"
-                    title="Действия"
-                  >
-                    <MoreHorizontal size={14} />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    { /*
+                    <button
+                      type="button"
+                      className="flex h-[30px] w-[30px] items-center justify-center rounded-md border border-white/[.08] bg-white/[.04] text-slate-300 hover:text-emerald-300 hover:border-emerald-400/30 hover:bg-emerald-400/[.08]"
+                      title="Подписать торговое соглашение (Bybit)"
+                      onClick={() => onAction({ type: 'account/sign-agreement', userId: user.id, accountId: acc.id })}
+                    >
+                      <FileSignature size={14} />
+                    </button>
+                    */ }
+                    <button
+                      type="button"
+                      className="flex h-[30px] w-[30px] items-center justify-center rounded-md border border-white/[.08] bg-white/[.04] text-slate-300 hover:text-rose-300 hover:border-rose-400/30 hover:bg-rose-400/[.08]"
+                      title="Удалить аккаунт"
+                      onClick={() => {
+                        if (window.confirm(`Удалить аккаунт «${acc.label}»?`)) {
+                          onAction({ type: 'account/remove', userId: user.id, accountId: acc.id });
+                        }
+                      }}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -375,6 +423,114 @@ export function UserDetailPanel({ user, users, onClose, onAction }: Props) {
           </BtnDanger>
         </div>
       </Section>
+
+      {/* TRANSACTION HISTORY */}
+      {fetchTransactions && (
+        <Section
+          title="История баланса"
+          hint={`${txFilter === 'all' ? 'все' : txFilter === 'credit' ? 'начисления' : 'списания'}`}
+          right={
+            <button
+              type="button"
+              onClick={loadTxs}
+              disabled={txLoading}
+              className="flex h-7 w-7 items-center justify-center rounded-md border border-white/[.08] bg-white/[.04] text-slate-300 hover:text-slate-100 disabled:opacity-40"
+              title="Обновить"
+            >
+              <RefreshCw size={12} className={txLoading ? 'animate-spin' : ''} />
+            </button>
+          }
+        >
+          {/* Filter */}
+          <div className="mb-3 flex gap-1.5">
+            {([
+              { key: 'all', label: 'Все' },
+              { key: 'credit', label: 'Начисления' },
+              { key: 'debit', label: 'Списания' },
+            ] as const).map((f) => (
+              <button
+                key={f.key}
+                type="button"
+                onClick={() => setTxFilter(f.key)}
+                className={
+                  'rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors ' +
+                  (txFilter === f.key
+                    ? 'bg-[#5b8cff]/[.18] text-[#b8c8ff]'
+                    : 'border border-white/[.06] bg-white/[.02] text-slate-300 hover:bg-white/[.04]')
+                }
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          {txLoading ? (
+            <div className="py-4 text-center text-xs text-slate-500">Загрузка…</div>
+          ) : txs.length === 0 ? (
+            <div className="rounded-lg bg-black/20 px-3 py-4 text-center text-xs text-slate-400">
+              История операций пуста
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              {txs.map((tx) => (
+                <div
+                  key={tx.id}
+                  className="flex items-center gap-3 rounded-lg border border-white/[.04] bg-white/[.015] px-3 py-2"
+                >
+                  <div
+                    className={
+                      'flex h-7 w-7 shrink-0 items-center justify-center rounded-md ' +
+                      (tx.amount >= 0
+                        ? 'border border-emerald-400/20 bg-emerald-400/[.10] text-emerald-300'
+                        : 'border border-rose-400/20 bg-rose-400/[.10] text-rose-300')
+                    }
+                  >
+                    {tx.amount >= 0 ? <Plus size={12} strokeWidth={2.4} /> : <Minus size={12} strokeWidth={2.4} />}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className={`font-mono text-sm font-semibold ${tx.amount >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
+                        {tx.amount >= 0 ? '+' : ''}{fmtMoney(tx.amount)}
+                      </span>
+                      {tx.note && (
+                        <span className="truncate text-[11px] text-slate-400">· {tx.note}</span>
+                      )}
+                    </div>
+                    <div className="mt-0.5 flex items-center gap-2 text-[10px] text-slate-500">
+                      <span>{fmtDateTime(tx.createdAt)}</span>
+                      <span className="h-[2px] w-[2px] rounded-full bg-slate-600" />
+                      <span className="font-mono">admin {tx.adminId?.slice(0, 8) ?? '—'}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Pagination */}
+          <div className="mt-3 flex items-center justify-between">
+            <button
+              type="button"
+              disabled={txOffset === 0 || txLoading}
+              onClick={() => setTxOffset((o) => Math.max(0, o - TX_PAGE))}
+              className="rounded-md border border-white/[.06] bg-white/[.02] px-3 py-1.5 text-[11px] font-semibold text-slate-300 hover:bg-white/[.04] disabled:opacity-30"
+            >
+              ← Назад
+            </button>
+            <span className="text-[11px] text-slate-500">
+              {txOffset + 1}–{txOffset + txs.length}
+            </span>
+            <button
+              type="button"
+              disabled={txs.length < TX_PAGE || txLoading}
+              onClick={() => setTxOffset((o) => o + TX_PAGE)}
+              className="rounded-md border border-white/[.06] bg-white/[.02] px-3 py-1.5 text-[11px] font-semibold text-slate-300 hover:bg-white/[.04] disabled:opacity-30"
+            >
+              Вперёд →
+            </button>
+          </div>
+        </Section>
+      )}
 
       {/* BLOCK */}
       <Section title="Блокировка">

@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"sis/pkg/proxy"
 )
 
 const (
@@ -60,20 +60,25 @@ type KlineHub struct {
 	// WS connection pool
 	pool   []*hubConn
 	poolMu sync.Mutex
+
+	// prefetchSem limits concurrent REST prefetch goroutines
+	prefetchSem chan struct{}
 }
 
 type hubConn struct {
-	mu     sync.Mutex
-	conn   *websocket.Conn
-	topics []string // bybit topic strings, e.g. "kline.60.BTCUSDT"
+	mu      sync.Mutex // protects conn and topics
+	writeMu sync.Mutex // serialises all writes to conn (gorilla/websocket is not write-safe)
+	conn    *websocket.Conn
+	topics  []string // bybit topic strings, e.g. "kline.60.BTCUSDT"
 }
 
 // NewKlineHub creates a hub and starts the pool manager.
 func NewKlineHub(ctx context.Context) *KlineHub {
 	h := &KlineHub{
-		ctx:       ctx,
-		buffers:   make(map[string][]Candle),
-		listeners: make(map[string][]func([]Candle)),
+		ctx:         ctx,
+		buffers:     make(map[string][]Candle),
+		listeners:   make(map[string][]func([]Candle)),
+		prefetchSem: make(chan struct{}, 50),
 	}
 	return h
 }
@@ -90,7 +95,9 @@ func (h *KlineHub) Subscribe(symbol, interval string, cb func([]Candle)) {
 	if !exists {
 		h.buffers[key] = nil // placeholder; filled by prefetch
 	}
-	h.listeners[key] = append(h.listeners[key], cb)
+	if cb != nil {
+		h.listeners[key] = append(h.listeners[key], cb)
+	}
 	h.mu.Unlock()
 
 	if !exists {
@@ -143,6 +150,9 @@ func (h *KlineHub) SnapshotOrFetch(symbol, interval string) []Candle {
 // ── prefetch + connect ────────────────────────────────────────────────────
 
 func (h *KlineHub) prefetchAndConnect(symbol, interval, bybitIv, topic, key string) {
+	h.prefetchSem <- struct{}{}
+	defer func() { <-h.prefetchSem }()
+
 	// 1. Fetch REST history
 	candles, err := FetchKlineHistory(symbol, bybitIv, candleBufferSize)
 	if err != nil {
@@ -164,11 +174,10 @@ func (h *KlineHub) assignTopic(topic, key string) {
 		c.mu.Lock()
 		if len(c.topics) < maxTopicsPerConn {
 			c.topics = append(c.topics, topic)
-			conn := c.conn
 			c.mu.Unlock()
 			h.poolMu.Unlock()
 			// subscribe on existing live connection
-			h.wsSend(conn, map[string]interface{}{
+			h.wsSend(c, map[string]interface{}{
 				"op":   "subscribe",
 				"args": []string{topic},
 			})
@@ -208,7 +217,7 @@ func (h *KlineHub) runConn(hc *hubConn) {
 		hc.mu.Unlock()
 
 		// Subscribe to all topics for this connection
-		h.wsSend(conn, map[string]interface{}{
+		h.wsSend(hc, map[string]interface{}{
 			"op":   "subscribe",
 			"args": topics,
 		})
@@ -251,18 +260,23 @@ func (h *KlineHub) readLoop(conn *websocket.Conn, hc *hubConn) {
 			log.Printf("kline hub: read: %v", err)
 			return
 		case <-ping.C:
-			h.wsSend(conn, map[string]string{"op": "ping"})
+			h.wsSend(hc, map[string]string{"op": "ping"})
 		case data := <-msgCh:
 			h.handleMessage(data)
 		}
 	}
 }
 
-func (h *KlineHub) wsSend(conn *websocket.Conn, v interface{}) {
+func (h *KlineHub) wsSend(hc *hubConn, v interface{}) {
+	data, _ := json.Marshal(v)
+	hc.writeMu.Lock()
+	defer hc.writeMu.Unlock()
+	hc.mu.Lock()
+	conn := hc.conn
+	hc.mu.Unlock()
 	if conn == nil {
 		return
 	}
-	data, _ := json.Marshal(v)
 	conn.WriteMessage(websocket.TextMessage, data) //nolint:errcheck
 }
 
@@ -341,7 +355,7 @@ func FetchKlineHistory(symbol, bybitInterval string, limit int) ([]Candle, error
 	url := fmt.Sprintf("%s?category=linear&symbol=%s&interval=%s&limit=%d",
 		bybitKlineREST, symbol, bybitInterval, limit)
 
-	resp, err := http.Get(url)
+	resp, err := proxy.HTTPClient().Get(url)
 	if err != nil {
 		return nil, err
 	}

@@ -16,6 +16,7 @@ import (
 	binanceclient "sis/pkg/exchange/binance"
 	bybitclient "sis/pkg/exchange/bybit"
 	"sis/pkg/models"
+	"sis/pkg/proxy"
 )
 
 func main() {
@@ -49,6 +50,14 @@ func main() {
 		log.Fatalf("redis connect: %v", err)
 	}
 	defer rdb.Close()
+
+	encKey := getEnv("ENCRYPTION_KEY", "")
+	pm, err := proxy.NewManager(ctx, pool, encKey)
+	if err != nil {
+		log.Printf("proxy manager disabled: %v", err)
+	} else {
+		proxy.InitGlobalManager(pm)
+	}
 
 	clients := []exchange.Client{
 		binanceclient.New(),

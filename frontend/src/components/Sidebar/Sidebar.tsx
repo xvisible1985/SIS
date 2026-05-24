@@ -14,6 +14,7 @@ import {
   BarChart2,
   Shield,
   Bot,
+  History,
 } from 'lucide-react';
 import { NovaMark } from './NovaMark';
 import { Sparkline } from './Sparkline';
@@ -24,7 +25,8 @@ const NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/terminal',  label: 'Terminal',  icon: Terminal, badge: 'live' as const },
   { to: '/signals',   label: 'Сигналы',   icon: BarChart2 },
-  { to: '/bots',      label: 'Боты',      icon: Bot },
+  { to: '/bots',           label: 'Боты',           icon: Bot },
+  { to: '/trade-history',  label: 'История сделок', icon: History },
   { to: '/webhooks',  label: 'Webhooks',  icon: Webhook,  badge: 'count' as const, key: 'webhooks' },
   { to: '/admin',     label: 'Админка',   icon: Shield },
 ];
@@ -63,6 +65,7 @@ export function Sidebar({
   selectedAccountId,
   equity,
   pnl24h,
+  has24hData = false,
   spark,
   novabotBalance,
   user,
@@ -202,10 +205,9 @@ export function Sidebar({
                   strokeWidth={2.6}
                   className={pnl24h.percent >= 0 ? '' : 'rotate-180'}
                 />
-                {pnl24h.percent >= 0 ? '+' : ''}
-                {pnl24h.percent.toFixed(2)}% · ${Math.abs(pnl24h.usd).toFixed(0)}
+                {pnl24h.usd >= 0 ? '+' : '-'}${Math.abs(pnl24h.usd).toFixed(2)} ({pnl24h.percent >= 0 ? '+' : ''}{pnl24h.percent.toFixed(2)}%)
               </span>
-              <span className="text-[10px] text-slate-500">за 24ч</span>
+              <span className="text-[10px] text-slate-500">{has24hData ? 'за 24ч' : 'текущий'}</span>
             </div>
 
             <div className="-mx-0.5 mt-2">

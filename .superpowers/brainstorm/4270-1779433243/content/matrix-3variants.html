@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Matrix — 3 варианта</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0d1117; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; }
+
+h1 { font-size: 15px; color: #94a3b8; text-align: center; margin-bottom: 20px; letter-spacing: .04em; }
+
+.variants { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
+
+/* ─── shared modal shell ─── */
+.modal { width: 500px; background: #111827; border: 1px solid #374151; border-radius: 10px; overflow: hidden; flex-shrink: 0; }
+.modal-title { font-size: 11px; font-weight: 700; color: #6b7280; text-align: center; padding: 8px; background: #1f2937; letter-spacing: .08em; text-transform: uppercase; border-bottom: 1px solid #374151; }
+.modal-body { padding: 12px 14px; }
+.modal-body::-webkit-scrollbar { width: 3px; }
+.modal-body::-webkit-scrollbar-thumb { background: #374151; }
+
+/* global params */
+.global-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+.fld label { display: block; font-size: 9px; color: #6b7280; margin-bottom: 3px; text-transform: uppercase; letter-spacing: .05em; }
+.fld input { width: 100%; background: #1f2937; border: 1px solid #374151; border-radius: 5px; padding: 5px 8px; font-size: 12px; color: #e2e8f0; outline: none; }
+
+/* section header */
+.sec { font-size: 9px; color: #4b5563; text-transform: uppercase; letter-spacing: .06em; padding-bottom: 5px; border-bottom: 1px solid #1f2937; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between; }
+.sec .cnt { background: #1e3a8a; color: #93c5fd; border-radius: 3px; padding: 1px 5px; font-size: 9px; }
+.sec .cnt.g { background: #14532d; color: #86efac; }
+
+/* viz strip */
+.viz { display: flex; align-items: center; gap: 2px; padding: 4px 2px 10px; overflow-x: auto; flex-wrap: nowrap; }
+.viz::-webkit-scrollbar { height: 2px; }
+.v { font-size: 8px; padding: 2px 4px; border-radius: 3px; white-space: nowrap; }
+.v.a { background: #1e3a8a; color: #93c5fd; }
+.v.b { background: #14532d; color: #86efac; }
+.v.e { background: #1d4ed8; color: white; font-weight: 700; font-size: 9px; padding: 2px 7px; border-radius: 4px; }
+.viz-arr { color: #374151; font-size: 9px; }
+
+input[type=number] { -moz-appearance: textfield; }
+input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; }
+
+/* ════════════════════════════════════════
+   VARIANT A — Two-line rows
+   ════════════════════════════════════════ */
+.va-row { background: #1f2937; border-radius: 5px; margin-bottom: 3px; overflow: hidden; }
+.va-top { display: grid; grid-template-columns: 24px 1fr 1fr 1fr 22px; gap: 4px; align-items: center; padding: 5px 6px; }
+.va-bot { display: grid; grid-template-columns: 24px 1fr 1fr 1fr 22px; gap: 4px; align-items: center; padding: 0 6px 5px; }
+.va-bot-inner { grid-column: 2 / 5; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; background: #161e2e; border-radius: 4px; padding: 4px 5px; }
+.va-bot-inner .sf { }
+.va-bot-inner .sf label { font-size: 8px; color: #4b5563; display: block; margin-bottom: 2px; }
+.va-bot-inner .sf input { width: 100%; background: #1f2937; border: 1px solid #374151; border-radius: 3px; padding: 2px 5px; font-size: 10px; color: #e2e8f0; text-align: center; outline: none; }
+.va-bot-inner .sf input.nil { color: #4b5563; border-style: dashed; font-style: italic; }
+.col-h { font-size: 8px; color: #4b5563; text-align: center; }
+.lnum { font-size: 10px; font-weight: 700; text-align: center; }
+.lnum.b { color: #60a5fa; }
+.lnum.g { color: #34d399; }
+.li { background: #111827; border: 1px solid #374151; border-radius: 3px; padding: 3px; font-size: 11px; color: #e2e8f0; text-align: center; width: 100%; outline: none; }
+.li.nil { color: #4b5563; border-style: dashed; font-style: italic; }
+.del { font-size: 11px; color: #374151; text-align: center; cursor: pointer; }
+.del:hover { color: #ef4444; }
+
+/* ════════════════════════════════════════
+   VARIANT B — Flat table (all in one row)
+   ════════════════════════════════════════ */
+.vb-headers { display: grid; grid-template-columns: 24px repeat(6, 1fr) 22px; gap: 3px; padding: 0 6px 4px; }
+.vb-row { display: grid; grid-template-columns: 24px repeat(6, 1fr) 22px; gap: 3px; align-items: center; padding: 5px 6px; background: #1f2937; border-radius: 5px; margin-bottom: 3px; }
+.vb-row .li { font-size: 10px; padding: 3px 2px; }
+.vb-row .li.nil { font-size: 10px; }
+
+/* separator between stop group */
+.stop-sep { border-left: 2px solid #1d4ed8; padding-left: 3px; }
+.stop-sep.g { border-left-color: #16a34a; }
+
+/* ════════════════════════════════════════
+   VARIANT C — Card per level
+   ════════════════════════════════════════ */
+.vc-card { background: #1f2937; border-radius: 6px; margin-bottom: 5px; padding: 7px 8px; border-left: 3px solid #1d4ed8; }
+.vc-card.g { border-left-color: #16a34a; }
+.vc-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }
+.vc-title { display: flex; align-items: center; gap: 8px; }
+.vc-fields { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
+.vc-fields-stop { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; margin-top: 5px; padding-top: 5px; border-top: 1px dashed #374151; }
+.cf { }
+.cf label { font-size: 8px; color: #6b7280; display: block; margin-bottom: 2px; }
+.cf input { width: 100%; background: #111827; border: 1px solid #374151; border-radius: 4px; padding: 3px 6px; font-size: 11px; color: #e2e8f0; text-align: center; outline: none; }
+.cf input.nil { color: #4b5563; border-style: dashed; font-style: italic; }
+.stop-tag { font-size: 8px; color: #fbbf24; background: #451a03; border-radius: 3px; padding: 1px 5px; }
+.stop-tag.nil { color: #4b5563; background: #1f2937; border: 1px solid #374151; }
+</style>
+</head>
+<body>
+
+<h1>Матрица 5+5 уровней — 3 варианта компоновки</h1>
+
+<div class="variants">
+
+<!-- ═══════════ VARIANT A ═══════════ -->
+<div class="modal">
+  <div class="modal-title">Вариант A — двухстрочные строки</div>
+  <div class="modal-body">
+
+    <div class="global-row">
+      <div class="fld"><label>Депозит (USDT)</label><input type="number" value="1000"></div>
+      <div class="fld"><label>Safe-Zone от SL %</label><input type="number" value="1.5" step="0.1"></div>
+    </div>
+
+    <div class="viz">
+      <span class="v a">A5 −10%</span><span class="v a">A4 −7.5%</span><span class="v a">A3 −5%</span><span class="v a">A2 −3%</span><span class="v a">A1 −1.5%</span>
+      <span class="viz-arr">←</span><span class="v e">ВХОД</span><span class="viz-arr">→</span>
+      <span class="v b">B1 +2%</span><span class="v b">B2 +4%</span><span class="v b">B3 +6.5%</span><span class="v b">B4 +9%</span><span class="v b">B5 +12%</span>
+    </div>
+
+    <div class="sec">Ниже точки входа <span class="cnt">5</span></div>
+    <div style="display:grid;grid-template-columns:24px 1fr 1fr 1fr 22px;gap:4px;padding:0 6px 4px">
+      <span class="col-h"></span><span class="col-h">Шаг %</span><span class="col-h">Объём %</span><span class="col-h">ТП % (ТВХ)</span><span></span>
+    </div>
+
+    <!-- A1 with stop details -->
+    <div class="va-row">
+      <div class="va-top">
+        <span class="lnum b">A1</span>
+        <input class="li" type="number" value="1.5">
+        <input class="li" type="number" value="5">
+        <input class="li" type="number" value="2.5">
+        <span class="del">✕</span>
+      </div>
+      <div class="va-bot">
+        <span></span>
+        <div class="va-bot-inner">
+          <div class="sf"><label>Стоп от ТВХ %</label><input type="number" value="3.0"></div>
+          <div class="sf"><label>Усл. замены %</label><input type="number" value="1.0"></div>
+          <div class="sf"><label>Новый стоп %</label><input type="number" value="-0.5"></div>
+        </div>
+        <span></span>
+      </div>
+    </div>
+    <div class="va-row">
+      <div class="va-top">
+        <span class="lnum b">A2</span>
+        <input class="li" type="number" value="3.0">
+        <input class="li" type="number" value="8">
+        <input class="li" type="number" value="3.5">
+        <span class="del">✕</span>
+      </div>
+      <div class="va-bot">
+        <span></span>
+        <div class="va-bot-inner">
+          <div class="sf"><label>Стоп от ТВХ %</label><input type="number" value="2.5"></div>
+          <div class="sf"><label>Усл. замены %</label><input type="number" value="1.5"></div>
+          <div class="sf"><label>Новый стоп %</label><input type="number" value="-1.0"></div>
+        </div>
+        <span></span>
+      </div>
+    </div>
+    <div class="va-row">
+      <div class="va-top">
+        <span class="lnum b">A3</span>
+        <input class="li" type="number" value="5.0">
+        <input class="li" type="number" value="12">
+        <input class="li" type="number" value="4.0">
+        <span class="del">✕</span>
+      </div>
+      <div class="va-bot">
+        <span></span>
+        <div class="va-bot-inner">
+          <div class="sf"><label>Стоп от ТВХ %</label><input class="nil" type="text" value="—"></div>
+          <div class="sf"><label>Усл. замены %</label><input class="nil" type="text" value="—"></div>
+          <div class="sf"><label>Новый стоп %</label><input class="nil" type="text" value="—"></div>
+        </div>
+        <span></span>
+      </div>
+    </div>
+    <div class="va-row">
+      <div class="va-top">
+        <span class="lnum b">A4</span>
+        <input class="li" type="number" value="7.5">
+        <input class="li" type="number" value="18">
+        <input class="li" type="number" value="5.0">
+        <span class="del">✕</span>
+      </div>
+      <div class="va-bot">
+        <span></span>
+        <div class="va-bot-inner">
+          <div class="sf"><label>Стоп от ТВХ %</label><input type="number" value="2.0"></div>
+          <div class="sf"><label>Усл. замены %</label><input type="number" value="2.0"></div>
+          <div class="sf"><label>Новый стоп %</label><input type="number" value="-2.0"></div>
+        </div>
+        <span></span>
+      </div>
+    </div>
+    <div class="va-row">
+      <div class="va-top">
+        <span class="lnum b">A5</span>
+        <input class="li" type="number" value="10.0">
+        <input class="li" type="number" value="25">
+        <input class="li nil" type="text" value="—">
+        <span class="del">✕</span>
+      </div>
+      <div class="va-bot">
+        <span></span>
+        <div class="va-bot-inner">
+          <div class="sf"><label>Стоп от ТВХ %</label><input type="number" value="1.5"></div>
+          <div class="sf"><label>Усл. замены %</label><input class="nil" type="text" value="—"></div>
+          <div class="sf"><label>Новый стоп %</label><input class="nil" type="text" value="—"></div>
+        </div>
+        <span></span>
+      </div>
+    </div>
+
+    <div class="sec" style="margin-top:10px">Выше точки входа <span class="cnt g">5</span></div>
+    <div style="display:grid;grid-template-columns:24px 1fr 1fr 1fr 22px;gap:4px;padding:0 6px 4px">
+      <span class="col-h"></span><span class="col-h">Шаг %</span><span class="col-h">Объём %</span><span class="col-h">ТП % (ТВХ)</span><span></span>
+    </div>
+
+    <div class="va-row">
+      <div class="va-top">
+        <span class="lnum g">B1</span>
+        <input class="li" type="number" value="2.0">
+        <input class="li" type="number" value="5">
+        <input class="li" type="number" value="3.0">
+        <span class="del">✕</span>
+      </div>
+      <div class="va-bot">
+        <span></span>
+        <div class="va-bot-inner">
+          <div class="sf"><label>Стоп от ТВХ %</label><input type="number" value="3.5"></div>
+          <div class="sf"><label>Усл. замены %</label><input type="number" value="1.0"></div>
+          <div class="sf"><label>Новый стоп %</label><input type="number" value="-0.5"></div>
+        </div>
+        <span></span>
+      </div>
+    </div>
+    <div class="va-row">
+      <div class="va-top">
+        <span class="lnum g">B2</span>
+        <input class="li" type="number" value="4.0">
+        <input class="li" type="number" value="8">
+        <input class="li" type="number" value="4.5">
+        <span class="del">✕</span>
+      </div>
+      <div class="va-bot">
+        <span></span>
+        <div class="va-bot-inner">
+          <div class="sf"><label>Стоп от ТВХ %</label><input type="number" value="3.0"></div>
+          <div class="sf"><label>Усл. замены %</label><input type="number" value="1.5"></div>
+          <div class="sf"><label>Новый стоп %</label><input type="number" value="-1.5"></div>
+        </div>
+        <span></span>
+      </div>
+    </div>
+    <div class="va-row">
+      <div class="va-top">
+        <span class="lnum g">B3</span>
+        <input class="li" type="number" value="6.5">
+        <input class="li" type="number" value="12">
+        <input class="li" type="number" value="6.0">
+        <span class="del">✕</span>
+      </div>
+      <div class="va-bot">
+        <span></span>
+        <div class="va-bot-inner">
+          <div class="sf"><label>Стоп от ТВХ %</label><input class="nil" type="text" value="—"></div>
+          <div class="sf"><label>Усл. замены %</label><input class="nil" type="text" value="—"></div>
+          <div class="sf"><label>Новый стоп %</label><input class="nil" type="text" value="—"></div>
+        </div>
+        <span></span>
+      </div>
+    </div>
+    <div class="va-row">
+      <div class="va-top">
+        <span class="lnum g">B4</span>
+        <input class="li" type="number" value="9.0">
+        <input class="li" type="number" value="18">
+        <input class="li" type="number" value="7.5">
+        <span class="del">✕</span>
+      </div>
+      <div class="va-bot">
+        <span></span>
+        <div class="va-bot-inner">
+          <div class="sf"><label>Стоп от ТВХ %</label><input type="number" value="2.5"></div>
+          <div class="sf"><label>Усл. замены %</label><input type="number" value="2.5"></div>
+          <div class="sf"><label>Новый стоп %</label><input type="number" value="-3.0"></div>
+        </div>
+        <span></span>
+      </div>
+    </div>
+    <div class="va-row">
+      <div class="va-top">
+        <span class="lnum g">B5</span>
+        <input class="li" type="number" value="12.0">
+        <input class="li" type="number" value="22">
+        <input class="li nil" type="text" value="—">
+        <span class="del">✕</span>
+      </div>
+      <div class="va-bot">
+        <span></span>
+        <div class="va-bot-inner">
+          <div class="sf"><label>Стоп от ТВХ %</label><input type="number" value="2.0"></div>
+          <div class="sf"><label>Усл. замены %</label><input class="nil" type="text" value="—"></div>
+          <div class="sf"><label>Новый стоп %</label><input class="nil" type="text" value="—"></div>
+        </div>
+        <span></span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════ VARIANT B ═══════════ -->
+<div class="modal">
+  <div class="modal-title">Вариант B — плоская таблица (все поля в строке)</div>
+  <div class="modal-body">
+
+    <div class="global-row">
+      <div class="fld"><label>Депозит (USDT)</label><input type="number" value="1000"></div>
+      <div class="fld"><label>Safe-Zone от SL %</label><input type="number" value="1.5" step="0.1"></div>
+    </div>
+
+    <div class="viz">
+      <span class="v a">A5 −10%</span><span class="v a">A4 −7.5%</span><span class="v a">A3 −5%</span><span class="v a">A2 −3%</span><span class="v a">A1 −1.5%</span>
+      <span class="viz-arr">←</span><span class="v e">ВХОД</span><span class="viz-arr">→</span>
+      <span class="v b">B1 +2%</span><span class="v b">B2 +4%</span><span class="v b">B3 +6.5%</span><span class="v b">B4 +9%</span><span class="v b">B5 +12%</span>
+    </div>
+
+    <div class="sec">Ниже точки входа <span class="cnt">5</span></div>
+    <div class="vb-headers">
+      <span class="col-h"></span>
+      <span class="col-h">Шаг%</span>
+      <span class="col-h">Объём%</span>
+      <span class="col-h" style="color:#fbbf24">Стоп%</span>
+      <span class="col-h" style="color:#fbbf24">Усл%</span>
+      <span class="col-h" style="color:#fbbf24">Замена%</span>
+      <span class="col-h">ТП%</span>
+      <span></span>
+    </div>
+
+    <div class="vb-row"><span class="lnum b">A1</span><input class="li" type="number" value="1.5"><input class="li" type="number" value="5"><input class="li stop-sep" type="number" value="3.0"><input class="li" type="number" value="1.0"><input class="li" type="number" value="-0.5"><input class="li" type="number" value="2.5"><span class="del">✕</span></div>
+    <div class="vb-row"><span class="lnum b">A2</span><input class="li" type="number" value="3.0"><input class="li" type="number" value="8"><input class="li stop-sep" type="number" value="2.5"><input class="li" type="number" value="1.5"><input class="li" type="number" value="-1.0"><input class="li" type="number" value="3.5"><span class="del">✕</span></div>
+    <div class="vb-row"><span class="lnum b">A3</span><input class="li" type="number" value="5.0"><input class="li" type="number" value="12"><input class="li nil stop-sep" type="text" value="—"><input class="li nil" type="text" value="—"><input class="li nil" type="text" value="—"><input class="li" type="number" value="4.0"><span class="del">✕</span></div>
+    <div class="vb-row"><span class="lnum b">A4</span><input class="li" type="number" value="7.5"><input class="li" type="number" value="18"><input class="li stop-sep" type="number" value="2.0"><input class="li" type="number" value="2.0"><input class="li" type="number" value="-2.0"><input class="li" type="number" value="5.0"><span class="del">✕</span></div>
+    <div class="vb-row"><span class="lnum b">A5</span><input class="li" type="number" value="10.0"><input class="li" type="number" value="25"><input class="li stop-sep" type="number" value="1.5"><input class="li nil" type="text" value="—"><input class="li nil" type="text" value="—"><input class="li nil" type="text" value="—"><span class="del">✕</span></div>
+
+    <div class="sec" style="margin-top:10px">Выше точки входа <span class="cnt g">5</span></div>
+    <div class="vb-headers">
+      <span class="col-h"></span>
+      <span class="col-h">Шаг%</span>
+      <span class="col-h">Объём%</span>
+      <span class="col-h" style="color:#fbbf24">Стоп%</span>
+      <span class="col-h" style="color:#fbbf24">Усл%</span>
+      <span class="col-h" style="color:#fbbf24">Замена%</span>
+      <span class="col-h">ТП%</span>
+      <span></span>
+    </div>
+
+    <div class="vb-row"><span class="lnum g">B1</span><input class="li" type="number" value="2.0"><input class="li" type="number" value="5"><input class="li stop-sep g" type="number" value="3.5"><input class="li" type="number" value="1.0"><input class="li" type="number" value="-0.5"><input class="li" type="number" value="3.0"><span class="del">✕</span></div>
+    <div class="vb-row"><span class="lnum g">B2</span><input class="li" type="number" value="4.0"><input class="li" type="number" value="8"><input class="li stop-sep g" type="number" value="3.0"><input class="li" type="number" value="1.5"><input class="li" type="number" value="-1.5"><input class="li" type="number" value="4.5"><span class="del">✕</span></div>
+    <div class="vb-row"><span class="lnum g">B3</span><input class="li" type="number" value="6.5"><input class="li" type="number" value="12"><input class="li nil stop-sep g" type="text" value="—"><input class="li nil" type="text" value="—"><input class="li nil" type="text" value="—"><input class="li" type="number" value="6.0"><span class="del">✕</span></div>
+    <div class="vb-row"><span class="lnum g">B4</span><input class="li" type="number" value="9.0"><input class="li" type="number" value="18"><input class="li stop-sep g" type="number" value="2.5"><input class="li" type="number" value="2.5"><input class="li" type="number" value="-3.0"><input class="li" type="number" value="7.5"><span class="del">✕</span></div>
+    <div class="vb-row"><span class="lnum g">B5</span><input class="li" type="number" value="12.0"><input class="li" type="number" value="22"><input class="li stop-sep g" type="number" value="2.0"><input class="li nil" type="text" value="—"><input class="li nil" type="text" value="—"><input class="li nil" type="text" value="—"><span class="del">✕</span></div>
+
+  </div>
+</div>
+
+<!-- ═══════════ VARIANT C ═══════════ -->
+<div class="modal">
+  <div class="modal-title">Вариант C — карточки уровней</div>
+  <div class="modal-body">
+
+    <div class="global-row">
+      <div class="fld"><label>Депозит (USDT)</label><input type="number" value="1000"></div>
+      <div class="fld"><label>Safe-Zone от SL %</label><input type="number" value="1.5" step="0.1"></div>
+    </div>
+
+    <div class="viz">
+      <span class="v a">A5 −10%</span><span class="v a">A4 −7.5%</span><span class="v a">A3 −5%</span><span class="v a">A2 −3%</span><span class="v a">A1 −1.5%</span>
+      <span class="viz-arr">←</span><span class="v e">ВХОД</span><span class="viz-arr">→</span>
+      <span class="v b">B1 +2%</span><span class="v b">B2 +4%</span><span class="v b">B3 +6.5%</span><span class="v b">B4 +9%</span><span class="v b">B5 +12%</span>
+    </div>
+
+    <div class="sec">Ниже точки входа <span class="cnt">5</span></div>
+
+    <div class="vc-card">
+      <div class="vc-top"><div class="vc-title"><span class="lnum b">A1</span><span style="font-size:10px;color:#94a3b8">−1.5% от входа</span></div><div style="display:flex;align-items:center;gap:6px"><span class="stop-tag">стоп ↺</span><span class="del">✕</span></div></div>
+      <div class="vc-fields">
+        <div class="cf"><label>Шаг от пред. %</label><input type="number" value="1.5"></div>
+        <div class="cf"><label>Объём % депоз.</label><input type="number" value="5"></div>
+        <div class="cf"><label>ТП % от ТВХ</label><input type="number" value="2.5"></div>
+      </div>
+      <div class="vc-fields-stop">
+        <div class="cf"><label>Стоп от ТВХ %</label><input type="number" value="3.0"></div>
+        <div class="cf"><label>Усл. замены %</label><input type="number" value="1.0"></div>
+        <div class="cf"><label>Новый стоп %</label><input type="number" value="-0.5"></div>
+      </div>
+    </div>
+
+    <div class="vc-card">
+      <div class="vc-top"><div class="vc-title"><span class="lnum b">A2</span><span style="font-size:10px;color:#94a3b8">−3% от входа</span></div><div style="display:flex;align-items:center;gap:6px"><span class="stop-tag">стоп ↺</span><span class="del">✕</span></div></div>
+      <div class="vc-fields">
+        <div class="cf"><label>Шаг от пред. %</label><input type="number" value="3.0"></div>
+        <div class="cf"><label>Объём % депоз.</label><input type="number" value="8"></div>
+        <div class="cf"><label>ТП % от ТВХ</label><input type="number" value="3.5"></div>
+      </div>
+      <div class="vc-fields-stop">
+        <div class="cf"><label>Стоп от ТВХ %</label><input type="number" value="2.5"></div>
+        <div class="cf"><label>Усл. замены %</label><input type="number" value="1.5"></div>
+        <div class="cf"><label>Новый стоп %</label><input type="number" value="-1.0"></div>
+      </div>
+    </div>
+
+    <div class="vc-card">
+      <div class="vc-top"><div class="vc-title"><span class="lnum b">A3</span><span style="font-size:10px;color:#94a3b8">−5% от входа</span></div><div style="display:flex;align-items:center;gap:6px"><span class="stop-tag nil">нет стопа</span><span class="del">✕</span></div></div>
+      <div class="vc-fields">
+        <div class="cf"><label>Шаг от пред. %</label><input type="number" value="5.0"></div>
+        <div class="cf"><label>Объём % депоз.</label><input type="number" value="12"></div>
+        <div class="cf"><label>ТП % от ТВХ</label><input type="number" value="4.0"></div>
+      </div>
+    </div>
+
+    <div class="vc-card">
+      <div class="vc-top"><div class="vc-title"><span class="lnum b">A4</span><span style="font-size:10px;color:#94a3b8">−7.5% от входа</span></div><div style="display:flex;align-items:center;gap:6px"><span class="stop-tag">стоп ↺</span><span class="del">✕</span></div></div>
+      <div class="vc-fields">
+        <div class="cf"><label>Шаг от пред. %</label><input type="number" value="7.5"></div>
+        <div class="cf"><label>Объём % депоз.</label><input type="number" value="18"></div>
+        <div class="cf"><label>ТП % от ТВХ</label><input type="number" value="5.0"></div>
+      </div>
+      <div class="vc-fields-stop">
+        <div class="cf"><label>Стоп от ТВХ %</label><input type="number" value="2.0"></div>
+        <div class="cf"><label>Усл. замены %</label><input type="number" value="2.0"></div>
+        <div class="cf"><label>Новый стоп %</label><input type="number" value="-2.0"></div>
+      </div>
+    </div>
+
+    <div class="vc-card">
+      <div class="vc-top"><div class="vc-title"><span class="lnum b">A5</span><span style="font-size:10px;color:#94a3b8">−10% от входа</span></div><div style="display:flex;align-items:center;gap:6px"><span class="stop-tag">стоп</span><span class="del">✕</span></div></div>
+      <div class="vc-fields">
+        <div class="cf"><label>Шаг от пред. %</label><input type="number" value="10.0"></div>
+        <div class="cf"><label>Объём % депоз.</label><input type="number" value="25"></div>
+        <div class="cf"><label>ТП % от ТВХ</label><input class="nil" type="text" value="—"></div>
+      </div>
+      <div class="vc-fields-stop">
+        <div class="cf"><label>Стоп от ТВХ %</label><input type="number" value="1.5"></div>
+        <div class="cf"><label>Усл. замены %</label><input class="nil" type="text" value="—"></div>
+        <div class="cf"><label>Новый стоп %</label><input class="nil" type="text" value="—"></div>
+      </div>
+    </div>
+
+    <div class="sec" style="margin-top:10px">Выше точки входа <span class="cnt g">5</span></div>
+
+    <div class="vc-card g">
+      <div class="vc-top"><div class="vc-title"><span class="lnum g">B1</span><span style="font-size:10px;color:#94a3b8">+2% от входа</span></div><div style="display:flex;align-items:center;gap:6px"><span class="stop-tag">стоп ↺</span><span class="del">✕</span></div></div>
+      <div class="vc-fields">
+        <div class="cf"><label>Шаг от пред. %</label><input type="number" value="2.0"></div>
+        <div class="cf"><label>Объём % депоз.</label><input type="number" value="5"></div>
+        <div class="cf"><label>ТП % от ТВХ</label><input type="number" value="3.0"></div>
+      </div>
+      <div class="vc-fields-stop">
+        <div class="cf"><label>Стоп от ТВХ %</label><input type="number" value="3.5"></div>
+        <div class="cf"><label>Усл. замены %</label><input type="number" value="1.0"></div>
+        <div class="cf"><label>Новый стоп %</label><input type="number" value="-0.5"></div>
+      </div>
+    </div>
+
+    <div class="vc-card g">
+      <div class="vc-top"><div class="vc-title"><span class="lnum g">B2</span><span style="font-size:10px;color:#94a3b8">+4% от входа</span></div><div style="display:flex;align-items:center;gap:6px"><span class="stop-tag">стоп ↺</span><span class="del">✕</span></div></div>
+      <div class="vc-fields">
+        <div class="cf"><label>Шаг от пред. %</label><input type="number" value="4.0"></div>
+        <div class="cf"><label>Объём % депоз.</label><input type="number" value="8"></div>
+        <div class="cf"><label>ТП % от ТВХ</label><input type="number" value="4.5"></div>
+      </div>
+      <div class="vc-fields-stop">
+        <div class="cf"><label>Стоп от ТВХ %</label><input type="number" value="3.0"></div>
+        <div class="cf"><label>Усл. замены %</label><input type="number" value="1.5"></div>
+        <div class="cf"><label>Новый стоп %</label><input type="number" value="-1.5"></div>
+      </div>
+    </div>
+
+    <div class="vc-card g">
+      <div class="vc-top"><div class="vc-title"><span class="lnum g">B3</span><span style="font-size:10px;color:#94a3b8">+6.5% от входа</span></div><div style="display:flex;align-items:center;gap:6px"><span class="stop-tag nil">нет стопа</span><span class="del">✕</span></div></div>
+      <div class="vc-fields">
+        <div class="cf"><label>Шаг от пред. %</label><input type="number" value="6.5"></div>
+        <div class="cf"><label>Объём % депоз.</label><input type="number" value="12"></div>
+        <div class="cf"><label>ТП % от ТВХ</label><input type="number" value="6.0"></div>
+      </div>
+    </div>
+
+    <div class="vc-card g">
+      <div class="vc-top"><div class="vc-title"><span class="lnum g">B4</span><span style="font-size:10px;color:#94a3b8">+9% от входа</span></div><div style="display:flex;align-items:center;gap:6px"><span class="stop-tag">стоп ↺</span><span class="del">✕</span></div></div>
+      <div class="vc-fields">
+        <div class="cf"><label>Шаг от пред. %</label><input type="number" value="9.0"></div>
+        <div class="cf"><label>Объём % депоз.</label><input type="number" value="18"></div>
+        <div class="cf"><label>ТП % от ТВХ</label><input type="number" value="7.5"></div>
+      </div>
+      <div class="vc-fields-stop">
+        <div class="cf"><label>Стоп от ТВХ %</label><input type="number" value="2.5"></div>
+        <div class="cf"><label>Усл. замены %</label><input type="number" value="2.5"></div>
+        <div class="cf"><label>Новый стоп %</label><input type="number" value="-3.0"></div>
+      </div>
+    </div>
+
+    <div class="vc-card g">
+      <div class="vc-top"><div class="vc-title"><span class="lnum g">B5</span><span style="font-size:10px;color:#94a3b8">+12% от входа</span></div><div style="display:flex;align-items:center;gap:6px"><span class="stop-tag">стоп</span><span class="del">✕</span></div></div>
+      <div class="vc-fields">
+        <div class="cf"><label>Шаг от пред. %</label><input type="number" value="12.0"></div>
+        <div class="cf"><label>Объём % депоз.</label><input type="number" value="22"></div>
+        <div class="cf"><label>ТП % от ТВХ</label><input class="nil" type="text" value="—"></div>
+      </div>
+      <div class="vc-fields-stop">
+        <div class="cf"><label>Стоп от ТВХ %</label><input type="number" value="2.0"></div>
+        <div class="cf"><label>Усл. замены %</label><input class="nil" type="text" value="—"></div>
+        <div class="cf"><label>Новый стоп %</label><input class="nil" type="text" value="—"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</div><!-- /variants -->
+</body>
+</html>

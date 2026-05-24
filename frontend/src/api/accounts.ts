@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { ExchangeAccount } from '../types'
+import type { ExchangeAccount, Position } from '../types'
 
 export async function listAccounts(): Promise<ExchangeAccount[]> {
   const res = await apiClient.get<ExchangeAccount[]>('/accounts')
@@ -39,10 +39,18 @@ export interface BalanceResult {
   message?: string
   equity?: number
   available?: number
+  equity_24h_ago?: number
+  equity_change_usd?: number
+  equity_change_percent?: number
 }
 
 export async function getAccountBalance(id: string): Promise<BalanceResult> {
   const res = await apiClient.get<BalanceResult>(`/accounts/${id}/balance`)
+  return res.data
+}
+
+export async function getAccountPositions(id: string): Promise<{ ok: boolean; message?: string; positions?: Position[] }> {
+  const res = await apiClient.get<{ ok: boolean; message?: string; positions?: Position[] }>(`/accounts/${id}/positions`)
   return res.data
 }
 

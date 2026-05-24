@@ -1,0 +1,1 @@
+ALTER TABLE strategies ADD COLUMN manual_alert TEXT DEFAULT NULL;

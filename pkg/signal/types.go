@@ -70,3 +70,9 @@ type SignalValuer interface {
 	Signal
 	Value(candles []Candle) float64
 }
+
+// TTLAware is an optional extension for signals with a configurable time-to-live.
+// TTLRemainingSec returns seconds left; -1 means no TTL configured or not yet fired.
+type TTLAware interface {
+	TTLRemainingSec() float64
+}

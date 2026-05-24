@@ -29,6 +29,7 @@ export type StrategyConfig = {
   grid_size_usdt?: number;
   steps?: { price_move_pct: number; lots: number }[];
   signal_configs?: { name: string; params?: Record<string, unknown> }[];
+  activation_signals?: { name: string; params?: Record<string, unknown> }[];
   tp_mode?: 'per_level' | 'total';
   tp_pct?: number;
   sl_type?: 'conditional' | 'programmatic';
@@ -37,17 +38,21 @@ export type StrategyConfig = {
   trailing_stop_enabled?: boolean;
   trailing_activation_pct?: number;
   trailing_callback_pct?: number;
+  after_stop_mode?: 'delete' | 'restart';
+  max_cycles?: number;
 };
 
 export type Bot = {
   id: string;
   name: string;
   description: string;
+  fullDescription?: string;
   avatarUrl?: string;
   ownerId: string;
   ownerName: string;
   isOwn: boolean;
   isPublic: boolean;
+  isOfficial: boolean;
   status: BotStatus;
   sourceBotId: string | null;
   isFork: boolean;
@@ -57,17 +62,34 @@ export type Bot = {
   strategyConfig: StrategyConfig;
   deployCount: number;
   createdAt: Date;
+  maxStrategies: number;
+  maxLongStrategies: number;
+  maxShortStrategies: number;
+  maxMarginUsdt: number;
+  maxSymConsecutiveRuns: number;
+  activeStrategiesCount: number;
+  accountId: string | null;
+  autoMode: boolean;
+  custom?: boolean;
 };
 
 export type CreateBotInput = {
   name: string;
   description?: string;
+  fullDescription?: string;
   isPublic?: boolean;
   avatarUrl?: string;
   symbolWhitelist?: string[];
   symbolBlacklist?: string[];
   triggers?: Trigger[];
   strategyConfig?: StrategyConfig;
+  maxStrategies?: number;
+  maxLongStrategies?: number;
+  maxShortStrategies?: number;
+  maxMarginUsdt?: number;
+  maxSymConsecutiveRuns?: number;
+  accountId?: string | null;
+  autoMode?: boolean;
 };
 
 export type BotFilters = {

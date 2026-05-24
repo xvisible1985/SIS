@@ -99,7 +99,11 @@ func matrixLevelSide(dir Direction) string {
 }
 
 // matrixIsVirtual returns true if the given level uses a virtual order type.
+// ForceVirtual is set at runtime when the exchange rejects placement (e.g. 110007).
 func (sr *StrategyRunner) matrixIsVirtual(l *GridLevel) bool {
+	if l.ForceVirtual {
+		return true
+	}
 	if l.Slot == nil {
 		return false
 	}
@@ -121,7 +125,7 @@ func (sr *StrategyRunner) matrixIsVirtual(l *GridLevel) bool {
 // matrixEntryOrderType decides the order type and trigger direction based on
 // the relationship between targetPrice and currentPrice for the given direction.
 func matrixEntryOrderType(direction string, targetPrice, currentPrice float64) (orderType string, triggerDirection int) {
-	if targetPrice == 0 {
+	if targetPrice == 0 || targetPrice == currentPrice {
 		return "Market", 0
 	}
 	isLong := direction == "long" || direction == string(DirectionLong)
@@ -307,11 +311,20 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 		levelIdx++
 	}
 
-	sr.info(ctx, fmt.Sprintf("Matrix цикл %d запущен @ %.4f, уровней: %d",
-		sr.cycle.CycleNum, price, len(sr.levels)))
+	for _, l := range sr.levels {
+		virt := ""
+		if sr.matrixIsVirtual(&l) {
+			virt = " [virtual]"
+		}
+		sr.info(ctx, fmt.Sprintf("  L%d slot=%v %.4f qty=%s size=%.2f USDT%s",
+			l.LevelIdx, l.Slot, l.TargetPrice, l.Qty, l.SizeUSDT, virt))
+	}
+	sr.info(ctx, fmt.Sprintf("Matrix цикл %d запущен @ %.4f, уровней: %d (gridSize=%.2f USDT)",
+		sr.cycle.CycleNum, price, len(sr.levels), sr.strategy.GridSizeUSDT))
 	sr.clearManualAlert(ctx)
 
-	// Place slot 0 (market entry) first, then non-virtual remaining levels.
+	// Place slot 0 (market entry) first. If virtual, trigger immediately — L0 is always
+	// at the current price, so the "wait for price cross" condition is already met.
 	for i := range sr.levels {
 		l := &sr.levels[i]
 		if l.Slot == nil {
@@ -319,8 +332,12 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 		}
 		slot := *l.Slot
 		if slot == 0 {
-			if err := sr.placeMatrixLevel(ctx, l, price); err != nil {
-				sr.errlog(ctx, fmt.Sprintf("Ошибка выставления matrix entry L%d: %v", l.LevelIdx, err))
+			if sr.matrixIsVirtual(l) {
+				sr.matrixTriggerVirtualLevel(ctx, l)
+			} else {
+				if err := sr.placeMatrixLevel(ctx, l, price); err != nil {
+					sr.errlog(ctx, fmt.Sprintf("Ошибка выставления matrix entry L%d: %v", l.LevelIdx, err))
+				}
 			}
 		}
 	}
@@ -433,8 +450,13 @@ func (sr *StrategyRunner) placeMatrixLevel(ctx context.Context, l *GridLevel, cu
 			return nil
 		}
 		if isInsufficientBalance(err) {
-			sr.stopWithMessage(ctx, "Недостаточно баланса для выставления ордера — стратегия остановлена")
-			return err
+			// Not enough balance — fall back to virtual so the level is triggered
+			// by the price monitor instead of stopping the whole strategy.
+			l.ForceVirtual = true
+			sr.runner.pool.Exec(ctx, //nolint:errcheck
+				`UPDATE strategy_levels SET force_virtual=true WHERE id=$1`, l.ID)
+			sr.warn(ctx, fmt.Sprintf("Matrix L%d (slot %v): недостаточно баланса — переведён в виртуальный режим", l.LevelIdx, l.Slot))
+			return nil
 		}
 		return err
 	}
@@ -476,6 +498,18 @@ func (sr *StrategyRunner) loadMatrixCycle(ctx context.Context) error {
 		return err
 	}
 	sr.restoreMatrixSafeZone(ctx)
+	// Trigger virtual L0 immediately if it's still pending — the price-cross condition
+	// is already satisfied for the entry slot, and the price monitor won't fire it
+	// because currentPrice >= TargetPrice only holds at the moment of cycle start.
+	sr.mu.Lock()
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Slot != nil && *l.Slot == 0 && l.Status == LevelPending && sr.matrixIsVirtual(l) {
+			sr.matrixTriggerVirtualLevel(ctx, l)
+			break
+		}
+	}
+	sr.mu.Unlock()
 	sr.launchMatrixPriceMonitor()
 	return nil
 }
@@ -606,7 +640,11 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 		sr.matrixReplaceSlots(ctx, currentPrice)
 	}
 
-	// 2. Trigger virtual levels whose target price has been crossed
+	// 2. Trigger virtual levels whose target price has been crossed.
+	// Crossing condition is slot-based:
+	//   slot < 0 (below levels): fire when price drops to/past target
+	//   slot >= 0 (entry or above): fire when price rises to/past target
+	// For entry (slot=0, targetPrice=0) the condition is always true.
 	for i := range sr.levels {
 		l := &sr.levels[i]
 		if l.Status != LevelPending || l.ExchangeOrderID != "" {
@@ -616,10 +654,12 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 			continue
 		}
 		var crossed bool
-		if sr.strategy.Direction == DirectionLong {
-			crossed = currentPrice >= l.TargetPrice
-		} else {
+		if l.TargetPrice == 0 {
+			crossed = true
+		} else if l.Slot != nil && *l.Slot < 0 {
 			crossed = currentPrice <= l.TargetPrice
+		} else {
+			crossed = currentPrice >= l.TargetPrice
 		}
 		if crossed {
 			sr.matrixTriggerVirtualLevel(ctx, l)
@@ -819,12 +859,39 @@ func (sr *StrategyRunner) matrixReplaceSlots(ctx context.Context, currentPrice f
 			Status: LevelPending, Slot: &s,
 		}
 		sr.levels = append(sr.levels, newLevel)
-		if err := sr.placeMatrixLevel(ctx, &sr.levels[len(sr.levels)-1], currentPrice); err != nil {
+		placed := &sr.levels[len(sr.levels)-1]
+		if slot == 0 && sr.matrixIsVirtual(placed) {
+			// L0 virtual re-entry: trigger immediately (already at or near start price)
+			sr.matrixTriggerVirtualLevel(ctx, placed)
+		} else if err := sr.placeMatrixLevel(ctx, placed, currentPrice); err != nil {
 			sr.errlog(ctx, fmt.Sprintf("Matrix re-entry slot %d: %v", slot, err))
 		} else {
 			sr.info(ctx, fmt.Sprintf("Matrix re-entry slot %d @ %.4f (после Safe Zone)", slot, targetPrice))
 		}
 		levelIdx++
+	}
+}
+
+// resumeMatrixAfterSignal re-places all pending/cancelled matrix levels after the signal
+// resumes (mirror of resumeGridAfterSignal for DCA strategies).
+// Must be called with startMu held and WITHOUT sr.mu held.
+func (sr *StrategyRunner) resumeMatrixAfterSignal(ctx context.Context) {
+	sr.resetCancelledLevels(ctx)
+
+	price, err := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	if err != nil {
+		log.Printf("strategy %s: resumeMatrixAfterSignal: fetch price: %v", sr.strategy.ID, err)
+		return
+	}
+
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	for i := range sr.levels {
+		if sr.levels[i].Status == LevelPending {
+			if err := sr.placeMatrixLevel(ctx, &sr.levels[i], price); err != nil {
+				sr.errlog(ctx, fmt.Sprintf("resumeMatrixAfterSignal L%d: %v", sr.levels[i].LevelIdx, err))
+			}
+		}
 	}
 }
 

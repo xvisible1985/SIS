@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Matrix — Вариант B v2</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0d1117; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; justify-content: center; padding: 24px 12px; }
+
+input[type=number], input[type=text] { -moz-appearance: textfield; }
+input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; }
+
+.modal { width: 500px; background: #111827; border: 1px solid #374151; border-radius: 12px; overflow: hidden; box-shadow: 0 25px 50px rgba(0,0,0,.7); }
+
+.modal-header { display:flex; justify-content:space-between; align-items:center; padding: 12px 20px; border-bottom: 1px solid #1f2937; }
+.modal-header span { font-size:15px; font-weight:600; color:#f1f5f9; }
+.modal-header button { color:#6b7280; font-size:18px; background:none; border:none; cursor:pointer; }
+
+.tabs { display:flex; border-bottom:1px solid #1f2937; }
+.tab { flex:1; padding:10px; text-align:center; font-size:11px; font-weight:500; border-bottom:2px solid transparent; color:#6b7280; }
+.tab.active { color:#60a5fa; border-bottom-color:#3b82f6; }
+
+.modal-body { padding: 14px 16px; max-height: 680px; overflow-y: auto; }
+.modal-body::-webkit-scrollbar { width: 4px; }
+.modal-body::-webkit-scrollbar-thumb { background: #374151; border-radius: 2px; }
+
+/* Global */
+.global-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.fld label { display:block; font-size:9px; color:#6b7280; margin-bottom:3px; text-transform:uppercase; letter-spacing:.05em; }
+.fld input { width:100%; background:#1f2937; border:1px solid #374151; border-radius:5px; padding:5px 8px; font-size:12px; color:#e2e8f0; outline:none; }
+
+/* Viz */
+.viz { display:flex; align-items:center; gap:2px; padding:4px 2px 10px; overflow-x:auto; }
+.viz::-webkit-scrollbar { height:2px; }
+.v { font-size:8px; padding:2px 4px; border-radius:3px; white-space:nowrap; }
+.v.a { background:#1e3a8a; color:#93c5fd; }
+.v.b { background:#14532d; color:#86efac; }
+.v.e { background:#1d4ed8; color:white; font-weight:700; font-size:9px; padding:2px 7px; border-radius:4px; }
+.viz-arr { color:#374151; font-size:9px; }
+
+/* Section header */
+.sec { font-size:9px; color:#4b5563; text-transform:uppercase; letter-spacing:.06em; padding: 4px 0 5px; display:flex; align-items:center; justify-content:space-between; }
+.cnt { background:#1e3a8a; color:#93c5fd; border-radius:3px; padding:1px 5px; font-size:9px; }
+.cnt.g { background:#14532d; color:#86efac; }
+
+/* Column headers */
+.col-h-row { display:grid; grid-template-columns: 36px repeat(6,1fr) 20px; gap:3px; padding:0 4px 3px; }
+.col-h { font-size:8px; color:#4b5563; text-align:center; }
+.col-h.stop { color:#92400e; }
+
+/* Add button */
+.add-btn { width:100%; padding:5px; border:1px dashed #1d4ed8; background:none; border-radius:5px; font-size:10px; color:#3b82f6; cursor:pointer; }
+.add-btn:hover { border-color:#3b82f6; color:#60a5fa; }
+
+/* ── Level row ── */
+.lvl { display:grid; grid-template-columns: 36px repeat(6,1fr) 20px; gap:3px; align-items:center; padding:4px; border-radius:5px; margin-bottom:2px; }
+.lvl.above { background:#1a2540; }
+.lvl.below { background:#1a2a20; }
+
+.lnum { font-size:10px; font-weight:700; text-align:center; padding:2px 0; border-radius:3px; }
+.lnum.a { color:#93c5fd; background:#1e3a8a; font-size:9px; }
+.lnum.g { color:#86efac; background:#14532d; font-size:9px; }
+.lnum.e { color:white; background:#1d4ed8; font-size:9px; }
+
+.li { background:#111827; border:1px solid #374151; border-radius:4px; padding:3px 2px; font-size:10px; color:#e2e8f0; text-align:center; width:100%; outline:none; }
+.li:focus { border-color:#3b82f6; }
+.li.nil { color:#4b5563; border-style:dashed; font-style:italic; }
+.li.stop-col { border-color:#78350f; background:#1c1007; }
+.li.stop-col.nil { border-color:#374151; background:#111827; }
+
+.del { font-size:10px; color:#374151; text-align:center; cursor:pointer; line-height:1; }
+.del:hover { color:#ef4444; }
+
+/* ── Entry / Zero level ── */
+.entry-sep { display:flex; align-items:center; gap:6px; margin: 4px 0; }
+.entry-line { flex:1; height:1px; background:#1d4ed8; opacity:.4; }
+.entry-label { font-size:9px; color:#3b82f6; font-weight:600; text-transform:uppercase; letter-spacing:.06em; white-space:nowrap; }
+
+.lvl.entry { background:#0d1f3c; border:1px solid #1d4ed8; border-radius:5px; }
+
+/* Footer */
+.modal-footer { display:flex; justify-content:flex-end; gap:8px; padding:10px 16px; border-top:1px solid #1f2937; }
+.btn-cancel { padding:6px 16px; background:#1f2937; border:none; border-radius:8px; font-size:13px; color:#9ca3af; cursor:pointer; }
+.btn-save { padding:6px 16px; background:#2563eb; border:none; border-radius:8px; font-size:13px; color:white; cursor:pointer; font-weight:500; }
+</style>
+</head>
+<body>
+<div class="modal">
+
+  <div class="modal-header">
+    <span>Редактировать стратегию</span>
+    <button>✕</button>
+  </div>
+
+  <div class="tabs">
+    <div class="tab">1. Базовые</div>
+    <div class="tab active">2. Матрица</div>
+    <div class="tab">3. Завершение</div>
+  </div>
+
+  <div class="modal-body">
+
+    <!-- Global -->
+    <div class="global-row">
+      <div class="fld"><label>Депозит (USDT)</label><input type="number" value="1000"></div>
+      <div class="fld"><label>Safe-Zone от SL %</label><input type="number" value="1.5" step="0.1"></div>
+    </div>
+
+    <!-- Viz -->
+    <div class="viz">
+      <span class="v a">L(-5)</span><span class="v a">L(-4)</span><span class="v a">L(-3)</span><span class="v a">L(-2)</span><span class="v a">L(-1)</span>
+      <span class="viz-arr">←</span><span class="v e">ВХОД</span><span class="viz-arr">→</span>
+      <span class="v b">L(1)</span><span class="v b">L(2)</span><span class="v b">L(3)</span><span class="v b">L(4)</span><span class="v b">L(5)</span>
+    </div>
+
+    <!-- ═══ ABOVE ENTRY ═══ -->
+    <div class="sec">Выше точки входа <span class="cnt">5 уровней</span></div>
+
+    <!-- Add button at TOP -->
+    <button class="add-btn" style="margin-bottom:6px">+ Добавить уровень выше</button>
+
+    <!-- Col headers -->
+    <div class="col-h-row">
+      <span class="col-h"></span>
+      <span class="col-h">Шаг %</span>
+      <span class="col-h">Объём %</span>
+      <span class="col-h stop">Стоп %</span>
+      <span class="col-h stop">Усл %</span>
+      <span class="col-h stop">Замена %</span>
+      <span class="col-h">ТП %</span>
+      <span></span>
+    </div>
+
+    <!-- L(-5) → L(-1), top to bottom, L(-1) closest to entry -->
+    <div class="lvl above">
+      <span class="lnum a">L(-5)</span>
+      <input class="li" type="number" value="10.0">
+      <input class="li" type="number" value="22">
+      <input class="li stop-col" type="number" value="2.0">
+      <input class="li stop-col nil" type="text" value="—">
+      <input class="li stop-col nil" type="text" value="—">
+      <input class="li nil" type="text" value="—">
+      <span class="del">✕</span>
+    </div>
+    <div class="lvl above">
+      <span class="lnum a">L(-4)</span>
+      <input class="li" type="number" value="9.0">
+      <input class="li" type="number" value="18">
+      <input class="li stop-col" type="number" value="2.5">
+      <input class="li stop-col" type="number" value="2.5">
+      <input class="li stop-col" type="number" value="-3.0">
+      <input class="li" type="number" value="7.5">
+      <span class="del">✕</span>
+    </div>
+    <div class="lvl above">
+      <span class="lnum a">L(-3)</span>
+      <input class="li" type="number" value="6.5">
+      <input class="li" type="number" value="12">
+      <input class="li stop-col nil" type="text" value="—">
+      <input class="li stop-col nil" type="text" value="—">
+      <input class="li stop-col nil" type="text" value="—">
+      <input class="li" type="number" value="6.0">
+      <span class="del">✕</span>
+    </div>
+    <div class="lvl above">
+      <span class="lnum a">L(-2)</span>
+      <input class="li" type="number" value="4.0">
+      <input class="li" type="number" value="8">
+      <input class="li stop-col" type="number" value="3.0">
+      <input class="li stop-col" type="number" value="1.5">
+      <input class="li stop-col" type="number" value="-1.5">
+      <input class="li" type="number" value="4.5">
+      <span class="del">✕</span>
+    </div>
+    <div class="lvl above">
+      <span class="lnum a">L(-1)</span>
+      <input class="li" type="number" value="2.0">
+      <input class="li" type="number" value="5">
+      <input class="li stop-col" type="number" value="3.5">
+      <input class="li stop-col" type="number" value="1.0">
+      <input class="li stop-col" type="number" value="-0.5">
+      <input class="li" type="number" value="3.0">
+      <span class="del">✕</span>
+    </div>
+
+    <!-- ═══ ENTRY / ZERO LEVEL ═══ -->
+    <div class="entry-sep" style="margin:8px 0 4px">
+      <div class="entry-line"></div>
+      <span class="entry-label">⬡ Нулевой уровень (точка входа)</span>
+      <div class="entry-line"></div>
+    </div>
+
+    <div class="col-h-row">
+      <span class="col-h"></span>
+      <span class="col-h" style="color:#4b5563">Шаг %</span>
+      <span class="col-h">Объём %</span>
+      <span class="col-h stop">Стоп %</span>
+      <span class="col-h stop">Усл %</span>
+      <span class="col-h stop">Замена %</span>
+      <span class="col-h">ТП %</span>
+      <span></span>
+    </div>
+
+    <div class="lvl entry" style="margin-bottom:4px">
+      <span class="lnum e">L(0)</span>
+      <input class="li" type="text" value="—" style="color:#4b5563;border-style:dashed" disabled>
+      <input class="li" type="number" value="10">
+      <input class="li stop-col" type="number" value="5.0">
+      <input class="li stop-col" type="number" value="2.0">
+      <input class="li stop-col" type="number" value="1.0">
+      <input class="li" type="number" value="2.0">
+      <span class="del" style="color:#1d4ed8;cursor:default"></span>
+    </div>
+
+    <!-- ═══ BELOW ENTRY ═══ -->
+    <div class="entry-sep" style="margin:4px 0 8px">
+      <div class="entry-line" style="background:#16a34a"></div>
+      <span></span>
+      <div class="entry-line" style="background:#16a34a"></div>
+    </div>
+
+    <div class="col-h-row">
+      <span class="col-h"></span>
+      <span class="col-h">Шаг %</span>
+      <span class="col-h">Объём %</span>
+      <span class="col-h stop">Стоп %</span>
+      <span class="col-h stop">Усл %</span>
+      <span class="col-h stop">Замена %</span>
+      <span class="col-h">ТП %</span>
+      <span></span>
+    </div>
+
+    <!-- L(1) → L(5), L(1) closest to entry -->
+    <div class="lvl below">
+      <span class="lnum g">L(1)</span>
+      <input class="li" type="number" value="1.5">
+      <input class="li" type="number" value="5">
+      <input class="li stop-col" type="number" value="3.0">
+      <input class="li stop-col" type="number" value="1.0">
+      <input class="li stop-col" type="number" value="-0.5">
+      <input class="li" type="number" value="2.5">
+      <span class="del">✕</span>
+    </div>
+    <div class="lvl below">
+      <span class="lnum g">L(2)</span>
+      <input class="li" type="number" value="3.0">
+      <input class="li" type="number" value="8">
+      <input class="li stop-col" type="number" value="2.5">
+      <input class="li stop-col" type="number" value="1.5">
+      <input class="li stop-col" type="number" value="-1.0">
+      <input class="li" type="number" value="3.5">
+      <span class="del">✕</span>
+    </div>
+    <div class="lvl below">
+      <span class="lnum g">L(3)</span>
+      <input class="li" type="number" value="5.0">
+      <input class="li" type="number" value="12">
+      <input class="li stop-col nil" type="text" value="—">
+      <input class="li stop-col nil" type="text" value="—">
+      <input class="li stop-col nil" type="text" value="—">
+      <input class="li" type="number" value="4.0">
+      <span class="del">✕</span>
+    </div>
+    <div class="lvl below">
+      <span class="lnum g">L(4)</span>
+      <input class="li" type="number" value="7.5">
+      <input class="li" type="number" value="18">
+      <input class="li stop-col" type="number" value="2.0">
+      <input class="li stop-col" type="number" value="2.0">
+      <input class="li stop-col" type="number" value="-2.0">
+      <input class="li" type="number" value="5.0">
+      <span class="del">✕</span>
+    </div>
+    <div class="lvl below">
+      <span class="lnum g">L(5)</span>
+      <input class="li" type="number" value="10.0">
+      <input class="li" type="number" value="25">
+      <input class="li stop-col" type="number" value="1.5">
+      <input class="li stop-col nil" type="text" value="—">
+      <input class="li stop-col nil" type="text" value="—">
+      <input class="li nil" type="text" value="—">
+      <span class="del">✕</span>
+    </div>
+
+    <div class="sec" style="margin-top:4px">Ниже точки входа <span class="cnt g">5 уровней</span></div>
+    <!-- Add button at BOTTOM -->
+    <button class="add-btn" style="margin-top:2px">+ Добавить уровень ниже</button>
+
+  </div>
+
+  <div class="modal-footer">
+    <button class="btn-cancel">Отмена</button>
+    <button class="btn-save">Сохранить</button>
+  </div>
+
+</div>
+</body>
+</html>

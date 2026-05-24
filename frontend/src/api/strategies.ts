@@ -31,14 +31,33 @@ export async function getStrategyState(id: string): Promise<StrategyState> {
   return res.data
 }
 
-export async function getStrategyEvents(id: string): Promise<StrategyEvent[]> {
-  const res = await apiClient.get<StrategyEvent[]>(`/strategies/${id}/events`)
-  return res.data
+export async function getStrategyEvents(
+  id: string,
+  params?: { level?: string; date?: string; limit?: number; offset?: number }
+): Promise<{ total: number; events: StrategyEvent[] }> {
+  const res = await apiClient.get<{ total: number; events: StrategyEvent[] } | StrategyEvent[]>(`/strategies/${id}/events`, { params })
+  const data = res.data
+  if (Array.isArray(data)) {
+    return { total: data.length, events: data }
+  }
+  return { total: data.total ?? data.events?.length ?? 0, events: data.events ?? [] }
 }
 
 export async function getCycleAudit(id: string): Promise<CycleAuditData> {
   const res = await apiClient.get<CycleAuditData>(`/strategies/${id}/cycle-audit`)
   return res.data
+}
+
+export async function restartCycle(id: string): Promise<void> {
+  await apiClient.post(`/strategies/${id}/cycle-restart`)
+}
+
+export async function dismissManualAlert(id: string): Promise<void> {
+  await apiClient.post(`/strategies/${id}/dismiss-alert`)
+}
+
+export async function detachFromBot(id: string): Promise<void> {
+  await apiClient.post(`/strategies/${id}/detach`)
 }
 
 export interface InstrumentConstraints {
@@ -47,6 +66,7 @@ export interface InstrumentConstraints {
   min_qty: number
   max_leverage: number
   min_notional_value: number
+  min_order_usdt: number
 }
 
 const instrConstraintsCache = new Map<string, { data: InstrumentConstraints; ts: number }>()

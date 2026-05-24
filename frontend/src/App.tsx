@@ -16,6 +16,7 @@ import { AdminPage }   from './pages/AdminPage'
 import { SignalChartPage } from './pages/SignalChartPage'
 import { AccountPage } from './pages/AccountPage'
 import { BotsPage } from './pages/BotsPage'
+import { TradeHistoryPage } from './pages/TradeHistoryPage'
 
 export default function App() {
   return (
@@ -39,6 +40,7 @@ export default function App() {
                     <Route path="terminal" element={<TerminalPage />} />
                     <Route path="signals" element={<SignalsPage />} />
                     <Route path="bots" element={<BotsPage />} />
+                    <Route path="trade-history" element={<TradeHistoryPage />} />
                     <Route path="webhooks" element={<WebhooksPage />} />
                     <Route path="accounts" element={<AccountsPage />} />
                     <Route path="admin"    element={<AdminPage />} />

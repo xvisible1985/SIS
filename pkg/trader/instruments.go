@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"net/http"
+	"sis/pkg/proxy"
 	"strconv"
 	"strings"
 	"sync"
@@ -109,4 +112,199 @@ func FormatQty(qty, qtyStep, minQty float64) string {
 		return "0"
 	}
 	return strconv.FormatFloat(rounded, 'f', stepDecimals(qtyStep), 64)
+}
+
+// ── Public instrument constraints ────────────────────────────────────────────
+
+// PubInstrumentInfo holds exchange-enforced limits exposed to the frontend.
+type PubInstrumentInfo struct {
+	TickSize         float64 `json:"tick_size"`
+	QtyStep          float64 `json:"qty_step"`
+	MinQty           float64 `json:"min_qty"`
+	MaxLeverage      float64 `json:"max_leverage"`
+	MinNotionalValue float64 `json:"min_notional_value"`
+	MinOrderUSDT     float64 `json:"min_order_usdt"`
+}
+
+var (
+	pubInstrMu    sync.RWMutex
+	pubInstrCache = map[string]struct {
+		info PubInstrumentInfo
+		at   time.Time
+	}{}
+)
+
+// GetPublicInstrumentInfo fetches leverage and lot-size limits from Bybit.
+// The endpoint is public — no API credentials required. Cached 5 minutes.
+func GetPublicInstrumentInfo(ctx context.Context, category, symbol string) (PubInstrumentInfo, error) {
+	key := category + "/" + symbol
+	pubInstrMu.RLock()
+	if e, ok := pubInstrCache[key]; ok && time.Since(e.at) < 5*time.Minute {
+		pubInstrMu.RUnlock()
+		return e.info, nil
+	}
+	pubInstrMu.RUnlock()
+
+	url := bybitBase + "/v5/market/instruments-info?category=" + category + "&symbol=" + symbol
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return PubInstrumentInfo{}, err
+	}
+	resp, err := proxy.HTTPClient().Do(req)
+	if err != nil {
+		return PubInstrumentInfo{}, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return PubInstrumentInfo{}, err
+	}
+
+	var result struct {
+		RetCode int `json:"retCode"`
+		Result  struct {
+			List []struct {
+				LeverageFilter struct {
+					MaxLeverage string `json:"maxLeverage"`
+				} `json:"leverageFilter"`
+				LotSizeFilter struct {
+					QtyStep          string `json:"qtyStep"`
+					MinOrderQty      string `json:"minOrderQty"`
+					MinNotionalValue string `json:"minNotionalValue"`
+				} `json:"lotSizeFilter"`
+				PriceFilter struct {
+					TickSize string `json:"tickSize"`
+				} `json:"priceFilter"`
+			} `json:"list"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil || len(result.Result.List) == 0 {
+		return PubInstrumentInfo{}, fmt.Errorf("instruments-info: no data for %s/%s", category, symbol)
+	}
+
+	item := result.Result.List[0]
+	info := PubInstrumentInfo{
+		TickSize:         parseF64(item.PriceFilter.TickSize),
+		QtyStep:          parseF64(item.LotSizeFilter.QtyStep),
+		MinQty:           parseF64(item.LotSizeFilter.MinOrderQty),
+		MaxLeverage:      parseF64(item.LeverageFilter.MaxLeverage),
+		MinNotionalValue: parseF64(item.LotSizeFilter.MinNotionalValue),
+	}
+
+	// Fetch mark price to compute real minimum order value in USDT
+	markPrice, _ := fetchMarkPricePublic(ctx, category, symbol)
+	minFromQty := info.MinQty * markPrice
+	if minFromQty > info.MinNotionalValue {
+		info.MinOrderUSDT = math.Ceil(minFromQty*10) / 10
+	} else {
+		info.MinOrderUSDT = math.Ceil(info.MinNotionalValue*10) / 10
+	}
+
+	pubInstrMu.Lock()
+	pubInstrCache[key] = struct {
+		info PubInstrumentInfo
+		at   time.Time
+	}{info, time.Now()}
+	pubInstrMu.Unlock()
+
+	return info, nil
+}
+
+func fetchMarkPricePublic(ctx context.Context, category, symbol string) (float64, error) {
+	url := bybitBase + "/v5/market/tickers?category=" + category + "&symbol=" + symbol
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := proxy.HTTPClient().Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, err
+	}
+	var result struct {
+		Result struct {
+			List []struct {
+				MarkPrice string `json:"markPrice"`
+			} `json:"list"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return 0, err
+	}
+	if len(result.Result.List) == 0 {
+		return 0, fmt.Errorf("no ticker for %s/%s", category, symbol)
+	}
+	return strconv.ParseFloat(result.Result.List[0].MarkPrice, 64)
+}
+
+func parseF64(s string) float64 {
+	v, _ := strconv.ParseFloat(s, 64)
+	return v
+}
+
+// ── All linear symbols ────────────────────────────────────────────────────────
+
+var (
+	allLinSymMu    sync.RWMutex
+	allLinSymCache []string
+	allLinSymAt    time.Time
+)
+
+// FetchAllLinearSymbols returns all active linear USDT perpetual symbols from Bybit.
+// Results are cached for 5 minutes.
+func FetchAllLinearSymbols(ctx context.Context) ([]string, error) {
+	allLinSymMu.RLock()
+	if allLinSymCache != nil && time.Since(allLinSymAt) < 5*time.Minute {
+		res := make([]string, len(allLinSymCache))
+		copy(res, allLinSymCache)
+		allLinSymMu.RUnlock()
+		return res, nil
+	}
+	allLinSymMu.RUnlock()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		bybitBase+"/v5/market/instruments-info?category=linear&status=Trading&limit=1000", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := proxy.HTTPClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Result struct {
+			List []struct {
+				Symbol       string `json:"symbol"`
+				SettleCoin   string `json:"settleCoin"`
+				ContractType string `json:"contractType"`
+			} `json:"list"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	var symbols []string
+	for _, item := range result.Result.List {
+		// Only perpetuals — dated futures (LinearFutures) don't support hedge mode
+		// or position mode switching and cause retCode=10001 errors.
+		if item.SettleCoin == "USDT" && item.ContractType == "LinearPerpetual" {
+			symbols = append(symbols, item.Symbol)
+		}
+	}
+
+	allLinSymMu.Lock()
+	allLinSymCache = symbols
+	allLinSymAt = time.Now()
+	allLinSymMu.Unlock()
+
+	return symbols, nil
 }

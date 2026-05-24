@@ -6,6 +6,7 @@ export interface AccountProfile {
   username: string | null
   plan: string
   telegram_username: string | null
+  novabot_balance: number
 }
 
 export interface NotificationSettings {

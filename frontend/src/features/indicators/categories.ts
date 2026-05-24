@@ -21,6 +21,11 @@ export const CAT_STYLES: Record<IndicatorCategory, { mark: string; tag: string; 
     tag:   'bg-[linear-gradient(135deg,rgba(193,77,255,.22),rgba(193,77,255,.10))] text-[#d8a4ff] border-[#c14dff]/40',
     label: 'Volume',
   },
+  fundamental: {
+    mark:  'bg-[linear-gradient(135deg,rgba(248,113,113,.22),rgba(248,113,113,.10))] text-rose-300 border-rose-400/35',
+    tag:   'bg-[linear-gradient(135deg,rgba(248,113,113,.22),rgba(248,113,113,.10))] text-rose-300 border-rose-400/35',
+    label: 'Fundamental',
+  },
 };
 
 export const SOURCES = ['close', 'open', 'high', 'low', 'hl2', 'ohlc4'] as const;

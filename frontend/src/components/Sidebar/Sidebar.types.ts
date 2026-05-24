@@ -16,16 +16,27 @@ export type User = {
   email: string;
 };
 
+export type PickerAccount = {
+  id: string;
+  exchangeBadge: string;
+  name: string;
+  exchange: string;
+};
+
 export type SidebarProps = {
   version?: string;
   account: Account;
+  pickerAccounts?: PickerAccount[];
+  selectedAccountId?: string;
   equity: number;
   pnl24h: Pnl;
+  has24hData?: boolean;
   spark: number[];
   novabotBalance: number;
   user: User;
   counters?: Partial<Record<'webhooks' | 'accounts', number>>;
-  onSelectAccount?: () => void;
+  noActiveAccounts?: boolean;
+  onSelectAccount?: (id: string) => void;
   onTopUp?: () => void;
   onOpenSettings?: () => void;
   onLogout?: () => void;

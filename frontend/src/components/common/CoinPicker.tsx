@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import ReactDOM from 'react-dom'
 import { CoinIcon } from './CoinIcon'
 
 interface TickerRow {
@@ -10,14 +11,35 @@ interface TickerRow {
 
 let _tickers: TickerRow[] = []
 let _cacheAt = 0
+let _delistings: string[] = []
+let _delistingsAt = 0
+
+async function loadDelistings() {
+  if (Date.now() - _delistingsAt < 60_000 && _delistings.length >= 0) return
+  try {
+    const r = await fetch('/bybit-news/delistings')
+    const j = await r.json()
+    _delistings = (j.symbols ?? []) as string[]
+    _delistingsAt = Date.now()
+  } catch {
+    _delistings = []
+  }
+}
+
+function isDelisted(sym: string): boolean {
+  return _delistings.includes(sym)
+}
 
 async function loadTickers() {
   if (Date.now() - _cacheAt < 30_000 && _tickers.length > 0) return
   try {
-    const r = await fetch('https://api.bybit.com/v5/market/tickers?category=linear')
+    const [r] = await Promise.all([
+      fetch('https://api.bybit.com/v5/market/tickers?category=linear'),
+      loadDelistings(),
+    ])
     const j = await r.json()
     _tickers = ((j.result?.list ?? []) as any[])
-      .filter((t: any) => t.symbol.endsWith('USDT'))
+      .filter((t: any) => t.symbol.endsWith('USDT') && !isDelisted(t.symbol))
       .map((t: any) => ({
         symbol: t.symbol,
         price: parseFloat(t.lastPrice),
@@ -47,15 +69,26 @@ interface Props {
   onChange: (sym: string) => void
   size?: 'sm' | 'md'
   triggerClassName?: string
+  disabled?: boolean
+  disabledTooltip?: string
 }
 
-export function CoinPicker({ value, onChange, size = 'md', triggerClassName }: Props) {
+export function CoinPicker({ value, onChange, size = 'md', triggerClassName, disabled, disabledTooltip }: Props) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [rows, setRows] = useState<TickerRow[]>([])
   const [dropPos, setDropPos] = useState({ top: 0, left: 0 })
+  const [tipPos, setTipPos] = useState({ top: 0, left: 0 })
+  const [tipVisible, setTipVisible] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  function handleMouseEnter(e: React.MouseEvent<HTMLButtonElement>) {
+    if (!disabled || !disabledTooltip) return
+    const r = e.currentTarget.getBoundingClientRect()
+    setTipPos({ top: r.top, left: r.left + r.width / 2 })
+    setTipVisible(true)
+  }
 
   useEffect(() => {
     if (!open) return
@@ -73,6 +106,7 @@ export function CoinPicker({ value, onChange, size = 'md', triggerClassName }: P
   }, [open])
 
   function handleOpen() {
+    if (disabled) return
     const rect = triggerRef.current?.getBoundingClientRect()
     if (rect) {
       setDropPos({
@@ -104,12 +138,34 @@ export function CoinPicker({ value, onChange, size = 'md', triggerClassName }: P
       <button
         ref={triggerRef}
         onClick={handleOpen}
-        className={`flex items-center gap-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500 transition-colors ${isSm ? 'px-1.5 py-1' : 'px-2 py-1.5'} ${triggerClassName ?? ''}`}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={() => setTipVisible(false)}
+        className={`flex items-center gap-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 transition-colors ${isSm ? 'px-1.5 py-1' : 'px-2 py-1.5'} ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:border-blue-400 dark:hover:border-blue-500'} ${triggerClassName ?? ''}`}
       >
         <CoinIcon symbol={value} className={isSm ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
-        <span className={`font-mono font-semibold text-gray-900 dark:text-white ${isSm ? 'text-[11px]' : 'text-xs'}`}>{value}</span>
-        <span className="text-[9px] text-gray-400">▾</span>
+        <span className={`font-mono font-semibold text-gray-900 dark:text-white flex-1 text-left ${isSm ? 'text-[11px]' : 'text-base'}`}>{value}</span>
+        <svg className="w-3.5 h-3.5 text-gray-400 flex-shrink-0 ml-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
       </button>
+
+      {tipVisible && disabledTooltip && ReactDOM.createPortal(
+        <span
+          className="fixed w-56 rounded-[9px] px-3 py-2.5 text-[11px] leading-relaxed shadow-2xl font-medium pointer-events-none whitespace-normal"
+          style={{
+            background: '#1a1a2e',
+            border: '1px solid rgba(148,163,184,.25)',
+            color: '#94a3b8',
+            zIndex: 9999,
+            top: tipPos.top,
+            left: tipPos.left,
+            transform: 'translate(-50%, calc(-100% - 8px))',
+          }}
+        >
+          {disabledTooltip}
+        </span>,
+        document.body
+      )}
 
       {open && <div className="fixed inset-0 z-[9998]" onClick={close} />}
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import ReactDOM from 'react-dom'
 import { SIGNALS } from '../../features/indicators/signals'
 import { INDICATORS } from '../../features/indicators/indicators'
@@ -123,18 +123,42 @@ export function SignalPickerField({ configs, onChange, onAutoSave }: {
   const [picked, setPicked] = useState<typeof SIGNALS[0] | typeof INDICATORS[0] | null>(null)
   const [params, setParams] = useState<Record<string, unknown>>({})
   const [editingName, setEditingName] = useState<string | null>(null)
+  const [dropStyle, setDropStyle] = useState<React.CSSProperties>({})
   const ref = useRef<HTMLDivElement>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const dropRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!open) return
     const h = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
+      const t = e.target as Node
+      if (
+        ref.current && !ref.current.contains(t) &&
+        dropRef.current && !dropRef.current.contains(t)
+      ) {
         setOpen(false); setStep('list'); setPicked(null); setEditingName(null)
       }
     }
     document.addEventListener('mousedown', h)
     return () => document.removeEventListener('mousedown', h)
   }, [open])
+
+  function computeDropStyle() {
+    if (!buttonRef.current) return
+    const r = buttonRef.current.getBoundingClientRect()
+    const dropW = 288 // w-72
+    const spaceBelow = window.innerHeight - r.bottom
+    const above = spaceBelow < 320 && r.top > 320
+    setDropStyle({
+      position: 'fixed',
+      zIndex: 9999,
+      width: dropW,
+      left: Math.min(r.left, window.innerWidth - dropW - 8),
+      ...(above
+        ? { bottom: window.innerHeight - r.top + 4 }
+        : { top: r.bottom + 4 }),
+    })
+  }
 
   function selectSignal(sig: typeof SIGNALS[0] | typeof INDICATORS[0]) {
     setPicked(sig)
@@ -150,6 +174,7 @@ export function SignalPickerField({ configs, onChange, onAutoSave }: {
     setParams({ ...(sc.params ?? {}) })
     setEditingName(sc.name)
     setStep('edit')
+    computeDropStyle()
     setOpen(true)
   }
 
@@ -242,14 +267,18 @@ export function SignalPickerField({ configs, onChange, onAutoSave }: {
 
       <div ref={ref} className="relative">
         <button
-          onClick={() => { setOpen(v => !v); if (!open) { setStep('list'); setPicked(null) } }}
+          ref={buttonRef}
+          onClick={() => {
+            if (!open) { computeDropStyle(); setStep('list'); setPicked(null) }
+            setOpen(v => !v)
+          }}
           className="w-full border border-dashed border-blue-800 text-blue-500 rounded-md py-1.5 text-[11px] hover:border-blue-600 hover:text-blue-400 transition-colors"
         >
           + Добавить сигнал
         </button>
 
-        {open && (
-          <div className="absolute bottom-full mb-1.5 left-0 bg-[#0d1628] border border-white/[.10] rounded-xl shadow-2xl z-20 w-72">
+        {open && ReactDOM.createPortal(
+          <div ref={dropRef} style={dropStyle} className="bg-[#0d1628] border border-white/[.10] rounded-xl shadow-2xl">
             {step === 'list' ? (
               <div className="max-h-64 overflow-y-auto p-1">
                 {allowedLoading ? (
@@ -341,7 +370,8 @@ export function SignalPickerField({ configs, onChange, onAutoSave }: {
                 </button>
               </div>
             ) : null}
-          </div>
+          </div>,
+          document.body
         )}
       </div>
     </div>

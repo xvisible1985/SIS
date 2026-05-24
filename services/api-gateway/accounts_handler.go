@@ -11,11 +11,12 @@ import (
 )
 
 type accountRow struct {
-	ID        string    `json:"id"`
-	Exchange  string    `json:"exchange"`
-	Label     string    `json:"label"`
-	IsActive  bool      `json:"is_active"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string     `json:"id"`
+	Exchange  string     `json:"exchange"`
+	Label     string     `json:"label"`
+	IsActive  bool       `json:"is_active"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt *time.Time `json:"expires_at"`
 }
 
 // ListAccounts returns exchange accounts for the authenticated user (no keys).
@@ -23,7 +24,7 @@ type accountRow struct {
 func (s *Server) ListAccounts(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	rows, err := s.pool.Query(r.Context(),
-		`SELECT id, exchange, label, is_active, created_at
+		`SELECT id, exchange, label, is_active, created_at, expires_at
 		 FROM exchange_accounts WHERE owner_id=$1 ORDER BY created_at DESC`, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
@@ -33,7 +34,7 @@ func (s *Server) ListAccounts(w http.ResponseWriter, r *http.Request) {
 	result := make([]accountRow, 0)
 	for rows.Next() {
 		var a accountRow
-		if err := rows.Scan(&a.ID, &a.Exchange, &a.Label, &a.IsActive, &a.CreatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.Exchange, &a.Label, &a.IsActive, &a.CreatedAt, &a.ExpiresAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan error")
 			return
 		}
@@ -74,9 +75,9 @@ func (s *Server) CreateAccount(w http.ResponseWriter, r *http.Request) {
 	err = s.pool.QueryRow(r.Context(),
 		`INSERT INTO exchange_accounts (owner_id, exchange, label, api_key_enc, secret_enc)
 		 VALUES ($1,$2,$3,$4,$5)
-		 RETURNING id, exchange, label, is_active, created_at`,
+		 RETURNING id, exchange, label, is_active, created_at, expires_at`,
 		userID, req.Exchange, req.Label, encKey, encSecret,
-	).Scan(&a.ID, &a.Exchange, &a.Label, &a.IsActive, &a.CreatedAt)
+	).Scan(&a.ID, &a.Exchange, &a.Label, &a.IsActive, &a.CreatedAt, &a.ExpiresAt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -133,6 +134,14 @@ func (s *Server) VerifyAccount(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
+	var expiresAt *time.Time
+	if parsed.ExpiredTime > 0 {
+		t := time.UnixMilli(parsed.ExpiredTime)
+		expiresAt = &t
+		_, _ = s.pool.Exec(r.Context(),
+			`UPDATE exchange_accounts SET expires_at=$1 WHERE id=$2 AND owner_id=$3`,
+			expiresAt, id, userID)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":          true,
 		"read_only":   parsed.ReadOnly == 1,
@@ -143,6 +152,7 @@ func (s *Server) VerifyAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetAccountBalance returns wallet balance (equity + available) from Bybit.
+// Also saves a snapshot and returns 24h change if history exists.
 // GET /accounts/:id/balance
 func (s *Server) GetAccountBalance(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
@@ -167,7 +177,63 @@ func (s *Server) GetAccountBalance(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "equity": equity, "available": available})
+
+	// Save snapshot
+	s.pool.Exec(r.Context(),
+		`INSERT INTO balance_snapshots (account_id, equity) VALUES ($1, $2)`,
+		id, equity,
+	)
+
+	// Find snapshot ~24h ago
+	var equity24hAgo *float64
+	s.pool.QueryRow(r.Context(),
+		`SELECT equity FROM balance_snapshots
+		 WHERE account_id=$1 AND created_at <= NOW() - INTERVAL '24 hours'
+		 ORDER BY created_at DESC LIMIT 1`,
+		id,
+	).Scan(&equity24hAgo)
+
+	resp := map[string]any{"ok": true, "equity": equity, "available": available}
+	if equity24hAgo != nil {
+		change := equity - *equity24hAgo
+		var pct float64
+		if *equity24hAgo != 0 {
+			pct = (change / *equity24hAgo) * 100
+		}
+		resp["equity_24h_ago"] = *equity24hAgo
+		resp["equity_change_usd"] = change
+		resp["equity_change_percent"] = pct
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// GetAccountPositions returns current open positions for an account.
+// GET /accounts/:id/positions
+func (s *Server) GetAccountPositions(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	id := chi.URLParam(r, "id")
+	var apiKeyEnc, secretEnc string
+	if err := s.pool.QueryRow(r.Context(),
+		`SELECT api_key_enc, secret_enc FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
+		id, userID,
+	).Scan(&apiKeyEnc, &secretEnc); err != nil {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	apiKey, err1 := crypto.Decrypt(apiKeyEnc, s.encKey)
+	secret, err2 := crypto.Decrypt(secretEnc, s.encKey)
+	if err1 != nil || err2 != nil {
+		writeError(w, http.StatusInternalServerError, "decryption error")
+		return
+	}
+	creds := trader.Credentials{APIKey: apiKey, SecretKey: secret}
+	positions, err := trader.FetchPositions(r.Context(), creds)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "positions": positions})
 }
 
 // ToggleAccountActive flips is_active for an account.
@@ -179,9 +245,9 @@ func (s *Server) ToggleAccountActive(w http.ResponseWriter, r *http.Request) {
 	err := s.pool.QueryRow(r.Context(),
 		`UPDATE exchange_accounts SET is_active = NOT is_active
 		 WHERE id=$1 AND owner_id=$2
-		 RETURNING id, exchange, label, is_active, created_at`,
+		 RETURNING id, exchange, label, is_active, created_at, expires_at`,
 		id, userID,
-	).Scan(&a.ID, &a.Exchange, &a.Label, &a.IsActive, &a.CreatedAt)
+	).Scan(&a.ID, &a.Exchange, &a.Label, &a.IsActive, &a.CreatedAt, &a.ExpiresAt)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "account not found")
 		return

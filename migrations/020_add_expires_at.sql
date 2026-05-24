@@ -1,0 +1,1 @@
+ALTER TABLE exchange_accounts ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;

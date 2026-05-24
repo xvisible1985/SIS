@@ -1,10 +1,13 @@
-import { useState, useEffect, useRef } from 'react';
-import { X, Bot, ToggleLeft, ToggleRight, Camera, Trash2 } from 'lucide-react';
-import { CoinPicker } from '../../../components/common/CoinPicker';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { X, Bot, ToggleLeft, ToggleRight, Camera, Trash2, Search, Loader2 } from 'lucide-react';
 import { CoinMultiPicker } from '../../../components/common/CoinMultiPicker';
 import { Toggle, Tip, SignalPickerField } from '../../../components/strategies/FormWidgets';
+import { apiClient } from '../../../api/client';
+import { getAllSymbols, matchesPattern } from '../../../components/common/CoinMultiPicker';
+import { getInstrumentConstraints, type InstrumentConstraints } from '../../../api/strategies';
 import type { Bot as BotType, CreateBotInput, StrategyConfig } from '../types';
 import type { SignalConfig } from '../../../types';
+import { useSelectedAccount } from '../../../contexts/AccountContext';
 
 type Props = {
   bot?: BotType;
@@ -13,8 +16,10 @@ type Props = {
   mode?: 'user' | 'admin';
 };
 
-type OuterTab = 'basic' | 'strategy' | 'symbols';
+type OuterTab = 'basic' | 'activation' | 'strategy';
 type StrategySubTab = 'entry' | 'grid' | 'exit';
+
+type ScanItem = { symbol: string; state: 'buy' | 'sell' };
 
 // ─── Default config ───────────────────────────────────────────────────────────
 
@@ -36,7 +41,8 @@ function defaultConfig(bot?: BotType): StrategyConfig {
       { price_move_pct: 1.5, lots: 2 },
       { price_move_pct: 2.0, lots: 2 },
     ],
-    signal_configs:        (s.signal_configs as SignalConfig[] | undefined) ?? [],
+    signal_configs:        (s.signal_configs        as SignalConfig[] | undefined) ?? [],
+    activation_signals:    (s.activation_signals    as SignalConfig[] | undefined) ?? [],
     tp_mode:               s.tp_mode               ?? 'total',
     tp_pct:                s.tp_pct                ?? 2.0,
     sl_type:               s.sl_type               ?? 'conditional',
@@ -45,6 +51,8 @@ function defaultConfig(bot?: BotType): StrategyConfig {
     trailing_stop_enabled: s.trailing_stop_enabled ?? false,
     trailing_activation_pct: s.trailing_activation_pct ?? 1.5,
     trailing_callback_pct:   s.trailing_callback_pct   ?? 0.5,
+    after_stop_mode:         s.after_stop_mode         ?? 'restart',
+    max_cycles:              s.max_cycles              ?? 0,
   };
 }
 
@@ -77,13 +85,28 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
 
   const [name,        setName]        = useState(bot?.name        ?? '');
   const [description, setDescription] = useState(bot?.description ?? '');
+  const [fullDescription, setFullDescription] = useState(bot?.fullDescription ?? '');
   const [isPublic,    setIsPublic]    = useState(bot?.isPublic    ?? false);
   const [avatarUrl,   setAvatarUrl]   = useState<string>(bot?.avatarUrl ?? '');
-  const [whitelist,   setWhitelist]   = useState<string[]>(bot?.symbolWhitelist ?? []);
-  const [blacklist,   setBlacklist]   = useState<string[]>(bot?.symbolBlacklist ?? []);
-  const [config,      setConfig]      = useState<StrategyConfig>(defaultConfig(bot));
-  const [submitting,  setSubmitting]  = useState(false);
+  const [whitelist,       setWhitelist]       = useState<string[]>(bot?.symbolWhitelist ?? []);
+  const [blacklist,       setBlacklist]       = useState<string[]>(bot?.symbolBlacklist ?? []);
+  const [config,          setConfig]          = useState<StrategyConfig>(defaultConfig(bot));
+  const [maxStrategies,      setMaxStrategies]      = useState<number>(bot?.maxStrategies ?? 0);
+  const [maxLongStrategies,  setMaxLongStrategies]  = useState<number>(bot?.maxLongStrategies ?? 0);
+  const [maxShortStrategies, setMaxShortStrategies] = useState<number>(bot?.maxShortStrategies ?? 0);
+  const [maxMarginUsdt,      setMaxMarginUsdt]      = useState<number>(bot?.maxMarginUsdt ?? 0);
+  const [maxSymConsecutiveRuns, setMaxSymConsecutiveRuns] = useState<number>(bot?.maxSymConsecutiveRuns ?? 0);
+  const [autoMode,        setAutoMode]        = useState<boolean>(bot?.autoMode ?? false);
+  const [submitting,      setSubmitting]      = useState(false);
+  const { selectedAccountId } = useSelectedAccount();
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const [scanLoading,  setScanLoading]  = useState(false);
+  const [scanResult,   setScanResult]   = useState<ScanItem[] | null>(null);
+  const [scanError,    setScanError]    = useState<string | null>(null);
+  const [allSymbols,   setAllSymbols]   = useState<string[]>([]);
+  const [instrInfo,    setInstrInfo]    = useState<InstrumentConstraints | null>(null);
+  const [minLotEnabled, setMinLotEnabled] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -92,6 +115,38 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
     window.addEventListener('keydown', fn);
     return () => window.removeEventListener('keydown', fn);
   }, [onClose]);
+
+  // Загружаем все доступные символы при открытии вкладки Активация
+  useEffect(() => {
+    if (outerTab === 'activation' && allSymbols.length === 0) {
+      getAllSymbols().then(setAllSymbols);
+    }
+  }, [outerTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Загружаем ограничения инструмента для отображения минимального лота (используем BTCUSDT как эталон)
+  useEffect(() => {
+    const category = config.category ?? 'linear';
+    setInstrInfo(null);
+    getInstrumentConstraints('BTCUSDT', category).then(setInstrInfo).catch(() => setInstrInfo(null));
+  }, [config.category]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Если включён min-lot — форсируем grid_size_usdt
+  useEffect(() => {
+    if (minLotEnabled && instrInfo && instrInfo.min_order_usdt > 0) {
+      patch({ grid_size_usdt: instrInfo.min_order_usdt });
+    }
+  }, [minLotEnabled, instrInfo]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Итоговый список монет: применяем правила whitelist и blacklist (с поддержкой масок)
+  const resolvedSymbols = useMemo(() => {
+    if (allSymbols.length === 0) return [];
+    let result = allSymbols;
+    if (whitelist.length > 0) {
+      result = result.filter(sym => whitelist.some(rule => matchesPattern(sym, rule)));
+    }
+    result = result.filter(sym => !blacklist.some(rule => matchesPattern(sym, rule)));
+    return result;
+  }, [allSymbols, whitelist, blacklist]);
 
   async function handleAvatarFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -125,6 +180,35 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
     patch({ steps: (config.steps ?? []).filter((_, idx) => idx !== i) });
   }
 
+  const handleScan = async () => {
+    const signals = (config.activation_signals as SignalConfig[]) ?? [];
+    if (signals.length === 0) {
+      setScanError('Добавьте хотя бы один сигнал для проверки');
+      return;
+    }
+    const targets = resolvedSymbols.length > 0 ? resolvedSymbols : allSymbols;
+    if (targets.length === 0) {
+      setScanError('Список символов ещё загружается');
+      return;
+    }
+    setScanLoading(true);
+    setScanError(null);
+    setScanResult(null);
+    try {
+      const res = await apiClient.post<{ results: ScanItem[] }>('/bots/signal-scan', {
+        signal_configs: signals,
+        whitelist: targets,   // уже разрешённый список, маски применены на фронте
+        blacklist: [],
+        interval: '15',
+      });
+      setScanResult(res.data.results ?? []);
+    } catch {
+      setScanError('Ошибка при проверке символов');
+    } finally {
+      setScanLoading(false);
+    }
+  };
+
   const handleSubmit = async () => {
     if (!name.trim()) return;
     setSubmitting(true);
@@ -134,6 +218,7 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
       await onSubmit({
         name: name.trim(),
         description: description.trim(),
+        fullDescription: fullDescription.trim() || undefined,
         isPublic,
         avatarUrl: avatarUrl || undefined,
         symbolWhitelist: whitelist,
@@ -144,6 +229,13 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
           grid_step_pct: steps[0]?.price_move_pct ?? 1.0,
           signal_filter: (config.signal_configs?.length ?? 0) > 0,
         },
+        maxStrategies,
+        maxLongStrategies,
+        maxShortStrategies,
+        maxMarginUsdt,
+        maxSymConsecutiveRuns,
+        accountId: selectedAccountId || null,
+        autoMode,
       });
       onClose();
     } catch (e) {
@@ -154,9 +246,9 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
   };
 
   const outerTabs: { id: OuterTab; label: string }[] = [
-    { id: 'basic',    label: 'Основное' },
-    { id: 'strategy', label: 'Стратегия' },
-    { id: 'symbols',  label: 'Символы' },
+    { id: 'basic',      label: 'Основное' },
+    { id: 'activation', label: 'Активация' },
+    { id: 'strategy',   label: 'Стратегия' },
   ];
 
   const stratTabs: { id: StrategySubTab; label: string }[] = [
@@ -166,14 +258,8 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
   ];
 
   return (
-    <div
-      onClick={onClose}
-      className="fixed inset-0 z-[100] flex items-center justify-center overflow-auto bg-[rgba(8,11,18,.78)] p-6 backdrop-blur"
-    >
-      <div
-        onClick={e => e.stopPropagation()}
-        className="flex max-h-[calc(100vh-48px)] w-full max-w-[680px] flex-col overflow-hidden rounded-[18px] border border-white/[.08] bg-[#0c1018] shadow-[0_32px_80px_-16px_rgba(0,0,0,.7)]"
-      >
+    <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-auto bg-[rgba(8,11,18,.78)] p-6 backdrop-blur">
+      <div className="flex max-h-[calc(100vh-48px)] w-full max-w-[680px] flex-col overflow-hidden rounded-[18px] border border-white/[.08] bg-[#0c1018] shadow-[0_32px_80px_-16px_rgba(0,0,0,.7)]">
         {/* header */}
         <div className="flex items-center gap-3 border-b border-white/[.06] px-5 py-4">
           <div className="h-9 w-9 shrink-0 overflow-hidden rounded-[9px] border border-[#5b8cff]/30">
@@ -251,9 +337,17 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                   />
                 </div>
 
-                <div className="flex flex-col gap-1.5">
-                  <div className="text-[13px] font-semibold text-slate-200">Аватар бота</div>
-                  <div className="text-[11px] text-slate-500">PNG, JPG, GIF, WebP · сжимается до 300×300</div>
+                <div className="flex flex-1 flex-col gap-2">
+                  <Field label="Название" required>
+                    <input
+                      type="text"
+                      value={name}
+                      onChange={e => setName(e.target.value.slice(0, 30))}
+                      placeholder="BTC Grid Pro"
+                      className={inputCls}
+                      maxLength={30}
+                    />
+                  </Field>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
@@ -271,27 +365,39 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                         <Trash2 size={11} /> Удалить
                       </button>
                     )}
+                    <span className="text-[11px] text-slate-500">PNG, JPG, GIF, WebP · до 300×300</span>
                   </div>
                 </div>
               </div>
-
-              <Field label="Название" required>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  placeholder="BTC Grid Pro"
-                  className={inputCls}
-                />
+              <Field label="Краткое описание" hint="Показывается под названием на карточке бота">
+                <div className="relative">
+                  <textarea
+                    value={description}
+                    onChange={e => setDescription(e.target.value.slice(0, 120))}
+                    placeholder="Сеточная стратегия по тренду на BTC"
+                    rows={2}
+                    className={`${inputCls} resize-none`}
+                    maxLength={120}
+                  />
+                  <span className="pointer-events-none absolute right-3 bottom-2 text-[10px] text-slate-600">
+                    {description.length}/120
+                  </span>
+                </div>
               </Field>
-              <Field label="Описание">
-                <textarea
-                  value={description}
-                  onChange={e => setDescription(e.target.value)}
-                  rows={4}
-                  placeholder="Опишите стратегию бота..."
-                  className={`${inputCls} resize-none`}
-                />
+              <Field label="Подробное описание" hint="Развёрнутое описание для страницы бота">
+                <div className="relative">
+                  <textarea
+                    value={fullDescription}
+                    onChange={e => setFullDescription(e.target.value.slice(0, 2000))}
+                    placeholder="Опишите логику работы бота, рекомендуемые рыночные условия, особенности настройки..."
+                    rows={4}
+                    className={`${inputCls} resize-none`}
+                    maxLength={2000}
+                  />
+                  <span className="pointer-events-none absolute right-3 bottom-2 text-[10px] text-slate-600">
+                    {fullDescription.length}/2000
+                  </span>
+                </div>
               </Field>
               {mode !== 'admin' && (
                 <div className="flex items-center justify-between rounded-lg border border-white/[.06] bg-white/[.02] px-4 py-3">
@@ -308,6 +414,106 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                   </button>
                 </div>
               )}
+
+              {/* Авто-режим */}
+              <div className="rounded-lg border border-white/[.06] bg-white/[.02]">
+                <div className="flex items-center justify-between px-4 py-3">
+                  <div>
+                    <div className="text-[13px] font-semibold text-slate-200">Авто-режим</div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">
+                      Бот сам открывает стратегии при срабатывании сигналов — без подтверждения
+                    </div>
+                  </div>
+                  <button type="button" onClick={() => setAutoMode(v => !v)} className="text-slate-400">
+                    {autoMode
+                      ? <ToggleRight size={28} className="text-emerald-400" />
+                      : <ToggleLeft size={28} />}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between border-t border-white/[.05] px-4 py-2.5">
+                  <div>
+                    <div className="text-[12px] font-medium text-slate-300">Удалять стратегию после TP/SL</div>
+                    <div className="text-[11px] text-slate-500">
+                      {config.after_stop_mode === 'delete'
+                        ? 'Стратегия удаляется — бот сможет открыть новую на той же монете'
+                        : 'Стратегия перезапускается — продолжает работу без нового сигнала'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => patch({ after_stop_mode: config.after_stop_mode === 'delete' ? 'restart' : 'delete' })}
+                    className="ml-4 shrink-0 text-slate-400"
+                  >
+                    {config.after_stop_mode === 'delete'
+                      ? <ToggleRight size={26} className="text-[#5b8cff]" />
+                      : <ToggleLeft size={26} />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Ограничения */}
+              <div>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Ограничения</span>
+                  <div className="h-px flex-1 bg-white/[.05]" />
+                </div>
+                <div className="grid grid-cols-3 gap-3 mb-3">
+                  <Field label="Всего стратегий" hint="0 = ∞">
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={maxStrategies}
+                      onChange={e => setMaxStrategies(Math.max(0, parseInt(e.target.value) || 0))}
+                      className={inputCls}
+                    />
+                  </Field>
+                  <Field label="Макс. лонг" hint="0 = ∞">
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={maxLongStrategies}
+                      onChange={e => setMaxLongStrategies(Math.max(0, parseInt(e.target.value) || 0))}
+                      className={`${inputCls} border-emerald-900/40`}
+                    />
+                  </Field>
+                  <Field label="Макс. шорт" hint="0 = ∞">
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={maxShortStrategies}
+                      onChange={e => setMaxShortStrategies(Math.max(0, parseInt(e.target.value) || 0))}
+                      className={`${inputCls} border-rose-900/40`}
+                    />
+                  </Field>
+                </div>
+                <Field label="Лимит маржи, USDT" hint="0 — без ограничений">
+                  <input
+                    type="number"
+                    min={0}
+                    step={10}
+                    value={maxMarginUsdt}
+                    onChange={e => setMaxMarginUsdt(Math.max(0, parseFloat(e.target.value) || 0))}
+                    className={inputCls}
+                  />
+                </Field>
+                <Field label="Повторов подряд" hint="0 = ∞">
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={maxSymConsecutiveRuns}
+                    onChange={e => setMaxSymConsecutiveRuns(Math.max(0, parseInt(e.target.value) || 0))}
+                    className={inputCls}
+                  />
+                </Field>
+                <p className="mt-2 text-[11px] text-slate-600">
+                  Бот не откроет стратегию при достижении лимита. Лонг/шорт — отдельные счётчики. «Повторов подряд» — после N запусков одной пары бот пропустит её, пока не запустит другую.
+                </p>
+              </div>
+
             </div>
           )}
 
@@ -355,16 +561,19 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
               {/* sub-tab content */}
               {stratTab === 'entry' && (
                 <div className="flex flex-col gap-3">
-                  <div>
-                    <label className={labelCls}>
-                      Символ
-                      <Tip text="Основной инструмент бота. Можно изменить при каждом деплое." />
-                    </label>
-                    <CoinPicker
-                      value={config.symbol ?? 'BTCUSDT'}
-                      onChange={sym => patch({ symbol: sym })}
-                      triggerClassName="w-full px-3 py-1.5 text-sm rounded-md border-gray-700 bg-gray-800"
-                    />
+                  <div className="flex items-start gap-2.5 rounded-lg border border-[#5b8cff]/20 bg-[#5b8cff]/[.07] px-3 py-2.5">
+                    <span className="mt-0.5 shrink-0 text-[14px] text-[#5b8cff]">⚡</span>
+                    <p className="text-[11px] leading-relaxed text-slate-400">
+                      <span className="font-semibold text-slate-300">Монеты выбираются автоматически</span> — бот сканирует рынок по сигналам активации
+                      и открывает стратегию на каждой подходящей монете. Настрой сигналы и список монет на вкладке{' '}
+                      <button
+                        type="button"
+                        onClick={() => setOuterTab('activation')}
+                        className="font-semibold text-[#a0b8ff] underline underline-offset-2 hover:text-[#c4d4ff]"
+                      >
+                        Активация
+                      </button>.
+                    </p>
                   </div>
 
                   <div>
@@ -415,14 +624,33 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                     <div>
                       <label className={labelCls}>
                         Объём 1 лота (USDT)
+                        {instrInfo && (
+                          <span className="ml-1.5 text-[10px] text-slate-500">
+                            мин. {instrInfo.min_order_usdt.toFixed(2)}$
+                          </span>
+                        )}
                         <Tip text="Размер одного базового ордера. Итоговый объём уровня = лоты × этот размер." />
                       </label>
-                      <input
-                        type="number" min={1}
-                        value={config.grid_size_usdt ?? 100}
-                        onChange={e => patch({ grid_size_usdt: Number(e.target.value) })}
-                        className={inputCls}
-                      />
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number" min={instrInfo?.min_order_usdt ?? 1}
+                          value={config.grid_size_usdt ?? 100}
+                          onChange={e => patch({ grid_size_usdt: Number(e.target.value) })}
+                          disabled={minLotEnabled}
+                          className={`${inputCls} [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${minLotEnabled ? 'cursor-not-allowed opacity-50' : ''}`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setMinLotEnabled(v => !v)}
+                          className={`shrink-0 rounded-lg border px-3 py-2 text-[11px] font-semibold transition-colors ${
+                            minLotEnabled
+                              ? 'border-[#5b8cff]/40 bg-[#5b8cff]/[.18] text-[#a0b8ff]'
+                              : 'border-white/[.07] bg-white/[.02] text-slate-400 hover:bg-white/[.05]'
+                          }`}
+                        >
+                          min
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -580,6 +808,57 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                         />
                       </div>
                     </div>
+                    {/* Trailing stop inside TP */}
+                    <div className="pt-2 border-t border-green-900/40 space-y-3">
+                      <div className="flex items-center gap-1 text-[10px] text-green-600/80 font-bold uppercase tracking-wider pb-1">
+                        Трейлинг-стоп
+                        <Tip text="Подтягивает стоп вслед за ценой, фиксируя прибыль. При откате на callback — позиция закрывается." />
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => patch({ trailing_stop_enabled: !(config.trailing_stop_enabled ?? false) })}
+                          className={`w-10 h-5 rounded-full relative transition-colors ${
+                            config.trailing_stop_enabled ? 'bg-green-600' : 'bg-gray-700'
+                          }`}
+                        >
+                          <span className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                            config.trailing_stop_enabled ? 'translate-x-5' : 'translate-x-0'
+                          }`} />
+                        </button>
+                        <span className={`text-xs ${config.trailing_stop_enabled ? 'text-green-400' : 'text-gray-500'}`}>
+                          {config.trailing_stop_enabled ? 'Включён' : 'Выключен'}
+                        </span>
+                      </div>
+                      {config.trailing_stop_enabled && (
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className={labelCls}>
+                              Активация %
+                              <Tip text="Прибыль от входа, при которой трейлинг начинает следить за ценой." />
+                            </label>
+                            <input
+                              type="number" step="0.1" min="0.1"
+                              value={config.trailing_activation_pct ?? 1.5}
+                              onChange={e => patch({ trailing_activation_pct: Number(e.target.value) })}
+                              className={inputCls}
+                            />
+                          </div>
+                          <div>
+                            <label className={labelCls}>
+                              Callback %
+                              <Tip text="Откат от пика, после которого трейлинг-стоп срабатывает." />
+                            </label>
+                            <input
+                              type="number" step="0.1" min="0.1"
+                              value={config.trailing_callback_pct ?? 0.5}
+                              onChange={e => patch({ trailing_callback_pct: Number(e.target.value) })}
+                              className={inputCls}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   {/* SL */}
@@ -615,64 +894,27 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                     </div>
                   </div>
 
-                  {/* Trailing stop */}
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-gray-500 pb-1 border-b border-gray-800">
-                      Трейлинг-стоп
-                      <Tip text="Подтягивает стоп вслед за ценой, фиксируя прибыль. При откате на callback — позиция закрывается." />
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() => patch({ trailing_stop_enabled: !(config.trailing_stop_enabled ?? false) })}
-                        className={`w-10 h-5 rounded-full relative transition-colors ${
-                          config.trailing_stop_enabled ? 'bg-green-600' : 'bg-gray-700'
-                        }`}
-                      >
-                        <span className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
-                          config.trailing_stop_enabled ? 'translate-x-5' : 'translate-x-0'
-                        }`} />
-                      </button>
-                      <span className={`text-xs ${config.trailing_stop_enabled ? 'text-green-400' : 'text-gray-500'}`}>
-                        {config.trailing_stop_enabled ? 'Включён' : 'Выключен'}
-                      </span>
-                    </div>
-                    {config.trailing_stop_enabled && (
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className={labelCls}>
-                            Активация %
-                            <Tip text="Прибыль от входа, при которой трейлинг начинает следить за ценой." />
-                          </label>
-                          <input
-                            type="number" step="0.1" min="0.1"
-                            value={config.trailing_activation_pct ?? 1.5}
-                            onChange={e => patch({ trailing_activation_pct: Number(e.target.value) })}
-                            className={inputCls}
-                          />
-                        </div>
-                        <div>
-                          <label className={labelCls}>
-                            Callback %
-                            <Tip text="Откат от пика, после которого трейлинг-стоп срабатывает." />
-                          </label>
-                          <input
-                            type="number" step="0.1" min="0.1"
-                            value={config.trailing_callback_pct ?? 0.5}
-                            onChange={e => patch({ trailing_callback_pct: Number(e.target.value) })}
-                            className={inputCls}
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </div>
                 </div>
               )}
             </div>
           )}
 
-          {outerTab === 'symbols' && (
+          {outerTab === 'activation' && (
             <div className="flex flex-col gap-5">
+
+              {/* Signals */}
+              <div>
+                <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 pb-1 border-b border-white/[.05] mb-2">
+                  Сигналы активации
+                  <Tip text="AND-логика: все указанные сигналы должны совпасть, чтобы символ был активирован." />
+                </div>
+                <SignalPickerField
+                  configs={(config.activation_signals as SignalConfig[]) ?? []}
+                  onChange={v => patch({ activation_signals: v })}
+                />
+              </div>
+
+              {/* Whitelist */}
               <div>
                 <div className="mb-1 text-[11px] font-bold uppercase tracking-wider text-slate-400">
                   Whitelist
@@ -687,6 +929,8 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                   placeholder="Выбрать монеты для whitelist..."
                 />
               </div>
+
+              {/* Blacklist */}
               <div>
                 <div className="mb-1 text-[11px] font-bold uppercase tracking-wider text-slate-400">
                   Blacklist
@@ -700,6 +944,94 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                   color="red"
                   placeholder="Выбрать монеты для blacklist..."
                 />
+              </div>
+
+              {/* Resolved symbols */}
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 pb-1 border-b border-white/[.05] flex-1">
+                    Итоговый список символов
+                  </div>
+                </div>
+                {allSymbols.length === 0 ? (
+                  <div className="text-[11px] text-slate-500">Загрузка символов...</div>
+                ) : resolvedSymbols.length === 0 && (whitelist.length > 0 || blacklist.length > 0) ? (
+                  <div className="text-[11px] text-rose-400">Все символы исключены правилами</div>
+                ) : (
+                  <div>
+                    <div className="mb-1.5 text-[11px] text-slate-400">
+                      {whitelist.length === 0 && blacklist.length === 0
+                        ? <span>Все символы биржи: <span className="font-semibold text-slate-200">{allSymbols.length}</span></span>
+                        : <span>Подходит: <span className="font-semibold text-slate-200">{resolvedSymbols.length}</span> из {allSymbols.length}</span>
+                      }
+                    </div>
+                    {(whitelist.length > 0 || blacklist.length > 0) && resolvedSymbols.length > 0 && (
+                      <div className="flex flex-wrap gap-1 max-h-[100px] overflow-y-auto">
+                        {resolvedSymbols.map(sym => (
+                          <span key={sym} className="rounded-md border border-white/[.08] bg-white/[.03] px-1.5 py-0.5 font-mono text-[10px] text-slate-300">
+                            {sym.replace(/USDT$/i, '')}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Scan button + results */}
+              <div>
+                <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 pb-1 border-b border-white/[.05]">
+                  Проверка в моменте
+                </div>
+                <p className="mb-3 text-[11px] text-slate-500">
+                  Запускает проверку доступных символов на соответствие выбранным сигналам прямо сейчас.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleScan}
+                  disabled={scanLoading}
+                  className="inline-flex items-center gap-2 rounded-lg border border-[#5b8cff]/30 bg-[#5b8cff]/[.12] px-4 py-2 text-[12px] font-semibold text-[#a0b8ff] hover:bg-[#5b8cff]/[.20] disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {scanLoading
+                    ? <><Loader2 size={13} className="animate-spin" />Проверяем...</>
+                    : <><Search size={13} />Проверить</>
+                  }
+                </button>
+
+                {scanError && (
+                  <div className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/[.08] px-3 py-2 text-[12px] text-rose-300">
+                    {scanError}
+                  </div>
+                )}
+
+                {scanResult !== null && (
+                  <div className="mt-3">
+                    {scanResult.length === 0 ? (
+                      <div className="text-[12px] text-slate-500">Совпадений не найдено</div>
+                    ) : (
+                      <>
+                        <div className="mb-1.5 text-[11px] text-slate-400">
+                          Найдено символов: <span className="font-semibold text-slate-200">{scanResult.length}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 max-h-[160px] overflow-y-auto">
+                          {scanResult.map(r => (
+                            <span
+                              key={r.symbol}
+                              className={
+                                'rounded-md border px-2 py-0.5 font-mono text-[11px] font-semibold ' +
+                                (r.state === 'buy'
+                                  ? 'border-emerald-500/30 bg-emerald-500/[.12] text-emerald-300'
+                                  : 'border-rose-500/30 bg-rose-500/[.12] text-rose-300')
+                              }
+                            >
+                              {r.symbol}
+                            </span>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -738,12 +1070,15 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function Field({ label, children, required }: { label: string; children: React.ReactNode; required?: boolean }) {
+function Field({ label, children, required, hint }: { label: string; children: React.ReactNode; required?: boolean; hint?: string }) {
   return (
     <div>
-      <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-slate-400">
-        {label}{required && <span className="ml-0.5 text-[#5b8cff]">*</span>}
-      </label>
+      <div className="mb-1.5 flex items-baseline gap-2">
+        <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">
+          {label}{required && <span className="ml-0.5 text-[#5b8cff]">*</span>}
+        </label>
+        {hint && <span className="text-[10px] text-slate-600">{hint}</span>}
+      </div>
       {children}
     </div>
   );

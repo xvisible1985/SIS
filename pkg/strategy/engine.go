@@ -53,7 +53,8 @@ func (e *Engine) Start(ctx context.Context) {
 		        tp_mode, tp_pct, sl_type, sl_pct, signal_filter, hedge_mode,
 		        entry_order_type, COALESCE(steps::text,'[]'),
 		        COALESCE(signal_configs::text,'[]'),
-		        after_stop_mode, cycle_count, max_cycles, bot_id, COALESCE(matrix_levels::text,''), COALESCE(safe_zone_pct,0), COALESCE(matrix_entry_level::text,'')
+		        after_stop_mode, cycle_count, max_cycles, bot_id, COALESCE(matrix_levels::text,''), COALESCE(safe_zone_pct,0), COALESCE(matrix_entry_level::text,''),
+		        COALESCE(strategy_type,'grid')
 		 FROM strategies WHERE status IN ('active','finishing')`)
 	if err != nil {
 		log.Printf("strategy engine: load: %v", err)
@@ -77,7 +78,8 @@ func (e *Engine) Notify(ctx context.Context, strategyID string) {
 		        tp_mode, tp_pct, sl_type, sl_pct, signal_filter, hedge_mode,
 		        entry_order_type, COALESCE(steps::text,'[]'),
 		        COALESCE(signal_configs::text,'[]'),
-		        after_stop_mode, cycle_count, max_cycles, bot_id, COALESCE(matrix_levels::text,''), COALESCE(safe_zone_pct,0), COALESCE(matrix_entry_level::text,'')
+		        after_stop_mode, cycle_count, max_cycles, bot_id, COALESCE(matrix_levels::text,''), COALESCE(safe_zone_pct,0), COALESCE(matrix_entry_level::text,''),
+		        COALESCE(strategy_type,'grid')
 		 FROM strategies WHERE id=$1`, strategyID)
 	if err := scanStrategyRow(row, &s); err != nil {
 		log.Printf("strategy engine: notify %s: %v", strategyID, err)
@@ -419,6 +421,7 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 		&tpm, &s.TPPct, &slt, &s.SLPct, &sf, &hm,
 		&s.EntryOrderType, &stepsJSON, &signalConfigsJSON,
 		&afterStopMode, &s.CycleCount, &s.MaxCycles, &s.BotID, &matrixJSON, &s.SafeZonePct, &entryLevelJSON,
+		&s.StrategyType,
 	)
 	if err != nil {
 		return err

@@ -1,0 +1,160 @@
+<h2>Дизайн вкладки «Матрица» — выбери подход</h2>
+<p class="subtitle">Три варианта компоновки для настройки уровней матричной стратегии в модальном окне 500px</p>
+
+<div class="cards">
+
+  <!-- Option A -->
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#0f172a;padding:12px;font-family:monospace;font-size:11px;color:#94a3b8;border-radius:6px 6px 0 0">
+      <div style="color:#60a5fa;font-size:10px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">▼ Уровни ниже входа (Buy)</div>
+      <div style="display:grid;grid-template-columns:20px 1fr 1fr 1fr 1fr 1fr 18px;gap:4px;color:#475569;font-size:9px;margin-bottom:4px;padding:0 2px">
+        <span>#</span><span>Шаг%</span><span>Объём%</span><span>Стоп%</span><span>Усл%</span><span>ТП%</span><span></span>
+      </div>
+      <div style="display:grid;grid-template-columns:20px 1fr 1fr 1fr 1fr 1fr 18px;gap:4px;background:#1e293b;border-radius:4px;padding:4px;margin-bottom:3px;align-items:center">
+        <span style="color:#475569">1</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px 4px;color:#e2e8f0">1.5</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px 4px;color:#e2e8f0">5</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px 4px;color:#e2e8f0">3</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px 4px;color:#e2e8f0">1</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px 4px;color:#e2e8f0">2</span>
+        <span style="color:#dc2626;font-size:10px">✕</span>
+      </div>
+      <div style="display:grid;grid-template-columns:20px 1fr 1fr 1fr 1fr 1fr 18px;gap:4px;background:#1e293b;border-radius:4px;padding:4px;margin-bottom:3px;align-items:center">
+        <span style="color:#475569">2</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px 4px;color:#e2e8f0">3.0</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px 4px;color:#e2e8f0">10</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px 4px;color:#475569;font-style:italic">—</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px 4px;color:#475569;font-style:italic">—</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px 4px;color:#e2e8f0">4</span>
+        <span style="color:#dc2626;font-size:10px">✕</span>
+      </div>
+      <div style="color:#22c55e;font-size:10px;text-transform:uppercase;letter-spacing:.05em;margin:8px 0 6px">▲ Уровни выше входа (Buy)</div>
+      <div style="display:grid;grid-template-columns:20px 1fr 1fr 1fr 1fr 1fr 18px;gap:4px;background:#1e293b;border-radius:4px;padding:4px;align-items:center">
+        <span style="color:#475569">1</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px 4px;color:#e2e8f0">2.0</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px 4px;color:#e2e8f0">8</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px 4px;color:#e2e8f0">2</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px 4px;color:#e2e8f0">0.5</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px 4px;color:#e2e8f0">3</span>
+        <span style="color:#dc2626;font-size:10px">✕</span>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — Две таблицы</h3>
+      <p>Два отдельных блока: «выше входа» и «ниже входа». Все 5 полей уровня — в строке таблицы.</p>
+      <div class="pros-cons" style="font-size:11px;margin-top:8px">
+        <div class="pros"><h4>+</h4><ul><li>Вся информация сразу</li><li>Быстрое редактирование</li></ul></div>
+        <div class="cons"><h4>−</h4><ul><li>Тесно — 7 колонок в 500px</li><li>Много полей на экране</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Option B -->
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#0f172a;padding:12px;font-family:monospace;font-size:11px;color:#94a3b8;border-radius:6px 6px 0 0">
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <div style="background:#1e3a5f;border:1px solid #1d4ed8;border-radius:4px;padding:3px 8px;font-size:10px;color:#60a5fa">↓ Ниже входа (3)</div>
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:4px;padding:3px 8px;font-size:10px;color:#475569">↑ Выше входа (2)</div>
+      </div>
+      <div style="background:#1e293b;border-radius:6px;overflow:hidden;margin-bottom:4px">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-bottom:1px solid #0f172a">
+          <div style="display:flex;gap:8px;align-items:center">
+            <span style="color:#60a5fa;font-size:10px">L1</span>
+            <span style="color:#e2e8f0">Шаг 1.5%</span>
+            <span style="color:#94a3b8">•</span>
+            <span style="color:#e2e8f0">Объём 5%</span>
+          </div>
+          <span style="color:#22c55e;font-size:10px">▸ стоп+ТП</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-bottom:1px solid #0f172a">
+          <div style="display:flex;gap:8px;align-items:center">
+            <span style="color:#60a5fa;font-size:10px">L2</span>
+            <span style="color:#e2e8f0">Шаг 3.0%</span>
+            <span style="color:#94a3b8">•</span>
+            <span style="color:#e2e8f0">Объём 10%</span>
+          </div>
+          <span style="color:#475569;font-size:10px">▸ нет стопа</span>
+        </div>
+        <div style="padding:6px 8px 8px;background:#0f172a;font-size:10px;color:#94a3b8">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px">
+            <div style="background:#1e293b;padding:4px 6px;border-radius:3px">Стоп <span style="color:#fbbf24">3%</span></div>
+            <div style="background:#1e293b;padding:4px 6px;border-radius:3px">Усл <span style="color:#fbbf24">1%</span></div>
+            <div style="background:#1e293b;padding:4px 6px;border-radius:3px">ТП <span style="color:#fbbf24">2%</span></div>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px">
+          <div style="display:flex;gap:8px;align-items:center">
+            <span style="color:#60a5fa;font-size:10px">L3</span>
+            <span style="color:#e2e8f0">Шаг 5.0%</span>
+            <span style="color:#94a3b8">•</span>
+            <span style="color:#e2e8f0">Объём 15%</span>
+          </div>
+          <span style="color:#22c55e;font-size:10px">▸ стоп+ТП</span>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — Аккордеон-карточки</h3>
+      <p>Уровни как строки с кратким описанием. Клик разворачивает параметры стопа и ТП.</p>
+      <div class="pros-cons" style="font-size:11px;margin-top:8px">
+        <div class="pros"><h4>+</h4><ul><li>Не перегружен</li><li>Контекст по клику</li></ul></div>
+        <div class="cons"><h4>−</h4><ul><li>Лишние клики</li><li>Сложнее сравнивать уровни</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Option C -->
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#0f172a;padding:12px;font-family:monospace;font-size:11px;color:#94a3b8;border-radius:6px 6px 0 0">
+      <!-- Visualization strip -->
+      <div style="display:flex;align-items:center;gap:2px;margin-bottom:10px;overflow-x:auto;padding:4px 2px">
+        <span style="color:#60a5fa;font-size:9px;white-space:nowrap">S3</span>
+        <span style="background:#1e3a8a;color:#93c5fd;border-radius:3px;padding:2px 5px;font-size:9px;white-space:nowrap">−5%</span>
+        <span style="background:#1e3a8a;color:#93c5fd;border-radius:3px;padding:2px 5px;font-size:9px;white-space:nowrap">−3%</span>
+        <span style="background:#1e3a8a;color:#93c5fd;border-radius:3px;padding:2px 5px;font-size:9px;white-space:nowrap">−1.5%</span>
+        <span style="background:#1d4ed8;color:white;border-radius:3px;padding:3px 6px;font-size:10px;font-weight:bold;white-space:nowrap">ВХОД</span>
+        <span style="background:#14532d;color:#86efac;border-radius:3px;padding:2px 5px;font-size:9px;white-space:nowrap">+2%</span>
+        <span style="background:#14532d;color:#86efac;border-radius:3px;padding:2px 5px;font-size:9px;white-space:nowrap">+4%</span>
+        <span style="color:#22c55e;font-size:9px;white-space:nowrap">L2</span>
+      </div>
+      <!-- Unified table -->
+      <div style="display:grid;grid-template-columns:40px 1fr 1fr 1fr 1fr 18px;gap:3px;color:#475569;font-size:9px;margin-bottom:4px">
+        <span>Напр.</span><span>Шаг%</span><span>Объём%</span><span>Стоп%</span><span>ТП%</span><span></span>
+      </div>
+      <div style="display:grid;grid-template-columns:40px 1fr 1fr 1fr 1fr 18px;gap:3px;background:#1e293b;border-radius:4px;padding:4px;margin-bottom:2px;align-items:center">
+        <span style="background:#1e3a8a;color:#93c5fd;border-radius:3px;padding:1px 4px;font-size:9px;text-align:center">↓</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px;color:#e2e8f0;text-align:center">1.5</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px;color:#e2e8f0;text-align:center">5</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px;color:#e2e8f0;text-align:center">3</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px;color:#e2e8f0;text-align:center">2</span>
+        <span style="color:#dc2626;font-size:10px">✕</span>
+      </div>
+      <div style="display:grid;grid-template-columns:40px 1fr 1fr 1fr 1fr 18px;gap:3px;background:#1e293b;border-radius:4px;padding:4px;margin-bottom:2px;align-items:center">
+        <span style="background:#1e3a8a;color:#93c5fd;border-radius:3px;padding:1px 4px;font-size:9px;text-align:center">↓</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px;color:#e2e8f0;text-align:center">3.0</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px;color:#e2e8f0;text-align:center">10</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px;color:#475569;text-align:center">—</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px;color:#e2e8f0;text-align:center">4</span>
+        <span style="color:#dc2626;font-size:10px">✕</span>
+      </div>
+      <div style="display:grid;grid-template-columns:40px 1fr 1fr 1fr 1fr 18px;gap:3px;background:#1e293b;border-radius:4px;padding:4px;align-items:center">
+        <span style="background:#14532d;color:#86efac;border-radius:3px;padding:1px 4px;font-size:9px;text-align:center">↑</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px;color:#e2e8f0;text-align:center">2.0</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px;color:#e2e8f0;text-align:center">8</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px;color:#e2e8f0;text-align:center">2</span>
+        <span style="background:#0f172a;border-radius:3px;padding:2px;color:#e2e8f0;text-align:center">3</span>
+        <span style="color:#dc2626;font-size:10px">✕</span>
+      </div>
+      <div style="color:#475569;font-size:9px;margin-top:6px">* Стоп усл.% и замена стоп% — в детали строки (клик ▸)</div>
+    </div>
+    <div class="card-body">
+      <h3>C — Единая таблица с направлением</h3>
+      <p>Одна таблица, у каждой строки значок ↓/↑ (ниже/выше входа). Визуализация — шкала над таблицей. Детали стопа — по клику на строку.</p>
+      <div class="pros-cons" style="font-size:11px;margin-top:8px">
+        <div class="pros"><h4>+</h4><ul><li>Компактно</li><li>Все уровни в одном скролле</li><li>Наглядная шкала</li></ul></div>
+        <div class="cons"><h4>−</h4><ul><li>Детали стопа спрятаны</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+</div>

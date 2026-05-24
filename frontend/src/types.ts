@@ -297,6 +297,7 @@ export interface StrategyLevel {
   sl_order_id?: string
   sl_price?: number
   sl_replaced?: boolean
+  force_virtual?: boolean
 }
 
 export interface StrategyEvent {
@@ -380,6 +381,7 @@ export interface StrategyFormData {
 // Cycle Audit
 export interface CycleAuditLevel {
   idx: number
+  slot?: number | null
   side: string
   target_price: number
   size_usdt: number
@@ -387,8 +389,13 @@ export interface CycleAuditLevel {
   db_status: string
   filled_price: number
   exchange_order_id: string
+  sl_order_id?: string
+  sl_price?: number
+  sl_replaced?: boolean
   live_on_exchange: boolean
+  sl_live_on_exchange?: boolean
   in_order_index: boolean
+  sl_in_order_index?: boolean
   flag: 'ok' | 'pending' | 'missing_fill' | 'cancelled' | 'orphan'
 }
 
@@ -401,6 +408,7 @@ export interface CycleAuditTPSL {
 
 export interface CycleAuditData {
   no_active_cycle?: boolean
+  strategy_type?: string
   cycle_num?: number
   started_at?: string
   position?: { size: string; avg_entry: string; side: string; unrealised_pnl: string } | null

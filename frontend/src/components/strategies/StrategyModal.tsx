@@ -3,7 +3,19 @@ import { TemplateSelector } from './TemplateSelector'
 import { Toggle, Tip, SignalPickerField } from './FormWidgets'
 import { createStrategy, updateStrategy, getStrategyState, getInstrumentConstraints, type InstrumentConstraints } from '../../api/strategies'
 import { CoinPicker } from '../common/CoinPicker'
-import type { Strategy, StrategyFormData, GridStep, SignalConfig } from '../../types'
+import type { Strategy, StrategyFormData, GridStep, MatrixLevel, MatrixEntryLevel } from '../../types'
+
+const DEFAULT_MATRIX_LEVELS: MatrixLevel[] = [
+  { direction: 'below', price_step_pct: 1.5, size_pct: 5,  stop_pct: -3.0, stop_cond_pct: -1.0, stop_replace_pct: -0.5, tp_pct: 2.5 },
+  { direction: 'below', price_step_pct: 3.0, size_pct: 8,  stop_pct: -2.5, stop_cond_pct: null,  stop_replace_pct: null,  tp_pct: 3.5 },
+  { direction: 'below', price_step_pct: 5.0, size_pct: 12, stop_pct: null,  stop_cond_pct: null,  stop_replace_pct: null,  tp_pct: 4.0 },
+  { direction: 'above', price_step_pct: 2.0, size_pct: 5,  stop_pct: -3.5, stop_cond_pct: -1.0, stop_replace_pct: -0.5, tp_pct: 3.0 },
+  { direction: 'above', price_step_pct: 4.0, size_pct: 8,  stop_pct: -3.0, stop_cond_pct: -1.5, stop_replace_pct: -1.5, tp_pct: 4.5 },
+]
+
+const DEFAULT_MATRIX_ENTRY: MatrixEntryLevel = {
+  size_pct: 10, stop_pct: -5.0, stop_cond_pct: -2.0, stop_replace_pct: 1.0, tp_pct: 2.0,
+}
 
 function defaultForm(): StrategyFormData {
   return {
@@ -28,11 +40,15 @@ function defaultForm(): StrategyFormData {
     signal_configs: [],
     tp_pct: 2.0,
     tp_mode: 'total',
-    sl_pct: 5.0,
+    sl_pct: -5.0,
     sl_type: 'conditional',
     trailing_stop_enabled: false,
     trailing_activation_pct: 1.5,
     trailing_callback_pct: 0.5,
+    after_stop_mode: 'restart',
+    matrix_levels: DEFAULT_MATRIX_LEVELS,
+    safe_zone_pct: 1.5,
+    matrix_entry_level: DEFAULT_MATRIX_ENTRY,
   }
 }
 
@@ -60,6 +76,20 @@ function strategyToForm(s: Strategy): StrategyFormData {
     trailing_stop_enabled: s.trailing_stop_enabled,
     trailing_activation_pct: s.trailing_activation_pct ?? 1.5,
     trailing_callback_pct: s.trailing_callback_pct ?? 0.5,
+    after_stop_mode: s.after_stop_mode ?? 'restart',
+    matrix_levels: (s.matrix_levels ?? DEFAULT_MATRIX_LEVELS).map(l => ({
+      direction: (l as any).direction ?? 'below',
+      price_step_pct: l.price_step_pct,
+      size_pct: (l as any).size_pct ?? 0,
+      stop_pct: l.stop_pct ?? null,
+      stop_cond_pct: (l as any).stop_cond_pct ?? null,
+      stop_replace_pct: (l as any).stop_replace_pct ?? null,
+      tp_pct: (l as any).tp_pct ?? null,
+      order_type: (l as any).order_type ?? 'exchange',
+      use_signal: (l as any).use_signal ?? false,
+    })),
+    safe_zone_pct: s.safe_zone_pct ?? 1.5,
+    matrix_entry_level: s.matrix_entry_level ?? DEFAULT_MATRIX_ENTRY,
   }
 }
 
@@ -80,6 +110,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
   const [error, setError] = useState<string | null>(null)
   const [filledLevels, setFilledLevels] = useState(filledLevelsProp)
   const [instrInfo, setInstrInfo] = useState<InstrumentConstraints | null>(null)
+  const [minLotEnabled, setMinLotEnabled] = useState(false)
 
   // Fetch live filled count when editing — card state may not be loaded yet.
   useEffect(() => {
@@ -95,6 +126,13 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
     getInstrumentConstraints(form.symbol, form.category).then(setInstrInfo).catch(() => {})
   }, [form.symbol, form.category])
 
+  // Если включён min-lot — форсируем grid_size_usdt
+  useEffect(() => {
+    if (minLotEnabled && instrInfo && instrInfo.min_order_usdt > 0) {
+      patch({ grid_size_usdt: instrInfo.min_order_usdt })
+    }
+  }, [minLotEnabled, instrInfo])
+
   function patch(partial: Partial<StrategyFormData>) {
     setForm(f => ({ ...f, ...partial }))
   }
@@ -107,11 +145,57 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
     patch({ steps: form.steps.filter((_, idx) => idx !== i) })
   }
 
-  function updateStep(i: number, field: keyof GridStep, value: number) {
+  function updateStep(i: number, field: keyof GridStep, value: number | string | boolean) {
     const steps = form.steps.map((s, idx) =>
       idx === i ? { ...s, [field]: value } : s
     )
     patch({ steps })
+  }
+
+  const aboveLevels = form.matrix_levels.filter(l => l.direction === 'above')
+  const belowLevels = form.matrix_levels.filter(l => l.direction === 'below')
+
+  function addAboveLevel() {
+    const last = aboveLevels[aboveLevels.length - 1]
+    const newLevel: MatrixLevel = {
+      direction: 'above',
+      price_step_pct: last ? +(last.price_step_pct + 2).toFixed(1) : 2.0,
+      size_pct: last ? +(last.size_pct + 2).toFixed(1) : 5,
+      stop_pct: null, stop_cond_pct: null, stop_replace_pct: null, tp_pct: null,
+    }
+    patch({ matrix_levels: [...form.matrix_levels, newLevel] })
+  }
+  function addBelowLevel() {
+    const last = belowLevels[belowLevels.length - 1]
+    const newLevel: MatrixLevel = {
+      direction: 'below',
+      price_step_pct: last ? +(last.price_step_pct + 1.5).toFixed(1) : 1.5,
+      size_pct: last ? +(last.size_pct + 3).toFixed(1) : 5,
+      stop_pct: null, stop_cond_pct: null, stop_replace_pct: null, tp_pct: null,
+    }
+    patch({ matrix_levels: [...form.matrix_levels, newLevel] })
+  }
+  function removeMatrixLevel(direction: 'above' | 'below', idx: number) {
+    const dirLevels = form.matrix_levels.filter(l => l.direction === direction)
+    if (dirLevels.length <= 1) return
+    let removed = false
+    patch({ matrix_levels: form.matrix_levels.filter(l => {
+      if (l.direction !== direction) return true
+      const thisIdx = form.matrix_levels.filter(x => x.direction === direction).indexOf(l)
+      if (thisIdx === idx && !removed) { removed = true; return false }
+      return true
+    }) })
+  }
+  function updateMatrixLevel(direction: 'above' | 'below', idx: number, field: keyof MatrixLevel, value: number | string | boolean | null) {
+    let dirCount = 0
+    patch({ matrix_levels: form.matrix_levels.map(l => {
+      if (l.direction !== direction) return l
+      if (dirCount++ === idx) return { ...l, [field]: value }
+      return l
+    }) })
+  }
+  function updateEntryLevel(field: keyof MatrixEntryLevel, value: number | null) {
+    patch({ matrix_entry_level: { ...form.matrix_entry_level, [field]: value } })
   }
 
   function loadTemplate(config: Partial<StrategyFormData>) {
@@ -128,19 +212,21 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
         setError(`Максимальное плечо для ${form.symbol}: ×${instrInfo.max_leverage}`)
         return
       }
-      if (instrInfo.min_notional_value > 0 && form.grid_size_usdt < instrInfo.min_notional_value) {
-        setError(`Минимальный размер ордера для ${form.symbol}: ${instrInfo.min_notional_value}$`)
+      if (instrInfo.min_order_usdt > 0 && form.grid_size_usdt < instrInfo.min_order_usdt) {
+        setError(`Минимальный размер ордера для ${form.symbol}: ${instrInfo.min_order_usdt.toFixed(2)}$`)
         return
       }
     }
     setSaving(true)
     setError(null)
     try {
+      const isMatrix = form.strategy_type === 'dca'
+      const totalMatrixLevels = aboveLevels.length + 1 + belowLevels.length
       const payload = {
         ...form,
-        grid_levels: form.steps.length || 1,
-        grid_active: form.grid_active > 0 ? form.grid_active : form.steps.length || 1,
-        grid_step_pct: form.steps[0]?.price_move_pct ?? 0,
+        grid_levels: isMatrix ? totalMatrixLevels : (form.steps.length || 1),
+        grid_active: isMatrix ? totalMatrixLevels : (form.grid_active > 0 ? form.grid_active : form.steps.length || 1),
+        grid_step_pct: isMatrix ? (belowLevels[0]?.price_step_pct ?? aboveLevels[0]?.price_step_pct ?? 0) : (form.steps[0]?.price_move_pct ?? 0),
         signal_filter: form.signal_configs.length > 0,
       }
       if (strategy) {
@@ -165,13 +251,13 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
     }
   }
 
-  const tabLabels = ['1. Базовые', '2. Сетка ордеров', '3. Завершение']
+  const tabLabels = ['1. Базовые', form.strategy_type === 'dca' ? '2. Матрица' : '2. Сетка ордеров', '3. Завершение']
   const inputCls = 'w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-blue-500'
-  const labelCls = 'flex items-center text-xs text-gray-500 mb-1'
+  const labelCls = 'flex items-center text-xs text-gray-400 mb-1'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-gray-900 border border-gray-700 rounded-xl w-[500px] shadow-2xl flex flex-col max-h-[90vh]">
+      <div className="bg-gray-900 border border-gray-700 rounded-xl w-[740px] shadow-2xl flex flex-col max-h-[90vh]">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-700">
           <span className="text-gray-100 font-semibold">
@@ -180,8 +266,13 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
           <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-xl leading-none">✕</button>
         </div>
 
-        {/* Template bar */}
-        <TemplateSelector formData={form} onLoad={loadTemplate} />
+        {/* Template bar + strategy type switcher */}
+        <TemplateSelector
+          formData={form}
+          onLoad={loadTemplate}
+          strategyType={form.strategy_type as 'grid' | 'dca'}
+          onStrategyTypeChange={t => patch({ strategy_type: t })}
+        />
 
         {/* Tabs */}
         <div className="flex border-b border-gray-700">
@@ -228,18 +319,6 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
               </div>
 
               <div>
-                <label className={labelCls}>Тип стратегии<Tip text="Grid — сетка лимитных ордеров: стратегия сама расставляет уровни и усредняет позицию по мере движения цены. Matrix — усреднение по сигналам индикаторов." /></label>
-                <Toggle
-                  options={[
-                    { label: 'Grid', value: 'grid' },
-                    { label: 'Matrix', value: 'dca' },
-                  ]}
-                  value={form.strategy_type}
-                  onChange={v => patch({ strategy_type: v as StrategyFormData['strategy_type'] })}
-                />
-              </div>
-
-              <div>
                 <label className={labelCls}>Робот<Tip text="Разрешить или запретить боту управлять стратегией автоматически." /></label>
                 <div className="flex items-center gap-3">
                   <button
@@ -258,6 +337,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                 </div>
               </div>
 
+              {form.strategy_type !== 'dca' && (
               <div>
                 <label className={labelCls}>Тип входного ордера<Tip text="Limit — мейкер-ордер ждёт своей цены в стакане (комиссия ~0.02%). Stop Market — тейкер-ордер срабатывает при пробое уровня (комиссия ~0.055%). Limit дешевле, Stop Market гарантирует исполнение." /></label>
                 <Toggle
@@ -269,12 +349,13 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                   onChange={v => patch({ entry_order_type: v as 'limit' | 'stop_market' })}
                 />
               </div>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className={labelCls}>
                     Плечо (×)
-                    {instrInfo && <span className="ml-1.5 text-[10px] text-gray-600">макс. ×{instrInfo.max_leverage}</span>}
+                    {instrInfo && <span className="ml-1.5 text-[10px] text-gray-500">макс. ×{instrInfo.max_leverage}</span>}
                     <Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500. Чем выше плечо — тем больше потенциальная прибыль и тем ближе ликвидация." />
                   </label>
                   <input
@@ -287,15 +368,29 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                 <div>
                   <label className={labelCls}>
                     Объём 1 лота (USDT)
-                    {instrInfo?.min_notional_value ? <span className="ml-1.5 text-[10px] text-gray-600">мин. {instrInfo.min_notional_value}$</span> : null}
+                    {instrInfo?.min_order_usdt ? <span className="ml-1.5 text-[10px] text-gray-500">мин. {instrInfo.min_order_usdt.toFixed(2)}$</span> : null}
                     <Tip text="Размер одного базового ордера в USDT. Итоговый объём каждого уровня сетки = лоты шага × этот размер. Например, при 100 USDT/лот и 2 лотах на шаге — ордер на 200 USDT." />
                   </label>
-                  <input
-                    type="number" min={instrInfo?.min_notional_value ?? 1}
-                    value={form.grid_size_usdt}
-                    onChange={e => patch({ grid_size_usdt: Number(e.target.value) })}
-                    className={instrInfo && form.grid_size_usdt < instrInfo.min_notional_value ? `${inputCls} border-red-500` : inputCls}
-                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number" min={instrInfo?.min_order_usdt ?? 1}
+                      value={form.grid_size_usdt}
+                      onChange={e => patch({ grid_size_usdt: Number(e.target.value) })}
+                      disabled={minLotEnabled}
+                      className={`${inputCls} [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${minLotEnabled ? 'cursor-not-allowed opacity-50' : ''} ${instrInfo && form.grid_size_usdt < instrInfo.min_order_usdt ? 'border-red-500' : ''}`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setMinLotEnabled(v => !v)}
+                      className={`shrink-0 rounded-lg border px-3 py-1.5 text-[11px] font-semibold transition-colors ${
+                        minLotEnabled
+                          ? 'border-blue-500/40 bg-blue-500/[.18] text-blue-400'
+                          : 'border-gray-700 bg-gray-800 text-gray-400 hover:bg-gray-700'
+                      }`}
+                    >
+                      min
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -319,32 +414,247 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
             </>
           )}
 
-          {/* Tab 2: Averaging */}
-          {tab === 1 && (
+          {/* Tab 2: Matrix */}
+          {tab === 1 && form.strategy_type === 'dca' && (() => {
+            const miniInput = (
+              value: number | null,
+              onChange: (v: number | null) => void,
+              extraCls = ''
+            ) => (
+              <input
+                type="number" step="0.1"
+                value={value ?? ''}
+                placeholder="—"
+                onChange={e => onChange(e.target.value === '' ? null : Number(e.target.value))}
+                className={`bg-gray-900 border rounded py-1 px-1 text-xs text-gray-100 text-center w-full outline-none focus:border-blue-500 ${value === null ? 'border-dashed border-gray-700 text-gray-600 placeholder-gray-700' : 'border-gray-700'} ${extraCls}`}
+              />
+            )
+            const colHdrCls = 'text-[8px] text-gray-400 text-center flex items-center justify-center gap-0.5'
+            const colGrid = 'grid grid-cols-[34px_1fr_1fr_6px_1fr_1fr_1fr_1fr_46px_40px_18px] gap-[3px] items-center'
+            const sep = <div className="flex items-center justify-center"><div className="w-px h-[22px] bg-gray-700/60" /></div>
+            const orderTypeBtn = (isVirtual: boolean, isFilled: boolean, onToggle: () => void) => (
+              <button
+                onClick={onToggle}
+                disabled={isFilled}
+                title={isVirtual ? 'Виртуальный — бот следит за ценой и выставляет ордер в нужный момент' : 'Биржевой — ордер сразу выставляется на биржу'}
+                className={`text-[8px] leading-4 font-bold rounded w-full py-1 transition-colors ${
+                  isFilled ? 'opacity-40 cursor-not-allowed bg-gray-800 text-gray-600 border border-gray-700' :
+                  isVirtual ? 'bg-violet-950/60 text-violet-300 border border-violet-800/50 hover:bg-violet-900/60' :
+                  'bg-gray-800 text-gray-500 border border-gray-700 hover:text-gray-300'
+                }`}
+              >
+                {isVirtual ? 'Virtual' : 'Broker'}
+              </button>
+            )
+            const colHdrs = () => (
+              <div className={`${colGrid} px-1 pb-1`}>
+                <span />
+                <span className={colHdrCls}>Шаг %<Tip text="% от точки входа до этого уровня. L(1) = первый шаг от входа, L(2) = ещё на этот % дальше." /></span>
+                <span className={colHdrCls}>Объём %<Tip text="Размер ордера как % от Депозита. Например 5% от 1000 USDT = ордер 50 USDT." /></span>
+                <span />
+                <span className={colHdrCls}>Стоп %<Tip text="Расстояние частичного стопа от цены взятия ордера. Ставится сразу при заполнении. Пусто = не ставить." /></span>
+                <span className={colHdrCls}>Усл %<Tip text="Условие перевыставления стопа: когда цена уйдёт от ТВХ на этот %, стоп отменяется и ставится заново на расстоянии «Замена %»." /></span>
+                <span className={colHdrCls}>Замена %<Tip text="Новое расстояние стопа от цены взятия после перевыставления. Отрицательное значение переводит стоп в зону прибыли." /></span>
+                <span className={colHdrCls}>ТП %<Tip text="Тейкпрофит от цены входа (ТВХ). При достижении закрывает ВСЮ позицию. Пусто = не ставить." /></span>
+                <span className={colHdrCls}>Тип<Tip text="Broker — ордер сразу выставляется на биржу. Virtual — бот следит за ценой и выставляет ордер в нужный момент." /></span>
+                <span className={colHdrCls}>Сигн<Tip text="Signal — ордер выставляется только при активном сигнале стратегии. No — ордер выставляется независимо от сигнала." /></span>
+                <span />
+              </div>
+            )
+            const levelRow = (
+              direction: 'above' | 'below',
+              level: MatrixLevel,
+              dirIdx: number,
+              labelNum: number,
+              isFilled: boolean,
+              canDelete: boolean
+            ) => {
+              const isAbove = direction === 'above'
+              const badgeCls = isAbove
+                ? 'bg-emerald-900 text-emerald-300 text-[8px] font-bold rounded text-center py-0.5'
+                : 'bg-blue-900 text-blue-300 text-[8px] font-bold rounded text-center py-0.5'
+              const rowCls = isAbove ? 'bg-emerald-950/20' : 'bg-blue-950/30'
+              return (
+                <div key={`${direction}-${dirIdx}`} className={`${colGrid} px-1 py-1 rounded mb-0.5 ${isFilled ? 'bg-green-950/40' : rowCls}`}>
+                  <div className={badgeCls}>
+                    {isFilled ? <span className="text-green-400">✓</span> : (isAbove ? `L(${labelNum})` : `L(-${labelNum})`)}
+                  </div>
+                  <input type="number" step="0.1" value={level.price_step_pct} disabled={isFilled}
+                    onChange={e => updateMatrixLevel(direction, dirIdx, 'price_step_pct', Number(e.target.value))}
+                    className={`bg-gray-900 border border-gray-700 rounded py-1 px-1 text-xs text-gray-100 text-center w-full outline-none focus:border-blue-500 ${isFilled ? 'opacity-50 cursor-not-allowed' : ''}`} />
+                  <input type="number" step="0.5" value={level.size_pct} disabled={isFilled}
+                    onChange={e => updateMatrixLevel(direction, dirIdx, 'size_pct', Number(e.target.value))}
+                    className={`bg-gray-900 border border-gray-700 rounded py-1 px-1 text-xs text-gray-100 text-center w-full outline-none focus:border-blue-500 ${isFilled ? 'opacity-50 cursor-not-allowed' : ''}`} />
+                  {sep}
+                  {miniInput(level.stop_pct, v => updateMatrixLevel(direction, dirIdx, 'stop_pct', v))}
+                  {miniInput(level.stop_cond_pct, v => updateMatrixLevel(direction, dirIdx, 'stop_cond_pct', v))}
+                  {miniInput(level.stop_replace_pct, v => updateMatrixLevel(direction, dirIdx, 'stop_replace_pct', v))}
+                  {miniInput(level.tp_pct, v => updateMatrixLevel(direction, dirIdx, 'tp_pct', v))}
+                  {orderTypeBtn(level.order_type === 'virtual', isFilled, () => updateMatrixLevel(direction, dirIdx, 'order_type', level.order_type === 'virtual' ? 'exchange' : 'virtual'))}
+                  <button
+                    onClick={() => !isFilled && updateMatrixLevel(direction, dirIdx, 'use_signal', !level.use_signal)}
+                    disabled={isFilled}
+                    title={level.use_signal ? 'Выставлять уровень только при активном сигнале' : 'Выставлять уровень независимо от сигнала'}
+                    className={`text-[8px] leading-4 font-bold rounded w-full py-1 transition-colors ${
+                      isFilled ? 'opacity-40 cursor-not-allowed bg-gray-800 text-gray-600 border border-gray-700' :
+                      level.use_signal ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/50 hover:bg-emerald-900/60' :
+                      'bg-gray-800 text-gray-600 border border-gray-700 hover:text-gray-400'
+                    }`}
+                  >
+                    {level.use_signal ? 'Signal' : 'No'}
+                  </button>
+                  <button onClick={() => removeMatrixLevel(direction, dirIdx)} disabled={isFilled || !canDelete}
+                    className={`text-[11px] text-center ${isFilled || !canDelete ? 'text-gray-700 cursor-not-allowed' : 'text-red-600 hover:text-red-400'}`}>✕</button>
+                </div>
+              )
+            }
+
+            return (
+              <>
+                {/* Auto-virtual fallback notice */}
+                <div className="flex items-start gap-2 bg-violet-950/30 border border-violet-800/40 rounded-lg px-3 py-2 text-[10px] text-violet-300">
+                  <span className="mt-0.5 shrink-0 text-violet-400">ℹ</span>
+                  <span>
+                    Если биржа отклоняет ордер (нехватка баланса), уровень автоматически переходит в режим <strong>Virtual</strong> — бот будет следить за ценой и исполнит его рыночным ордером в нужный момент.
+                    Устанавливайте <strong>Virtual</strong> заранее для уровней, по которым ожидаете нехватку маржи.
+                  </span>
+                </div>
+
+                {/* Global params */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={labelCls}>Депозит (USDT)<Tip text="Базовая сумма в USDT, от которой рассчитывается объём каждого ордера. Объём уровня = Депозит × Объём %." /></label>
+                    <input type="number" min={1} value={form.grid_size_usdt}
+                      onChange={e => patch({ grid_size_usdt: Number(e.target.value) })}
+                      className={inputCls} />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Safe-Zone от SL %<Tip text="После срабатывания стоп-лосса — зона вокруг цены SL, в которой новые ордера матрицы не выставляются. Защита от немедленного повторного входа." /></label>
+                    <input type="number" step="0.1" min={0} value={form.safe_zone_pct}
+                      onChange={e => patch({ safe_zone_pct: Number(e.target.value) })}
+                      className={inputCls} />
+                  </div>
+                </div>
+
+                {/* ABOVE section */}
+                <div>
+                  <div className="text-[9px] text-gray-400 uppercase tracking-wider flex items-center justify-between pb-1 border-b border-gray-800 mb-1">
+                    <span>Выше точки входа <span className="normal-case text-gray-600 font-normal">(в сторону)</span></span>
+                    <span className="bg-emerald-900/60 text-emerald-400 rounded px-1.5 py-0.5 text-[8px]">{aboveLevels.length} уровней</span>
+                  </div>
+                  <button onClick={addAboveLevel}
+                    className="w-full border border-dashed border-emerald-900 text-emerald-700 rounded py-1 text-[10px] hover:border-emerald-700 hover:text-emerald-400 transition-colors mb-2">
+                    + Добавить уровень выше
+                  </button>
+                  <div>
+                    {[...aboveLevels].reverse().map((level, revIdx) => {
+                      const dirIdx = aboveLevels.length - 1 - revIdx
+                      const labelNum = dirIdx + 1
+                      return levelRow('above', level, dirIdx, labelNum, false, aboveLevels.length > 1)
+                    })}
+                  </div>
+                </div>
+
+                {/* ENTRY level (L0) */}
+                <div className="border border-yellow-700/60 bg-yellow-950/10 rounded-lg p-2">
+                  <div className="text-[9px] text-yellow-600 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                    ⬡ Нулевой уровень — точка входа L(0)
+                  </div>
+                  {colHdrs()}
+                  <div className={`${colGrid} px-1 py-1 rounded bg-yellow-950/20`}>
+                    <div className="bg-yellow-800/60 text-yellow-200 text-[8px] font-bold rounded text-center py-0.5">L(0)</div>
+                    <div className="bg-gray-900 border border-dashed border-gray-700 rounded py-1 text-[9px] text-gray-600 text-center">—</div>
+                    <input type="number" step="0.5" value={form.matrix_entry_level.size_pct}
+                      onChange={e => updateEntryLevel('size_pct', Number(e.target.value))}
+                      className="bg-gray-900 border border-gray-700 rounded py-1 px-1 text-xs text-gray-100 text-center w-full outline-none focus:border-blue-500" />
+                    {sep}
+                    {miniInput(form.matrix_entry_level.stop_pct, v => updateEntryLevel('stop_pct', v))}
+                    {miniInput(form.matrix_entry_level.stop_cond_pct, v => updateEntryLevel('stop_cond_pct', v))}
+                    {miniInput(form.matrix_entry_level.stop_replace_pct, v => updateEntryLevel('stop_replace_pct', v))}
+                    {miniInput(form.matrix_entry_level.tp_pct, v => updateEntryLevel('tp_pct', v))}
+                    {orderTypeBtn(
+                      form.matrix_entry_level.order_type === 'virtual',
+                      false,
+                      () => patch({ matrix_entry_level: { ...form.matrix_entry_level, order_type: form.matrix_entry_level.order_type === 'virtual' ? 'exchange' : 'virtual' } })
+                    )}
+                    <button
+                      onClick={() => patch({ matrix_entry_level: { ...form.matrix_entry_level, use_signal: !form.matrix_entry_level.use_signal } })}
+                      title={form.matrix_entry_level.use_signal ? 'Выставлять уровень только при активном сигнале' : 'Выставлять уровень независимо от сигнала'}
+                      className={`text-[8px] leading-4 font-bold rounded w-full py-1 transition-colors ${
+                        form.matrix_entry_level.use_signal
+                          ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/50 hover:bg-emerald-900/60'
+                          : 'bg-gray-800 text-gray-600 border border-gray-700 hover:text-gray-400'
+                      }`}
+                    >
+                      {form.matrix_entry_level.use_signal ? 'Signal' : 'No'}
+                    </button>
+                    <span />
+
+                  </div>
+                </div>
+
+                {/* BELOW section */}
+                <div>
+                  <div>
+                    {belowLevels.map((level, dirIdx) => {
+                      const isFilled = dirIdx < filledLevels
+                      return levelRow('below', level, dirIdx, dirIdx + 1, isFilled, belowLevels.length > 1)
+                    })}
+                  </div>
+                  <div className="text-[9px] text-gray-400 uppercase tracking-wider flex items-center justify-between pt-1 border-t border-gray-800 mt-1 mb-1">
+                    <span>Ниже точки входа <span className="normal-case text-gray-600 font-normal">(против направления)</span></span>
+                    <span className="bg-blue-900/60 text-blue-400 rounded px-1.5 py-0.5 text-[8px]">{belowLevels.length} уровней</span>
+                  </div>
+                  <button onClick={addBelowLevel}
+                    className="w-full border border-dashed border-blue-900 text-blue-600 rounded py-1 text-[10px] hover:border-blue-700 hover:text-blue-400 transition-colors">
+                    + Добавить уровень ниже
+                  </button>
+                </div>
+
+                {/* Signals */}
+                <div className="flex items-center gap-1 text-[10px] text-gray-400 uppercase tracking-wider pb-1 border-b border-gray-800 mt-1">
+                  Сигналы для входа<Tip text="Технические индикаторы, сигнал которых должен совпасть для запуска матрицы. Если сигналов нет — матрица стартует сразу при активации." />
+                </div>
+                <SignalPickerField
+                  configs={form.signal_configs}
+                  onChange={v => patch({ signal_configs: v })}
+                  onAutoSave={strategy ? (newConfigs) => {
+                    updateStrategy(strategy.id, { ...form, signal_configs: newConfigs, signal_filter: newConfigs.length > 0 } as any).catch(() => {})
+                  } : undefined}
+                />
+              </>
+            )
+          })()}
+
+          {/* Tab 2: Grid (non-matrix) */}
+          {tab === 1 && form.strategy_type !== 'dca' && (
             <>
-              <div className="text-[10px] text-gray-500 uppercase tracking-wider pb-1 border-b border-gray-800">
+              <div className="text-[10px] text-gray-400 uppercase tracking-wider pb-1 border-b border-gray-800">
                 Шаги усреднения
               </div>
               <div>
-                <div className="grid grid-cols-[28px_1fr_1fr_1fr_28px] gap-2 text-[10px] text-gray-600 mb-1 px-0.5">
-                  <div className="text-center">#</div>
-                  <div className="text-center">Движение %</div>
-                  <div className="text-center">Лотов</div>
-                  <div className="text-center">USDT</div>
+                <div className="grid grid-cols-[28px_1fr_1fr_1fr_46px_40px_28px] gap-2 text-[10px] text-gray-400 mb-1 px-0.5">
+                  <div className="flex items-center justify-center">#<Tip text="Номер шага усреднения. Шаги исполняются последовательно по мере движения цены." /></div>
+                  <div className="flex items-center justify-center">Движение %<Tip text="Процент движения цены от предыдущего шага. На этом расстоянии выставляется ордер." /></div>
+                  <div className="flex items-center justify-center">Лотов<Tip text="Количество лотов на этом шаге. Итоговый объём = Лотов × Объём 1 лота (USDT)." /></div>
+                  <div className="flex items-center justify-center">USDT<Tip text="Итоговый объём ордера в USDT. Редактируется напрямую — автоматически пересчитывает Лотов." /></div>
+                  <div className="flex items-center justify-center text-[8px]">Тип<Tip text="Broker — ордер сразу выставляется на биржу. Virtual — бот следит за ценой и выставляет ордер в нужный момент." /></div>
+                  <div className="flex items-center justify-center text-[8px]">Сигн<Tip text="Signal — ордер выставляется только при активном сигнале стратегии. No — независимо от сигнала." /></div>
                   <div />
                 </div>
                 <div className="max-h-[216px] overflow-y-auto">
                   {form.steps.map((step, i) => {
                     const isFilled = i < filledLevels
+                    const isVirtual = step.order_type === 'virtual'
                     return (
                       <div
                         key={i}
-                        className={`grid grid-cols-[28px_1fr_1fr_1fr_28px] gap-2 items-center py-1.5 border-b border-gray-800/60 last:border-0 ${isFilled ? 'bg-green-950/30' : ''}`}
+                        className={`grid grid-cols-[28px_1fr_1fr_1fr_46px_40px_28px] gap-2 items-center py-1.5 border-b border-gray-800/60 last:border-0 ${isFilled ? 'bg-green-950/30' : ''}`}
                       >
                         <div className="text-center text-[10px]">
                           {isFilled
                             ? <span className="text-green-400 font-bold">✓</span>
-                            : <span className="text-gray-600">{i + 1}</span>
+                            : <span className="text-gray-500">{i + 1}</span>
                           }
                         </div>
                         <input
@@ -369,6 +679,30 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                           }}
                           className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
                         />
+                        <button
+                          onClick={() => !isFilled && updateStep(i, 'order_type', isVirtual ? 'exchange' : 'virtual')}
+                          disabled={isFilled}
+                          title={isVirtual ? 'Виртуальный — бот следит за ценой и выставляет ордер в нужный момент' : 'Биржевой — ордер сразу выставляется на биржу'}
+                          className={`text-[8px] leading-4 font-bold rounded w-full py-1 transition-colors ${
+                            isFilled ? 'opacity-40 cursor-not-allowed bg-gray-800 text-gray-600 border border-gray-700' :
+                            isVirtual ? 'bg-violet-950/60 text-violet-300 border border-violet-800/50 hover:bg-violet-900/60' :
+                            'bg-gray-800 text-gray-500 border border-gray-700 hover:text-gray-300'
+                          }`}
+                        >
+                          {isVirtual ? 'Virtual' : 'Broker'}
+                        </button>
+                        <button
+                          onClick={() => !isFilled && updateStep(i, 'use_signal', !step.use_signal)}
+                          disabled={isFilled}
+                          title={step.use_signal ? 'Выставлять уровень только при активном сигнале' : 'Выставлять уровень независимо от сигнала'}
+                          className={`text-[8px] leading-4 font-bold rounded w-full py-1 transition-colors ${
+                            isFilled ? 'opacity-40 cursor-not-allowed bg-gray-800 text-gray-600 border border-gray-700' :
+                            step.use_signal ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/50 hover:bg-emerald-900/60' :
+                            'bg-gray-800 text-gray-600 border border-gray-700 hover:text-gray-400'
+                          }`}
+                        >
+                          {step.use_signal ? 'Signal' : 'No'}
+                        </button>
                         <button
                           onClick={() => removeStep(i)}
                           disabled={isFilled}
@@ -397,12 +731,12 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                   className={inputCls}
                   placeholder="0"
                 />
-                <p className="text-[10px] text-gray-600 mt-1">
+                <p className="text-[10px] text-gray-500 mt-1">
                   При заполнении ордера автоматически выставляется следующий шаг.
                 </p>
               </div>
 
-              <div className="flex items-center gap-1 text-[10px] text-gray-500 uppercase tracking-wider pb-1 border-b border-gray-800 mt-2">
+              <div className="flex items-center gap-1 text-[10px] text-gray-400 uppercase tracking-wider pb-1 border-b border-gray-800 mt-2">
                 Сигналы для входа<Tip text="Технические индикаторы, сигнал которых должен совпасть для запуска цикла. Если сигналов нет — цикл стартует сразу. AND-логика: все добавленные сигналы должны совпасть одновременно." />
               </div>
               <SignalPickerField
@@ -424,7 +758,12 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
           )}
 
           {/* Tab 3: Exit */}
-          {tab === 2 && (
+          {tab === 2 && form.strategy_type === 'dca' && (
+            <div className="py-10 text-center text-gray-500 text-sm">
+              Настройки завершения для матрикс-стратегии будут добавлены позже.
+            </div>
+          )}
+          {tab === 2 && form.strategy_type !== 'dca' && (
             <>
               {/* TP */}
               <div className="border border-green-900/50 bg-green-950/20 rounded-lg p-3 space-y-3">
@@ -448,6 +787,49 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                     />
                   </div>
                 </div>
+                {/* Trailing stop inside TP */}
+                <div className="pt-2 border-t border-green-900/40 space-y-3">
+                  <div className="flex items-center gap-1 text-[10px] text-green-600/80 uppercase tracking-wider pb-1">
+                    Трейлинг-стоп<Tip text="Автоматически подтягивает стоп вслед за ценой, фиксируя накопленную прибыль. Пока цена идёт в твою сторону — стоп следует за ней. Как только цена откатывается на заданный callback — позиция закрывается." />
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => patch({ trailing_stop_enabled: !form.trailing_stop_enabled })}
+                      className={`w-10 h-5 rounded-full relative transition-colors ${
+                        form.trailing_stop_enabled ? 'bg-green-600' : 'bg-gray-700'
+                      }`}
+                    >
+                      <span className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                        form.trailing_stop_enabled ? 'translate-x-5' : 'translate-x-0'
+                      }`} />
+                    </button>
+                    <span className={`text-xs ${form.trailing_stop_enabled ? 'text-green-400' : 'text-gray-500'}`}>
+                      {form.trailing_stop_enabled ? 'Включён' : 'Выключен'}
+                    </span>
+                  </div>
+                  {form.trailing_stop_enabled && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className={labelCls}>Активация %<Tip text="Прибыль от средней цены входа, при достижении которой трейлинг-стоп начинает следить за ценой. До этого порога стоп стоит на фиксированном уровне SL." /></label>
+                        <input
+                          type="number" step="0.1" min="0.1"
+                          value={form.trailing_activation_pct}
+                          onChange={e => patch({ trailing_activation_pct: Number(e.target.value) })}
+                          className={inputCls}
+                        />
+                      </div>
+                      <div>
+                        <label className={labelCls}>Callback %<Tip text="Максимальный откат от пика цены, после которого трейлинг-стоп срабатывает и закрывает позицию. Чем меньше значение — тем раньше фиксируется прибыль, но выше риск закрыться на случайном колебании." /></label>
+                        <input
+                          type="number" step="0.1" min="0.1"
+                          value={form.trailing_callback_pct}
+                          onChange={e => patch({ trailing_callback_pct: Number(e.target.value) })}
+                          className={inputCls}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* SL */}
@@ -455,9 +837,9 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                 <div className="text-xs font-semibold text-red-400">Stop Loss</div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className={labelCls}>SL %<Tip text="Процент убытка от средней цены входа, при достижении которого позиция принудительно закрывается. Защищает от неконтролируемого роста убытка при сильном движении против позиции." /></label>
+                    <label className={labelCls}>SL %<Tip text="Расстояние стоп-лосса от средней цены входа. Отрицательное значение = ниже средней для Long (например, -5 = SL на 5% ниже). Положительное значение = выше средней (для Short SL)." /></label>
                     <input
-                      type="number" step="0.1" min="0.1"
+                      type="number" step="0.1"
                       value={form.sl_pct}
                       onChange={e => patch({ sl_pct: Number(e.target.value) })}
                       className={inputCls}
@@ -475,50 +857,6 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                     />
                   </div>
                 </div>
-              </div>
-
-              {/* Trailing stop */}
-              <div className="space-y-3">
-                <div className="flex items-center gap-1 text-[10px] text-gray-500 uppercase tracking-wider pb-1 border-b border-gray-800">
-                  Трейлинг-стоп<Tip text="Автоматически подтягивает стоп вслед за ценой, фиксируя накопленную прибыль. Пока цена идёт в твою сторону — стоп следует за ней. Как только цена откатывается на заданный callback — позиция закрывается." />
-                </div>
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => patch({ trailing_stop_enabled: !form.trailing_stop_enabled })}
-                    className={`w-10 h-5 rounded-full relative transition-colors ${
-                      form.trailing_stop_enabled ? 'bg-green-600' : 'bg-gray-700'
-                    }`}
-                  >
-                    <span className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
-                      form.trailing_stop_enabled ? 'translate-x-5' : 'translate-x-0'
-                    }`} />
-                  </button>
-                  <span className={`text-xs ${form.trailing_stop_enabled ? 'text-green-400' : 'text-gray-500'}`}>
-                    {form.trailing_stop_enabled ? 'Включён' : 'Выключен'}
-                  </span>
-                </div>
-                {form.trailing_stop_enabled && (
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className={labelCls}>Активация %<Tip text="Прибыль от средней цены входа, при достижении которой трейлинг-стоп начинает следить за ценой. До этого порога стоп стоит на фиксированном уровне SL." /></label>
-                      <input
-                        type="number" step="0.1" min="0.1"
-                        value={form.trailing_activation_pct}
-                        onChange={e => patch({ trailing_activation_pct: Number(e.target.value) })}
-                        className={inputCls}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelCls}>Callback %<Tip text="Максимальный откат от пика цены, после которого трейлинг-стоп срабатывает и закрывает позицию. Чем меньше значение — тем раньше фиксируется прибыль, но выше риск закрыться на случайном колебании." /></label>
-                      <input
-                        type="number" step="0.1" min="0.1"
-                        value={form.trailing_callback_pct}
-                        onChange={e => patch({ trailing_callback_pct: Number(e.target.value) })}
-                        className={inputCls}
-                      />
-                    </div>
-                  </div>
-                )}
               </div>
             </>
           )}

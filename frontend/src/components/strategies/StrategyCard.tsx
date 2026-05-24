@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
+import { Calendar } from 'lucide-react'
 import { setSignalChartIntent } from '../../stores/signalChartStore'
-import { getStrategyState, getStrategyEvents, setStrategyStatus, deleteStrategy, updateStrategy } from '../../api/strategies'
+import { getStrategyState, getStrategyEvents, setStrategyStatus, deleteStrategy, updateStrategy, detachFromBot } from '../../api/strategies'
 import { placeOrder } from '../../api/trader'
 import { ClosePositionModal, makeCloseConfirm, type CloseConfirm } from '../common/ClosePositionModal'
 import { useStrategyEventsWs } from '../../hooks/useStrategyEventsWs'
@@ -23,6 +25,7 @@ interface Props {
   accounts: ExchangeAccount[]
   orders: ActiveOrder[]
   positions?: Position[]
+  tickerPrices?: Map<string, number>
   onEdit: (s: Strategy, filledCount: number) => void
   onChanged: () => void
   selected?: boolean
@@ -35,6 +38,7 @@ interface Props {
 interface CardState {
   state: StrategyState | null
   events: StrategyEvent[]
+  eventTotal: number
   loading: boolean
   acting: boolean
 }
@@ -105,22 +109,39 @@ const STATUS_ITEMS = [
 
 function StatusPicker({ value, acting, onChange, onInteract }: { value: StratStatus; acting: boolean; onChange: (v: StratStatus) => void; onInteract?: () => void }) {
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+  const [menuPos, setMenuPos] = useState({ top: 0, right: 0 })
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const cur = STATUS_ITEMS.find(i => i.id === value) ?? STATUS_ITEMS[2]
 
   useEffect(() => {
     if (!open) return
-    const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node
+      const inWrap = wrapRef.current?.contains(target) ?? false
+      const inMenu = menuRef.current?.contains(target) ?? false
+      if (!inWrap && !inMenu) setOpen(false)
+    }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [open])
 
+  const handleToggle = () => {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect()
+      setMenuPos({ top: r.bottom + 4, right: window.innerWidth - r.right })
+    }
+    setOpen(o => !o)
+  }
+
   return (
-    <div ref={ref} className="relative flex-shrink-0" onClick={e => { onInteract?.(); e.stopPropagation() }}>
+    <div ref={wrapRef} className="relative flex-shrink-0" onClick={e => { onInteract?.(); e.stopPropagation() }}>
       <button
+        ref={btnRef}
         type="button"
         disabled={acting}
-        onClick={() => setOpen(o => !o)}
+        onClick={handleToggle}
         className="h-7 inline-flex items-center gap-1.5 px-2.5 text-[10px] font-bold uppercase tracking-[.5px] rounded-[7px] cursor-pointer leading-none font-sans select-none disabled:opacity-40 transition-colors"
         style={cur.btn}
       >
@@ -128,8 +149,18 @@ function StatusPicker({ value, acting, onChange, onInteract }: { value: StratSta
         {cur.label}
         <IcChev open={open} />
       </button>
-      {open && (
-        <div className="absolute top-[calc(100%+4px)] right-0 z-20 min-w-[156px] bg-[#141a28] border border-white/10 rounded-[9px] p-1 shadow-[0_14px_36px_-10px_rgba(0,0,0,.7),inset_0_0_0_1px_rgba(255,255,255,.02)] flex flex-col gap-px">
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-[9999] min-w-[156px] rounded-[9px] p-1 flex flex-col gap-px"
+          style={{
+            top: menuPos.top,
+            right: menuPos.right,
+            background: '#181b28',
+            border: '1px solid rgba(255,255,255,.22)',
+            boxShadow: '0 8px 32px rgba(0,0,0,.85), 0 0 0 1px rgba(255,255,255,.06)',
+          }}
+        >
           {STATUS_ITEMS.map(it => (
             <div key={it.id} className="relative group/tip">
               <button
@@ -147,7 +178,90 @@ function StatusPicker({ value, acting, onChange, onInteract }: { value: StratSta
               </div>
             </div>
           ))}
-        </div>
+        </div>,
+        document.body
+      )}
+    </div>
+  )
+}
+
+// ── bot badge with detach action ──────────────────────────────────────────────
+function BotBadge({ botName, strategyId, onDetached, onInteract }: {
+  botName: string
+  strategyId: string
+  onDetached: () => void
+  onInteract?: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [menuPos, setMenuPos] = useState({ top: 0, right: 0 })
+  const [acting, setActing] = useState(false)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node
+      if (!btnRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const handleToggle = () => {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect()
+      setMenuPos({ top: r.bottom + 4, right: window.innerWidth - r.right })
+    }
+    setOpen(o => !o)
+  }
+
+  const handleDetach = async () => {
+    setActing(true)
+    setOpen(false)
+    try {
+      await detachFromBot(strategyId)
+      onDetached()
+    } finally {
+      setActing(false)
+    }
+  }
+
+  return (
+    <div className="relative flex-shrink-0" onClick={e => { onInteract?.(); e.stopPropagation() }}>
+      <button
+        ref={btnRef}
+        type="button"
+        disabled={acting}
+        onClick={handleToggle}
+        className="h-7 inline-flex items-center gap-1.5 px-2.5 text-[10px] font-bold uppercase tracking-[.5px] rounded-[7px] cursor-pointer leading-none font-sans select-none disabled:opacity-40 transition-colors"
+        style={{ background: '#2d1b6b', border: '1px solid rgba(139,92,246,.50)', color: '#c4b5fd' }}
+      >
+        <span className="w-[5px] h-[5px] rounded-full shrink-0 bg-[#a78bfa]" />
+        {botName}
+        <IcChev open={open} />
+      </button>
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-[9999] min-w-[156px] rounded-[9px] p-1"
+          style={{
+            top: menuPos.top,
+            right: menuPos.right,
+            background: '#181b28',
+            border: '1px solid rgba(255,255,255,.22)',
+            boxShadow: '0 8px 32px rgba(0,0,0,.85), 0 0 0 1px rgba(255,255,255,.06)',
+          }}
+        >
+          <button
+            type="button"
+            onClick={handleDetach}
+            className="flex items-center gap-2 px-[9px] py-[8px] text-[12px] font-semibold text-[#c4b5fd] rounded-[6px] cursor-pointer w-full text-left transition-colors hover:bg-white/[.06]"
+          >
+            открепить от бота
+          </button>
+        </div>,
+        document.body
       )}
     </div>
   )
@@ -173,10 +287,11 @@ function relTime(iso: string) {
 }
 
 function lvlTag(status: string) {
-  if (status === 'filled')    return { cls: 'bg-emerald-400/[.14] border border-emerald-400/20 text-emerald-300',  label: 'filled'  }
-  if (status === 'placed')    return { cls: 'bg-amber-400/[.14] text-amber-300',                                   label: 'placed'  }
-  if (status === 'cancelled') return { cls: 'bg-white/[.04] border border-white/[.06] text-slate-500',             label: 'cancel'  }
-  return                             { cls: 'bg-white/[.04] border border-white/[.06] text-slate-500',             label: 'wait'    }
+  if (status === 'filled')    return { cls: 'bg-emerald-400/[.14] border border-emerald-400/20 text-emerald-300',  label: 'filled'    }
+  if (status === 'placed')    return { cls: 'bg-amber-400/[.14] text-amber-300',                                   label: 'placed'    }
+  if (status === 'cancelled') return { cls: 'bg-white/[.04] border border-white/[.06] text-slate-500',             label: 'cancel'    }
+  if (status === 'sl_closed') return { cls: 'bg-rose-400/[.14] border border-rose-400/20 text-rose-300',           label: 'sl-closed' }
+  return                             { cls: 'bg-white/[.04] border border-white/[.06] text-slate-500',             label: 'wait'      }
 }
 
 function logLvlStyle(lvl: string) {
@@ -186,12 +301,23 @@ function logLvlStyle(lvl: string) {
 }
 
 // ── main component ─────────────────────────────────────────────────────────────
-export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit, onChanged, selected, onSelect, isOpen, onToggleOpen, liveSignal }: Props) {
+export function StrategyCard({ strategy: s, accounts, orders, positions, tickerPrices, onEdit, onChanged, selected, onSelect, isOpen, onToggleOpen, liveSignal }: Props) {
   const navigate = useNavigate()
-  const [cs, setCs] = useState<CardState>({ state: null, events: [], loading: false, acting: false })
+  const [cs, setCs] = useState<CardState>({ state: null, events: [], eventTotal: 0, loading: false, acting: false })
   const [localEvents, setLocalEvents] = useState<StrategyEvent[] | null>(null)
   const [copiedLogIdx, setCopiedLogIdx] = useState<number | null>(null)
   const [logOpen, setLogOpen] = useState(false)
+  const [logFilter, setLogFilter] = useState<'all' | 'error' | 'warn' | 'info'>('all')
+  const [logDate, setLogDate] = useState('')
+  const [logLoading, setLogLoading] = useState(false)
+
+  // reload log when filter/date changes (only when card is open)
+  useEffect(() => {
+    if (!isOpen || !s.id) return
+    loadLog(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [logFilter, logDate, isOpen, s.id])
+
   const [closeConfirm, setCloseConfirm] = useState<CloseConfirm | null>(null)
   const [closing, setClosing] = useState(false)
   const [debugOpen, setDebugOpen] = useState(false)
@@ -206,8 +332,8 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
     if (isOpen && !cs.state && !cs.loading) {
       setCs(p => ({ ...p, loading: true }))
       Promise.all([getStrategyState(s.id), getStrategyEvents(s.id)])
-        .then(([state, events]) => {
-          setCs(p => ({ ...p, state, events, loading: false }))
+        .then(([state, { total, events }]) => {
+          setCs(p => ({ ...p, state, events, eventTotal: total, loading: false }))
           setLocalEvents(null)
         })
         .catch(() => setCs(p => ({ ...p, loading: false })))
@@ -239,13 +365,28 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
     ) ?? null
   }, [positions, s.symbol, s.direction, s.hedge_mode])
 
-  const pnlUsdt = stratPosition ? parseFloat(stratPosition.unrealisedPnl) : null
-  const pnlPct  = pnlUsdt !== null && s.volume_usdt > 0 ? pnlUsdt / s.volume_usdt * 100 : null
+  const pnlUsdt = useMemo(() => {
+    if (!stratPosition) return null
+    const entry = parseFloat(stratPosition.entryPrice)
+    const size = parseFloat(stratPosition.size)
+    const livePrice = tickerPrices?.get(stratPosition.symbol)
+    const mark = livePrice ?? parseFloat(stratPosition.markPrice)
+    return livePrice != null
+      ? (stratPosition.side === 'Buy' ? (mark - entry) : (entry - mark)) * size
+      : parseFloat(stratPosition.unrealisedPnl)
+  }, [stratPosition, tickerPrices])
+
+  const pnlPct = useMemo(() => {
+    if (pnlUsdt === null || !stratPosition) return null
+    const entry = parseFloat(stratPosition.entryPrice)
+    const size = parseFloat(stratPosition.size)
+    return entry > 0 && size > 0 ? (pnlUsdt / (size * entry)) * 100 : null
+  }, [pnlUsdt, stratPosition])
 
   useEffect(() => {
     if (!isOpen || cs.acting) return
     Promise.all([getStrategyState(s.id), getStrategyEvents(s.id)])
-      .then(([state, events]) => setCs(p => ({ ...p, state, events })))
+      .then(([state, { total, events }]) => setCs(p => ({ ...p, state, events, eventTotal: total })))
       .catch(() => {})
   }, [strategyOrdersKey])
 
@@ -296,7 +437,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
     const hasPos = positions.some(p => p.symbol === s.symbol && p.side === expectedSide && parseFloat(p.size) > 0)
     if (hadPositionRef.current && !hasPos) {
       Promise.all([getStrategyState(s.id), getStrategyEvents(s.id)])
-        .then(([state, events]) => setCs(p => ({ ...p, state, events })))
+        .then(([state, { total, events }]) => setCs(p => ({ ...p, state, events, eventTotal: total })))
         .catch(() => {})
       onChanged()
     }
@@ -310,7 +451,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
       const seen = new Set(p.events.map(eventKey))
       const fresh = reversed.filter(e => !seen.has(eventKey(e)))
       if (!fresh.length) return p
-      return { ...p, events: [...fresh, ...p.events].slice(0, 200) }
+      return { ...p, events: [...fresh, ...p.events].slice(0, 200), eventTotal: p.eventTotal + fresh.length }
     })
     setLocalEvents(prev => {
       if (prev === null) return null
@@ -330,11 +471,11 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
       await setStrategyStatus(s.id, status)
       onChanged()
       await new Promise(r => setTimeout(r, 300))
-      const [state, events] = await Promise.all([
+      const [state, evRes] = await Promise.all([
         getStrategyState(s.id).catch(() => null),
-        getStrategyEvents(s.id).catch(() => [] as StrategyEvent[]),
+        getStrategyEvents(s.id).catch(() => ({ total: 0, events: [] as StrategyEvent[] })),
       ])
-      setCs(p => ({ ...p, state, events, acting: false }))
+      setCs(p => ({ ...p, state, events: evRes.events, eventTotal: evRes.total, acting: false }))
     } catch {
       setCs(p => ({ ...p, acting: false }))
     }
@@ -396,11 +537,51 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
 
   const displayEvents = localEvents ?? cs.events
 
+  async function copyToClipboard(text: string): Promise<boolean> {
+    if (navigator.clipboard && window.isSecureContext) {
+      try { await navigator.clipboard.writeText(text); return true } catch { /* fallthrough */ }
+    }
+    // Fallback for non-secure contexts (HTTP over remote IP)
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    ta.style.left = '-9999px'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    let ok = false
+    try { ok = document.execCommand('copy') } catch { /* ignore */ }
+    document.body.removeChild(ta)
+    return ok
+  }
+
   async function copyLog() {
     const text = displayEvents.map(e =>
       `${new Date(e.created_at).toLocaleString('ru-RU')} [${e.level}] ${e.message}`
     ).join('\n')
-    await navigator.clipboard.writeText(text).catch(() => {})
+    await copyToClipboard(text)
+  }
+
+  async function loadLog(reset = true) {
+    if (!s.id) return
+    setLogLoading(true)
+    try {
+      const res = await getStrategyEvents(s.id, {
+        level: logFilter === 'all' ? undefined : logFilter,
+        date: logDate || undefined,
+        limit: 200,
+        offset: reset ? 0 : cs.events.length,
+      })
+      setCs(p => ({
+        ...p,
+        events: reset ? res.events : [...p.events, ...res.events],
+        eventTotal: res.total,
+      }))
+      if (reset) setLocalEvents(null)
+    } finally {
+      setLogLoading(false)
+    }
   }
 
   async function copyLogRow(ev: StrategyEvent, idx: number) {
@@ -409,9 +590,11 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
     const timeStr = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     const meta = `acc:${accountName} · accid:${s.account_id.slice(0, 8)} · id:${s.id.slice(0, 8)}`
     const text = `${dateStr} ${timeStr}  [${ev.level}]  ${ev.message}  [${meta}]`
-    await navigator.clipboard.writeText(text).catch(() => {})
-    setCopiedLogIdx(idx)
-    setTimeout(() => setCopiedLogIdx(null), 1400)
+    const ok = await copyToClipboard(text)
+    if (ok) {
+      setCopiedLogIdx(idx)
+      setTimeout(() => setCopiedLogIdx(null), 1400)
+    }
   }
 
   // ── card border/bg — matches AccountCard style ───────────────────────────────
@@ -429,7 +612,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
 
   // ────────────────────────────────────────────────────────────────────────────
   return (
-    <li className="rounded-xl overflow-visible transition-all font-sans" style={cardStyle} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
+    <div className="rounded-xl overflow-visible transition-all font-sans" style={cardStyle} onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
 
       {/* ── collapsed header ── */}
       <div
@@ -451,14 +634,13 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
               {isLong ? <IcUp s={9} w={2.6} /> : <IcDown s={9} w={2.6} />}
               <span style={{ transform: 'translateY(-.5px)', display: 'inline-block' }}>{s.direction}</span>
             </span>
-            <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-400 leading-none whitespace-nowrap">
-              <span className="w-3.5 h-3.5 rounded-[3px] bg-[linear-gradient(135deg,#f7a600,#e88f00)] text-[#1a1100] font-extrabold text-[8px] flex items-center justify-center shrink-0">B</span>
-              {accountName}
-            </span>
           </div>
 
           {/* right: status · gear */}
-          <StatusPicker value={s.status} acting={cs.acting} onChange={handleStatus} onInteract={() => onSelect?.(s)} />
+          {s.bot_id
+            ? <BotBadge botName={s.bot_name ?? 'Bot'} strategyId={s.id} onDetached={onChanged} onInteract={() => onSelect?.(s)} />
+            : <StatusPicker value={s.status} acting={cs.acting} onChange={handleStatus} onInteract={() => onSelect?.(s)} />
+          }
           <button
             type="button"
             onClick={e => { e.stopPropagation(); setDebugOpen(o => !o) }}
@@ -466,14 +648,6 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
             title="Debug cycle window"
           >
             <IcBug s={13} w={1.6} />
-          </button>
-          <button
-            type="button"
-            onClick={e => { e.stopPropagation(); setAuditOpen(o => !o) }}
-            className={`w-7 h-7 inline-flex items-center justify-center rounded-[7px] border transition-colors shrink-0 ${auditOpen ? 'bg-blue-400/[.15] border-blue-400/40 text-blue-400' : 'text-slate-500 bg-white/[.04] border-white/[.08] hover:bg-white/[.08]'}`}
-            title="Аудит цикла"
-          >
-            <IcScope s={13} w={1.6} />
           </button>
           <button
             type="button"
@@ -485,36 +659,49 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
         </div>
 
         {/* row 2: metrics · chev */}
-        <div className="flex items-center gap-3.5 flex-wrap">
-          <div className="relative group/ctip flex items-baseline gap-1.5">
-            <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">Grid</span>
-            <span className={`text-[13px] font-semibold ${s.active_levels > 0 ? 'text-slate-200' : 'text-slate-500'}`}>
-              {s.active_levels}/{s.grid_levels}
-            </span>
-            <CardTip text="Исполненных уровней сетки / всего уровней в текущем цикле" />
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="min-w-0 flex-1 flex items-center gap-3.5 flex-wrap">
+            <div className="relative group/ctip flex items-baseline gap-1.5">
+              <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">
+                {s.strategy_type === 'dca' ? 'Матрица' : 'Grid'}
+              </span>
+              <span className={`text-[13px] font-semibold ${s.active_levels > 0 ? 'text-slate-200' : 'text-slate-500'}`}>
+                {s.active_levels}/{s.grid_levels}
+              </span>
+              <CardTip text={s.strategy_type === 'dca' ? 'Заполненных слотов матрицы / всего слотов в цикле' : 'Исполненных уровней сетки / всего уровней в текущем цикле'} />
+            </div>
+            <div className="w-px h-2.5 bg-white/[.08]" />
+            <div className="relative group/ctip flex items-baseline gap-1.5">
+              <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">Объём</span>
+              <span className={`text-[13px] font-semibold ${(stratPosition?.sizeUsdt ?? 0) > 0 ? 'text-slate-200' : 'text-slate-500'}`}>
+                {(stratPosition?.sizeUsdt ?? 0) > 0 ? `${(stratPosition!.sizeUsdt).toFixed(1)}$` : '0$'}
+              </span>
+              <CardTip text="Реальный объём открытой позиции с биржи (size × mark price)" />
+            </div>
+            <div className="w-px h-2.5 bg-white/[.08]" />
+            <div className="relative group/ctip flex items-baseline gap-1.5">
+              <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">P&L</span>
+              <span className={`text-[13px] font-semibold ${
+                pnlUsdt === null ? 'text-slate-500' : pnlUsdt > 0 ? 'text-emerald-300' : pnlUsdt < 0 ? 'text-rose-300' : 'text-slate-500'
+              }`}>
+                {pnlUsdt === null
+                  ? '—'
+                  : `${pnlUsdt >= 0 ? '+' : ''}${pnlUsdt.toFixed(2)}$ (${pnlPct !== null ? (pnlPct >= 0 ? '+' : '') + pnlPct.toFixed(1) + '%' : '—'})`
+                }
+              </span>
+              <CardTip text="Нереализованный P&L по открытой позиции относительно вложенного капитала" />
+            </div>
           </div>
-          <div className="w-px h-2.5 bg-white/[.08]" />
-          <div className="relative group/ctip flex items-baseline gap-1.5">
-            <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">Объём</span>
-            <span className={`text-[13px] font-semibold ${s.volume_usdt > 0 ? 'text-slate-200' : 'text-slate-500'}`}>
-              {s.volume_usdt > 0 ? `${s.volume_usdt.toFixed(1)}$` : '0$'}
-            </span>
-            <CardTip text="Суммарный объём открытой позиции — сумма всех взятых уровней в USDT" />
-          </div>
-          <div className="w-px h-2.5 bg-white/[.08]" />
-          <div className="relative group/ctip flex items-baseline gap-1.5">
-            <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">P&L</span>
-            <span className={`text-[13px] font-semibold ${
-              pnlUsdt === null ? 'text-slate-500' : pnlUsdt > 0 ? 'text-emerald-300' : pnlUsdt < 0 ? 'text-rose-300' : 'text-slate-500'
-            }`}>
-              {pnlUsdt === null
-                ? '—'
-                : `${pnlUsdt >= 0 ? '+' : ''}${pnlUsdt.toFixed(2)}$ (${pnlPct !== null ? (pnlPct >= 0 ? '+' : '') + pnlPct.toFixed(1) + '%' : '—'})`
-              }
-            </span>
-            <CardTip text="Нереализованный P&L по открытой позиции относительно вложенного капитала" />
-          </div>
-          <button type="button" onClick={e => { e.stopPropagation(); onToggleOpen?.() }} className="ml-auto w-7 h-7 inline-flex items-center justify-center text-slate-400 rounded-[7px] bg-white/[.04] border border-white/[.08] hover:bg-white/[.08] transition-colors shrink-0">
+          <div className="h-7 invisible w-16 shrink-0" aria-hidden="true" />
+          <button
+            type="button"
+            onClick={e => { e.stopPropagation(); setAuditOpen(o => !o) }}
+            className={`w-7 h-7 inline-flex items-center justify-center rounded-[7px] border transition-colors shrink-0 ${auditOpen ? 'bg-blue-400/[.15] border-blue-400/40 text-blue-400' : 'text-slate-500 bg-white/[.04] border-white/[.08] hover:bg-white/[.08]'}`}
+            title="Аудит цикла"
+          >
+            <IcScope s={13} w={1.6} />
+          </button>
+          <button type="button" onClick={e => { e.stopPropagation(); onToggleOpen?.() }} className="w-7 h-7 inline-flex items-center justify-center text-slate-400 rounded-[7px] bg-white/[.04] border border-white/[.08] hover:bg-white/[.08] transition-colors shrink-0">
             <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round"
               className={`transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}>
               <path d="M6 9l6 6 6-6" />
@@ -642,14 +829,14 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
                 )}
 
                 {/* two-col: levels + TP/SL */}
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                   {/* levels */}
                   <div className="bg-black/[.18] border border-white/[.05] rounded-[10px] p-3">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-[10px] text-slate-400 uppercase tracking-[1.3px] font-semibold">
-                        Уровни · {cs.state?.levels.filter(l => l.status === 'filled').length ?? 0}/{s.grid_levels}
+                        {s.strategy_type === 'dca' ? 'Слоты матрицы' : 'Уровни'} · {cs.state?.levels.filter(l => l.status === 'filled' || l.status === 'sl_closed').length ?? 0}/{s.grid_levels}
                       </span>
-                      <span className="text-[10px] text-[#5b6479] font-mono font-medium">L1–L{s.grid_levels}</span>
+                      <span className="text-[10px] text-[#5b6479] font-mono font-medium">{s.strategy_type === 'dca' ? `${s.grid_levels} слотов` : `L1–L${s.grid_levels}`}</span>
                     </div>
                     <div
                       ref={levelsScrollRef}
@@ -659,20 +846,39 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
                       {cs.state && cs.state.levels.length > 0 ? (
                         cs.state.levels.map(l => {
                           const tag = lvlTag(l.status)
-                          const isFilled = l.status === 'filled'
-                          const usdtVal = isFilled && l.filled_price > 0
-                            ? Math.round(l.target_price > 0 ? (l.filled_price / l.target_price) * l.size_usdt : l.size_usdt)
+                          const isFilled = l.status === 'filled' || l.status === 'sl_closed'
+                          // find matching active order for filled levels to show real executed volume
+                          const order = isFilled ? strategyOrders.find(o => o.orderId === l.exchange_order_id) : null
+                          const realQty = order ? parseFloat(order.cumExecQty) : 0
+                          const usdtVal = isFilled
+                            ? (realQty > 0 && l.filled_price > 0
+                                ? Math.round(realQty * l.filled_price)
+                                : Math.round(l.size_usdt))
                             : Math.round(l.size_usdt)
                           const priceVal = isFilled && l.filled_price > 0 ? l.filled_price : l.target_price
+                          const isMatrix = s.strategy_type === 'dca'
                           return (
                             <div key={l.level_idx} data-lvl-status={l.status}
                               className="grid gap-2 items-center px-1 py-[5px] rounded-[5px] font-mono text-[11px]"
-                              style={{ gridTemplateColumns: 'auto 1fr auto' }}
+                              style={{ gridTemplateColumns: isMatrix ? 'auto auto 1fr auto' : 'auto 1fr auto' }}
                             >
                               <span className="text-[10px] text-[#5b6479] w-[18px]">L{l.level_idx}</span>
+                              {isMatrix && (
+                                <span className={`text-[9px] px-[4px] py-[1px] rounded-[3px] font-bold ${
+                                  l.slot == null ? 'text-slate-600' :
+                                  l.slot === 0   ? 'bg-violet-500/20 text-violet-300' :
+                                  l.slot < 0     ? 'bg-blue-500/20 text-blue-300' :
+                                                   'bg-amber-500/20 text-amber-300'
+                                }`}>
+                                  {l.slot != null ? (l.slot > 0 ? '+' : '') + l.slot : '—'}
+                                </span>
+                              )}
                               <span>
                                 <span className="text-[#e6ebf5] font-bold">{usdtVal}$</span>
                                 {priceVal > 0 && <span className="text-[#5b6479] font-normal"> ({priceVal.toFixed(2)})</span>}
+                                {isMatrix && l.sl_price && l.sl_price > 0 && (
+                                  <span className="text-rose-400/70 font-normal"> sl:{l.sl_price.toFixed(2)}</span>
+                                )}
                               </span>
                               <span className={`text-[9px] px-[5px] py-[2px] rounded-[3px] font-bold uppercase tracking-[.3px] ${tag.cls}`}>{tag.label}</span>
                             </div>
@@ -701,21 +907,39 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
                       </div>
                       <CardTip text="Цена закрытия позиции в прибыль. Рассчитывается от средней цены входа по всем взятым уровням." />
                     </div>
-                    <div className="relative group/ctip bg-black/[.18] border border-white/[.06] rounded-[10px] p-2.5 flex flex-col gap-1.5">
-                      <div className="flex items-center justify-between">
-                        <span className="flex items-center gap-1.5 text-[12px] font-semibold text-rose-300">
-                          <IcBolt s={13} c="#fca5a5" />Stop Loss
-                        </span>
-                        <span className="text-[9px] text-slate-500 uppercase tracking-[.6px] font-semibold">{s.sl_type === 'conditional' ? 'cond.' : 'prog.'}</span>
+                    {s.strategy_type === 'dca' ? (
+                      <div className="relative group/ctip bg-black/[.18] border border-white/[.06] rounded-[10px] p-2.5 flex flex-col gap-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="flex items-center gap-1.5 text-[12px] font-semibold text-rose-300">
+                            <IcBolt s={13} c="#fca5a5" />Stop Loss
+                          </span>
+                          <span className="text-[9px] text-slate-500 uppercase tracking-[.6px] font-semibold">per-level</span>
+                        </div>
+                        <div className="font-display text-[18px] font-bold tracking-[-0.4px] text-rose-300">
+                          по уровням
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          индивидуальный для каждого уровня
+                        </div>
+                        <CardTip text="Матрикс-стратегия: SL выставляется индивидуально для каждого заполненного уровня согласно его настройкам stop_pct." />
                       </div>
-                      <div className="font-display text-[18px] font-bold tracking-[-0.4px] text-rose-300">
-                        −{s.sl_pct}%
+                    ) : (
+                      <div className="relative group/ctip bg-black/[.18] border border-white/[.06] rounded-[10px] p-2.5 flex flex-col gap-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="flex items-center gap-1.5 text-[12px] font-semibold text-rose-300">
+                            <IcBolt s={13} c="#fca5a5" />Stop Loss
+                          </span>
+                          <span className="text-[9px] text-slate-500 uppercase tracking-[.6px] font-semibold">{s.sl_type === 'conditional' ? 'cond.' : 'prog.'}</span>
+                        </div>
+                        <div className="font-display text-[18px] font-bold tracking-[-0.4px] text-rose-300">
+                          −{s.sl_pct}%
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {slPrice() ? slPrice()!.toFixed(2) + ' от start' : 'от start price'}
+                        </div>
+                        <CardTip text={`Принудительное закрытие при убытке. Тип: ${s.sl_type === 'conditional' ? 'биржевой (срабатывает даже если сервер недоступен)' : 'программный (контролируется сервисом через WS)'}.`} />
                       </div>
-                      <div className="text-[11px] text-slate-500">
-                        {slPrice() ? slPrice()!.toFixed(2) + ' от start' : 'от start price'}
-                      </div>
-                      <CardTip text={`Принудительное закрытие при убытке. Тип: ${s.sl_type === 'conditional' ? 'биржевой (срабатывает даже если сервер недоступен)' : 'программный (контролируется сервисом через WS)'}.`} />
-                    </div>
+                    )}
                   </div>
                 </div>
 
@@ -725,8 +949,8 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
                     className="w-full flex items-center gap-2 px-3 py-2 border-b border-white/[.04] hover:bg-white/[.03] transition-colors">
                     <IcLog s={12} c="#7b8aa6" />
                     <span className="text-[10px] text-slate-400 uppercase tracking-[1.3px] font-semibold">Лог событий</span>
-                    {displayEvents.length > 0 && (
-                      <span className="text-[9px] px-1.5 py-0.5 bg-white/[.06] rounded-[3px] text-[#cfd5e1] font-mono font-semibold ml-0.5">{displayEvents.length}</span>
+                    {cs.eventTotal > 0 && (
+                      <span className="text-[9px] px-1.5 py-0.5 bg-white/[.06] rounded-[3px] text-[#cfd5e1] font-mono font-semibold ml-0.5">{cs.eventTotal}</span>
                     )}
                     <div className="ml-auto flex items-center gap-0.5">
                       {logOpen && displayEvents.length > 0 && (<>
@@ -746,35 +970,75 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
                     </div>
                   </button>
                   {logOpen && (
-                    <div className="flex flex-col max-h-[160px] overflow-y-auto"
-                      style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,.14) transparent' }}>
-                      {displayEvents.length === 0 ? (
-                        <div className="py-3 text-center text-[11px] text-slate-600">Событий нет</div>
-                      ) : displayEvents.slice(0, 30).map((e, i) => {
-                        const ls = logLvlStyle(e.level)
-                        const d = new Date(e.created_at)
-                        const copied = copiedLogIdx === i
-                        return (
-                          <div key={i}
-                            onClick={() => copyLogRow(e, i)}
-                            className={`grid items-start gap-2.5 px-3 py-1.5 font-mono text-[11px] border-t border-white/[.03] first:border-t-0 cursor-pointer transition-colors duration-150 ${copied ? 'bg-emerald-400/[.08]' : 'hover:bg-white/[.03]'}`}
-                            style={{ gridTemplateColumns: 'auto auto 1fr auto' }}
+                    <>
+                      {/* log filters */}
+                      <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-white/[.04]">
+                        {(['all', 'error', 'warn', 'info'] as const).map(lvl => (
+                          <button
+                            key={lvl}
+                            type="button"
+                            onClick={() => setLogFilter(lvl)}
+                            className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-[3px] border transition-colors ${
+                              logFilter === lvl
+                                ? 'bg-white/[.08] border-white/[.12] text-slate-200'
+                                : 'bg-transparent border-white/[.04] text-slate-500 hover:text-slate-300'
+                            }`}
                           >
-                            <span className="text-[10px] text-[#5b6479] leading-[1.35] pt-px">
-                              <span className="block">{d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}</span>
-                              <span className="block">{d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-                            </span>
-                            <span className={`w-[14px] h-[14px] rounded-[3px] flex items-center justify-center shrink-0 mt-px ${ls.bg} ${ls.color}`}>
-                              {ls.icon}
-                            </span>
-                            <span className="text-[#cfd5e1] break-words whitespace-pre-wrap">{e.message}</span>
-                            <span className={`text-[10px] pt-px transition-colors duration-150 ${copied ? 'text-emerald-400' : 'text-[#5b6479]'}`}>
-                              {copied ? '✓' : relTime(e.created_at)}
-                            </span>
-                          </div>
-                        )
-                      })}
-                    </div>
+                            {lvl === 'all' ? 'Все' : lvl}
+                          </button>
+                        ))}
+                        <div className="relative flex items-center">
+                          <Calendar size={12} className="absolute left-1.5 text-slate-500 pointer-events-none" />
+                          <input
+                            type="date"
+                            value={logDate}
+                            onChange={e => setLogDate(e.target.value)}
+                            className="text-[11px] bg-black/30 border border-white/[.08] rounded pl-6 pr-2 py-0.5 text-slate-300 outline-none"
+                          />
+                        </div>
+                        {logLoading && <span className="text-[10px] text-slate-500 animate-pulse">…</span>}
+                      </div>
+                      {/* events list */}
+                      <div className="flex flex-col max-h-[200px] overflow-y-auto"
+                        style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,.14) transparent' }}>
+                        {displayEvents.length === 0 ? (
+                          <div className="py-3 text-center text-[11px] text-slate-600">Событий нет</div>
+                        ) : displayEvents.map((e, i) => {
+                          const ls = logLvlStyle(e.level)
+                          const d = new Date(e.created_at)
+                          const copied = copiedLogIdx === i
+                          return (
+                            <div key={i}
+                              onClick={() => copyLogRow(e, i)}
+                              className={`grid items-start gap-2.5 px-3 py-1.5 font-mono text-[11px] border-t border-white/[.03] first:border-t-0 cursor-pointer transition-colors duration-150 ${copied ? 'bg-emerald-400/[.08]' : 'hover:bg-white/[.03]'}`}
+                              style={{ gridTemplateColumns: 'auto auto 1fr auto' }}
+                            >
+                              <span className="text-[10px] text-[#5b6479] leading-[1.35] pt-px">
+                                <span className="block">{d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}</span>
+                                <span className="block">{d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                              </span>
+                              <span className={`w-[14px] h-[14px] rounded-[3px] flex items-center justify-center shrink-0 mt-px ${ls.bg} ${ls.color}`}>
+                                {ls.icon}
+                              </span>
+                              <span className="text-[#cfd5e1] break-words whitespace-pre-wrap">{e.message}</span>
+                              <span className={`text-[10px] pt-px transition-colors duration-150 ${copied ? 'text-emerald-400' : 'text-[#5b6479]'}`}>
+                                {copied ? '✓' : relTime(e.created_at)}
+                              </span>
+                            </div>
+                          )
+                        })}
+                        {cs.events.length < cs.eventTotal && (
+                          <button
+                            type="button"
+                            onClick={() => loadLog(false)}
+                            disabled={logLoading}
+                            className="py-2 text-[11px] font-semibold text-[#5b8cff] hover:text-[#7ba4ff] transition-colors border-t border-white/[.04]"
+                          >
+                            {logLoading ? 'Загрузка…' : `Загрузить ещё (${cs.eventTotal - cs.events.length})`}
+                          </button>
+                        )}
+                      </div>
+                    </>
                   )}
                 </div>
 
@@ -826,13 +1090,15 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, onEdit,
         />
       )}
 
-      {debugOpen && (
-        <DebugCycleWindow strategy={s} orders={strategyOrders} onClose={() => setDebugOpen(false)} liveSignal={liveSignal} />
+      {debugOpen && createPortal(
+        <DebugCycleWindow strategy={s} orders={strategyOrders} onClose={() => setDebugOpen(false)} liveSignal={liveSignal} />,
+        document.body
       )}
 
-      {auditOpen && (
-        <CycleAuditModal strategyId={s.id} strategySymbol={s.symbol} onClose={() => setAuditOpen(false)} />
+      {auditOpen && createPortal(
+        <CycleAuditModal strategyId={s.id} strategySymbol={s.symbol} onClose={() => setAuditOpen(false)} />,
+        document.body
       )}
-    </li>
+    </div>
   )
 }

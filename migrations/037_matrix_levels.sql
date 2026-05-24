@@ -1,0 +1,1 @@
+ALTER TABLE strategies ADD COLUMN IF NOT EXISTS matrix_levels JSONB;

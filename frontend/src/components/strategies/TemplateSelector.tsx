@@ -5,9 +5,11 @@ import type { StrategyTemplate, StrategyFormData } from '../../types'
 interface Props {
   formData: StrategyFormData
   onLoad: (config: Partial<StrategyFormData>) => void
+  strategyType: 'grid' | 'dca' | 'manual'
+  onStrategyTypeChange: (t: 'grid' | 'dca') => void
 }
 
-export function TemplateSelector({ formData, onLoad }: Props) {
+export function TemplateSelector({ formData, onLoad, strategyType, onStrategyTypeChange }: Props) {
   const [templates, setTemplates] = useState<StrategyTemplate[]>([])
   const [open, setOpen] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
@@ -55,10 +57,37 @@ export function TemplateSelector({ formData, onLoad }: Props) {
     }
   }
 
-  const selectedName = templates.find(t => t.id === selected)?.name
+  const filteredTemplates = templates.filter(t => {
+    const cfg = t.config as Partial<StrategyFormData>
+    return !cfg.strategy_type || cfg.strategy_type === strategyType
+  })
+
+  const selectedName = filteredTemplates.find(t => t.id === selected)?.name
+    ?? (selected && templates.find(t => t.id === selected)?.name)
 
   return (
     <div className="flex items-center gap-2 px-4 py-2 bg-gray-900/60 border-b border-gray-700">
+      {/* Strategy type switcher */}
+      <div className="flex gap-1 shrink-0">
+        {(['grid', 'dca'] as const).map(t => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => onStrategyTypeChange(t)}
+            className={`rounded-lg border px-3 py-1 text-[11px] font-semibold transition-colors ${
+              strategyType === t
+                ? 'border-[#5b8cff]/40 bg-[#5b8cff]/[.18] text-[#a0b8ff]'
+                : 'border-white/[.07] bg-white/[.02] text-slate-400 hover:bg-white/[.05]'
+            }`}
+          >
+            {t === 'grid' ? 'Grid' : 'Matrix'}
+          </button>
+        ))}
+      </div>
+
+      <div className="w-px h-4 bg-gray-700 shrink-0" />
+
+      {/* Template selector */}
       <span className="text-gray-500 text-xs shrink-0">Шаблон:</span>
       <div className="relative flex-1" ref={ref}>
         <button
@@ -72,17 +101,15 @@ export function TemplateSelector({ formData, onLoad }: Props) {
         </button>
         {open && (
           <div className="absolute top-full mt-1 left-0 right-0 bg-gray-800 border border-gray-600 rounded-lg z-50 overflow-hidden shadow-xl">
-            {templates.length === 0 ? (
+            {filteredTemplates.length === 0 ? (
               <div className="px-3 py-2 text-[11px] text-gray-500">Нет сохранённых шаблонов</div>
-            ) : templates.map(tpl => (
+            ) : filteredTemplates.map(tpl => (
               <div
                 key={tpl.id}
                 onClick={() => handleLoad(tpl)}
                 className="flex items-center justify-between px-3 py-2 hover:bg-gray-700 cursor-pointer border-b border-gray-700/50 last:border-0"
               >
-                <div>
-                  <div className="text-[11px] text-gray-100">{tpl.name}</div>
-                </div>
+                <div className="text-[11px] text-gray-100">{tpl.name}</div>
                 <button
                   onClick={e => handleDelete(tpl.id, e)}
                   className="text-red-400 text-[10px] px-1.5 hover:text-red-300 opacity-60 hover:opacity-100"
@@ -94,6 +121,7 @@ export function TemplateSelector({ formData, onLoad }: Props) {
           </div>
         )}
       </div>
+
       {showSaveRow ? (
         <div className="flex items-center gap-2">
           <input

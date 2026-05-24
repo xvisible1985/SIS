@@ -1,10 +1,15 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect, useCallback } from 'react';
 import { Search, X, Filter, Plus, RotateCcw, ChevronDown } from 'lucide-react';
 import type { AdminUser, StatusFilter } from '../types';
 import { daysSince, fmtDate, fmtMoney } from '../utils';
 import { Avatar } from './Avatar';
 import { StatusPill } from './StatusPill';
 import { RoleTag } from './RoleTag';
+
+const COLS = ['Пользователь', 'Роль', 'Баланс', 'Статус', 'Регистрация', ''];
+const LS_KEY = 'admin_users_col_widths';
+const DEFAULT_WIDTHS = [320, 140, 120, 100, 160, 60];
+const MIN_COL_W = 60;
 
 type Props = {
   users: AdminUser[];
@@ -26,6 +31,32 @@ const FILTERS: { id: StatusFilter; label: string; color?: string }[] = [
 export function UserList({ users, selectedId, onSelect, onCreate, onRefresh }: Props) {
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState<StatusFilter>('all');
+  const [widths, setWidths] = useState<number[]>(() => {
+    try { const s = localStorage.getItem(LS_KEY); return s ? JSON.parse(s) : DEFAULT_WIDTHS; }
+    catch { return DEFAULT_WIDTHS; }
+  });
+
+  useEffect(() => { localStorage.setItem(LS_KEY, JSON.stringify(widths)); }, [widths]);
+
+  const startResize = useCallback((idx: number, e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = widths[idx];
+    const onMove = (ev: MouseEvent) => {
+      const delta = ev.clientX - startX;
+      setWidths(prev => {
+        const next = [...prev];
+        next[idx] = Math.max(MIN_COL_W, startW + delta);
+        return next;
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [widths]);
 
   const filtered = useMemo(() => {
     const ql = q.toLowerCase().trim();
@@ -162,79 +193,91 @@ export function UserList({ users, selectedId, onSelect, onCreate, onRefresh }: P
 
       {/* list */}
       <div className="mt-4 flex-1 overflow-auto border-t border-white/[.06] bg-white/[.01]">
-        <div className="sticky top-0 z-10 grid grid-cols-[minmax(280px,2fr)_minmax(160px,1.2fr)_auto_auto_minmax(120px,1fr)_auto] gap-0 border-b border-white/[.06] bg-[#0a0d14] px-5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-          <div>Пользователь</div>
-          <div>Роль</div>
-          <div className="pr-3.5 text-right">Баланс</div>
-          <div className="pl-3.5">Статус</div>
-          <div>Регистрация</div>
-          <div />
-        </div>
-
-        {filtered.map((u) => {
-          const sel = u.id === selectedId;
-          return (
-            <button
-              key={u.id}
-              type="button"
-              onClick={() => onSelect(u.id)}
-              className={
-                'grid w-full grid-cols-[minmax(280px,2fr)_minmax(160px,1.2fr)_auto_auto_minmax(120px,1fr)_auto] items-center gap-0 border-b border-white/[.04] px-5 py-3 text-left transition-colors ' +
-                (sel
-                  ? 'bg-[linear-gradient(90deg,rgba(91,140,255,.10),rgba(91,140,255,.02))] shadow-[inset_2px_0_0_#5b8cff]'
-                  : 'hover:bg-white/[.02]')
-              }
-            >
-              <div className="flex min-w-0 items-center gap-3">
-                <Avatar name={u.name} size={34} status={u.status} />
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate text-sm font-semibold text-slate-50">{u.name}</span>
-                    {!u.emailVerified && (
-                      <span title="Email не подтверждён" className="rounded border border-amber-500/30 bg-amber-500/[.14] px-1 py-px text-[9px] font-bold uppercase tracking-wider text-amber-400">
-                        не подтв.
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-0.5 font-mono text-[11px] text-slate-400">{u.email}</div>
-                </div>
-              </div>
-
-              <div>
-                <RoleTag role={u.role} curator={u.curator} />
-              </div>
-
-              <div
-                className={
-                  'pr-3.5 text-right font-mono text-sm font-semibold ' +
-                  (u.balance > 0 ? 'text-slate-100' : 'text-slate-500')
-                }
-              >
-                {fmtMoney(u.balance)}
-              </div>
-
-              <div className="pl-3.5">
-                <StatusPill status={u.status} />
-              </div>
-
-              <div className="text-xs text-slate-400">
-                {fmtDate(u.joined)}
-                <div className="mt-0.5 text-[10px] text-slate-500">{daysSince(u.joined)} дн. назад</div>
-              </div>
-
-              <div className="flex items-center gap-1.5 pr-2">
-                <span className="font-mono text-[11px] text-slate-400">{u.accounts.length} API</span>
-                <ChevronDown size={14} className="-rotate-90 text-slate-500" />
-              </div>
-            </button>
-          );
-        })}
-
-        {filtered.length === 0 && (
-          <div className="px-5 py-16 text-center text-sm text-slate-400">
-            Ничего не нашлось. Попробуй изменить запрос или фильтр.
-          </div>
-        )}
+        <table className="w-full border-collapse text-left">
+          <thead className="sticky top-0 z-10 bg-[#0a0d14]">
+            <tr className="border-b border-white/[.06] text-[10px] font-bold uppercase tracking-wider text-slate-500">
+              {COLS.map((label, i) => (
+                <th
+                  key={i}
+                  className="relative select-none px-5 py-2.5 text-left"
+                  style={{ width: widths[i], minWidth: MIN_COL_W }}
+                >
+                  {label}
+                  {i < COLS.length - 1 && (
+                    <div
+                      onMouseDown={(e) => startResize(i, e)}
+                      className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-[#5b8cff]/40"
+                    />
+                  )}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((u) => {
+              const sel = u.id === selectedId;
+              return (
+                <tr
+                  key={u.id}
+                  onClick={() => onSelect(u.id)}
+                  className={
+                    'cursor-pointer border-b border-white/[.04] transition-colors ' +
+                    (sel
+                      ? 'bg-[linear-gradient(90deg,rgba(91,140,255,.10),rgba(91,140,255,.02))] shadow-[inset_2px_0_0_#5b8cff]'
+                      : 'hover:bg-white/[.02]')
+                  }
+                >
+                  <td className="px-5 py-3" style={{ width: widths[0] }}>
+                    <div className="flex min-w-0 items-center gap-3">
+                      <Avatar name={u.name} size={34} status={u.status} />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-sm font-semibold text-slate-50">{u.name}</span>
+                          {!u.emailVerified && (
+                            <span title="Email не подтверждён" className="rounded border border-amber-500/30 bg-amber-500/[.14] px-1 py-px text-[9px] font-bold uppercase tracking-wider text-amber-400">
+                              не подтв.
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-0.5 font-mono text-[11px] text-slate-400">{u.email}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-5 py-3" style={{ width: widths[1] }}>
+                    <RoleTag role={u.role} curator={u.curator} />
+                  </td>
+                  <td className="px-5 py-3" style={{ width: widths[2] }}>
+                    <span className={'font-mono text-sm font-semibold ' + (u.balance > 0 ? 'text-slate-100' : 'text-slate-500')}>
+                      {fmtMoney(u.balance)}
+                    </span>
+                  </td>
+                  <td className="px-5 py-3" style={{ width: widths[3] }}>
+                    <StatusPill status={u.status} />
+                  </td>
+                  <td className="px-5 py-3" style={{ width: widths[4] }}>
+                    <div className="text-xs text-slate-400">
+                      {fmtDate(u.joined)}
+                      <div className="mt-0.5 text-[10px] text-slate-500">{daysSince(u.joined)} дн. назад</div>
+                    </div>
+                  </td>
+                  <td className="px-5 py-3" style={{ width: widths[5] }}>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-mono text-[11px] text-slate-400">{u.accounts.length} API</span>
+                      <ChevronDown size={14} className="-rotate-90 text-slate-500" />
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {filtered.length === 0 && (
+              <tr>
+                <td colSpan={COLS.length} className="px-5 py-16 text-center text-sm text-slate-400">
+                  Ничего не нашлось. Попробуй изменить запрос или фильтр.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );

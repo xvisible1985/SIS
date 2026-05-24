@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"context"
@@ -349,13 +349,15 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 	var oldGridLevels, oldGridActive int
 	var oldGridStepPct, oldGridSizeUSDT float64
 	var oldDirection, oldEntryOrderType string
-	var oldStepsJSON *string
+	var oldStepsJSON, oldMatrixLevelsJSON, oldMatrixEntryJSON *string
 	_ = s.pool.QueryRow(r.Context(),
 		`SELECT grid_levels, grid_active, grid_step_pct, grid_size_usdt,
-		        direction, entry_order_type, steps::text
+		        direction, entry_order_type, steps::text,
+		        matrix_levels::text, matrix_entry_level::text
 		 FROM strategies WHERE id=$1 AND owner_id=$2`, id, userID,
 	).Scan(&oldGridLevels, &oldGridActive, &oldGridStepPct, &oldGridSizeUSDT,
-		&oldDirection, &oldEntryOrderType, &oldStepsJSON)
+		&oldDirection, &oldEntryOrderType, &oldStepsJSON,
+		&oldMatrixLevelsJSON, &oldMatrixEntryJSON)
 
 	tag, err := s.pool.Exec(r.Context(), `
 		UPDATE strategies SET
@@ -389,25 +391,29 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	newStepsJSON := nullableJSONB(req.Steps)
+	newMatrixLevelsJSON := nullableJSONB(req.MatrixLevels)
+	newMatrixEntryJSON := nullableJSONB(req.MatrixEntryLevel)
 	gridChanged := oldGridLevels != req.GridLevels ||
 		oldGridActive != req.GridActive ||
 		diffFloat(oldGridStepPct, req.GridStepPct) ||
 		diffFloat(oldGridSizeUSDT, req.GridSizeUSDT) ||
 		oldDirection != req.Direction ||
 		oldEntryOrderType != req.EntryOrderType ||
-		!stepsEqual(oldStepsJSON, newStepsJSON)
+		!stepsEqual(oldStepsJSON, newStepsJSON) ||
+		!stepsEqual(oldMatrixLevelsJSON, newMatrixLevelsJSON) ||
+		!stepsEqual(oldMatrixEntryJSON, newMatrixEntryJSON)
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 
 	// Notify the engine asynchronously so the HTTP response is not blocked by
 	// strategy runner mutexes that may be held during live Bybit API calls.
 	logMsg := fmt.Sprintf(
-		"Настройки обновлены (TP/SL): tp=%.2f%% sl=%.2f%%",
+		"РќР°СЃС‚СЂРѕР№РєРё РѕР±РЅРѕРІР»РµРЅС‹ (TP/SL): tp=%.2f%% sl=%.2f%%",
 		req.TPPct, req.SLPct,
 	)
 	if gridChanged {
 		logMsg = fmt.Sprintf(
-			"Настройки обновлены (сетка): symbol=%s dir=%s step=%.2f%% size=%.2f USDT active=%d entryType=%s tp=%.2f%% sl=%.2f%%",
+			"РќР°СЃС‚СЂРѕР№РєРё РѕР±РЅРѕРІР»РµРЅС‹ (СЃРµС‚РєР°): symbol=%s dir=%s step=%.2f%% size=%.2f USDT active=%d entryType=%s tp=%.2f%% sl=%.2f%%",
 			req.Symbol, req.Direction, req.GridStepPct, req.GridSizeUSDT, req.GridActive, req.EntryOrderType, req.TPPct, req.SLPct,
 		)
 	}
@@ -450,11 +456,11 @@ func (s *Server) SetStrategyStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 
 	statusLabel := map[string]string{
-		"active":    "запущена",
-		"finishing": "завершение",
-		"stopped":   "остановлена",
+		"active":    "Р·Р°РїСѓС‰РµРЅР°",
+		"finishing": "Р·Р°РІРµСЂС€РµРЅРёРµ",
+		"stopped":   "РѕСЃС‚Р°РЅРѕРІР»РµРЅР°",
 	}[req.Status]
-	logMsg := fmt.Sprintf("Статус изменён пользователем: %s", statusLabel)
+	logMsg := fmt.Sprintf("РЎС‚Р°С‚СѓСЃ РёР·РјРµРЅС‘РЅ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј: %s", statusLabel)
 	go func() {
 		ctx := context.Background()
 		s.engine.Notify(ctx, id)
@@ -570,12 +576,12 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 
-	// Verify ownership
-	var exists bool
+	// Verify ownership and read strategy_type/safe_zone_pct in one query.
+	var strategyType string
+	var safeZonePct float64
 	if err := s.pool.QueryRow(r.Context(),
-		`SELECT true FROM strategies WHERE id=$1 AND owner_id=$2`, id, userID,
-	).Scan(&exists); err != nil {
-		// pgx returns an error for no rows; treat any error as not found
+		`SELECT strategy_type, COALESCE(safe_zone_pct,0) FROM strategies WHERE id=$1 AND owner_id=$2`, id, userID,
+	).Scan(&strategyType, &safeZonePct); err != nil {
 		writeError(w, http.StatusNotFound, "strategy not found")
 		return
 	}
@@ -605,13 +611,6 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 		cycle.StartPrice = 0
 	}
 
-	// Read strategy_type and safe_zone_pct for matrix-specific fields.
-	var strategyType string
-	var safeZonePct float64
-	s.pool.QueryRow(r.Context(), //nolint:errcheck
-		`SELECT strategy_type, COALESCE(safe_zone_pct,0) FROM strategies WHERE id=$1`, id,
-	).Scan(&strategyType, &safeZonePct)
-
 	type levelInfo struct {
 		LevelIdx        int     `json:"level_idx"`
 		Side            string  `json:"side"`
@@ -624,6 +623,7 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 		SLOrderID       string  `json:"sl_order_id,omitempty"`
 		SLPrice         float64 `json:"sl_price,omitempty"`
 		SLReplaced      bool    `json:"sl_replaced,omitempty"`
+		ForceVirtual    bool    `json:"force_virtual,omitempty"`
 	}
 	var levels []levelInfo
 	var volumeUSDT, totalCost, totalCoins float64
@@ -631,7 +631,7 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		lrows, lErr := s.pool.Query(r.Context(), `
 			SELECT level_idx, side, target_price, size_usdt, status, COALESCE(filled_price,0), COALESCE(exchange_order_id,''),
-			       slot, COALESCE(sl_order_id,''), COALESCE(sl_price,0), COALESCE(sl_replaced,false)
+			       slot, COALESCE(sl_order_id,''), COALESCE(sl_price,0), COALESCE(sl_replaced,false), COALESCE(force_virtual,false)
 			FROM strategy_levels WHERE cycle_id=$1 ORDER BY level_idx`, cycleID)
 		if lErr == nil && lrows != nil {
 			defer lrows.Close()
@@ -639,7 +639,7 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 				var l levelInfo
 				if lrows.Scan(&l.LevelIdx, &l.Side, &l.TargetPrice,
 					&l.SizeUSDT, &l.Status, &l.FilledPrice, &l.ExchangeOrderID,
-					&l.Slot, &l.SLOrderID, &l.SLPrice, &l.SLReplaced) == nil {
+					&l.Slot, &l.SLOrderID, &l.SLPrice, &l.SLReplaced, &l.ForceVirtual) == nil {
 					levels = append(levels, l)
 					if l.Status == "filled" && l.FilledPrice > 0 {
 						volumeUSDT += l.SizeUSDT
@@ -768,11 +768,11 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
 	// 1. Verify ownership + load strategy meta.
-	var accountID, symbol, category, direction string
+	var accountID, symbol, category, direction, strategyType string
 	err := s.pool.QueryRow(r.Context(),
-		`SELECT account_id, symbol, category, direction FROM strategies WHERE id=$1 AND owner_id=$2`,
+		`SELECT account_id, symbol, category, direction, COALESCE(strategy_type,'grid') FROM strategies WHERE id=$1 AND owner_id=$2`,
 		id, userID,
-	).Scan(&accountID, &symbol, &category, &direction)
+	).Scan(&accountID, &symbol, &category, &direction, &strategyType)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "strategy not found")
 		return
@@ -797,6 +797,7 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 	// 3. Load DB levels.
 	type levelRow struct {
 		Idx             int     `json:"idx"`
+		Slot            *int    `json:"slot"`
 		Side            string  `json:"side"`
 		TargetPrice     float64 `json:"target_price"`
 		SizeUSDT        float64 `json:"size_usdt"`
@@ -804,13 +805,20 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 		DbStatus        string  `json:"db_status"`
 		FilledPrice     float64 `json:"filled_price"`
 		ExchangeOrderID string  `json:"exchange_order_id"`
+		SlOrderID       string  `json:"sl_order_id"`
+		SlPrice         float64 `json:"sl_price"`
+		SlReplaced      bool    `json:"sl_replaced"`
+		ForceVirtual    bool    `json:"force_virtual"`
 		LiveOnExchange  bool    `json:"live_on_exchange"`
+		SlLiveOnExchange bool   `json:"sl_live_on_exchange"`
 		InOrderIndex    bool    `json:"in_order_index"`
+		SlInOrderIndex  bool    `json:"sl_in_order_index"`
 		Flag            string  `json:"flag"`
 	}
 	lrows, err := s.pool.Query(r.Context(),
-		`SELECT level_idx, side, target_price, size_usdt, qty, status,
-		        COALESCE(filled_price,0), COALESCE(exchange_order_id,'')
+		`SELECT level_idx, slot, side, target_price, size_usdt, qty, status,
+		        COALESCE(filled_price,0), COALESCE(exchange_order_id,''),
+		        COALESCE(sl_order_id,''), COALESCE(sl_price,0), COALESCE(sl_replaced,false), COALESCE(force_virtual,false)
 		 FROM strategy_levels WHERE cycle_id=$1 ORDER BY level_idx`,
 		cycleID)
 	if err != nil {
@@ -820,8 +828,9 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 	var levels []levelRow
 	for lrows.Next() {
 		var l levelRow
-		if lrows.Scan(&l.Idx, &l.Side, &l.TargetPrice, &l.SizeUSDT, &l.Qty,
-			&l.DbStatus, &l.FilledPrice, &l.ExchangeOrderID) == nil {
+		if lrows.Scan(&l.Idx, &l.Slot, &l.Side, &l.TargetPrice, &l.SizeUSDT, &l.Qty,
+			&l.DbStatus, &l.FilledPrice, &l.ExchangeOrderID,
+			&l.SlOrderID, &l.SlPrice, &l.SlReplaced, &l.ForceVirtual) == nil {
 			levels = append(levels, l)
 		}
 	}
@@ -889,7 +898,7 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	var filledQtySum float64
 	for _, l := range levels {
-		if l.DbStatus == "filled" {
+		if l.DbStatus == "filled" || l.DbStatus == "sl_closed" {
 			q, _ := strconv.ParseFloat(l.Qty, 64)
 			filledQtySum += q
 		}
@@ -903,8 +912,12 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 			l.LiveOnExchange = liveOrders[l.ExchangeOrderID]
 			l.InOrderIndex = orderIndex[l.ExchangeOrderID]
 		}
+		if l.SlOrderID != "" {
+			l.SlLiveOnExchange = liveOrders[l.SlOrderID]
+			l.SlInOrderIndex = orderIndex[l.SlOrderID]
+		}
 		switch l.DbStatus {
-		case "filled":
+		case "filled", "sl_closed":
 			l.Flag = "ok"
 		case "pending":
 			l.Flag = "pending"
@@ -946,6 +959,7 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"no_active_cycle":         false,
+		"strategy_type":           strategyType,
 		"cycle_num":               cycleNum,
 		"started_at":              startedAt,
 		"position":                posOut,
@@ -966,3 +980,4 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 }
+

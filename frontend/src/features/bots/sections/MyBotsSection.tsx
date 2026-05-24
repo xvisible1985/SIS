@@ -8,11 +8,11 @@ type Props = {
   onExport:     () => void;
   onToggle:     (botId: string, next: 'running' | 'paused') => void;
   onEdit:       (botId: string) => void;
-  onMore:       (botId: string) => void;
+  onDelete:     (botId: string) => void;
 };
 
 /** Секция «Мои боты» — заголовок + сетка карточек или empty state */
-export function MyBotsSection({ bots, onCreate, onExport, onToggle, onEdit, onMore }: Props) {
+export function MyBotsSection({ bots, onCreate, onExport, onToggle, onEdit, onDelete }: Props) {
   return (
     <section className="mx-auto max-w-[1400px] px-8 pt-6">
       <div className="mb-3.5 flex items-baseline gap-3 border-b border-white/[.06] pb-3.5">
@@ -45,7 +45,7 @@ export function MyBotsSection({ bots, onCreate, onExport, onToggle, onEdit, onMo
               bot={b}
               onToggle={(next: RunStatus | 'paused') => onToggle(b.id, next as 'running' | 'paused')}
               onEdit={() => onEdit(b.id)}
-              onMore={() => onMore(b.id)}
+              onDelete={() => onDelete(b.id)}
             />
           ))}
         </div>

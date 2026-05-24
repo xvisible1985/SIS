@@ -25,11 +25,12 @@ type tradeResp struct {
 // Each request is individually signed via the "header" field (per-request auth).
 // Falls back to REST if not connected.
 type TradeStream struct {
-	creds   Credentials
-	mu      sync.Mutex
-	conn    *websocket.Conn // nil when not connected
-	seq     int64
-	pending map[string]chan tradeResp
+	creds        Credentials
+	mu           sync.Mutex
+	conn         *websocket.Conn // nil when not connected
+	seq          int64
+	pending      map[string]chan tradeResp
+	wsDisabled   bool // set after permanent WS permission error (10005) to skip WS and use REST directly
 }
 
 func NewTradeStream(creds Credentials) *TradeStream {
@@ -143,6 +144,7 @@ func (ts *TradeStream) runOnce(ctx context.Context) error {
 // sendReq signs and sends a trade operation, then waits for the reqId response.
 // Caller must not hold ts.mu.
 func (ts *TradeStream) sendReq(ctx context.Context, op string, args any) (tradeResp, error) {
+	start := time.Now()
 	// WS trade per-request signing uses empty string as payload (unlike REST which uses request body).
 	timestamp := serverTimestamp()
 	sig := sign(timestamp, ts.creds.APIKey, ts.creds.SecretKey, recvWindow, "")
@@ -179,6 +181,9 @@ func (ts *TradeStream) sendReq(ctx context.Context, op string, args any) (tradeR
 
 	select {
 	case resp := <-ch:
+		if d := time.Since(start); d > 500*time.Millisecond {
+			log.Printf("trader trade ws: %s took %v (slow)", op, d)
+		}
 		return resp, nil
 	case <-time.After(10 * time.Second):
 		ts.mu.Lock()
@@ -202,74 +207,162 @@ func wsPermDenied(code int) bool {
 
 // PlaceOrder places a single order via WS, falling back to REST.
 func (ts *TradeStream) PlaceOrder(ctx context.Context, req OrderRequest) (OrderResult, error) {
-	resp, err := ts.sendReq(ctx, "order.create", []any{req})
-	if err != nil || wsPermDenied(resp.RetCode) {
-		if err == nil {
-			log.Printf("trader trade ws: PlaceOrder WS perm error %d, REST fallback", resp.RetCode)
-		} else {
-			log.Printf("trader trade ws: PlaceOrder fallback (%v)", err)
+	ts.mu.Lock()
+	disabled := ts.wsDisabled
+	ts.mu.Unlock()
+	if !disabled {
+		resp, err := ts.sendReq(ctx, "order.create", []any{req})
+		if err == nil && !wsPermDenied(resp.RetCode) {
+			if resp.RetCode == 0 {
+				var result OrderResult
+				if err := json.Unmarshal(resp.Data, &result); err != nil {
+					return OrderResult{}, fmt.Errorf("parse PlaceOrder response: %w", err)
+				}
+				return result, nil
+			}
+			/*
+			// Auto-sign trading agreement and retry once on WS.
+			if isAgreementError(resp.RetCode) {
+				if signErr := trySignAgreement(ctx, ts.creds); signErr == nil {
+					resp2, err2 := ts.sendReq(ctx, "order.create", []any{req})
+					if err2 == nil && resp2.RetCode == 0 {
+						var result OrderResult
+						if err := json.Unmarshal(resp2.Data, &result); err != nil {
+							return OrderResult{}, fmt.Errorf("parse PlaceOrder response: %w", err)
+						}
+						return result, nil
+					}
+					if err2 == nil {
+						return OrderResult{}, fmt.Errorf("bybit: retCode=%d: %s", resp2.RetCode, resp2.RetMsg)
+					}
+					log.Printf("trader trade ws: PlaceOrder retry after agreement failed (%v)", err2)
+				} else {
+					log.Printf("trader trade ws: PlaceOrder agreement sign failed: %v", signErr)
+				}
+			}
+			*/
+			return OrderResult{}, fmt.Errorf("bybit: retCode=%d: %s", resp.RetCode, resp.RetMsg)
 		}
-		return PlaceOrder(ctx, ts.creds, req)
+		if err != nil {
+			log.Printf("trader trade ws: PlaceOrder fallback (%v)", err)
+		} else {
+			log.Printf("trader trade ws: PlaceOrder WS perm error %d, REST fallback", resp.RetCode)
+			ts.mu.Lock()
+			ts.wsDisabled = true
+			ts.mu.Unlock()
+		}
 	}
-	if resp.RetCode != 0 {
-		return OrderResult{}, fmt.Errorf("bybit: retCode=%d: %s", resp.RetCode, resp.RetMsg)
-	}
-	var result OrderResult
-	if err := json.Unmarshal(resp.Data, &result); err != nil {
-		return OrderResult{}, fmt.Errorf("parse PlaceOrder response: %w", err)
-	}
-	return result, nil
+	return PlaceOrder(ctx, ts.creds, req)
 }
 
 // PlaceOrderBatch places multiple orders via WS, falling back to REST.
 func (ts *TradeStream) PlaceOrderBatch(ctx context.Context, req BatchPlaceRequest) ([]BatchPlaceResult, error) {
-	resp, err := ts.sendReq(ctx, "order.create-batch", []any{req})
-	if err != nil || wsPermDenied(resp.RetCode) {
-		if err == nil {
-			log.Printf("trader trade ws: PlaceOrderBatch WS perm error %d, REST fallback", resp.RetCode)
-		} else {
-			log.Printf("trader trade ws: PlaceOrderBatch fallback (%v)", err)
+	ts.mu.Lock()
+	disabled := ts.wsDisabled
+	ts.mu.Unlock()
+	if !disabled {
+		resp, err := ts.sendReq(ctx, "order.create-batch", []any{req})
+		if err == nil && !wsPermDenied(resp.RetCode) {
+			if resp.RetCode == 0 {
+				results, err := parseBatchPlaceWSResp(resp.Data, resp.RetExtInfo)
+				if err != nil {
+					return nil, err
+				}
+				/*
+				// If any item failed due to a missing trading agreement, sign it
+				// and fall back to REST (which handles per-item retries).
+				for _, r := range results {
+					if isAgreementError(r.Code) {
+						signErr := trySignAgreement(ctx, ts.creds)
+						if signErr == nil {
+							return PlaceOrderBatch(ctx, ts.creds, req)
+						}
+						log.Printf("trader trade ws: PlaceOrderBatch per-item agreement sign failed: %v", signErr)
+						break
+					}
+				}
+				*/
+				return results, nil
+			}
+			/*
+			// Auto-sign trading agreement and retry once on WS.
+			if isAgreementError(resp.RetCode) {
+				if signErr := trySignAgreement(ctx, ts.creds); signErr == nil {
+					resp2, err2 := ts.sendReq(ctx, "order.create-batch", []any{req})
+					if err2 == nil && resp2.RetCode == 0 {
+						return parseBatchPlaceWSResp(resp2.Data, resp2.RetExtInfo)
+					}
+					if err2 == nil {
+						return nil, fmt.Errorf("bybit: retCode=%d: %s", resp2.RetCode, resp2.RetMsg)
+					}
+					log.Printf("trader trade ws: PlaceOrderBatch retry after agreement failed (%v)", err2)
+				} else {
+					log.Printf("trader trade ws: PlaceOrderBatch agreement sign failed: %v", signErr)
+				}
+			}
+			*/
+			return nil, fmt.Errorf("bybit: retCode=%d: %s", resp.RetCode, resp.RetMsg)
 		}
-		return PlaceOrderBatch(ctx, ts.creds, req)
+		if err != nil {
+			log.Printf("trader trade ws: PlaceOrderBatch fallback (%v)", err)
+		} else {
+			log.Printf("trader trade ws: PlaceOrderBatch WS perm error %d, REST fallback", resp.RetCode)
+			ts.mu.Lock()
+			ts.wsDisabled = true
+			ts.mu.Unlock()
+		}
 	}
-	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit: retCode=%d: %s", resp.RetCode, resp.RetMsg)
-	}
-	return parseBatchPlaceWSResp(resp.Data, resp.RetExtInfo)
+	return PlaceOrderBatch(ctx, ts.creds, req)
 }
 
 // CancelOrder cancels a single order via WS, falling back to REST.
 func (ts *TradeStream) CancelOrder(ctx context.Context, req CancelRequest) error {
-	resp, err := ts.sendReq(ctx, "order.cancel", []any{req})
-	if err != nil || wsPermDenied(resp.RetCode) {
-		if err == nil {
-			log.Printf("trader trade ws: CancelOrder WS perm error %d, REST fallback", resp.RetCode)
-		} else {
-			log.Printf("trader trade ws: CancelOrder fallback (%v)", err)
+	ts.mu.Lock()
+	disabled := ts.wsDisabled
+	ts.mu.Unlock()
+	if !disabled {
+		resp, err := ts.sendReq(ctx, "order.cancel", []any{req})
+		if err == nil && !wsPermDenied(resp.RetCode) {
+			if resp.RetCode != 0 {
+				return fmt.Errorf("bybit: retCode=%d: %s", resp.RetCode, resp.RetMsg)
+			}
+			return nil
 		}
-		return CancelOrder(ctx, ts.creds, req)
+		if err != nil {
+			log.Printf("trader trade ws: CancelOrder fallback (%v)", err)
+		} else {
+			log.Printf("trader trade ws: CancelOrder WS perm error %d, REST fallback", resp.RetCode)
+			ts.mu.Lock()
+			ts.wsDisabled = true
+			ts.mu.Unlock()
+		}
 	}
-	if resp.RetCode != 0 {
-		return fmt.Errorf("bybit: retCode=%d: %s", resp.RetCode, resp.RetMsg)
-	}
-	return nil
+	return CancelOrder(ctx, ts.creds, req)
 }
 
 // CancelOrderBatch cancels specific orders via WS, falling back to REST.
 func (ts *TradeStream) CancelOrderBatch(ctx context.Context, req BatchCancelRequest) error {
-	resp, err := ts.sendReq(ctx, "order.cancel-batch", []any{req})
-	if err != nil || wsPermDenied(resp.RetCode) {
-		if err == nil {
-			log.Printf("trader trade ws: CancelOrderBatch WS perm error %d, REST fallback", resp.RetCode)
-		} else {
-			log.Printf("trader trade ws: CancelOrderBatch fallback (%v)", err)
+	ts.mu.Lock()
+	disabled := ts.wsDisabled
+	ts.mu.Unlock()
+	if !disabled {
+		resp, err := ts.sendReq(ctx, "order.cancel-batch", []any{req})
+		if err == nil && !wsPermDenied(resp.RetCode) {
+			if resp.RetCode != 0 {
+				return fmt.Errorf("bybit: retCode=%d: %s", resp.RetCode, resp.RetMsg)
+			}
+			return nil
 		}
-		return CancelOrderBatch(ctx, ts.creds, req)
+		if err != nil {
+			log.Printf("trader trade ws: CancelOrderBatch fallback (%v)", err)
+		} else {
+			log.Printf("trader trade ws: CancelOrderBatch WS perm error %d, REST fallback", resp.RetCode)
+			ts.mu.Lock()
+			ts.wsDisabled = true
+			ts.mu.Unlock()
+		}
 	}
-	if resp.RetCode != 0 {
-		return fmt.Errorf("bybit: retCode=%d: %s", resp.RetCode, resp.RetMsg)
-	}
-	return nil
+	return CancelOrderBatch(ctx, ts.creds, req)
 }
 
 func parseBatchPlaceWSResp(dataJSON, extInfoJSON json.RawMessage) ([]BatchPlaceResult, error) {

@@ -7,14 +7,40 @@ import { CoinIcon } from './CoinIcon'
 interface TickerRow { symbol: string; price: number; change: number; turnover: number }
 let _tickers: TickerRow[] = []
 let _cacheAt = 0
+let _delistings: string[] = []
+let _delistingsAt = 0
+
+async function loadDelistings() {
+  if (Date.now() - _delistingsAt < 60_000 && _delistings.length >= 0) return
+  try {
+    const r = await fetch('/bybit-news/delistings')
+    const j = await r.json()
+    _delistings = (j.symbols ?? []) as string[]
+    _delistingsAt = Date.now()
+  } catch {
+    _delistings = []
+  }
+}
+
+function isDelisted(sym: string): boolean {
+  return _delistings.includes(sym)
+}
+
+export async function getAllSymbols(): Promise<string[]> {
+  await loadTickers()
+  return _tickers.map(t => t.symbol)
+}
 
 async function loadTickers() {
   if (Date.now() - _cacheAt < 30_000 && _tickers.length > 0) return
   try {
-    const r = await fetch('https://api.bybit.com/v5/market/tickers?category=linear')
+    const [r] = await Promise.all([
+      fetch('https://api.bybit.com/v5/market/tickers?category=linear'),
+      loadDelistings(),
+    ])
     const j = await r.json()
     _tickers = ((j.result?.list ?? []) as any[])
-      .filter((t: any) => t.symbol.endsWith('USDT'))
+      .filter((t: any) => t.symbol.endsWith('USDT') && !isDelisted(t.symbol))
       .map((t: any) => ({
         symbol: t.symbol,
         price: parseFloat(t.lastPrice),

@@ -40,7 +40,7 @@ type VolSpikeP = { period: number; mult: number; candle: string; tf: string }
 type BreakoutP = { period: number; buffer: number; dir: string; tf: string }
 type EmaXP    = { fast: number; slow: number; dir: string; tf: string }
 type DivP     = { period: number; lookback: number; dir: string; tf: string }
-type StFlipP  = { atr: number; mult: number; dir: string; tf: string }
+type StFlipP  = { atr: number; mult: number; dir: string; ttl: number; tf: string }
 
 export const SIGNALS: SignalDef<any>[] = [
   {
@@ -278,14 +278,26 @@ export const SIGNALS: SignalDef<any>[] = [
     },
   },
   {
-    id: 'st-flip', abbr: 'STF', name: 'SuperTrend Flip', cat: 'trend', state: 'buy' as const,
-    desc: 'Смена направления SuperTrend',
-    about: 'Флип SuperTrend — момент пробоя ценой линии SuperTrend. Разворот с медвежьего на бычий → Buy, с бычьего на медвежий → Sell. Генерирует меньше сигналов чем EMA-кросс, но более надёжен в трендовых условиях. Множитель 3+ рекомендован для долгосрочных позиций.',
-    defaults: { atr: 10, mult: 3.0, dir: 'bull', tf: '1h' },
+    id: 'bybit-news', abbr: 'BN', name: 'Bybit News Listing', cat: 'fundamental', state: 'buy' as const,
+    desc: 'Автоматический запуск по листингам Bybit',
+    about: 'Сканирует анонсы Bybit о новых листингах. При появлении новости создаёт grid-стратегию для указанного символа с плечом из анонса. Только long.',
+    defaults: { tf: '1m' },
+    params: [
+      { kind: 'segmented', key: 'tf', label: 'Таймфрейм', hint: 'Техническое поле, не влияет на логику', options: ['1m', '5m', '15m'] },
+    ],
+    formula: () => <>{name('Bybit News Listing')}</>,
+    compute: () => 'neutral' as const,
+  },
+  {
+    id: 'st-flip', abbr: 'STF', name: 'SuperTrend', cat: 'trend', state: 'buy' as const,
+    desc: 'Направление SuperTrend — Buy выше линии, Sell ниже',
+    about: 'SuperTrend на базе ATR. Цена выше верхней полосы → Buy, ниже нижней → Sell. Генерирует меньше сигналов чем EMA-кросс, но более надёжен в трендовых условиях. Множитель 3+ рекомендован для долгосрочных позиций.',
+    defaults: { atr: 10, mult: 3.0, dir: 'bull', ttl: 0, tf: '1h' },
     params: [
       { kind: 'number',    key: 'atr',  label: 'ATR период',  hint: 'Период для расчёта ATR. Стандарт: 10.' },
       { kind: 'number',    key: 'mult', label: 'Множитель',   hint: 'Коэффициент ATR. Меньше → чаще флипы, больше → надёжнее. Стандарт: 3.0.', step: 0.1, decimals: 1 },
       { kind: 'segmented', key: 'dir',  label: 'Направл.',    hint: 'bull — только переворот в Buy. bear — только в Sell. оба — оба направления.', options: ['bull', 'bear', 'оба'] },
+      { kind: 'number',    key: 'ttl',  label: 'TTL (мин)',   hint: 'Время жизни сигнала в минутах. После истечения сигнал переходит в Neutral и не запускает новые стратегии. 0 — без ограничений.', step: 1, decimals: 0 },
     ],
     formula: p => <>{name(`SuperTrend(${p.atr},${p.mult})`)} {op(`↻ ${p.dir}`)}</>,
     compute: (p: StFlipP, c: Candle[]): SignalState => {

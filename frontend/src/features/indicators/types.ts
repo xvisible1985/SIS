@@ -1,4 +1,4 @@
-export type IndicatorCategory = 'momentum' | 'trend' | 'volatility' | 'volume';
+export type IndicatorCategory = 'momentum' | 'trend' | 'volatility' | 'volume' | 'fundamental';
 
 export type SignalState = 'buy' | 'sell' | 'neutral';
 

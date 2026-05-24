@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"time"
 )
 
 // Factory builds a Signal from a Config.
@@ -159,10 +160,12 @@ func init() {
 	})
 
 	Register("st-flip", func(cfg Config) Signal {
+		ttl := time.Duration(cfg.Float("ttl", 0) * float64(time.Minute))
 		return &superTrendFlip{
 			atrPeriod: int(cfg.Float("atr", 10)),
 			mult:      cfg.Float("mult", 3.0),
 			dir:       cfg.Str("dir", "bull"),
+			ttl:       ttl,
 		}
 	})
 
@@ -216,9 +219,11 @@ func init() {
 	})
 
 	Register("st", func(cfg Config) Signal {
+		ttl := time.Duration(cfg.Float("ttl", 0) * float64(time.Minute))
 		return &superTrendContinuous{
 			atrPeriod: int(cfg.Float("atr", 10)),
 			mult:      cfg.Float("mult", 3.0),
+			ttl:       ttl,
 		}
 	})
 }

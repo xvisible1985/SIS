@@ -3,34 +3,40 @@ import { BotsPage as BotsPageUI } from '../features/bots/BotsPage';
 import { BotForm } from '../features/bots/components/BotForm';
 import { DeployModal } from '../features/bots/components/DeployModal';
 import { useBots } from '../features/bots/api';
+import { useBotSignalCounts } from '../hooks/useBotSignalCounts';
+import type { BotSignalCount } from '../hooks/useBotSignalCounts';
 import type { Bot, CreateBotInput } from '../features/bots/types';
 import type { MyBot, FeaturedBot, BotStrategy, RiskLevel, TradeMode } from '../features/bots/ui-types';
 
-function toMyBot(b: Bot): MyBot {
+function toMyBot(b: Bot, sc: BotSignalCount | undefined): MyBot {
+  const wl = b.symbolWhitelist ?? [];
+  const symbolsTotal = sc
+    ? String(sc.totalCount)
+    : wl.length === 0 ? 'все' : String(wl.length);
+
   return {
-    id:        b.id,
-    tplId:     b.sourceBotId,
-    name:      b.name,
-    avatarUrl: b.avatarUrl,
+    id:               b.id,
+    tplId:            b.sourceBotId,
+    name:             b.name,
+    description:      b.description ?? '',
+    avatarUrl:        b.avatarUrl,
     strategy: (b.strategyConfig.direction === 'long'
       ? 'trend'
       : b.strategyConfig.direction === 'short'
         ? 'trend'
         : 'grid') as BotStrategy,
-    status:   b.status === 'active' ? 'running' : b.status === 'stopped' ? 'stopped' : 'paused',
-    pair:     b.strategyConfig.symbol ?? 'BTC/USDT',
-    exchange: 'bybit',
-    capital:  b.strategyConfig.grid_size_usdt ?? 0,
-    balance:  b.strategyConfig.grid_size_usdt ?? 0,
-    pnlMonth: 0,
-    pnlTotal: 0,
-    trades:   0,
-    winRate:  0,
-    started:  new Date(b.createdAt),
-    lev:      1,
-    mode:     'futures' as TradeMode,
-    custom:   !b.sourceBotId,
-    config:   b.strategyConfig as Record<string, unknown>,
+    status:           b.status === 'active' ? 'running' : b.status === 'stopped' ? 'stopped' : 'paused',
+    pair:             b.strategyConfig.symbol ?? 'BTC/USDT',
+    exchange:         'bybit',
+    capital:          b.strategyConfig.grid_size_usdt ?? 0,
+    started:          new Date(b.createdAt),
+    lev:              1,
+    mode:             'futures' as TradeMode,
+    symbolsTotal,
+    symbolsWithSignal: sc ? String(sc.signalCount) : '—',
+    symbolsLimit:      '—',
+    custom:            !b.sourceBotId,
+    config:            b.strategyConfig as Record<string, unknown>,
   };
 }
 
@@ -65,6 +71,7 @@ function toFeaturedBot(b: Bot): FeaturedBot {
 
 export function BotsPage() {
   const { catalog, mine, loading, action } = useBots();
+  const signalCounts = useBotSignalCounts(!loading);
 
   const [formMode, setFormMode] = useState<'create' | 'edit' | null>(null);
   const [editBot, setEditBot] = useState<Bot | null>(null);
@@ -119,7 +126,7 @@ export function BotsPage() {
   return (
     <>
       <BotsPageUI
-        myBots={mine.map(toMyBot)}
+        myBots={mine.map(b => toMyBot(b, signalCounts.get(b.id)))}
         featured={catalog.map(toFeaturedBot)}
         onCreateBot={handleCreate}
         onExportBots={() => {}}
@@ -130,7 +137,7 @@ export function BotsPage() {
           })
         }
         onEditBot={handleEditBot}
-        onMoreBot={() => {}}
+        onDeleteBot={(id) => action({ type: 'delete', botId: id })}
         onLaunchTpl={handleLaunchTpl}
         onConfigureTpl={handleLaunchTpl}
         onCloneTpl={(tplId) => action({ type: 'fork', botId: tplId })}

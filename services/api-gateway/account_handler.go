@@ -22,12 +22,13 @@ func (s *Server) GetProfile(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	var email, plan string
 	var username, telegramUsername *string
+	var novabotBalance float64
 	err := s.pool.QueryRow(r.Context(),
-		`SELECT u.email, u.plan, u.username, tc.username
+		`SELECT u.email, u.plan, u.username, tc.username, u.novabot_balance
 		 FROM users u
 		 LEFT JOIN telegram_connections tc ON tc.user_id = u.id
 		 WHERE u.id = $1`, userID,
-	).Scan(&email, &plan, &username, &telegramUsername)
+	).Scan(&email, &plan, &username, &telegramUsername, &novabotBalance)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -37,6 +38,7 @@ func (s *Server) GetProfile(w http.ResponseWriter, r *http.Request) {
 		"username":          username,
 		"plan":              plan,
 		"telegram_username": telegramUsername,
+		"novabot_balance":   novabotBalance,
 	})
 }
 

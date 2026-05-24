@@ -4,6 +4,8 @@ import { listAccounts } from '../api/accounts'
 import { StrategyCard } from '../components/strategies/StrategyCard'
 import { StrategyModal } from '../components/strategies/StrategyModal'
 import { MatrixDebugOverlay } from '../components/strategies/MatrixDebugOverlay'
+import { useSelectedAccount } from '../contexts/AccountContext'
+import { usePositionsWs } from '../hooks/terminal/usePositionsWs'
 import type { Strategy, ExchangeAccount } from '../types'
 
 const STATUS_ORDER: Record<string, number> = { active: 0, finishing: 1, stopped: 2 }
@@ -15,6 +17,9 @@ function sortStrategies(list: Strategy[]): Strategy[] {
 }
 
 export function StrategiesPage() {
+  const { selectedAccountId } = useSelectedAccount()
+  const { positions, orders } = usePositionsWs(selectedAccountId || null)
+
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
   const [loading, setLoading] = useState(true)
@@ -55,10 +60,15 @@ export function StrategiesPage() {
         try {
           const updates: { id: string; status: string; manual_alert?: string }[] = JSON.parse(evt.data as string)
           if (updates.length > 0) {
-            setStrategies(prev => prev.map(s => {
-              const upd = updates.find(u => u.id === s.id)
-              return upd ? { ...s, status: upd.status as Strategy['status'], manual_alert: upd.manual_alert } : s
-            }))
+            const deletedIds = new Set(updates.filter(u => u.status === 'deleted').map(u => u.id))
+            setStrategies(prev => {
+              let next = prev.filter(s => !deletedIds.has(s.id))
+              next = next.map(s => {
+                const upd = updates.find(u => u.id === s.id && u.status !== 'deleted')
+                return upd ? { ...s, status: upd.status as Strategy['status'], manual_alert: upd.manual_alert } : s
+              })
+              return next
+            })
           }
         } catch { /* ignore malformed */ }
       }
@@ -134,7 +144,8 @@ export function StrategiesPage() {
                 key={s.id}
                 strategy={s}
                 accounts={accounts}
-                orders={[]}
+                orders={orders}
+                positions={positions}
                 onEdit={openEdit}
                 onChanged={load}
                 selected={s.id === selectedId}

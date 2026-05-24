@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { AdminAction, AdminUser } from './types';
+import type { AdminAction, AdminUser, NovaBotTransaction } from './types';
 import { UserList } from './components/UserList';
 import { UserDetailPanel } from './components/UserDetailPanel';
 
@@ -11,9 +11,14 @@ type Props = {
   onCreateUser?: () => void;
   /** Опционально — клик по «Обновить» (обычно refetch) */
   onRefresh?: () => void;
+  /** Загрузка истории транзакций NovaBot */
+  fetchTransactions?: (
+    userId: string,
+    params?: { limit?: number; offset?: number; type?: 'all' | 'credit' | 'debit' },
+  ) => Promise<NovaBotTransaction[]>;
 };
 
-export function AdminUsersPage({ users, onAction, onCreateUser, onRefresh }: Props) {
+export function AdminUsersPage({ users, onAction, onCreateUser, onRefresh, fetchTransactions }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(users[0]?.id ?? null);
   const selected = users.find((u) => u.id === selectedId);
 
@@ -32,6 +37,7 @@ export function AdminUsersPage({ users, onAction, onCreateUser, onRefresh }: Pro
           users={users}
           onClose={() => setSelectedId(null)}
           onAction={onAction}
+          fetchTransactions={fetchTransactions}
         />
       )}
     </div>

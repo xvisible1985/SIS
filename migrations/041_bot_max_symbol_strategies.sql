@@ -1,0 +1,1 @@
+ALTER TABLE bots ADD COLUMN IF NOT EXISTS max_sym_consecutive_runs INTEGER NOT NULL DEFAULT 0;

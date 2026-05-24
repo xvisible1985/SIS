@@ -35,6 +35,14 @@ export type AdminUser = {
   blockReason?: string;
 };
 
+export type NovaBotTransaction = {
+  id: string;
+  adminId: string;
+  amount: number;
+  note: string;
+  createdAt: Date;
+};
+
 export type StatusFilter = 'all' | 'active' | 'pending' | 'blocked' | 'admin' | 'curator';
 
 export type UserListFilters = {
@@ -54,4 +62,5 @@ export type AdminAction =
   | { type: 'balance/adjust';   userId: string; amount: number; note?: string }
   | { type: 'block';            userId: string; reason: string }
   | { type: 'unblock';          userId: string }
-  | { type: 'account/remove';   userId: string; accountId: string };
+  | { type: 'account/remove';   userId: string; accountId: string }
+  | { type: 'account/sign-agreement'; userId: string; accountId: string; categoryV2?: number };

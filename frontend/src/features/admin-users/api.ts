@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiClient } from '../../api/client';
-import type { AdminAction, AdminUser, ApiAccount } from './types';
+import type { AdminAction, AdminUser, ApiAccount, NovaBotTransaction } from './types';
 
 type RawAccount = Record<string, unknown>;
 type RawUser   = Record<string, unknown>;
@@ -33,6 +33,16 @@ function parseUser(raw: RawUser): AdminUser {
     refererId:     raw.refererId     as string | null,
     accounts:      ((raw.accounts ?? []) as RawAccount[]).map(parseAccount),
     blockReason:   raw.blockReason   as string | undefined,
+  };
+}
+
+function parseTx(raw: Record<string, unknown>): NovaBotTransaction {
+  return {
+    id:        raw.id        as string,
+    adminId:   raw.adminId   as string,
+    amount:    raw.amount    as number,
+    note:      raw.note      as string,
+    createdAt: new Date(raw.createdAt as string),
   };
 }
 
@@ -80,9 +90,28 @@ export function useAdminUsers() {
         await apiClient.post(`/admin/users/${a.userId}/unblock`); break;
       case 'account/remove':
         await apiClient.delete(`/admin/users/${a.userId}/accounts/${a.accountId}`); break;
+      case 'account/sign-agreement':
+        await apiClient.post(`/admin/accounts/${a.accountId}/sign-agreement`, {
+          categoryV2: a.categoryV2,
+        }); break;
     }
     await load();
   }, [load]);
 
-  return { users, loading, action, refresh: load };
+  const fetchTransactions = useCallback(async (
+    userId: string,
+    params?: { limit?: number; offset?: number; type?: 'all' | 'credit' | 'debit' },
+  ) => {
+    const p = new URLSearchParams();
+    if (params?.limit)  p.set('limit', String(params.limit));
+    if (params?.offset) p.set('offset', String(params.offset));
+    if (params?.type && params.type !== 'all') p.set('type', params.type);
+    const qs = p.toString();
+    const res = await apiClient.get<Record<string, unknown>[]>(
+      `/admin/users/${userId}/transactions${qs ? '?' + qs : ''}`,
+    );
+    return res.data.map(parseTx);
+  }, []);
+
+  return { users, loading, action, refresh: load, fetchTransactions };
 }

@@ -14,7 +14,8 @@ func Connect(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("db: parse config: %w", err)
 	}
-	cfg.MaxConns = 20
+	cfg.MaxConns = 40
+	cfg.MinConns = 5
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

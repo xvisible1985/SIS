@@ -17,8 +17,10 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
+	"sis/pkg/bybitnews"
 	"sis/pkg/cache"
 	"sis/pkg/db"
+	"sis/pkg/proxy"
 	traderPkg "sis/pkg/trader"
 )
 
@@ -63,7 +65,17 @@ func main() {
 		}
 	}
 
-	s := NewServer(ctx, pool, rdb, jwtSecret, encKey, adminEmails)
+	var pm *proxy.Manager
+	if pm, err = proxy.NewManager(ctx, pool, encKey); err != nil {
+		log.Printf("proxy manager disabled: %v", err)
+	} else {
+		proxy.InitGlobalManager(pm)
+	}
+
+	ns := bybitnews.NewScraper(pool)
+	go ns.Start(ctx)
+
+	s := NewServer(ctx, pool, rdb, jwtSecret, encKey, adminEmails, pm, ns)
 	bootstrapAdmins(ctx, pool, adminEmails)
 
 	// Start strategy engine
@@ -75,6 +87,10 @@ func main() {
 	// Start background syncer
 	syncer := traderPkg.NewSyncer(pool, encKey, syncDays)
 	syncer.Start(ctx)
+
+	// Start bot automation engine
+	go s.RunBotEngine(ctx)
+	go s.globalWarmer.Start(ctx)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -123,6 +139,7 @@ func main() {
 		r.Delete("/accounts/{id}", s.DeleteAccount)
 		r.Get("/accounts/{id}/verify", s.VerifyAccount)
 		r.Get("/accounts/{id}/balance", s.GetAccountBalance)
+		r.Get("/accounts/{id}/positions", s.GetAccountPositions)
 		r.Patch("/accounts/{id}/active", s.ToggleAccountActive)
 
 		// Strategies
@@ -130,6 +147,7 @@ func main() {
 		r.Post("/strategies", s.CreateStrategy)
 		r.Put("/strategies/{id}", s.UpdateStrategy)
 		r.Post("/strategies/{id}/status", s.SetStrategyStatus)
+		r.Post("/strategies/{id}/detach", s.DetachFromBot)
 		r.Delete("/strategies/{id}", s.DeleteStrategy)
 
 		// Strategy state and events
@@ -172,6 +190,13 @@ func main() {
 		r.Post("/bots/{id}/start", s.StartBot)
 		r.Post("/bots/{id}/stop", s.StopBot)
 		r.Post("/bots/{id}/publish", s.PublishBot)
+		r.Get("/bots/{id}/events", s.GetBotEvents)
+		r.Get("/bots/{id}/scan", s.ScanBot)
+		r.Post("/bots/{id}/trigger", s.TriggerBot)
+		r.Post("/bots/signal-scan", s.ScanSignals)
+
+			// Trade history
+			r.Get("/trade-history", s.GetTradeHistory)
 
 		// Admin
 		r.Get("/admin/metrics", s.GetAdminMetrics)
@@ -191,6 +216,9 @@ func main() {
 			r.Post("/admin/users/{id}/block", s.BlockAdminUser)
 			r.Post("/admin/users/{id}/unblock", s.UnblockAdminUser)
 			r.Delete("/admin/users/{id}/accounts/{aid}", s.DeleteAdminAccount)
+			// Admin: bots management
+			r.Get("/admin/bots", s.ListAdminBots)
+			r.Post("/admin/bots", s.CreateOfficialBot)
 			// Admin: signal and indicator types management
 			r.Get("/admin/signal-types", s.ListSignalTypes)
 			r.Patch("/admin/signal-types/{id}", s.ToggleSignalType)
@@ -198,6 +226,21 @@ func main() {
 			r.Patch("/admin/indicator-types/{id}", s.ToggleIndicatorType)
 			r.Get("/admin/signal-override/{name}", s.GetSignalOverride)
 			r.Put("/admin/signal-override/{name}", s.SetSignalOverride)
+
+			// Admin: proxy management
+			r.Get("/admin/proxies", s.ListProxies)
+			r.Post("/admin/proxies", s.CreateProxy)
+			r.Patch("/admin/proxies/{id}", s.UpdateProxy)
+			r.Delete("/admin/proxies/{id}", s.DeleteProxy)
+			r.Get("/admin/proxy-metrics", s.GetProxyMetrics)
+
+			// Admin: Bybit news
+			r.Get("/admin/bybit-news", s.ListBybitAnnouncements)
+			r.Get("/admin/bybit-news/latest", s.GetLatestBybitNews)
+			r.Post("/admin/bybit-news/refresh", s.RefreshBybitNews)
+
+				// Admin: sign Bybit trading agreement (disabled — requires master API key permissions)
+				// r.Post("/admin/accounts/{id}/sign-agreement", s.AdminSignAgreement)
 		})
 	})
 
@@ -206,12 +249,16 @@ func main() {
 
 	// Coin icons — public, no auth
 	r.Get("/coin-icon/{symbol}", s.GetCoinIcon)
+	// Bybit news delistings — public, no auth (used by coin picker)
+	r.Get("/bybit-news/delistings", s.GetDelistingSymbolsHandler)
 
 	// WebSocket endpoints — auth via ?token= query param
 	r.Get("/ws/jobs/{id}/progress", s.JobProgress)
 	r.Get("/ws/trader/positions", s.PositionsStream)
 	r.Get("/ws/strategies/updates", s.StrategiesUpdatesStream)
 	r.Get("/ws/strategies/{id}/events", s.StrategyEventsStream)
+	r.Get("/ws/bots/updates", s.BotSignalUpdatesStream)
+	r.Get("/ws/bots/{id}/events", s.BotEventsStream)
 
 	srv := &http.Server{Addr: listenAddr, Handler: r}
 

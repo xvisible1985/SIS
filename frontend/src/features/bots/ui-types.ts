@@ -50,6 +50,7 @@ export type MyBot = {
   /** ID шаблона из библиотеки или null для кастомных */
   tplId: string | null;
   name: string;
+  description: string;
   avatarUrl?: string;
   strategy: BotStrategy;
   status: RunStatus;
@@ -57,15 +58,15 @@ export type MyBot = {
   exchange: string;
   /** Стартовый капитал */
   capital: number;
-  /** Текущий баланс */
-  balance: number;
-  pnlMonth: number;
-  pnlTotal: number;
-  trades: number;
-  winRate: number;
   started: Date;
   lev: number;
   mode: TradeMode;
+  /** "все" | "5" | "3 правила" — сколько символов обрабатывает бот */
+  symbolsTotal: string;
+  /** Сколько символов сейчас имеют нужный сигнал */
+  symbolsWithSignal: string;
+  /** Ограничение на одновременную обработку */
+  symbolsLimit: string;
   /** Кастомный бот (созданный с нуля) */
   custom?: boolean;
   /** Произвольный конфиг — структура зависит от strategy */

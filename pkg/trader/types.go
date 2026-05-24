@@ -110,6 +110,7 @@ type Order struct {
 	OrderType    string `json:"orderType"`
 	Price        string `json:"price"`
 	Qty          string `json:"qty"`
+	AvgPrice     string `json:"avgPrice"`
 	CumExecQty   string `json:"cumExecQty"`
 	CumExecFee   string `json:"cumExecFee"`
 	OrderStatus  string `json:"orderStatus"`

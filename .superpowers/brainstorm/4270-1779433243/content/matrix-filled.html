@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Matrix — filled mockup</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #111827; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; display: flex; justify-content: center; padding: 24px 12px; }
+
+  .modal { width: 500px; background: #111827; border: 1px solid #374151; border-radius: 12px; overflow: hidden; box-shadow: 0 25px 50px rgba(0,0,0,.7); }
+
+  /* Header */
+  .modal-header { display:flex; justify-content:space-between; align-items:center; padding: 12px 20px; border-bottom: 1px solid #1f2937; }
+  .modal-header span { font-size:15px; font-weight:600; color:#f1f5f9; }
+  .modal-header button { color:#6b7280; font-size:18px; background:none; border:none; cursor:pointer; }
+
+  /* Tabs */
+  .tabs { display:flex; border-bottom:1px solid #1f2937; }
+  .tab { flex:1; padding:10px; text-align:center; font-size:11px; font-weight:500; color:#6b7280; border-bottom:2px solid transparent; cursor:pointer; }
+  .tab.active { color:#60a5fa; border-bottom-color:#3b82f6; }
+
+  /* Body */
+  .modal-body { padding: 14px 16px; max-height: 600px; overflow-y: auto; }
+  .modal-body::-webkit-scrollbar { width:4px; }
+  .modal-body::-webkit-scrollbar-track { background:#1f2937; }
+  .modal-body::-webkit-scrollbar-thumb { background:#374151; border-radius:2px; }
+
+  /* Global params row */
+  .global-row { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px; }
+  .field-group label { display:block; font-size:10px; color:#6b7280; margin-bottom:4px; text-transform:uppercase; letter-spacing:.04em; }
+  .field-group input { width:100%; background:#1f2937; border:1px solid #374151; border-radius:6px; padding:6px 10px; font-size:12px; color:#e2e8f0; outline:none; }
+  .field-group input:focus { border-color:#3b82f6; }
+
+  /* Divider */
+  .divider { font-size:10px; color:#4b5563; text-transform:uppercase; letter-spacing:.06em; padding-bottom:6px; border-bottom:1px solid #1f2937; margin-bottom:8px; display:flex; align-items:center; gap:6px; }
+  .divider .badge { font-size:9px; background:#1e3a8a; color:#93c5fd; border-radius:3px; padding:1px 5px; }
+  .divider .badge.green { background:#14532d; color:#86efac; }
+
+  /* Level row */
+  .level-row { border-radius:6px; overflow:hidden; margin-bottom:3px; }
+  .level-main { display:grid; grid-template-columns:26px 70px 70px 70px 70px auto 22px; gap:4px; align-items:center; padding:5px 6px; background:#1f2937; cursor:pointer; }
+  .level-main:hover { background:#263244; }
+
+  .lvl-num { font-size:10px; color:#4b5563; text-align:center; font-weight:600; }
+  .lvl-num.blue { color:#60a5fa; }
+  .lvl-num.green { color:#34d399; }
+
+  .lvl-input { background:#111827; border:1px solid #374151; border-radius:4px; padding:3px 6px; font-size:11px; color:#e2e8f0; text-align:center; width:100%; outline:none; }
+  .lvl-input:focus { border-color:#3b82f6; }
+  .lvl-input.null { color:#4b5563; font-style:italic; border-style:dashed; }
+
+  .lvl-expand { font-size:9px; color:#4b5563; white-space:nowrap; }
+  .lvl-expand.has-stop { color:#fbbf24; }
+  .lvl-delete { font-size:11px; color:#374151; text-align:center; cursor:pointer; }
+  .lvl-delete:hover { color:#ef4444; }
+
+  /* Stop details */
+  .level-details { background:#161e2e; padding:5px 6px 6px 32px; display:none; }
+  .level-details.open { display:block; }
+  .details-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:4px; }
+  .detail-field label { font-size:9px; color:#4b5563; margin-bottom:2px; display:block; }
+  .detail-field input { width:100%; background:#1f2937; border:1px solid #374151; border-radius:4px; padding:3px 6px; font-size:11px; color:#e2e8f0; text-align:center; outline:none; }
+  .detail-field input:focus { border-color:#3b82f6; }
+  .detail-field input.null { color:#4b5563; font-style:italic; border-style:dashed; }
+
+  /* Column headers */
+  .col-headers { display:grid; grid-template-columns:26px 70px 70px 70px 70px auto 22px; gap:4px; padding:0 6px 4px; }
+  .col-headers span { font-size:9px; color:#4b5563; text-align:center; }
+
+  /* Add button */
+  .add-btn { width:100%; margin-top:6px; padding:6px; border:1px dashed #1d4ed8; background:none; border-radius:6px; font-size:11px; color:#3b82f6; cursor:pointer; }
+  .add-btn:hover { border-color:#3b82f6; color:#60a5fa; }
+
+  /* Footer */
+  .modal-footer { display:flex; justify-content:flex-end; gap:8px; padding:10px 16px; border-top:1px solid #1f2937; }
+  .btn-cancel { padding:6px 16px; background:#1f2937; border:none; border-radius:8px; font-size:13px; color:#9ca3af; cursor:pointer; }
+  .btn-save { padding:6px 16px; background:#2563eb; border:none; border-radius:8px; font-size:13px; color:white; cursor:pointer; font-weight:500; }
+
+  /* viz strip */
+  .viz { display:flex; align-items:center; gap:2px; padding:6px 4px 10px; overflow-x:auto; flex-wrap:nowrap; }
+  .viz::-webkit-scrollbar { height:2px; }
+  .viz-lvl { font-size:9px; padding:2px 5px; border-radius:3px; white-space:nowrap; }
+  .viz-lvl.above { background:#1e3a8a; color:#93c5fd; }
+  .viz-lvl.below { background:#14532d; color:#86efac; }
+  .viz-entry { background:#1d4ed8; color:white; font-weight:700; font-size:10px; padding:3px 8px; border-radius:4px; white-space:nowrap; }
+  .viz-arrow { color:#374151; font-size:10px; }
+</style>
+</head>
+<body>
+<div class="modal">
+
+  <div class="modal-header">
+    <span>Редактировать стратегию</span>
+    <button>✕</button>
+  </div>
+
+  <div class="tabs">
+    <div class="tab">1. Базовые</div>
+    <div class="tab active">2. Матрица</div>
+    <div class="tab">3. Завершение</div>
+  </div>
+
+  <div class="modal-body">
+
+    <!-- Global params -->
+    <div class="global-row">
+      <div class="field-group">
+        <label>Депозит (USDT)</label>
+        <input type="number" value="1000">
+      </div>
+      <div class="field-group">
+        <label>Safe-Zone от SL (%)</label>
+        <input type="number" value="1.5" step="0.1">
+      </div>
+    </div>
+
+    <!-- Visualization -->
+    <div class="viz">
+      <span class="viz-lvl above">A5 −10%</span>
+      <span class="viz-lvl above">A4 −7.5%</span>
+      <span class="viz-lvl above">A3 −5%</span>
+      <span class="viz-lvl above">A2 −3%</span>
+      <span class="viz-lvl above">A1 −1.5%</span>
+      <span class="viz-arrow">←</span>
+      <span class="viz-entry">ВХОД</span>
+      <span class="viz-arrow">→</span>
+      <span class="viz-lvl below">B1 +2%</span>
+      <span class="viz-lvl below">B2 +4%</span>
+      <span class="viz-lvl below">B3 +6.5%</span>
+      <span class="viz-lvl below">B4 +9%</span>
+      <span class="viz-lvl below">B5 +12%</span>
+    </div>
+
+    <!-- ABOVE section -->
+    <div class="divider">Ниже точки входа (усреднение) <span class="badge">5 уровней</span></div>
+
+    <div class="col-headers">
+      <span>#</span><span>Шаг %</span><span>Объём %</span><span>Стоп %</span><span>ТП % (ТВХ)</span><span></span><span></span>
+    </div>
+
+    <!-- Level A1 -->
+    <div class="level-row" id="row-a1">
+      <div class="level-main" onclick="toggle('a1')">
+        <span class="lvl-num blue">A1</span>
+        <input class="lvl-input" type="number" value="1.5" step="0.1" onclick="e=>e.stopPropagation()">
+        <input class="lvl-input" type="number" value="5" step="0.5" onclick="e=>e.stopPropagation()">
+        <input class="lvl-input" type="number" value="3.0" step="0.1" onclick="e=>e.stopPropagation()">
+        <input class="lvl-input" type="number" value="2.5" step="0.1" onclick="e=>e.stopPropagation()">
+        <span class="lvl-expand has-stop">▸ стоп ↺</span>
+        <span class="lvl-delete">✕</span>
+      </div>
+      <div class="level-details" id="det-a1">
+        <div class="details-grid">
+          <div class="detail-field"><label>Усл. замены %</label><input type="number" value="1.0" step="0.1"></div>
+          <div class="detail-field"><label>Новый стоп %</label><input type="number" value="-0.5" step="0.1"></div>
+          <div class="detail-field" style="display:flex;align-items:flex-end"><label></label><span style="font-size:9px;color:#4b5563;padding-bottom:7px">↺ перевыставится в +зону</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Level A2 -->
+    <div class="level-row" id="row-a2">
+      <div class="level-main" onclick="toggle('a2')">
+        <span class="lvl-num blue">A2</span>
+        <input class="lvl-input" type="number" value="3.0" step="0.1" onclick="e=>e.stopPropagation()">
+        <input class="lvl-input" type="number" value="8" step="0.5" onclick="e=>e.stopPropagation()">
+        <input class="lvl-input" type="number" value="2.5" step="0.1" onclick="e=>e.stopPropagation()">
+        <input class="lvl-input" type="number" value="3.5" step="0.1" onclick="e=>e.stopPropagation()">
+        <span class="lvl-expand has-stop">▸ стоп ↺</span>
+        <span class="lvl-delete">✕</span>
+      </div>
+      <div class="level-details" id="det-a2">
+        <div class="details-grid">
+          <div class="detail-field"><label>Усл. замены %</label><input type="number" value="1.5" step="0.1"></div>
+          <div class="detail-field"><label>Новый стоп %</label><input type="number" value="-1.0" step="0.1"></div>
+          <div class="detail-field"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Level A3 -->
+    <div class="level-row" id="row-a3">
+      <div class="level-main" onclick="toggle('a3')">
+        <span class="lvl-num blue">A3</span>
+        <input class="lvl-input" type="number" value="5.0" step="0.1" onclick="e=>e.stopPropagation()">
+        <input class="lvl-input" type="number" value="12" step="0.5" onclick="e=>e.stopPropagation()">
+        <input class="lvl-input null" type="text" value="—" onclick="e=>e.stopPropagation()">
+        <input class="lvl-input" type="number" value="4.0" step="0.1" onclick="e=>e.stopPropagation()">
+        <span class="lvl-expand">▸ нет стопа</span>
+        <span class="lvl-delete">✕</span>
+      </div>
+      <div class="level-details" id="det-a3">
+        <div class="details-grid">
+          <div class="detail-field"><label>Усл. замены %</label><input class="null" type="text" value="—"></div>
+          <div class="detail-field"><label>Новый стоп %</label><input class="null" type="text" value="—"></div>
+          <div class="detail-field"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Level A4 -->
+    <div class="level-row" id="row-a4">
+      <div class="level-main" onclick="toggle('a4')">
+        <span class="lvl-num blue">A4</span>
+        <input class="lvl-input" type="number" value="7.5" step="0.1" onclick="e=>e.stopPropagation()">
+        <input class="lvl-input" type="number" value="18" step="0.5" onclick="e=>e.stopPropagation()">
+        <input class="lvl-input" type="number" value="2.0" step="0.1" onclick="e=>e.stopPropagation()">
+        <input class="lvl-input" type="number" value="5.0" step="0.1" onclick="e=>e.stopPropagation()">
+        <span class="lvl-expand has-stop">▸ стоп ↺</span>
+        <span class="lvl-delete">✕</span>
+      </div>
+      <div class="level-details" id="det-a4">
+        <div class="details-grid">
+          <div class="detail-field"><label>Усл. замены %</label><input type="number" value="2.0" step="0.1"></div>
+          <div class="detail-field"><label>Новый стоп %</label><input type="number" value="-2.0" step="0.1"></div>
+          <div class="detail-field"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Level A5 -->
+    <div class="level-row" id="row-a5">
+      <div class="level-main" onclick="toggle('a5')">
+        <span class="lvl-num blue">A5</span>
+        <input class="lvl-input" type="number" value="10.0" step="0.1" onclick="e=>e.stopPropagation()">
+        <input class="lvl-input" type="number" value="25" step="0.5" onclick="e=>e.stopPropagation()">
+        <input class="lvl-input" type="number" value="1.5" step="0.1" onclick="e=>e.stopPropagation()">
+        <input class="lvl-input null" type="text" value="—" onclick="e=>e.stopPropagation()">
+        <span class="lvl-expand has-stop">▸ стоп</span>
+        <span class="lvl-delete">✕</span>
+      </div>
+      <div class="level-details" id="det-a5">
+        <div class="details-grid">
+          <div class="detail-field"><label>Усл. замены %</label><input class="null" type="text" value="—"></div>
+          <div class="detail-field"><label>Новый стоп %</label><input class="null" type="text" value="—"></div>
+          <div class="detail-field"></div>
+        </div>
+      </div>
+    </div>
+
+    <button class="add-btn">+ Добавить уровень ниже</button>
+
+    <!-- BELOW section -->
+    <div class="divider" style="margin-top:14px">Выше точки входа <span class="badge green">5 уровней</span></div>
+
+    <div class="col-headers">
+      <span>#</span><span>Шаг %</span><span>Объём %</span><span>Стоп %</span><span>ТП % (ТВХ)</span><span></span><span></span>
+    </div>
+
+    <!-- Level B1 -->
+    <div class="level-row">
+      <div class="level-main" onclick="toggle('b1')">
+        <span class="lvl-num green">B1</span>
+        <input class="lvl-input" type="number" value="2.0" step="0.1">
+        <input class="lvl-input" type="number" value="5" step="0.5">
+        <input class="lvl-input" type="number" value="3.5" step="0.1">
+        <input class="lvl-input" type="number" value="3.0" step="0.1">
+        <span class="lvl-expand has-stop">▸ стоп ↺</span>
+        <span class="lvl-delete">✕</span>
+      </div>
+      <div class="level-details" id="det-b1">
+        <div class="details-grid">
+          <div class="detail-field"><label>Усл. замены %</label><input type="number" value="1.0"></div>
+          <div class="detail-field"><label>Новый стоп %</label><input type="number" value="-0.5"></div>
+          <div class="detail-field"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Level B2 -->
+    <div class="level-row">
+      <div class="level-main" onclick="toggle('b2')">
+        <span class="lvl-num green">B2</span>
+        <input class="lvl-input" type="number" value="4.0" step="0.1">
+        <input class="lvl-input" type="number" value="8" step="0.5">
+        <input class="lvl-input" type="number" value="3.0" step="0.1">
+        <input class="lvl-input" type="number" value="4.5" step="0.1">
+        <span class="lvl-expand has-stop">▸ стоп ↺</span>
+        <span class="lvl-delete">✕</span>
+      </div>
+      <div class="level-details" id="det-b2">
+        <div class="details-grid">
+          <div class="detail-field"><label>Усл. замены %</label><input type="number" value="1.5"></div>
+          <div class="detail-field"><label>Новый стоп %</label><input type="number" value="-1.5"></div>
+          <div class="detail-field"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Level B3 -->
+    <div class="level-row">
+      <div class="level-main" onclick="toggle('b3')">
+        <span class="lvl-num green">B3</span>
+        <input class="lvl-input" type="number" value="6.5" step="0.1">
+        <input class="lvl-input" type="number" value="12" step="0.5">
+        <input class="lvl-input null" type="text" value="—">
+        <input class="lvl-input" type="number" value="6.0" step="0.1">
+        <span class="lvl-expand">▸ нет стопа</span>
+        <span class="lvl-delete">✕</span>
+      </div>
+      <div class="level-details" id="det-b3">
+        <div class="details-grid">
+          <div class="detail-field"><label>Усл. замены %</label><input class="null" type="text" value="—"></div>
+          <div class="detail-field"><label>Новый стоп %</label><input class="null" type="text" value="—"></div>
+          <div class="detail-field"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Level B4 -->
+    <div class="level-row">
+      <div class="level-main" onclick="toggle('b4')">
+        <span class="lvl-num green">B4</span>
+        <input class="lvl-input" type="number" value="9.0" step="0.1">
+        <input class="lvl-input" type="number" value="18" step="0.5">
+        <input class="lvl-input" type="number" value="2.5" step="0.1">
+        <input class="lvl-input" type="number" value="7.5" step="0.1">
+        <span class="lvl-expand has-stop">▸ стоп ↺</span>
+        <span class="lvl-delete">✕</span>
+      </div>
+      <div class="level-details" id="det-b4">
+        <div class="details-grid">
+          <div class="detail-field"><label>Усл. замены %</label><input type="number" value="2.5"></div>
+          <div class="detail-field"><label>Новый стоп %</label><input type="number" value="-3.0"></div>
+          <div class="detail-field"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Level B5 -->
+    <div class="level-row">
+      <div class="level-main" onclick="toggle('b5')">
+        <span class="lvl-num green">B5</span>
+        <input class="lvl-input" type="number" value="12.0" step="0.1">
+        <input class="lvl-input" type="number" value="22" step="0.5">
+        <input class="lvl-input" type="number" value="2.0" step="0.1">
+        <input class="lvl-input null" type="text" value="—">
+        <span class="lvl-expand has-stop">▸ стоп</span>
+        <span class="lvl-delete">✕</span>
+      </div>
+      <div class="level-details" id="det-b5">
+        <div class="details-grid">
+          <div class="detail-field"><label>Усл. замены %</label><input class="null" type="text" value="—"></div>
+          <div class="detail-field"><label>Новый стоп %</label><input class="null" type="text" value="—"></div>
+          <div class="detail-field"></div>
+        </div>
+      </div>
+    </div>
+
+    <button class="add-btn">+ Добавить уровень выше</button>
+
+  </div><!-- /modal-body -->
+
+  <div class="modal-footer">
+    <button class="btn-cancel">Отмена</button>
+    <button class="btn-save">Сохранить</button>
+  </div>
+
+</div>
+
+<script>
+function toggle(id) {
+  const det = document.getElementById('det-' + id);
+  if (det) det.classList.toggle('open');
+}
+// Stop input event propagation so clicking inputs doesn't toggle accordion
+document.querySelectorAll('.lvl-input').forEach(inp => {
+  inp.addEventListener('click', e => e.stopPropagation());
+});
+</script>
+</body>
+</html>

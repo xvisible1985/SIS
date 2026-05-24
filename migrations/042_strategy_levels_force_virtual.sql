@@ -1,0 +1,1 @@
+ALTER TABLE strategy_levels ADD COLUMN IF NOT EXISTS force_virtual BOOLEAN NOT NULL DEFAULT false;

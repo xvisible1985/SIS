@@ -1,0 +1,3 @@
+ALTER TABLE bots
+  ADD COLUMN IF NOT EXISTS max_long_strategies  INT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS max_short_strategies INT NOT NULL DEFAULT 0;

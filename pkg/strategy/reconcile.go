@@ -167,17 +167,14 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 				id8 = id8[:8]
 			}
 			if snap, ok := stratByID8[id8]; ok {
-				snap.sr.handleLevelFill(ctx, p.levelID, filledPrice, filledQty)
+				levelID := p.levelID
+				fp, fq := filledPrice, filledQty
+				snap.sr.submit(func(ctx context.Context) {
+					snap.sr.handleLevelFill(ctx, levelID, fp, fq)
+				})
 			}
 			continue
 		}
-
-		log.Printf("strategy reconcile: level %s order %s missing from exchange — resetting to pending", p.levelID, p.orderID)
-		ar.pool.Exec(ctx, //nolint:errcheck
-			`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL, placed_at=NULL WHERE id=$1`,
-			p.levelID,
-		)
-		ar.UnregisterOrder(p.orderID)
 
 		id8 := p.strategyID
 		if len(id8) > 8 {
@@ -185,19 +182,52 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 		}
 		snap, ok := stratByID8[id8]
 		if !ok {
+			// No runner — just reset DB record and move on.
+			log.Printf("strategy reconcile: level %s order %s missing from exchange — resetting to pending (no runner)", p.levelID, p.orderID)
+			ar.pool.Exec(ctx, //nolint:errcheck
+				`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL, placed_at=NULL WHERE id=$1`,
+				p.levelID,
+			)
+			ar.UnregisterOrder(p.orderID)
 			continue
 		}
 		sr := snap.sr
-		sr.mu.Lock()
-		for i := range sr.levels {
-			if sr.levels[i].ID == p.levelID {
-				sr.levels[i].Status = LevelPending
-				sr.levels[i].ExchangeOrderID = ""
-				break
+		p := p // capture for closure
+		// Submit repair to the strategy's worker so it's serialized with other tasks.
+		sr.submit(func(ctx context.Context) {
+			sr.mu.Lock()
+			// Guard: restartCycle may have cancelled this order and re-placed the level
+			// with a new order between our DB snapshot (step 1) and now. If ExchangeOrderID
+			// changed, the level is already handled — touching it would create a duplicate.
+			stale := false
+			for i := range sr.levels {
+				if sr.levels[i].ID == p.levelID {
+					if sr.levels[i].ExchangeOrderID != p.orderID {
+						stale = true
+					}
+					break
+				}
 			}
-		}
-		sr.placeNextLevels(ctx) //nolint:errcheck
-		sr.mu.Unlock()
+			if stale {
+				sr.mu.Unlock()
+				return
+			}
+			log.Printf("strategy reconcile: level %s order %s missing from exchange — resetting to pending", p.levelID, p.orderID)
+			ar.pool.Exec(ctx, //nolint:errcheck
+				`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL, placed_at=NULL WHERE id=$1`,
+				p.levelID,
+			)
+			ar.UnregisterOrder(p.orderID)
+			for i := range sr.levels {
+				if sr.levels[i].ID == p.levelID {
+					sr.levels[i].Status = LevelPending
+					sr.levels[i].ExchangeOrderID = ""
+					break
+				}
+			}
+			sr.placeNextLevels(ctx) //nolint:errcheck
+			sr.mu.Unlock()
+		})
 	}
 
 	// --- 7. Check TP/SL: in active Grid cycle DB row but missing from exchange ---
@@ -214,31 +244,38 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 				`UPDATE strategy_cycles SET tp_order_id=NULL WHERE id=$1`, c.cycleID)
 			ar.UnregisterOrder(c.tpOrderID)
 			if ok {
+				cycleID := c.cycleID
+				tpOrderID := c.tpOrderID
 				sr := snap.sr
-				sr.mu.Lock()
-				if sr.tpOrderID == c.tpOrderID {
-					sr.tpOrderID = ""
-					_, posQty := sr.avgEntry()
-					if posQty > 0 && sr.strategy.TPPct > 0 {
-						if err := sr.updateTP(ctx); err != nil {
-							log.Printf("strategy reconcile: TP re-place cycle %s: %v", c.cycleID, err)
+				sr.submit(func(ctx context.Context) {
+					sr.mu.Lock()
+					defer sr.mu.Unlock()
+					if sr.tpOrderID == tpOrderID {
+						sr.tpOrderID = ""
+						_, posQty := sr.avgEntry()
+						if posQty > 0 && sr.strategy.TPPct > 0 {
+							if err := sr.updateTP(ctx); err != nil {
+								log.Printf("strategy reconcile: TP re-place cycle %s: %v", cycleID, err)
+							}
 						}
 					}
-				}
-				sr.mu.Unlock()
+				})
 			}
 		} else if c.tpOrderID == "" && ok {
 			// TP was never placed (e.g. instrument wasn't loaded at fill time).
+			cycleID := c.cycleID
 			sr := snap.sr
-			sr.mu.Lock()
-			_, posQty := sr.avgEntry()
-			if posQty > 0 && sr.tpOrderID == "" && sr.strategy.TPPct > 0 {
-				log.Printf("strategy reconcile: cycle %s has position (qty=%.6f) but no TP — placing", c.cycleID, posQty)
-				if err := sr.updateTP(ctx); err != nil {
-					log.Printf("strategy reconcile: TP missing-place cycle %s: %v", c.cycleID, err)
+			sr.submit(func(ctx context.Context) {
+				sr.mu.Lock()
+				defer sr.mu.Unlock()
+				_, posQty := sr.avgEntry()
+				if posQty > 0 && sr.tpOrderID == "" && sr.strategy.TPPct > 0 {
+					log.Printf("strategy reconcile: cycle %s has position (qty=%.6f) but no TP — placing", cycleID, posQty)
+					if err := sr.updateTP(ctx); err != nil {
+						log.Printf("strategy reconcile: TP missing-place cycle %s: %v", cycleID, err)
+					}
 				}
-			}
-			sr.mu.Unlock()
+			})
 		}
 
 		if c.slOrderID != "" && !live[c.slOrderID] {
@@ -247,31 +284,38 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 				`UPDATE strategy_cycles SET sl_order_id=NULL WHERE id=$1`, c.cycleID)
 			ar.UnregisterOrder(c.slOrderID)
 			if ok {
+				cycleID := c.cycleID
+				slOrderID := c.slOrderID
 				sr := snap.sr
-				sr.mu.Lock()
-				if sr.slOrderID == c.slOrderID {
-					sr.slOrderID = ""
-					_, posQty := sr.avgEntry()
-					if posQty > 0 && sr.strategy.SLPct > 0 {
-						if err := sr.updateSL(ctx); err != nil {
-							log.Printf("strategy reconcile: SL re-place cycle %s: %v", c.cycleID, err)
+				sr.submit(func(ctx context.Context) {
+					sr.mu.Lock()
+					defer sr.mu.Unlock()
+					if sr.slOrderID == slOrderID {
+						sr.slOrderID = ""
+						_, posQty := sr.avgEntry()
+						if posQty > 0 && sr.strategy.SLPct < 0 {
+							if err := sr.updateSL(ctx); err != nil {
+								log.Printf("strategy reconcile: SL re-place cycle %s: %v", cycleID, err)
+							}
 						}
 					}
-				}
-				sr.mu.Unlock()
+				})
 			}
 		} else if c.slOrderID == "" && ok {
 			// SL was never placed (same gap as TP: instrument not loaded at fill time, etc.).
+			cycleID := c.cycleID
 			sr := snap.sr
-			sr.mu.Lock()
-			_, posQty := sr.avgEntry()
-			if posQty > 0 && sr.slOrderID == "" && sr.strategy.SLPct > 0 {
-				log.Printf("strategy reconcile: cycle %s has position (qty=%.6f) but no SL — placing", c.cycleID, posQty)
-				if err := sr.updateSL(ctx); err != nil {
-					log.Printf("strategy reconcile: SL missing-place cycle %s: %v", c.cycleID, err)
+			sr.submit(func(ctx context.Context) {
+				sr.mu.Lock()
+				defer sr.mu.Unlock()
+				_, posQty := sr.avgEntry()
+				if posQty > 0 && sr.slOrderID == "" && sr.strategy.SLPct < 0 {
+					log.Printf("strategy reconcile: cycle %s has position (qty=%.6f) but no SL — placing", cycleID, posQty)
+					if err := sr.updateSL(ctx); err != nil {
+						log.Printf("strategy reconcile: SL missing-place cycle %s: %v", cycleID, err)
+					}
 				}
-			}
-			sr.mu.Unlock()
+			})
 		}
 	}
 
@@ -340,6 +384,13 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 				isOrphan = true
 				reason = "не отслеживается в orderIndex"
 			}
+		}
+
+		// Guard: orderIndex is the ground truth. The cycle-number snapshot (step 4) is taken
+		// before exchange orders are fetched (step 5), so a new cycle that starts in between
+		// will appear mismatched but its orders ARE tracked in orderIndex. Tracked = not orphan.
+		if isOrphan && known[o.OrderId] {
+			isOrphan = false
 		}
 
 		if !isOrphan {

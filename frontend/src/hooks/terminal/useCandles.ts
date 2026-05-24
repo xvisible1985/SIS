@@ -26,6 +26,7 @@ export function useCandles(symbol: string, timeframe: string) {
   const [candleSymbol, setCandleSymbol] = useState<string | null>(null)
   const [lastPrice, setLastPrice] = useState<string | null>(null)
   const [priceChange, setPriceChange] = useState(0)
+  const [turnover24h, setTurnover24h] = useState<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const loadingMoreRef = useRef(false)
   const noMoreRef = useRef(false)
@@ -39,27 +40,33 @@ export function useCandles(symbol: string, timeframe: string) {
       const last = cached.candles[cached.candles.length - 1]
       const prev = cached.candles[cached.candles.length - 2]
       if (last && prev) {
-        setLastPrice(last.close.toFixed(2))
+        setLastPrice(String(last.close))
         setPriceChange(((last.close - prev.close) / prev.close) * 100)
       }
       return
     }
     try {
-      const res = await fetch(
-        `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${timeframe}&limit=200`
-      )
-      const json = await res.json()
-      if (json.result?.list) {
-        const cs = parseKline(json.result.list as string[][])
+      const [klineRes, tickerRes] = await Promise.all([
+        fetch(`https://api.bybit.com/v5/market/kline?category=linear&symbol=${symbol}&interval=${timeframe}&limit=200`),
+        fetch(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${symbol}`),
+      ])
+      const klineJson = await klineRes.json()
+      const tickerJson = await tickerRes.json()
+      if (klineJson.result?.list) {
+        const cs = parseKline(klineJson.result.list as string[][])
         cache.set(key, { candles: cs, ts: Date.now() })
         setCandles(cs)
         setCandleSymbol(`${symbol}:${timeframe}`)
         const last = cs[cs.length - 1]
         const prev = cs[cs.length - 2]
         if (last && prev) {
-          setLastPrice(last.close.toFixed(2))
+          setLastPrice(String(last.close))
           setPriceChange(((last.close - prev.close) / prev.close) * 100)
         }
+      }
+      const ticker = tickerJson.result?.list?.[0]
+      if (ticker?.turnover24h) {
+        setTurnover24h(ticker.turnover24h)
       }
     } catch { /* ignore */ }
   }, [symbol, timeframe])
@@ -70,7 +77,7 @@ export function useCandles(symbol: string, timeframe: string) {
     try {
       const endMs = before * 1000  // exclusive upper bound = oldest candle time
       const res = await fetch(
-        `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${timeframe}&limit=200&end=${endMs}`
+        `https://api.bybit.com/v5/market/kline?category=linear&symbol=${symbol}&interval=${timeframe}&limit=200&end=${endMs}`
       )
       const json = await res.json()
       const list = json.result?.list as string[][] | undefined
@@ -92,7 +99,7 @@ export function useCandles(symbol: string, timeframe: string) {
 
   const connectWs = useCallback(() => {
     wsRef.current?.close()
-    const ws = new WebSocket('wss://stream.bybit.com/v5/public/spot')
+    const ws = new WebSocket('wss://stream.bybit.com/v5/public/linear')
     wsRef.current = ws
     ws.onopen = () => {
       ws.send(JSON.stringify({ op: 'subscribe', args: [`kline.${timeframe}.${symbol}`] }))
@@ -116,7 +123,7 @@ export function useCandles(symbol: string, timeframe: string) {
             else next.push(candle)
             return next
           })
-          setLastPrice(parseFloat(k.close).toFixed(2))
+          setLastPrice(k.close)
         }
       } catch { /* ignore */ }
     }
@@ -129,10 +136,11 @@ export function useCandles(symbol: string, timeframe: string) {
     setCandles([])
     setCandleSymbol(null)
     setLastPrice(null)
+    setTurnover24h(null)
     loadHistory()
     connectWs()
     return () => wsRef.current?.close()
   }, [loadHistory, connectWs])
 
-  return { candles, candleSymbol, lastPrice, priceChange, loadMore }
+  return { candles, candleSymbol, lastPrice, priceChange, turnover24h, loadMore }
 }

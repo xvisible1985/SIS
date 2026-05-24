@@ -40,6 +40,8 @@ func (s *Server) StrategiesUpdatesStream(w http.ResponseWriter, r *http.Request)
 		VolumeUSDT   float64            `json:"volume_usdt"`
 		SignalState  string             `json:"signal_state"`
 		SignalValues map[string]float64 `json:"signal_values,omitempty"`
+		ManualAlert  *string            `json:"manual_alert,omitempty"`
+		CycleNum     int                `json:"cycle_num"`
 	}
 
 	type lastState struct {
@@ -47,6 +49,8 @@ func (s *Server) StrategiesUpdatesStream(w http.ResponseWriter, r *http.Request)
 		activeLevels int
 		volumeUSDT   float64
 		signalState  string
+		manualAlert  *string
+		cycleNum     int
 	}
 	lastSeen := map[string]lastState{}
 	ticker := time.NewTicker(2 * time.Second)
@@ -69,6 +73,12 @@ func (s *Server) StrategiesUpdatesStream(w http.ResponseWriter, r *http.Request)
 						SELECT SUM(sl.size_usdt) FROM strategy_levels sl
 						JOIN strategy_cycles sc ON sl.cycle_id = sc.id
 						WHERE sc.strategy_id = s.id AND sc.ended_at IS NULL AND sl.status = 'filled'
+					), 0),
+					s.manual_alert,
+					COALESCE((
+						SELECT cycle_num FROM strategy_cycles
+						WHERE strategy_id = s.id AND ended_at IS NULL
+						ORDER BY cycle_num DESC LIMIT 1
 					), 0)
 				FROM strategies s WHERE s.owner_id=$1`, userID)
 			if err != nil {
@@ -79,19 +89,23 @@ func (s *Server) StrategiesUpdatesStream(w http.ResponseWriter, r *http.Request)
 				var id, status, symbol, sigConfigsJSON string
 				var activeLevels int
 				var volumeUSDT float64
-				if rows.Scan(&id, &status, &symbol, &sigConfigsJSON, &activeLevels, &volumeUSDT) != nil {
+				var manualAlert *string
+				var cycleNum int
+				if rows.Scan(&id, &status, &symbol, &sigConfigsJSON, &activeLevels, &volumeUSDT, &manualAlert, &cycleNum) != nil {
 					continue
 				}
 				// Compute signal state directly — works for active AND stopped strategies
 				sigState := computeSignalState(s.signalEngine, symbol, sigConfigsJSON)
 				prev := lastSeen[id]
-				if prev.status != status || prev.activeLevels != activeLevels || prev.volumeUSDT != volumeUSDT || prev.signalState != sigState {
+				if prev.status != status || prev.activeLevels != activeLevels || prev.volumeUSDT != volumeUSDT || prev.signalState != sigState || !ptrStrEqual(prev.manualAlert, manualAlert) || prev.cycleNum != cycleNum {
 					upd := statusUpdate{
 						ID:           id,
 						Status:       status,
 						ActiveLevels: activeLevels,
 						VolumeUSDT:   volumeUSDT,
 						SignalState:  sigState,
+						ManualAlert:  manualAlert,
+						CycleNum:     cycleNum,
 					}
 					if sigState != prev.signalState {
 						upd.SignalValues = s.engine.GetSignalValues(id)
@@ -100,10 +114,32 @@ func (s *Server) StrategiesUpdatesStream(w http.ResponseWriter, r *http.Request)
 						}
 					}
 					updates = append(updates, upd)
-					lastSeen[id] = lastState{status, activeLevels, volumeUSDT, sigState}
+					lastSeen[id] = lastState{status, activeLevels, volumeUSDT, sigState, manualAlert, cycleNum}
 				}
 			}
 			rows.Close()
+
+			// Detect strategies deleted from DB: present in lastSeen but no longer in DB.
+			if len(lastSeen) > 0 {
+				idRows, err2 := s.pool.Query(r.Context(), `SELECT id FROM strategies WHERE owner_id=$1`, userID)
+				if err2 == nil {
+					currentIDs := make(map[string]struct{}, len(lastSeen))
+					for idRows.Next() {
+						var sid string
+						if idRows.Scan(&sid) == nil {
+							currentIDs[sid] = struct{}{}
+						}
+					}
+					idRows.Close()
+					for id := range lastSeen {
+						if _, ok := currentIDs[id]; !ok {
+							updates = append(updates, statusUpdate{ID: id, Status: "deleted"})
+							delete(lastSeen, id)
+						}
+					}
+				}
+			}
+
 			if len(updates) == 0 {
 				continue
 			}
@@ -113,6 +149,16 @@ func (s *Server) StrategiesUpdatesStream(w http.ResponseWriter, r *http.Request)
 			}
 		}
 	}
+}
+
+func ptrStrEqual(a, b *string) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
 }
 
 // StrategyEventsStream streams new strategy events over WebSocket.

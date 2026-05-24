@@ -13,13 +13,26 @@ interface Props {
 function orderLabel(ord: ActiveOrder): string {
   const id = ord.orderLinkId ?? ''
   const type = ord.orderType?.toLowerCase() ?? ''
-  if (/^(SIS_STR|STP)-[a-f0-9]+-tp(-\d+)+$/.test(id))
-    return ord.side === 'Sell' ? 'TP_LONG' : ord.side === 'Buy' ? 'TP_SHORT' : 'TP'
-  if (/^(SIS_STR|STP)-[a-f0-9]+-sl(-\d+)+$/.test(id))
-    return ord.side === 'Sell' ? 'SL_LONG' : ord.side === 'Buy' ? 'SL_SHORT' : 'SL'
-  const lvl = id.match(/^(SIS_STR|STR)-[a-f0-9]+-\d+-(\d+)$/)
-  if (lvl) return `L${lvl[2]}_${type}`
+  // TP: SIS_STR-id-tp-cycle-seq
+  if (/^(SIS_STR|STP)-[a-f0-9]+-tp-\d+-\d+$/.test(id))
+    return 'TP'
+  // SL: SIS_STR-id-sl-cycle-seq
+  if (/^(SIS_STR|STP)-[a-f0-9]+-sl-\d+-\d+$/.test(id))
+    return 'SL'
+  // Limit: SIS_STR-id-cycle-level-reprice
+  const lvl = id.match(/^(SIS_STR|STR)-[a-f0-9]+-\d+-(\d+)-\d+$/)
+  if (lvl) return `Limit L${lvl[2]}`
   return type || '—'
+}
+
+function extractCycle(linkId: string): string | null {
+  // Limit: SIS_STR-id-cycle-level-reprice
+  const m = linkId.match(/^(SIS_STR|STR)-[a-f0-9]+-(\d+)-\d+-\d+$/)
+  if (m) return m[2]
+  // TP/SL: SIS_STR-id-tp|sl-cycle-seq
+  const m2 = linkId.match(/^(SIS_STR|STP)-[a-f0-9]+-(tp|sl)-(\d+)-\d+$/)
+  if (m2) return m2[3]
+  return null
 }
 
 function orderSource(linkId: string): 'str' | 'trm' | null {
@@ -56,17 +69,19 @@ export function OrdersTable({ accountId, orders, loading, onSelect, onRemoveOrde
   if (!visible.length) return <div className="flex flex-col items-center justify-center h-full text-gray-500 dark:text-gray-400 gap-2"><span className="text-2xl opacity-30">📭</span><p className="text-sm">Активных ордеров нет</p></div>
 
   return (
-    <table className="w-full text-xs">
-      <thead className="sticky top-0 z-10 bg-white dark:bg-gray-900">
-        <tr className="text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
+    <div className="overflow-x-auto h-full">
+    <table className="w-full text-xs min-w-[720px] border-collapse">
+      <thead>
+        <tr className="sticky top-0 z-10 bg-white dark:bg-gray-900 text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
           <th className="text-left px-3 py-2">Символ</th>
           <th className="text-left px-3 py-2">Сторона</th>
           <th className="text-left px-3 py-2">Тип</th>
+          <th className="text-left px-3 py-2">Цикл</th>
           <th className="text-right px-3 py-2">Цена</th>
           <th className="text-right px-3 py-2">Кол-во</th>
           <th className="text-left px-3 py-2">Размер</th>
           <th className="text-right px-3 py-2">Исполнено</th>
-          <th className="text-left px-3 py-2">Статус</th>
+          <th className="text-left px-3 py-2">Время</th>
           <th className="text-left px-3 py-2">Маркер</th>
           <th className="px-3 py-2" />
         </tr>
@@ -86,6 +101,9 @@ export function OrdersTable({ accountId, orders, loading, onSelect, onRemoveOrde
               </span>
             </td>
             <td className="px-3 py-2 text-gray-500 dark:text-gray-400 font-mono">{orderLabel(ord)}</td>
+            <td className="px-3 py-2 text-left font-mono text-[10px] text-slate-400">
+              {extractCycle(ord.orderLinkId ?? '') ?? <span className="text-slate-600">—</span>}
+            </td>
             <td className="px-3 py-2 text-right font-mono">
               {ord.triggerPrice ? `~${parseFloat(ord.triggerPrice).toFixed(2)}` : parseFloat(ord.price) > 0 ? parseFloat(ord.price).toFixed(2) : '—'}
             </td>
@@ -100,8 +118,10 @@ export function OrdersTable({ accountId, orders, loading, onSelect, onRemoveOrde
               })()}
             </td>
             <td className="px-3 py-2 text-right font-mono text-gray-500 dark:text-gray-400">{ord.cumExecQty}</td>
-            <td className="px-3 py-2">
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400">{ord.orderStatus}</span>
+            <td className="px-3 py-2 font-mono text-[10px] text-slate-400 whitespace-nowrap">
+              {ord.createdTime
+                ? new Date(parseInt(ord.createdTime)).toLocaleString('ru-RU', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+                : <span className="text-slate-600">—</span>}
             </td>
             <td className="px-3 py-2">
               {orderSource(ord.orderLinkId ?? '') === 'str' && (
@@ -119,5 +139,6 @@ export function OrdersTable({ accountId, orders, loading, onSelect, onRemoveOrde
         ))}
       </tbody>
     </table>
+    </div>
   )
 }

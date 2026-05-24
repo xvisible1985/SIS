@@ -1,0 +1,75 @@
+<h2>Как организовать страницу аккаунта?</h2>
+<p class="subtitle">Страница содержит несколько разделов: профиль, баланс, подписки, Telegram, рефералы</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="display:flex;gap:8px;height:120px;">
+        <div style="width:140px;background:#1e2330;border-radius:8px;padding:10px;font-size:11px;">
+          <div style="color:#4a5568;margin-bottom:8px;font-size:10px;text-transform:uppercase;letter-spacing:.5px;">Аккаунт</div>
+          <div style="padding:5px 8px;background:#2a3144;border-radius:5px;margin-bottom:4px;color:#e2e8f0;">Профиль</div>
+          <div style="padding:5px 8px;border-radius:5px;margin-bottom:4px;color:#64748b;">Баланс</div>
+          <div style="padding:5px 8px;border-radius:5px;margin-bottom:4px;color:#64748b;">Подписки</div>
+          <div style="padding:5px 8px;border-radius:5px;margin-bottom:4px;color:#64748b;">Telegram</div>
+          <div style="padding:5px 8px;border-radius:5px;color:#64748b;">Рефералы</div>
+        </div>
+        <div style="flex:1;background:#1e2330;border-radius:8px;padding:10px;font-size:11px;">
+          <div style="color:#94a3b8;margin-bottom:8px;">Профиль</div>
+          <div style="background:#2a3144;border-radius:5px;height:18px;margin-bottom:6px;width:80%;"></div>
+          <div style="background:#2a3144;border-radius:5px;height:18px;margin-bottom:6px;width:60%;"></div>
+          <div style="background:#2a3144;border-radius:5px;height:18px;width:70%;"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — Боковое меню + основной контент</h3>
+      <p>Каждый раздел — отдельная секция с навигацией слева. Привычный паттерн настроек (как в GitHub, Vercel).</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="height:120px;background:#1e2330;border-radius:8px;padding:10px;font-size:11px;">
+        <div style="display:flex;gap:6px;margin-bottom:10px;">
+          <div style="padding:4px 10px;background:#2a3144;border-radius:5px;color:#e2e8f0;font-size:11px;">Профиль</div>
+          <div style="padding:4px 10px;border-radius:5px;color:#64748b;font-size:11px;">Баланс</div>
+          <div style="padding:4px 10px;border-radius:5px;color:#64748b;font-size:11px;">Telegram</div>
+          <div style="padding:4px 10px;border-radius:5px;color:#64748b;font-size:11px;">Рефералы</div>
+        </div>
+        <div style="background:#2a3144;border-radius:5px;height:16px;margin-bottom:5px;width:75%;"></div>
+        <div style="background:#2a3144;border-radius:5px;height:16px;margin-bottom:5px;width:55%;"></div>
+        <div style="background:#2a3144;border-radius:5px;height:16px;width:65%;"></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — Горизонтальные вкладки</h3>
+      <p>Вкладки сверху переключают разделы. Компактно, знакомо. Хорошо работает если разделов не больше 4–5.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="height:120px;background:#1e2330;border-radius:8px;padding:10px;font-size:11px;overflow-y:auto;">
+        <div style="background:#2a3144;border-radius:5px;padding:8px;margin-bottom:6px;">
+          <div style="color:#94a3b8;margin-bottom:4px;font-size:10px;">Профиль</div>
+          <div style="background:#1e2330;border-radius:4px;height:10px;width:70%;margin-bottom:3px;"></div>
+          <div style="background:#1e2330;border-radius:4px;height:10px;width:50%;"></div>
+        </div>
+        <div style="background:#2a3144;border-radius:5px;padding:8px;margin-bottom:6px;">
+          <div style="color:#94a3b8;margin-bottom:4px;font-size:10px;">Баланс Novabot</div>
+          <div style="background:#1e2330;border-radius:4px;height:10px;width:40%;"></div>
+        </div>
+        <div style="background:#2a3144;border-radius:5px;padding:8px;">
+          <div style="color:#94a3b8;margin-bottom:4px;font-size:10px;">Telegram</div>
+          <div style="background:#1e2330;border-radius:4px;height:10px;width:60%;"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C — Одна страница, вертикальный скролл</h3>
+      <p>Все секции одна за другой. Не нужна навигация, всё видно сразу. Как страница настроек в Telegram или Discord.</p>
+    </div>
+  </div>
+
+</div>

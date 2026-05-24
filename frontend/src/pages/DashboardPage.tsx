@@ -20,11 +20,11 @@ export function DashboardPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-3">
         <h1 className="text-xl font-semibold dark:text-white">Signals</h1>
         <Link
           to="/signals/new"
-          className="bg-blue-600 text-white rounded px-4 py-2 text-sm font-medium hover:bg-blue-700"
+          className="bg-blue-600 text-white rounded px-4 py-2 text-sm font-medium hover:bg-blue-700 text-center"
         >
           Create signal
         </Link>
@@ -39,7 +39,8 @@ export function DashboardPage() {
         </div>
       ) : (
         <div className="bg-white dark:bg-gray-800 rounded-xl shadow overflow-hidden">
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[640px]">
             <thead className="bg-gray-50 dark:bg-gray-700 text-gray-600 dark:text-gray-300 uppercase text-xs">
               <tr>
                 <th className="px-4 py-3 text-left">Name</th>
@@ -92,6 +93,7 @@ export function DashboardPage() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </div>

@@ -12,6 +12,10 @@ import { FlyingCardOverlay } from '../features/indicators/components/FlyingCardO
 import type { IndicatorDef, BaseParams, SignalDef } from '../features/indicators/types'
 import { AdminUsersPage } from '../features/admin-users'
 import { useAdminUsers } from '../features/admin-users/api'
+import { AdminBotsTab } from '../features/admin-bots/AdminBotsTab'
+import { AdminProxiesTab } from '../features/admin-proxies/AdminProxiesTab'
+import { BybitNewsTab } from '../features/bybit-news/BybitNewsTab'
+import { BybitNewsCard } from '../features/bybit-news/BybitNewsCard'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -25,6 +29,22 @@ interface ComputeUnitStat {
   computeCount: number
   lastState: 'buy' | 'sell' | 'neutral'
   lastComputedSec: number
+}
+
+interface StrategyWorkerStat {
+  strategy_id: string
+  account_id: string
+  account_label: string
+  owner_id: string
+  owner_username: string
+  symbol: string
+  category: string
+  status: string
+  queue_depth: number
+  is_processing: boolean
+  panic_count: number
+  tasks_dropped: number
+  last_task_at: string // RFC3339 or empty
 }
 
 interface AdminMetrics {
@@ -43,6 +63,22 @@ interface AdminMetrics {
     ordersToday: number
     fillsToday: number
     accounts: { id: string; name: string; strategies: number; cycles: number }[]
+  }
+  strategy_workers?: StrategyWorkerStat[]
+  global_warmer?: {
+    symbols: number
+    intervals: string[]
+    warm_count: number
+    total_slots: number
+    warm_pct: number
+    prefetch_ms: number
+  }
+  bot_engine?: {
+    last_tick_at: string
+    last_tick_ms: number
+    bots_active: number
+    groups_computed: number
+    opportunities: number
   }
 }
 
@@ -130,9 +166,194 @@ function StateChip({ state }: { state: 'buy' | 'sell' | 'neutral' }) {
   )
 }
 
+// ── Strategy Workers section ───────────────────────────────────────────────
+
+function relativeTime(isoStr: string): string {
+  if (!isoStr) return '—'
+  const diffSec = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000)
+  if (diffSec < 60) return `${diffSec}s ago`
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`
+  return `${Math.floor(diffSec / 3600)}h ago`
+}
+
+type WorkerFilter = 'all' | 'active' | 'stopped' | 'panics' | 'dropped' | 'problems'
+
+function WorkersSection({ workers }: { workers?: StrategyWorkerStat[] }) {
+  const [open, setOpen] = useState(false)
+  const [filter, setFilter] = useState<WorkerFilter>('all')
+  if (!workers || workers.length === 0) return null
+
+  const totalPanics  = workers.reduce((s, w) => s + w.panic_count, 0)
+  const totalDropped = workers.reduce((s, w) => s + w.tasks_dropped, 0)
+  const processing   = workers.filter(w => w.is_processing).length
+  const hasAlerts    = totalPanics > 0 || totalDropped > 0
+
+  const filtered = workers.filter(w => {
+    switch (filter) {
+      case 'active':   return w.status === 'active'
+      case 'stopped':  return w.status !== 'active'
+      case 'panics':   return w.panic_count > 0
+      case 'dropped':  return w.tasks_dropped > 0
+      case 'problems': return w.panic_count > 0 || w.tasks_dropped > 0
+      default:         return true
+    }
+  })
+
+  const short = (id: string) => id.length > 8 ? id.slice(0, 8) : id
+
+  const filterBtns: { key: WorkerFilter; label: string; count?: number; alert?: boolean }[] = [
+    { key: 'all',      label: 'Все',         count: workers.length },
+    { key: 'active',   label: 'Активные',    count: workers.filter(w => w.status === 'active').length },
+    { key: 'stopped',  label: 'Остановленные', count: workers.filter(w => w.status !== 'active').length },
+    { key: 'panics',   label: 'Паники',      count: workers.filter(w => w.panic_count > 0).length,   alert: totalPanics > 0 },
+    { key: 'dropped',  label: 'Dropped',     count: workers.filter(w => w.tasks_dropped > 0).length, alert: totalDropped > 0 },
+    { key: 'problems', label: 'Проблемы',    count: workers.filter(w => w.panic_count > 0 || w.tasks_dropped > 0).length, alert: hasAlerts },
+  ]
+
+  return (
+    <section>
+      <SectionHeader>Strategy Workers</SectionHeader>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="Воркеров"         value={workers.length}    color="blue"   />
+        <StatCard label="Выполняют задачу" value={processing}        color={processing > 0 ? 'green' : 'blue'} />
+        <StatCard label="Паник"            value={totalPanics}       color={totalPanics > 0 ? 'rose' : 'blue'} />
+        <StatCard label="Dropped задач"    value={totalDropped}      color={totalDropped > 0 ? 'amber' : 'blue'} />
+      </div>
+
+      <div className="mt-4 overflow-hidden rounded-xl border border-white/[.07] bg-[#0d1018]">
+        {/* Header row with toggle + alert badge */}
+        <button
+          className="flex w-full cursor-pointer items-center gap-3 px-4 py-2.5 text-left hover:bg-white/[.02]"
+          onClick={() => setOpen(v => !v)}
+        >
+          <svg
+            className={`h-3 w-3 shrink-0 text-slate-500 transition-transform ${open ? 'rotate-90' : ''}`}
+            viewBox="0 0 6 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+          >
+            <polyline points="1,1 5,5 1,9" />
+          </svg>
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            Детали воркеров
+          </span>
+          {hasAlerts && (
+            <span className="rounded-full bg-rose-400/20 px-2 py-0.5 text-[10px] font-bold text-rose-300">
+              ⚠ требует внимания
+            </span>
+          )}
+        </button>
+
+        {open && (
+          <>
+            {/* Filter bar */}
+            <div className="flex flex-wrap gap-1.5 border-t border-white/[.06] px-4 py-2.5">
+              {filterBtns.map(btn => (
+                <button
+                  key={btn.key}
+                  onClick={() => setFilter(btn.key)}
+                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold transition-colors ${
+                    filter === btn.key
+                      ? btn.alert
+                        ? 'bg-rose-400/25 text-rose-200'
+                        : 'bg-[#5b8cff]/20 text-[#a0b8ff]'
+                      : 'bg-white/[.05] text-slate-400 hover:bg-white/[.08]'
+                  }`}
+                >
+                  {btn.label}
+                  {btn.count !== undefined && (
+                    <span className={`rounded-full px-1.5 py-0 text-[10px] ${
+                      filter === btn.key ? 'bg-white/20' : 'bg-white/[.07]'
+                    }`}>{btn.count}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {/* Table */}
+            <div className="overflow-x-auto border-t border-white/[.06]">
+              <table className="w-full text-[12px]">
+                <thead>
+                  <tr className="border-b border-white/[.05] text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                    <th className="px-4 py-2 text-left">Пользователь</th>
+                    <th className="px-4 py-2 text-left">Аккаунт</th>
+                    <th className="px-4 py-2 text-left">Символ</th>
+                    <th className="px-4 py-2 text-left">Статус</th>
+                    <th className="px-4 py-2 text-right">Очередь</th>
+                    <th className="px-4 py-2 text-center">Активен</th>
+                    <th className="px-4 py-2 text-right">Паник</th>
+                    <th className="px-4 py-2 text-right">Dropped</th>
+                    <th className="px-4 py-2 text-right">Последняя задача</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="px-4 py-8 text-center text-[12px] text-slate-600">
+                        Нет воркеров по выбранному фильтру
+                      </td>
+                    </tr>
+                  ) : filtered.map(w => {
+                    const rowAlert = w.panic_count > 0 || w.tasks_dropped > 0
+                    const lastSec = w.last_task_at
+                      ? Math.floor((Date.now() - new Date(w.last_task_at).getTime()) / 1000)
+                      : null
+                    const stale = w.status === 'active' && lastSec !== null && lastSec > 60
+
+                    return (
+                      <tr
+                        key={w.strategy_id}
+                        className={`border-b border-white/[.03] transition-colors hover:bg-white/[.02] ${
+                          rowAlert ? 'bg-rose-500/[.04]' : ''
+                        }`}
+                      >
+                        <td className="px-4 py-2.5 text-slate-300" title={w.owner_id}>{w.owner_username || <span className="font-mono text-slate-500">{short(w.owner_id)}</span>}</td>
+                        <td className="px-4 py-2.5 text-slate-300" title={w.account_id}>{w.account_label || <span className="font-mono text-slate-500">{short(w.account_id)}</span>}</td>
+                        <td className="px-4 py-2.5 font-mono font-semibold text-slate-200">{w.symbol}</td>
+                        <td className="px-4 py-2.5">
+                          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                            w.status === 'active'
+                              ? 'bg-emerald-400/15 text-emerald-300'
+                              : 'bg-white/[.06] text-slate-500'
+                          }`}>
+                            <span className={`h-1.5 w-1.5 rounded-full ${w.status === 'active' ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                            {w.status}
+                          </span>
+                        </td>
+                        <td className={`px-4 py-2.5 text-right font-mono ${
+                          w.queue_depth > 32 ? 'text-rose-300' : w.queue_depth > 10 ? 'text-amber-300' : 'text-slate-400'
+                        }`}>{w.queue_depth}</td>
+                        <td className="px-4 py-2.5 text-center">
+                          {w.is_processing
+                            ? <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+                            : <span className="text-slate-600">—</span>
+                          }
+                        </td>
+                        <td className={`px-4 py-2.5 text-right font-mono ${w.panic_count > 0 ? 'font-bold text-rose-300' : 'text-slate-500'}`}>
+                          {w.panic_count}
+                        </td>
+                        <td className={`px-4 py-2.5 text-right font-mono ${w.tasks_dropped > 0 ? 'font-bold text-amber-300' : 'text-slate-500'}`}>
+                          {w.tasks_dropped}
+                        </td>
+                        <td className={`px-4 py-2.5 text-right text-slate-500 ${stale ? 'text-rose-400' : ''}`}>
+                          {relativeTime(w.last_task_at)}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    </section>
+  )
+}
+
 // ── Monitoring tab ─────────────────────────────────────────────────────────
 
 function MonitoringTab({ metrics, error }: { metrics: AdminMetrics | null; error: string | null }) {
+  const [unitsOpen, setUnitsOpen] = useState(false)
+
   const dash = (v: number | undefined, decimals = 0, suffix = ''): string => {
     if (v == null) return '—'
     const s = decimals ? v.toFixed(decimals) : v.toLocaleString('ru-RU')
@@ -165,7 +386,16 @@ function MonitoringTab({ metrics, error }: { metrics: AdminMetrics | null; error
         </div>
 
         <div className="mt-4 overflow-hidden rounded-xl border border-white/[.07] bg-[#0d1018]">
-          <div className="flex items-center gap-3 border-b border-white/[.06] px-4 py-2.5">
+          <button
+            className="flex w-full cursor-pointer items-center gap-3 px-4 py-2.5 text-left hover:bg-white/[.02]"
+            onClick={() => setUnitsOpen(v => !v)}
+          >
+            <svg
+              className={`h-3 w-3 shrink-0 text-slate-500 transition-transform ${unitsOpen ? 'rotate-90' : ''}`}
+              viewBox="0 0 6 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+            >
+              <polyline points="1,1 5,5 1,9" />
+            </svg>
             <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
               Compute Units
             </span>
@@ -174,9 +404,9 @@ function MonitoringTab({ metrics, error }: { metrics: AdminMetrics | null; error
                 {sig.units.length}
               </span>
             )}
-          </div>
+          </button>
 
-          <div className="overflow-x-auto">
+          {unitsOpen && <div className="overflow-x-auto border-t border-white/[.06]">
             <table className="w-full text-[12px]">
               <thead>
                 <tr className="border-b border-white/[.05] text-[10px] font-semibold uppercase tracking-wider text-slate-500">
@@ -218,7 +448,7 @@ function MonitoringTab({ metrics, error }: { metrics: AdminMetrics | null; error
                 ))}
               </tbody>
             </table>
-          </div>
+          </div>}
         </div>
       </section>
 
@@ -260,6 +490,40 @@ function MonitoringTab({ metrics, error }: { metrics: AdminMetrics | null; error
             </table>
           </div>
         )}
+      </section>
+
+      {/* ── Strategy Workers ── */}
+      <WorkersSection workers={metrics?.strategy_workers} />
+
+      {/* ── Global Warmer ── */}
+      <section>
+        <SectionHeader>Global Warmer</SectionHeader>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <StatCard label="Символов"      value={dash(metrics?.global_warmer?.symbols)}                     color="blue"   />
+          <StatCard label="Интервалов"    value={dash(metrics?.global_warmer?.intervals?.length)}            color="violet" />
+          <StatCard label="Тёплых слотов" value={dash(metrics?.global_warmer?.warm_count)}                  color="green"  />
+          <StatCard label="Всего слотов"  value={dash(metrics?.global_warmer?.total_slots)}                  color="blue"   />
+          <StatCard label="Прогрев %"     value={dash(metrics?.global_warmer?.warm_pct, 1, '%')}             color="amber"  sub={`${dash(metrics?.global_warmer?.prefetch_ms)} ms prefetch`} />
+          <StatCard label="Интервалы"     value={metrics?.global_warmer?.intervals?.join(', ') ?? '—'}       color="violet" />
+        </div>
+      </section>
+
+      {/* ── Bot Engine ── */}
+      <section>
+        <SectionHeader>Bot Engine</SectionHeader>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          <StatCard label="Активных ботов"  value={dash(metrics?.bot_engine?.bots_active)}     color="blue"   />
+          <StatCard label="Групп"           value={dash(metrics?.bot_engine?.groups_computed)}  color="violet" />
+          <StatCard label="Возможностей"    value={dash(metrics?.bot_engine?.opportunities)}    color="green"  />
+          <StatCard label="Тик (мс)"        value={dash(metrics?.bot_engine?.last_tick_ms)}     color="amber"  />
+          <StatCard
+            label="Последний тик"
+            value={metrics?.bot_engine?.last_tick_at
+              ? new Date(metrics.bot_engine.last_tick_at).toLocaleTimeString('ru-RU')
+              : '—'}
+            color="blue"
+          />
+        </div>
       </section>
 
     </div>
@@ -757,6 +1021,7 @@ function SignalTypesTab() {
                 <div className="text-center text-[12px] text-slate-600 py-8">Загрузка...</div>
               ) : (
                 <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
+                  <BybitNewsCard />
                   {signalPanelItems.map(renderPanelCard)}
                 </div>
               )}
@@ -864,7 +1129,7 @@ function SignalTypesTab() {
 // ── Users tab ──────────────────────────────────────────────────────────────
 
 function UsersTab() {
-  const { users, loading, action, refresh } = useAdminUsers()
+  const { users, loading, action, refresh, fetchTransactions } = useAdminUsers()
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-slate-500">
@@ -877,6 +1142,7 @@ function UsersTab() {
       users={users}
       onAction={action}
       onRefresh={refresh}
+      fetchTransactions={fetchTransactions}
     />
   )
 }
@@ -885,8 +1151,11 @@ function UsersTab() {
 
 const TABS = [
   { id: 'users',      label: 'Пользователи' },
+  { id: 'bots',       label: 'Боты'         },
   { id: 'monitoring', label: 'Мониторинг'   },
   { id: 'signals',    label: 'Сигналы'      },
+  { id: 'proxies',    label: 'Прокси'       },
+  { id: 'bybit-news', label: 'Bybit News'   },
 ] as const
 
 type TabId = typeof TABS[number]['id']
@@ -929,9 +1198,24 @@ export function AdminPage() {
           <MonitoringTab metrics={metrics} error={error} />
         </div>
       )}
+      {tab === 'bots' && (
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <AdminBotsTab />
+        </div>
+      )}
       {tab === 'signals' && (
         <div className="flex flex-1 flex-col overflow-hidden p-2.5">
           <SignalTypesTab />
+        </div>
+      )}
+      {tab === 'proxies' && (
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <AdminProxiesTab />
+        </div>
+      )}
+      {tab === 'bybit-news' && (
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <BybitNewsTab />
         </div>
       )}
 

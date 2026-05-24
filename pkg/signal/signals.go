@@ -1,6 +1,10 @@
 package signal
 
-import "math"
+import (
+	"math"
+	"sync"
+	"time"
+)
 
 // ── RSI Oversold ──────────────────────────────────────────────────────────
 
@@ -206,6 +210,23 @@ func (s *volSpike) Compute(c []Candle) State {
 	return Sell
 }
 
+func (s *volSpike) Value(c []Candle) float64 {
+	if len(c) < s.period+1 {
+		return 0
+	}
+	vols := volumes(c)
+	maVals := sma(vols, s.period)
+	if len(maVals) == 0 {
+		return 0
+	}
+	ma := maVals[len(maVals)-1]
+	if ma == 0 {
+		return 0
+	}
+	ratio := vols[len(vols)-1] / ma
+	return math.Round(ratio*100) / 100
+}
+
 // ── Range Breakout ────────────────────────────────────────────────────────
 
 type rangeBreakout struct{ period int; buffer float64; dir string }
@@ -345,23 +366,86 @@ func (s *rsiDivergence) Value(c []Candle) float64 {
 
 // ── SuperTrend Flip ───────────────────────────────────────────────────────
 
-type superTrendFlip struct{ atrPeriod int; mult float64; dir string }
+type superTrendFlip struct {
+	atrPeriod int
+	mult      float64
+	dir       string
+	ttl       time.Duration
+	mu        sync.Mutex
+	firedAt   time.Time
+}
 
 func (s *superTrendFlip) Compute(c []Candle) State {
 	dir := superTrendDir(c, s.atrPeriod, s.mult)
+	var base State
 	switch s.dir {
 	case "bull":
 		if dir == Buy {
-			return Buy
+			base = Buy
+		} else {
+			base = Neutral
 		}
 	case "bear":
 		if dir == Sell {
-			return Sell
+			base = Sell
+		} else {
+			base = Neutral
 		}
 	default: // "оба"
-		return dir
+		base = dir
 	}
-	return Neutral
+
+	if s.ttl <= 0 {
+		return base
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if base == Neutral {
+		s.firedAt = time.Time{}
+		return Neutral
+	}
+	now := time.Now()
+	if s.firedAt.IsZero() {
+		s.firedAt = now
+	}
+	if now.Sub(s.firedAt) >= s.ttl {
+		return Neutral
+	}
+	return base
+}
+
+func (s *superTrendFlip) TTLRemainingSec() float64 {
+	if s.ttl <= 0 {
+		return -1
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.firedAt.IsZero() {
+		return -1
+	}
+	rem := s.ttl - time.Since(s.firedAt)
+	if rem <= 0 {
+		return 0
+	}
+	return rem.Seconds()
+}
+
+func (s *superTrendContinuous) TTLRemainingSec() float64 {
+	if s.ttl <= 0 {
+		return -1
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.firedAt.IsZero() {
+		return -1
+	}
+	rem := s.ttl - time.Since(s.firedAt)
+	if rem <= 0 {
+		return 0
+	}
+	return rem.Seconds()
 }
 
 func superTrendDir(c []Candle, period int, mult float64) State {
@@ -678,8 +762,40 @@ func (s *stochTrend) Value(c []Candle) float64 {
 
 // ── SuperTrend Continuous — direction (indicator 'st') ────────────────────
 
-type superTrendContinuous struct{ atrPeriod int; mult float64 }
+type superTrendContinuous struct {
+	atrPeriod int
+	mult      float64
+	ttl       time.Duration
+	mu        sync.Mutex
+	firedAt   time.Time
+	lastDir   State
+}
 
 func (s *superTrendContinuous) Compute(c []Candle) State {
-	return superTrendDir(c, s.atrPeriod, s.mult)
+	base := superTrendDir(c, s.atrPeriod, s.mult)
+
+	if s.ttl <= 0 {
+		return base
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if base == Neutral {
+		s.firedAt = time.Time{}
+		s.lastDir = Neutral
+		return Neutral
+	}
+	now := time.Now()
+	if base != s.lastDir {
+		// Direction changed — reset TTL timer
+		s.firedAt = now
+		s.lastDir = base
+	} else if s.firedAt.IsZero() {
+		s.firedAt = now
+	}
+	if now.Sub(s.firedAt) >= s.ttl {
+		return Neutral
+	}
+	return base
 }

@@ -9,6 +9,7 @@ function parseBot(raw: RawBot): Bot {
     id:              raw.id              as string,
     name:            raw.name            as string,
     description:     raw.description     as string,
+    fullDescription: (raw.fullDescription as string) || undefined,
     avatarUrl:       (raw.avatarUrl as string) || undefined,
     ownerId:         raw.ownerId         as string,
     ownerName:       raw.ownerName       as string,
@@ -22,8 +23,16 @@ function parseBot(raw: RawBot): Bot {
     symbolBlacklist: (raw.symbolBlacklist ?? []) as string[],
     triggers:        (raw.triggers       ?? []) as Trigger[],
     strategyConfig:  (raw.strategyConfig ?? {}) as StrategyConfig,
-    deployCount:     raw.deployCount     as number,
-    createdAt:       new Date(raw.createdAt as string),
+    deployCount:           raw.deployCount           as number,
+    createdAt:             new Date(raw.createdAt as string),
+    maxStrategies:         (raw.maxStrategies         as number) ?? 0,
+    maxLongStrategies:     (raw.maxLongStrategies     as number) ?? 0,
+    maxShortStrategies:    (raw.maxShortStrategies    as number) ?? 0,
+    maxMarginUsdt:         (raw.maxMarginUsdt         as number) ?? 0,
+    maxSymConsecutiveRuns: (raw.maxSymConsecutiveRuns as number) ?? 0,
+    activeStrategiesCount: (raw.activeStrategiesCount as number) ?? 0,
+    accountId:             (raw.accountId as string | null) ?? null,
+    autoMode:              (raw.autoMode as boolean) ?? false,
   };
 }
 

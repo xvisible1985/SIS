@@ -1,23 +1,21 @@
 import { useState } from 'react';
-import { Play, Pause, Settings, MoreHorizontal } from 'lucide-react';
+import { Play, Pause, Settings, Trash2 } from 'lucide-react';
 import type { MyBot } from '../ui-types';
 import { STRAT_META } from '../strategyMeta';
 import { StatusPill } from './StatusPill';
-import { Sparkline } from './Sparkline';
 
 type Props = {
   bot: MyBot;
   /** Сразу обновляем UI оптимистично + триггерим mutation */
   onToggle: (next: 'running' | 'paused') => void;
   onEdit:  () => void;
-  onMore:  () => void;
+  onDelete: () => void;
 };
 
 /** Карточка бота пользователя — в секции «Мои боты» */
-export function MyBotCard({ bot, onToggle, onEdit, onMore }: Props) {
+export function MyBotCard({ bot, onToggle, onEdit, onDelete }: Props) {
   const [optimisticRunning, setOptimisticRunning] = useState(bot.status === 'running');
   const running = optimisticRunning;
-  const profitable = bot.pnlMonth >= 0;
   const m = STRAT_META[bot.strategy];
   const Icon = m.icon;
 
@@ -38,14 +36,34 @@ export function MyBotCard({ bot, onToggle, onEdit, onMore }: Props) {
     >
       {/* head */}
       <div className="mb-3 flex items-start gap-2.5">
-        <div
-          className="h-9 w-9 shrink-0 overflow-hidden rounded-[9px] border"
-          style={{ background: m.bg, borderColor: m.border, color: m.color }}
-        >
-          {bot.avatarUrl
-            ? <img src={bot.avatarUrl} alt="" className="h-full w-full object-cover" />
-            : <div className="flex h-full w-full items-center justify-center"><Icon size={16} strokeWidth={2} /></div>
-          }
+        <div className="relative h-9 w-9 shrink-0">
+          {running && (
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-[-1.5px] overflow-hidden rounded-[11px]"
+            >
+              <span
+                className="absolute animate-spin"
+                style={{
+                  width: '200%',
+                  height: '200%',
+                  top: '-50%',
+                  left: '-50%',
+                  background: 'conic-gradient(from 0deg, transparent 0deg, rgba(91,224,160,0.9) 50deg, transparent 100deg)',
+                  animationDuration: '2.5s',
+                }}
+              />
+            </span>
+          )}
+          <div
+            className="h-9 w-9 overflow-hidden rounded-[9px] border"
+            style={{ background: m.bg, borderColor: m.border, color: m.color }}
+          >
+            {bot.avatarUrl
+              ? <img src={bot.avatarUrl} alt="" className="h-full w-full object-cover" />
+              : <div className="flex h-full w-full items-center justify-center"><Icon size={16} strokeWidth={2} /></div>
+            }
+          </div>
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -65,35 +83,19 @@ export function MyBotCard({ bot, onToggle, onEdit, onMore }: Props) {
         <StatusPill status={running ? 'running' : 'paused'} />
       </div>
 
-      {/* metrics + spark */}
-      <div className="mb-3 grid grid-cols-[1fr_auto] items-center gap-3.5">
-        <div className="flex flex-col gap-1">
-          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">P&L · 30 дней</div>
-          <div className={'font-display text-2xl font-bold tracking-tight ' + (profitable ? 'text-emerald-300' : 'text-rose-300')}>
-            {profitable ? '+' : ''}{bot.pnlMonth.toFixed(2)}%
-          </div>
-          <div className="font-mono text-[11px] text-slate-400">
-            ${(bot.balance - bot.capital).toFixed(2)} <span className="text-slate-500">· баланс</span>{' '}
-            <span className="font-semibold text-slate-200">${bot.balance.toFixed(2)}</span>
-          </div>
-        </div>
-        <Sparkline
-          data={[20, 22, 21, 24, 23, 26, 28, 27, 30, 29, 32, 31, 34, 36, 35, 38, 40, 42, 44]}
-          color={profitable ? '#5be0a0' : '#fca5a5'}
-          width={140}
-          height={48}
-        />
+      {/* description */}
+      <div className="mb-3 min-h-[44px]">
+        {bot.description
+          ? <p className="text-[12px] leading-relaxed text-slate-400 line-clamp-3">{bot.description}</p>
+          : <p className="text-[12px] italic text-slate-600">Описание не указано</p>
+        }
       </div>
 
       {/* row stats */}
       <div className="mb-3 grid grid-cols-3 border-y border-white/[.05] py-2">
-        <Stat label="Сделок"   value={String(bot.trades)} />
-        <Stat
-          label="Win-rate"
-          value={`${bot.winRate}%`}
-          color={bot.winRate >= 70 ? 'text-emerald-300' : bot.winRate >= 50 ? 'text-slate-200' : 'text-rose-300'}
-        />
-        <Stat label="Капитал"  value={`$${bot.capital}`} />
+        <Stat label="Монет"    value={bot.symbolsTotal} />
+        <Stat label="Сигнал"   value={bot.symbolsWithSignal} />
+        <Stat label="Лимит"    value={bot.symbolsLimit} />
       </div>
 
       {/* actions */}
@@ -119,10 +121,12 @@ export function MyBotCard({ bot, onToggle, onEdit, onMore }: Props) {
         </button>
         <button
           type="button"
-          onClick={onMore}
-          className="flex h-[34px] w-[34px] items-center justify-center rounded-md border border-white/[.08] bg-white/[.04] text-slate-300 hover:bg-white/[.08]"
+          onClick={() => {
+            if (confirm(`Удалить бота «${bot.name}»?`)) onDelete();
+          }}
+          className="flex h-[34px] w-[34px] items-center justify-center rounded-md border border-white/[.08] bg-white/[.04] text-rose-300 hover:bg-rose-400/[.12] hover:text-rose-200"
         >
-          <MoreHorizontal size={14} />
+          <Trash2 size={14} />
         </button>
       </div>
     </div>

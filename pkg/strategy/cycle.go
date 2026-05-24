@@ -1,4 +1,4 @@
-package strategy
+﻿package strategy
 
 import (
 	"context"
@@ -197,6 +197,16 @@ func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 	// Matrix strategies use their own load path.
 	if sr.strategy.StrategyType == "dca" {
 		sr.restoreMatrixSafeZone(ctx)
+		// Trigger virtual L0 immediately if it's still pending on resume.
+		sr.mu.Lock()
+		for i := range sr.levels {
+			l := &sr.levels[i]
+			if l.Slot != nil && *l.Slot == 0 && l.Status == LevelPending && sr.matrixIsVirtual(l) {
+				sr.matrixTriggerVirtualLevel(ctx, l)
+				break
+			}
+		}
+		sr.mu.Unlock()
 		sr.launchMatrixPriceMonitor()
 		return
 	}
@@ -1020,7 +1030,7 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 	rows, err := sr.runner.pool.Query(ctx,
 		`SELECT id, level_idx, side, target_price, size_usdt, qty, status,
 		        COALESCE(exchange_order_id,''), COALESCE(filled_price,0), COALESCE(exchange_link_id,''),
-		        COALESCE(sl_order_id,''), COALESCE(sl_price,0), COALESCE(sl_replaced,false), slot
+		        COALESCE(sl_order_id,''), COALESCE(sl_price,0), COALESCE(sl_replaced,false), slot, COALESCE(force_virtual,false)
 		 FROM strategy_levels WHERE cycle_id=$1 ORDER BY level_idx ASC`,
 		c.ID,
 	)
@@ -1034,7 +1044,7 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 		var slotVal *int16
 		if err := rows.Scan(&l.ID, &l.LevelIdx, &l.Side, &l.TargetPrice, &l.SizeUSDT,
 			&l.Qty, &stat, &l.ExchangeOrderID, &l.FilledPrice, &l.ExchangeLinkID,
-			&l.SLOrderID, &l.SLPrice, &l.SLReplaced, &slotVal); err != nil {
+			&l.SLOrderID, &l.SLPrice, &l.SLReplaced, &slotVal, &l.ForceVirtual); err != nil {
 			continue
 		}
 		if slotVal != nil {
@@ -1096,7 +1106,18 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 				sr.lastTPPrice = tpPrice
 			}
 			if sr.slOrderID != "" && sr.strategy.SLPct < 0 {
-				_, slTrigger, _ := slParams(sr.strategy.Direction, avg, sr.strategy.SLPct)
+				// Use projected avg (same logic as updateSL) so lastSLPrice stays
+				// consistent with what updateSL would compute on the next call.
+				slAvg := sr.projectedAvgEntry()
+				if slAvg == 0 {
+					slAvg = avg
+				}
+				if sr.strategy.Direction == DirectionLong && slAvg > avg {
+					slAvg = avg
+				} else if sr.strategy.Direction == DirectionShort && slAvg < avg {
+					slAvg = avg
+				}
+				_, slTrigger, _ := slParams(sr.strategy.Direction, slAvg, sr.strategy.SLPct)
 				sr.lastSLPrice = slTrigger
 			}
 		}
@@ -1194,6 +1215,7 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 
 	// Apply configured leverage on the exchange before opening a new cycle.
 	// Error 110043 means "leverage not modified" (already correct) and is treated as success.
+	// If the requested leverage exceeds the instrument's maximum, cap it and retry.
 	lev := sr.strategy.Leverage
 	if lev <= 0 {
 		lev = 1
@@ -1205,7 +1227,23 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 		BuyLeverage:  levStr,
 		SellLeverage: levStr,
 	}); lerr != nil && !strings.Contains(lerr.Error(), "110043") {
-		log.Printf("strategy %s: set leverage %d: %v", sr.strategy.ID, lev, lerr)
+		log.Printf("strategy %s: set leverage %d: %v — querying exchange max", sr.strategy.ID, lev, lerr)
+		if info, ierr := trader.GetPublicInstrumentInfo(ctx, sr.strategy.Category, sr.strategy.Symbol); ierr == nil && info.MaxLeverage > 0 {
+			cappedLev := int(info.MaxLeverage)
+			if cappedLev < lev {
+				cappedStr := strconv.Itoa(cappedLev)
+				if lerr2 := trader.SetLeverage(ctx, sr.runner.creds, trader.LeverageRequest{
+					Symbol:       sr.strategy.Symbol,
+					Category:     sr.strategy.Category,
+					BuyLeverage:  cappedStr,
+					SellLeverage: cappedStr,
+				}); lerr2 != nil && !strings.Contains(lerr2.Error(), "110043") {
+					log.Printf("strategy %s: set leverage capped to %d: %v", sr.strategy.ID, cappedLev, lerr2)
+				} else {
+					sr.info(ctx, fmt.Sprintf("Плечо ограничено биржей: запрошено %dx, установлено %dx", lev, cappedLev))
+				}
+			}
+		}
 	}
 
 	// Ensure position mode BEFORE taking the lock — this makes a REST call and must
@@ -1632,6 +1670,49 @@ func (sr *StrategyRunner) avgEntry() (avg, totalQty float64) {
 	return
 }
 
+// projectedAvgEntry returns the weighted average entry across all grid levels —
+// using actual fill prices for filled levels and planned limit prices for pending/placed ones.
+// This lets updateSL place the stop from the first fill without waiting for all levels,
+// while keeping the trigger stable as levels fill (limit orders fill at their target price).
+//
+// Safety: if projected avg drifts in the wrong direction versus filled avg (e.g. breakout
+// grid where unfilled levels are above entry), the caller falls back to actual avg.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) projectedAvgEntry() float64 {
+	var totalCost, totalQty float64
+	for _, l := range sr.levels {
+		var price, qty float64
+		switch l.Status {
+		case LevelFilled:
+			if l.FilledPrice == 0 {
+				continue
+			}
+			price = l.FilledPrice
+			qty, _ = strconv.ParseFloat(l.Qty, 64)
+		case LevelPending, LevelPlaced:
+			if l.TargetPrice == 0 {
+				continue // market entry not yet filled — skip, avgEntry handles it once filled
+			}
+			price = l.TargetPrice
+			qty, _ = strconv.ParseFloat(l.Qty, 64)
+			if qty == 0 && l.SizeUSDT > 0 {
+				qty = l.SizeUSDT / price
+			}
+		default:
+			continue
+		}
+		if qty == 0 {
+			continue
+		}
+		totalCost += price * qty
+		totalQty += qty
+	}
+	if totalQty == 0 {
+		return 0
+	}
+	return totalCost / totalQty
+}
+
 // handleLevelFill is called by AccountRunner when a grid level order is filled.
 func (sr *StrategyRunner) handleLevelFill(ctx context.Context, levelID string, filledPrice, _ float64) {
 	sr.mu.Lock()
@@ -1785,6 +1866,10 @@ func slParams(dir Direction, avg, slPct float64) (side string, triggerPrice floa
 }
 
 // updateSL cancels the existing SL order (if any) and places a new stop-market SL for the full position.
+// SL trigger is computed from projectedAvgEntry (includes unfilled levels at their limit prices),
+// so the stop is placed from the very first fill and stays stable as subsequent levels fill.
+// If the exchange rejects the trigger as ≥ current price (110093), it means the position is
+// already past the SL level — the position is closed at market immediately.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 	if sr.strategy.SLType != SLTypeConditional || sr.strategy.SLPct >= 0 {
@@ -1794,30 +1879,39 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 		sr.warn(ctx, "updateSL: инструмент не загружен (QtyStep=0) — SL не выставлен, повтор при следующем событии")
 		return nil
 	}
-	// Do not place SL until the entire grid is filled — wait for no pending/placed levels.
-	for _, l := range sr.levels {
-		if l.Status == LevelPending || l.Status == LevelPlaced {
-			return nil
-		}
-	}
-	avg, totalQty := sr.avgEntry()
-	if totalQty == 0 || avg == 0 {
+
+	actualAvg, totalQty := sr.avgEntry()
+	if totalQty == 0 || actualAvg == 0 {
 		return nil
 	}
 
-	slSide, slTrigger, trigDir := slParams(sr.strategy.Direction, avg, sr.strategy.SLPct)
+	// Projected avg: includes unfilled levels at their target (limit) prices.
+	// Falls back to actual avg when unfilled levels are above current entry (breakout grids)
+	// to avoid placing an SL trigger above the current price.
+	slAvg := sr.projectedAvgEntry()
+	if slAvg == 0 {
+		slAvg = actualAvg
+	}
+	if sr.strategy.Direction == DirectionLong && slAvg > actualAvg {
+		slAvg = actualAvg
+	} else if sr.strategy.Direction == DirectionShort && slAvg < actualAvg {
+		slAvg = actualAvg
+	}
+
+	slSide, slTrigger, trigDir := slParams(sr.strategy.Direction, slAvg, sr.strategy.SLPct)
 	if slSide == "" {
 		return nil
 	}
 
-	// Same as updateTP: use actual exchange qty after partial manual close.
+	// Use actual exchange qty after partial manual close.
 	if sr.partialCloseQty > 0 && sr.partialCloseQty < totalQty {
 		totalQty = sr.partialCloseQty
 	}
 
-	// Skip if SL is already placed with the same qty, avg entry, and trigger price.
+	// Skip if SL is already placed with the same qty and trigger price.
+	// Trigger price encodes both projected avg and sl_pct, so it's the sole dedup key.
 	// Must be checked BEFORE cancelling the existing order.
-	if sr.slOrderID != "" && sr.lastTPSLQty == totalQty && sr.lastTPSLAvg == avg && sr.lastSLPrice == slTrigger {
+	if sr.slOrderID != "" && sr.lastTPSLQty == totalQty && sr.lastSLPrice == slTrigger {
 		return nil
 	}
 
@@ -1859,16 +1953,23 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 			sr.recoverDuplicateSL(ctx, linkID)
 			return nil
 		}
+		// 110093: trigger ≥ current price — price already passed the SL level while all
+		// levels were filling. Close at market immediately (programmatic SL execution).
+		if strings.Contains(err.Error(), "110093") {
+			sr.warn(ctx, fmt.Sprintf("updateSL: 110093 — цена уже прошла SL %.4f, закрываю позицию маркетом", slTrigger))
+			sr.closePositionAtMarket(ctx, "sl")
+			return nil
+		}
 		return fmt.Errorf("place SL: %w", err)
 	}
 	sr.slOrderID = result.OrderId
 	sr.lastTPSLQty = totalQty
-	sr.lastTPSLAvg = avg
+	sr.lastTPSLAvg = actualAvg
 	sr.lastSLPrice = slTrigger
 	sr.runner.RegisterOrder(result.OrderId, orderRef{strategyID: sr.strategy.ID, refType: "sl"})
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
 		`UPDATE strategy_cycles SET sl_order_id=$1 WHERE id=$2`, result.OrderId, sr.cycle.ID)
-	sr.info(ctx, fmt.Sprintf("SL выставлен @ %.4f qty=%s", slTrigger, slQty))
+	sr.info(ctx, fmt.Sprintf("SL выставлен @ %.4f qty=%s (проекц. avg %.4f)", slTrigger, slQty, slAvg))
 	return nil
 }
 
@@ -1999,6 +2100,12 @@ func (sr *StrategyRunner) maybeRestart(ctx context.Context) {
 			stratID := sr.strategy.ID
 			sr.info(ctx, "Стратегия удалена после TP/SL (режим: удалять)")
 			go func() {
+				// Cancel any surviving exchange orders before removing from DB.
+				// cancelPlacedLevels + closeCycle already ran, but this catches edge cases
+				// where a ghost TP/grid order was left due to an error or race.
+				cCtx, cCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				sr.cancelAllStrategyOrders(cCtx)
+				cCancel()
 				sr.runner.pool.Exec(context.Background(), //nolint:errcheck
 					`DELETE FROM strategies WHERE id=$1`, stratID)
 				sr.runner.removeStrategy(stratID)
@@ -2017,7 +2124,7 @@ func (sr *StrategyRunner) maybeRestart(ctx context.Context) {
 			} else {
 				sr.cancelAllStrategyOrders(ctx)
 				sr.startMu.Lock()
-				if err := sr.startCycle(ctx); err != nil {
+				if err := sr.startCycleByType(ctx); err != nil {
 					log.Printf("strategy %s: restart cycle: %v", sr.strategy.ID, err)
 				}
 				sr.startMu.Unlock()
@@ -2184,6 +2291,25 @@ func (sr *StrategyRunner) cancelPlacedLevels(ctx context.Context) {
 
 // awaitSignal subscribes to the signal engine and calls startCycle when the
 // signal state matches the strategy direction. Runs in a goroutine launched from loadOrStart.
+// startCycleByType starts the correct cycle type: startMatrixCycle for DCA, startCycle for grid.
+// Must be called with startMu held and WITHOUT sr.mu held.
+func (sr *StrategyRunner) startCycleByType(ctx context.Context) error {
+	if sr.strategy.StrategyType == "dca" {
+		return sr.startMatrixCycle(ctx)
+	}
+	return sr.startCycle(ctx)
+}
+
+// resumeCycleAfterSignalByType resumes the correct cycle type after signal fires.
+// Must be called with startMu held and WITHOUT sr.mu held.
+func (sr *StrategyRunner) resumeCycleAfterSignalByType(ctx context.Context) {
+	if sr.strategy.StrategyType == "dca" {
+		sr.resumeMatrixAfterSignal(ctx)
+	} else {
+		sr.resumeGridAfterSignal(ctx)
+	}
+}
+
 func (sr *StrategyRunner) awaitSignal(ctx context.Context) {
 	sr.mu.Lock()
 	configs := sr.strategy.SignalConfigs
@@ -2194,7 +2320,7 @@ func (sr *StrategyRunner) awaitSignal(ctx context.Context) {
 
 	if signalEngine == nil || len(configs) == 0 {
 		sr.startMu.Lock()
-		err := sr.startCycle(ctx)
+		err := sr.startCycleByType(ctx)
 		sr.startMu.Unlock()
 		if err != nil {
 			log.Printf("strategy %s: start cycle (no signal engine): %v", stratID, err)
@@ -2259,7 +2385,7 @@ func (sr *StrategyRunner) awaitSignal(ctx context.Context) {
 		sr.info(context.Background(), fmt.Sprintf("Сигнал получен (%s), запуск цикла", state))
 		sr.submit(func(ctx context.Context) {
 			sr.startMu.Lock()
-			if err2 := sr.startCycle(ctx); err2 != nil {
+			if err2 := sr.startCycleByType(ctx); err2 != nil {
 				log.Printf("strategy %s: start cycle on signal: %v", stratID, err2)
 			}
 			sr.startMu.Unlock()
@@ -2272,7 +2398,7 @@ func (sr *StrategyRunner) awaitSignal(ctx context.Context) {
 		sr.signalSubID = ""
 		sr.mu.Unlock()
 		sr.startMu.Lock()
-		if err2 := sr.startCycle(ctx); err2 != nil {
+		if err2 := sr.startCycleByType(ctx); err2 != nil {
 			log.Printf("strategy %s: start cycle (signal subscribe failed): %v", stratID, err2)
 		}
 		sr.startMu.Unlock()
@@ -2307,7 +2433,7 @@ func (sr *StrategyRunner) awaitSignal(ctx context.Context) {
 				sr.mu.Unlock()
 				sr.info(ctx, fmt.Sprintf("Текущий сигнал (%s) уже соответствует направлению — запуск цикла", curState))
 				sr.startMu.Lock()
-				if err2 := sr.startCycle(ctx); err2 != nil {
+				if err2 := sr.startCycleByType(ctx); err2 != nil {
 					log.Printf("strategy %s: start cycle on current signal: %v", stratID, err2)
 				}
 				sr.startMu.Unlock()
@@ -2357,7 +2483,7 @@ func (sr *StrategyRunner) handleSignalConfigUpdate(ctx context.Context) {
 		if !sf || len(configs) == 0 {
 			sr.info(ctx, "Фильтр сигнала отключён — запускаю сетку")
 			sr.startMu.Lock()
-			sr.resumeGridAfterSignal(ctx)
+			sr.resumeCycleAfterSignalByType(ctx)
 			sr.startMu.Unlock()
 			return
 		}
@@ -2429,7 +2555,7 @@ func (sr *StrategyRunner) handleSignalConfigUpdate(ctx context.Context) {
 		if wasAwaiting {
 			sr.info(ctx, fmt.Sprintf("Конфигурация сигнала изменена — текущий сигнал (%s) соответствует направлению, запускаю сетку", state))
 			sr.startMu.Lock()
-			sr.resumeGridAfterSignal(ctx)
+			sr.resumeCycleAfterSignalByType(ctx)
 			sr.startMu.Unlock()
 		} else {
 			sr.info(ctx, fmt.Sprintf("Конфигурация сигнала изменена — текущий сигнал (%s) соответствует направлению, сетка продолжает работать", state))
@@ -2472,7 +2598,7 @@ func (sr *StrategyRunner) awaitSignalResumeCycle(ctx context.Context) {
 
 	if signalEngine == nil || len(configs) == 0 {
 		sr.startMu.Lock()
-		sr.resumeGridAfterSignal(ctx)
+		sr.resumeCycleAfterSignalByType(ctx)
 		sr.startMu.Unlock()
 		return
 	}
@@ -2531,7 +2657,7 @@ func (sr *StrategyRunner) awaitSignalResumeCycle(ctx context.Context) {
 		sr.info(context.Background(), fmt.Sprintf("Сигнал получен (%s), возобновляю сетку", state))
 		sr.submit(func(ctx context.Context) {
 			sr.startMu.Lock()
-			sr.resumeGridAfterSignal(ctx)
+			sr.resumeCycleAfterSignalByType(ctx)
 			sr.startMu.Unlock()
 			sr.launchSignalMonitor(ctx)
 		})
@@ -2542,7 +2668,7 @@ func (sr *StrategyRunner) awaitSignalResumeCycle(ctx context.Context) {
 		sr.signalSubID = ""
 		sr.mu.Unlock()
 		sr.startMu.Lock()
-		sr.resumeGridAfterSignal(ctx)
+		sr.resumeCycleAfterSignalByType(ctx)
 		sr.startMu.Unlock()
 	}
 }
@@ -2636,7 +2762,7 @@ func (sr *StrategyRunner) launchSignalMonitor(ctx context.Context) {
 				sr.info(context.Background(), "Возобновляю сетку")
 				sr.submit(func(ctx context.Context) {
 					sr.startMu.Lock()
-					sr.resumeGridAfterSignal(ctx)
+					sr.resumeCycleAfterSignalByType(ctx)
 					sr.startMu.Unlock()
 				})
 			}
@@ -2919,12 +3045,31 @@ func (sr *StrategyRunner) restartCycle(ctx context.Context) {
 		}
 		// Bump so re-placed levels get linkIds Bybit has never seen (avoids 110072).
 		sr.repriceGen++
-		sr.repriceRemainingFromFills(ctx)
-		if err := sr.placeNextLevels(ctx); err != nil {
-			sr.errlog(ctx, fmt.Sprintf("Ошибка выставления уровней: %v", err))
+		if sr.strategy.StrategyType == "dca" {
+			// Matrix: re-place pending slots individually with current price.
+			sr.mu.Unlock()
+			price, ferr := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+			sr.mu.Lock()
+			if ferr == nil {
+				for i := range sr.levels {
+					if sr.levels[i].Status == LevelPending {
+						if err := sr.placeMatrixLevel(ctx, &sr.levels[i], price); err != nil {
+							sr.errlog(ctx, fmt.Sprintf("restartCycle matrix L%d: %v", sr.levels[i].LevelIdx, err))
+						}
+					}
+				}
+			}
+		} else {
+			sr.repriceRemainingFromFills(ctx)
+			if err := sr.placeNextLevels(ctx); err != nil {
+				sr.errlog(ctx, fmt.Sprintf("Ошибка выставления уровней: %v", err))
+			}
 		}
 		if err := sr.updateTP(ctx); err != nil {
 			sr.errlog(ctx, fmt.Sprintf("Ошибка обновления TP: %v", err))
+		}
+		if err := sr.updateSL(ctx); err != nil {
+			sr.errlog(ctx, fmt.Sprintf("Ошибка обновления SL после пересчёта уровней: %v", err))
 		}
 		sr.mu.Unlock()
 		return
@@ -3493,6 +3638,10 @@ func (sr *StrategyRunner) repriceStale(ctx context.Context) {
 			)
 		}
 		sr.info(ctx, fmt.Sprintf("Уровни пересчитаны от %.4f (%d %s)", currentPrice, len(pending), side))
+	}
+
+	if err := sr.updateSL(ctx); err != nil {
+		sr.errlog(ctx, fmt.Sprintf("Ошибка обновления SL после reprice уровней: %v", err))
 	}
 }
 

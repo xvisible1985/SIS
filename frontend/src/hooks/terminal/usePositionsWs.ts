@@ -10,6 +10,26 @@ let _cachePositions: Position[] = []
 let _cacheOrders: ActiveOrder[] = []
 let _cacheAccountName = ''
 
+const CACHE_TTL_MS = 5 * 60 * 1000
+
+function lsKey(accountId: string) { return `sis_trader_${accountId}` }
+
+function readLs(accountId: string): { positions: Position[]; orders: ActiveOrder[]; name: string; ts: number } | null {
+  try {
+    const raw = localStorage.getItem(lsKey(accountId))
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || Date.now() - (parsed.ts || 0) > CACHE_TTL_MS) return null
+    return parsed
+  } catch { return null }
+}
+
+function writeLs(accountId: string, positions: Position[], orders: ActiveOrder[], name: string) {
+  try {
+    localStorage.setItem(lsKey(accountId), JSON.stringify({ positions, orders, name, ts: Date.now() }))
+  } catch { /* ignore quota errors */ }
+}
+
 function mapPosition(p: any): Position {
   const entry = parseFloat(p.entryPrice || p.avgPrice || '0')
   const mark = parseFloat(p.markPrice ?? '0')
@@ -36,7 +56,7 @@ function mapPosition(p: any): Position {
 
 function mapOrder(o: any): ActiveOrder {
   return {
-    orderId: o.orderId,
+    orderId: o.orderId || o.orderLinkId || '',
     orderLinkId: o.orderLinkId ?? '',
     symbol: o.symbol,
     side: o.side,
@@ -54,14 +74,19 @@ function mapOrder(o: any): ActiveOrder {
 const CLOSED_STATUSES = new Set(['Filled', 'Cancelled', 'Rejected', 'Deactivated'])
 
 export function usePositionsWs(accountId: string | null) {
+  const ls = accountId ? readLs(accountId) : null
   const fromCache = accountId !== null && accountId === _cacheAccountId
-  const [positions, setPositions] = useState<Position[]>(fromCache ? _cachePositions : [])
-  const [orders, setOrders] = useState<ActiveOrder[]>(fromCache ? _cacheOrders : [])
+  const initialPositions = fromCache ? _cachePositions : (ls?.positions ?? [])
+  const initialOrders    = fromCache ? _cacheOrders    : (ls?.orders ?? [])
+  const initialName      = fromCache ? _cacheAccountName : (ls?.name ?? '')
+
+  const [positions, setPositions] = useState<Position[]>(initialPositions)
+  const [orders, setOrders] = useState<ActiveOrder[]>(initialOrders)
   const [executions, setExecutions] = useState<ChartExecution[]>([])
   const [log, setLog] = useState<LogEntry[]>([])
   const [status, setStatus] = useState<WsStatus>('connecting')
-  const [accountName, setAccountName] = useState(fromCache ? _cacheAccountName : '')
-  const [loading, setLoading] = useState(!fromCache)
+  const [accountName, setAccountName] = useState(initialName)
+  const [loading, setLoading] = useState(!fromCache && !ls)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const rawPositions = useRef(new Map<string, any>())
@@ -172,7 +197,10 @@ export function usePositionsWs(accountId: string | null) {
         if (msg.type === 'order') {
           if (msg.dataType === 'snapshot') {
             rawOrders.current.clear()
-            for (const o of msg.data) rawOrders.current.set(o.orderId, o)
+            for (const o of msg.data) {
+              const key = o.orderId || o.orderLinkId
+              if (key) rawOrders.current.set(key, o)
+            }
             setOrders(msg.data.filter((o: any) => !CLOSED_STATUSES.has(o.orderStatus)).map(mapOrder))
             clearTimeout(loadingTimeout)
             setLoading(false)
@@ -180,11 +208,13 @@ export function usePositionsWs(accountId: string | null) {
             setOrders(prev => {
               const next = [...prev]
               for (const o of msg.data) {
-                const merged = { ...(rawOrders.current.get(o.orderId) ?? {}), ...o }
-                rawOrders.current.set(o.orderId, merged)
-                const idx = next.findIndex(x => x.orderId === o.orderId)
+                const key = o.orderId || o.orderLinkId
+                if (!key) continue
+                const merged = { ...(rawOrders.current.get(key) ?? {}), ...o }
+                rawOrders.current.set(key, merged)
+                const idx = next.findIndex(x => x.orderId === key || x.orderLinkId === key)
                 if (CLOSED_STATUSES.has(merged.orderStatus)) {
-                  rawOrders.current.delete(o.orderId)
+                  rawOrders.current.delete(key)
                   if (idx !== -1) next.splice(idx, 1)
                 } else {
                   const mapped = mapOrder(merged)
@@ -215,13 +245,21 @@ export function usePositionsWs(accountId: string | null) {
     }
   }, [accountId, addLog])
 
-  // Когда accountId становится известен — подгружаем кэш если он совпадает
+  // Когда accountId становится известен — подгружаем кэш (module или localStorage)
   useEffect(() => {
-    if (!accountId || accountId !== _cacheAccountId) return
-    if (_cachePositions.length > 0 || _cacheOrders.length > 0) {
+    if (!accountId) return
+    if (accountId === _cacheAccountId && (_cachePositions.length > 0 || _cacheOrders.length > 0)) {
       setPositions(_cachePositions)
       setOrders(_cacheOrders)
       setAccountName(_cacheAccountName)
+      setLoading(false)
+      return
+    }
+    const ls = readLs(accountId)
+    if (ls) {
+      setPositions(ls.positions)
+      setOrders(ls.orders)
+      setAccountName(ls.name)
       setLoading(false)
     }
   }, [accountId])
@@ -240,13 +278,14 @@ export function usePositionsWs(accountId: string | null) {
     }
   }, [connect])
 
-  // Синхронизируем данные в кэш после каждого обновления
+  // Синхронизируем данные в кэш и localStorage после каждого обновления
   useEffect(() => {
     if (!accountId) return
     _cacheAccountId = accountId
     _cachePositions = positions
     _cacheOrders = orders
-  }, [accountId, positions, orders])
+    writeLs(accountId, positions, orders, accountName)
+  }, [accountId, positions, orders, accountName])
 
   useEffect(() => {
     if (accountId && accountName) _cacheAccountName = accountName
@@ -259,7 +298,7 @@ export function usePositionsWs(accountId: string | null) {
 
   const removeOrder = useCallback((orderId: string) => {
     rawOrders.current.delete(orderId)
-    setOrders(prev => prev.filter(o => o.orderId !== orderId))
+    setOrders(prev => prev.filter(o => o.orderId !== orderId && o.orderLinkId !== orderId))
   }, [])
 
   return { positions, orders, executions, log, status, accountName, loading, reconnect, removeOrder }
