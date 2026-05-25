@@ -67,6 +67,7 @@ func (s *Server) GetAdminMetrics(w http.ResponseWriter, r *http.Request) {
 		},
 		"strategy_workers": s.engine.WorkerStats(),
 		"global_warmer":    warmerMetrics,
+		"ticker_hub":       s.signalEngine.PriceHub().Metrics(),
 		"bot_engine": map[string]interface{}{
 			"last_tick_at":    lastAtStr,
 			"last_tick_ms":    ms,
