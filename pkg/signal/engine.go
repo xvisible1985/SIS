@@ -119,8 +119,9 @@ func labelFor(cfg Config) string {
 // Engine manages signal subscriptions, deduplicates compute units,
 // and dispatches results to subscribers.
 type Engine struct {
-	hub     *KlineHub
-	metrics *Metrics
+	hub       *KlineHub
+	tickerHub *TickerHub
+	metrics   *Metrics
 
 	mu    sync.RWMutex
 	units map[string]*computeUnit // hash → unit
@@ -133,12 +134,14 @@ type Engine struct {
 // NewEngine creates a SignalEngine. Pass a non-nil exec to persist metrics to DB.
 func NewEngine(ctx context.Context, exec ExecFn) *Engine {
 	hub := NewKlineHub(ctx)
+	tickerHub := NewTickerHub(ctx)
 	m := newMetrics(ctx, exec)
 	return &Engine{
-		hub:     hub,
-		metrics: m,
-		units:   make(map[string]*computeUnit),
-		subs:    make(map[string]string),
+		hub:       hub,
+		tickerHub: tickerHub,
+		metrics:   m,
+		units:     make(map[string]*computeUnit),
+		subs:      make(map[string]string),
 	}
 }
 
@@ -338,6 +341,9 @@ func (e *Engine) QueryTTLRemaining(symbol, interval string, configs []Config) fl
 
 // Hub returns the underlying KlineHub (for conn count metrics).
 func (e *Engine) Hub() *KlineHub { return e.hub }
+
+// PriceHub returns the TickerHub for real-time mark price subscriptions.
+func (e *Engine) PriceHub() *TickerHub { return e.tickerHub }
 
 // Metrics returns the live metrics snapshot.
 func (e *Engine) Metrics() MetricsSnapshot {
