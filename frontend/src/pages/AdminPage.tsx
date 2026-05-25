@@ -73,6 +73,11 @@ interface AdminMetrics {
     warm_pct: number
     prefetch_ms: number
   }
+  ticker_hub?: {
+    symbols: number
+    warm_symbols: number
+    ws_connections: number
+  }
   bot_engine?: {
     last_tick_at: string
     last_tick_ms: number
@@ -505,6 +510,25 @@ function MonitoringTab({ metrics, error }: { metrics: AdminMetrics | null; error
           <StatCard label="Всего слотов"  value={dash(metrics?.global_warmer?.total_slots)}                  color="blue"   />
           <StatCard label="Прогрев %"     value={dash(metrics?.global_warmer?.warm_pct, 1, '%')}             color="amber"  sub={`${dash(metrics?.global_warmer?.prefetch_ms)} ms prefetch`} />
           <StatCard label="Интервалы"     value={metrics?.global_warmer?.intervals?.join(', ') ?? '—'}       color="violet" />
+        </div>
+      </section>
+
+      {/* ── Ticker Hub ── */}
+      <section>
+        <SectionHeader>Ticker Hub</SectionHeader>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <StatCard label="Символов"        value={dash(metrics?.ticker_hub?.symbols)}      color="blue"   />
+          <StatCard
+            label="С ценой"
+            value={metrics?.ticker_hub != null
+              ? `${dash(metrics.ticker_hub.warm_symbols)} / ${dash(metrics.ticker_hub.symbols)}`
+              : '—'}
+            color="green"
+            sub={metrics?.ticker_hub != null && metrics.ticker_hub.symbols > 0
+              ? `${((metrics.ticker_hub.warm_symbols / metrics.ticker_hub.symbols) * 100).toFixed(1)}%`
+              : undefined}
+          />
+          <StatCard label="WS соединений"   value={dash(metrics?.ticker_hub?.ws_connections)} color="violet" />
         </div>
       </section>
 
