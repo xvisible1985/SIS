@@ -618,19 +618,18 @@ func (sr *StrategyRunner) launchMatrixPriceMonitor() {
 	// Buffered channel holds the latest price; old values are overwritten.
 	priceCh := make(chan float64, 1)
 
-	unsub := se.PriceHub().Subscribe(symbol, func(markPrice float64) {
-		// Non-blocking: drain stale price, insert latest.
-		select {
-		case <-priceCh:
-		default:
-		}
-		select {
-		case priceCh <- markPrice:
-		default:
-		}
-	})
-
 	go func() {
+		unsub := se.PriceHub().Subscribe(symbol, func(markPrice float64) {
+			// Non-blocking: drain stale price, insert latest.
+			select {
+			case <-priceCh:
+			default:
+			}
+			select {
+			case priceCh <- markPrice:
+			default:
+			}
+		})
 		defer cancel()
 		defer unsub()
 		for {
@@ -689,7 +688,7 @@ func (sr *StrategyRunner) runMatrixPriceMonitorPolling(ctx context.Context, canc
 	}
 }
 
-// matrixPriceTick is called on each 5-second price poll.
+// matrixPriceTick is called on each mark price update from TickerHub or the REST fallback poll.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice float64) {
 	if sr.cycle == nil {
