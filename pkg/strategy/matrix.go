@@ -14,16 +14,22 @@ import (
 
 // calculateMatrixPrices returns a map from slot index to target price.
 // Slot 0 = start price (market entry), negative slots = below, positive slots = above.
-func calculateMatrixPrices(startPrice float64, above, below []MatrixLevel) map[int]float64 {
+// For short direction stepMul=-1 inverts all steps so positive slots land below entry and
+// negative slots land above entry (in-direction DCA for short is downward).
+func calculateMatrixPrices(startPrice float64, above, below []MatrixLevel, dir Direction) map[int]float64 {
+	stepMul := 1.0
+	if dir == DirectionShort {
+		stepMul = -1.0
+	}
 	prices := map[int]float64{0: startPrice}
 	prev := startPrice
 	for i, lvl := range below {
-		prev = prev * (1 + lvl.PriceStepPct/100)
+		prev = prev * (1 + stepMul*lvl.PriceStepPct/100)
 		prices[-(i + 1)] = prev
 	}
 	prev = startPrice
 	for i, lvl := range above {
-		prev = prev * (1 + lvl.PriceStepPct/100)
+		prev = prev * (1 + stepMul*lvl.PriceStepPct/100)
 		prices[i+1] = prev
 	}
 	return prices
@@ -112,8 +118,18 @@ func (sr *StrategyRunner) matrixIsVirtual(l *GridLevel) bool {
 		e := sr.strategy.MatrixEntryLevel
 		return e != nil && e.OrderType == "virtual"
 	}
+	if sr.strategy.Direction == DirectionShort {
+		if slot > 0 {
+			// Short: positive slots are in-direction (below entry) — respect order_type config.
+			above := filterMatrixLevels(sr.strategy.MatrixLevels, "above")
+			idx := slot - 1
+			return idx < len(above) && above[idx].OrderType == "virtual"
+		}
+		// Short: negative slots land above entry (against direction) — always virtual.
+		return true
+	}
 	if slot > 0 {
-		return true // above levels are always virtual — fired by price monitor when price rises
+		return true // long: above levels always virtual — triggered by price monitor when price rises
 	}
 	below := filterMatrixLevels(sr.strategy.MatrixLevels, "below")
 	idx := -slot - 1
@@ -233,7 +249,7 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 
 	above := filterMatrixLevels(sr.strategy.MatrixLevels, "above")
 	below := filterMatrixLevels(sr.strategy.MatrixLevels, "below")
-	prices := calculateMatrixPrices(price, above, below)
+	prices := calculateMatrixPrices(price, above, below, sr.strategy.Direction)
 
 	side := matrixLevelSide(sr.strategy.Direction)
 	levelIdx := 1
@@ -576,8 +592,9 @@ func matrixStopReplaceTrigger(dir Direction, fillPrice, replacePct float64) floa
 	return fillPrice * (1 - replacePct/100)
 }
 
-// launchMatrixPriceMonitor starts a goroutine that polls mark price every 5 seconds.
-// It replaces any existing monitor. Must be called WITHOUT sr.mu held.
+// launchMatrixPriceMonitor starts a goroutine that feeds real-time mark prices
+// from TickerHub into matrixPriceTick. Falls back to 5-second REST polling if
+// the signal engine is unavailable. Must be called WITHOUT sr.mu held.
 func (sr *StrategyRunner) launchMatrixPriceMonitor() {
 	sr.mu.Lock()
 	if sr.matrixMonitorStop != nil {
@@ -589,30 +606,43 @@ func (sr *StrategyRunner) launchMatrixPriceMonitor() {
 	sr.mu.Lock()
 	sr.matrixMonitorStop = cancel
 	stratID := sr.strategy.ID
-	creds := sr.runner.creds
-	category := sr.strategy.Category
 	symbol := sr.strategy.Symbol
+	se := sr.runner.signalEngine
 	sr.mu.Unlock()
+
+	if se == nil {
+		go sr.runMatrixPriceMonitorPolling(ctx, cancel, stratID, symbol)
+		return
+	}
+
+	// Buffered channel holds the latest price; old values are overwritten.
+	priceCh := make(chan float64, 1)
+
+	unsub := se.PriceHub().Subscribe(symbol, func(markPrice float64) {
+		// Non-blocking: drain stale price, insert latest.
+		select {
+		case <-priceCh:
+		default:
+		}
+		select {
+		case priceCh <- markPrice:
+		default:
+		}
+	})
 
 	go func() {
 		defer cancel()
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
+		defer unsub()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case price := <-priceCh:
 				sr.mu.Lock()
 				hasCycle := sr.cycle != nil
 				sr.mu.Unlock()
 				if !hasCycle {
 					return
-				}
-				price, err := trader.FetchMarkPrice(ctx, creds, category, symbol)
-				if err != nil {
-					log.Printf("strategy %s: matrix price monitor: %v", stratID, err)
-					continue
 				}
 				sr.submit(func(taskCtx context.Context) {
 					sr.mu.Lock()
@@ -622,6 +652,41 @@ func (sr *StrategyRunner) launchMatrixPriceMonitor() {
 			}
 		}
 	}()
+}
+
+// runMatrixPriceMonitorPolling is the REST fallback when signalEngine is nil.
+func (sr *StrategyRunner) runMatrixPriceMonitorPolling(ctx context.Context, cancel context.CancelFunc, stratID, symbol string) {
+	defer cancel()
+	sr.mu.Lock()
+	creds := sr.runner.creds
+	category := sr.strategy.Category
+	sr.mu.Unlock()
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sr.mu.Lock()
+			hasCycle := sr.cycle != nil
+			sr.mu.Unlock()
+			if !hasCycle {
+				return
+			}
+			price, err := trader.FetchMarkPrice(ctx, creds, category, symbol)
+			if err != nil {
+				log.Printf("strategy %s: matrix price monitor: %v", stratID, err)
+				continue
+			}
+			sr.submit(func(taskCtx context.Context) {
+				sr.mu.Lock()
+				defer sr.mu.Unlock()
+				sr.matrixPriceTick(taskCtx, price)
+			})
+		}
+	}
 }
 
 // matrixPriceTick is called on each 5-second price poll.
@@ -656,6 +721,13 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 		var crossed bool
 		if l.TargetPrice == 0 {
 			crossed = true
+		} else if sr.strategy.Direction == DirectionShort {
+			// Short: positive slots land below entry (price must drop), negative above (price must rise).
+			if l.Slot != nil && *l.Slot > 0 {
+				crossed = currentPrice <= l.TargetPrice
+			} else {
+				crossed = currentPrice >= l.TargetPrice
+			}
 		} else if l.Slot != nil && *l.Slot < 0 {
 			crossed = currentPrice <= l.TargetPrice
 		} else {
@@ -785,7 +857,7 @@ func (sr *StrategyRunner) matrixTriggerVirtualLevel(ctx context.Context, l *Grid
 func (sr *StrategyRunner) matrixReplaceSlots(ctx context.Context, currentPrice float64) {
 	above := filterMatrixLevels(sr.strategy.MatrixLevels, "above")
 	below := filterMatrixLevels(sr.strategy.MatrixLevels, "below")
-	prices := calculateMatrixPrices(sr.cycle.StartPrice, above, below)
+	prices := calculateMatrixPrices(sr.cycle.StartPrice, above, below, sr.strategy.Direction)
 
 	// Collect all slots in the config
 	slots := []int{0}
