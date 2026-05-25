@@ -61,7 +61,7 @@ func NewServer(ctx context.Context, pool *pgxpool.Pool, rdb *redis.Client, jwtSe
 		return err
 	})
 	se := signal.NewEngine(ctx, exec)
-	gw := signal.NewGlobalWarmer(se.Hub())
+	gw := signal.NewGlobalWarmer(se.Hub(), se.PriceHub())
 	s := &Server{
 		pool:            pool,
 		rdb:             rdb,

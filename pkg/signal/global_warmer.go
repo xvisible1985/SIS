@@ -35,7 +35,8 @@ type GlobalWarmerMetrics struct {
 // GlobalWarmer subscribes to all active linear USDT symbols for all
 // registered intervals, keeping the KlineHub's candle buffers permanently warm.
 type GlobalWarmer struct {
-	hub *KlineHub
+	hub       *KlineHub
+	tickerHub *TickerHub
 
 	mu        sync.RWMutex
 	intervals map[string]bool // bybit interval strings, e.g. "15", "60"
@@ -45,10 +46,11 @@ type GlobalWarmer struct {
 	prefetchMs int64 // atomic; ms taken for initial bulk prefetch
 }
 
-// NewGlobalWarmer creates a GlobalWarmer backed by the given KlineHub.
-func NewGlobalWarmer(hub *KlineHub) *GlobalWarmer {
+// NewGlobalWarmer creates a GlobalWarmer backed by the given KlineHub and TickerHub.
+func NewGlobalWarmer(hub *KlineHub, tickerHub *TickerHub) *GlobalWarmer {
 	return &GlobalWarmer{
 		hub:       hub,
+		tickerHub: tickerHub,
 		intervals: make(map[string]bool),
 		startedAt: time.Now(),
 	}
@@ -161,6 +163,7 @@ func (w *GlobalWarmer) loadAndSubscribeAll(ctx context.Context) error {
 		for _, iv := range ivs {
 			w.hub.Subscribe(sym, iv, nil)
 		}
+		w.tickerHub.Subscribe(sym, nil)
 	}
 	ms := time.Since(start).Milliseconds()
 	// Only record timing on the first pass (prefetchMs == 0)
