@@ -154,6 +154,11 @@ func (w *GlobalWarmer) loadAndSubscribeAll(ctx context.Context) error {
 	}
 	w.mu.Unlock()
 
+	// Warm TickerHub for all symbols regardless of whether kline intervals exist.
+	for _, sym := range syms {
+		w.tickerHub.Subscribe(sym, nil)
+	}
+
 	if len(ivs) == 0 {
 		return nil // no intervals registered yet; subscriptions will come via EnsureIntervals
 	}
@@ -163,7 +168,6 @@ func (w *GlobalWarmer) loadAndSubscribeAll(ctx context.Context) error {
 		for _, iv := range ivs {
 			w.hub.Subscribe(sym, iv, nil)
 		}
-		w.tickerHub.Subscribe(sym, nil)
 	}
 	ms := time.Since(start).Milliseconds()
 	// Only record timing on the first pass (prefetchMs == 0)
