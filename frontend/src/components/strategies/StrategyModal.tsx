@@ -6,9 +6,9 @@ import { CoinPicker } from '../common/CoinPicker'
 import type { Strategy, StrategyFormData, GridStep, MatrixLevel, MatrixEntryLevel } from '../../types'
 
 const DEFAULT_MATRIX_LEVELS: MatrixLevel[] = [
-  { direction: 'below', price_step_pct: 1.5, size_pct: 5,  stop_pct: -3.0, stop_cond_pct: -1.0, stop_replace_pct: -0.5, tp_pct: 2.5 },
-  { direction: 'below', price_step_pct: 3.0, size_pct: 8,  stop_pct: -2.5, stop_cond_pct: null,  stop_replace_pct: null,  tp_pct: 3.5 },
-  { direction: 'below', price_step_pct: 5.0, size_pct: 12, stop_pct: null,  stop_cond_pct: null,  stop_replace_pct: null,  tp_pct: 4.0 },
+  { direction: 'below', price_step_pct: -1.5, size_pct: 5,  stop_pct: -3.0, stop_cond_pct: -1.0, stop_replace_pct: -0.5, tp_pct: 2.5 },
+  { direction: 'below', price_step_pct: -3.0, size_pct: 8,  stop_pct: -2.5, stop_cond_pct: null,  stop_replace_pct: null,  tp_pct: 3.5 },
+  { direction: 'below', price_step_pct: -5.0, size_pct: 12, stop_pct: null,  stop_cond_pct: null,  stop_replace_pct: null,  tp_pct: 4.0 },
   { direction: 'above', price_step_pct: 2.0, size_pct: 5,  stop_pct: -3.5, stop_cond_pct: -1.0, stop_replace_pct: -0.5, tp_pct: 3.0 },
   { direction: 'above', price_step_pct: 4.0, size_pct: 8,  stop_pct: -3.0, stop_cond_pct: -1.5, stop_replace_pct: -1.5, tp_pct: 4.5 },
 ]
@@ -109,6 +109,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [filledLevels, setFilledLevels] = useState(filledLevelsProp)
+  const [entryFilled, setEntryFilled] = useState(false)
   const [instrInfo, setInstrInfo] = useState<InstrumentConstraints | null>(null)
   const [minLotEnabled, setMinLotEnabled] = useState(false)
 
@@ -116,7 +117,14 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
   useEffect(() => {
     if (!strategy) return
     getStrategyState(strategy.id)
-      .then(state => setFilledLevels(state.levels?.filter(l => l.status === 'filled').length ?? 0))
+      .then(state => {
+        const isShort = strategy?.direction === 'short'
+        setFilledLevels(state.levels?.filter(l => {
+          const slot = l.slot ?? 0
+          return l.status === 'filled' && (isShort ? slot > 0 : slot < 0)
+        }).length ?? 0)
+        setEntryFilled(state.levels?.some(l => l.slot === 0 && l.status === 'filled') ?? false)
+      })
       .catch(() => {})
   }, [strategy?.id])
 
@@ -169,7 +177,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
     const last = belowLevels[belowLevels.length - 1]
     const newLevel: MatrixLevel = {
       direction: 'below',
-      price_step_pct: last ? +(last.price_step_pct + 1.5).toFixed(1) : 1.5,
+      price_step_pct: last ? +(last.price_step_pct - 1.5).toFixed(1) : -1.5,
       size_pct: last ? +(last.size_pct + 3).toFixed(1) : 5,
       stop_pct: null, stop_cond_pct: null, stop_replace_pct: null, tp_pct: null,
     }
@@ -461,6 +469,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                 <span />
               </div>
             )
+            const isShort = form.direction === 'short'
             const levelRow = (
               direction: 'above' | 'below',
               level: MatrixLevel,
@@ -474,14 +483,15 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                 ? 'bg-emerald-900 text-emerald-300 text-[8px] font-bold rounded text-center py-0.5'
                 : 'bg-blue-900 text-blue-300 text-[8px] font-bold rounded text-center py-0.5'
               const rowCls = isAbove ? 'bg-emerald-950/20' : 'bg-blue-950/30'
+              const stepInvalid = !isFilled && (isAbove ? level.price_step_pct <= 0 : level.price_step_pct >= 0)
               return (
                 <div key={`${direction}-${dirIdx}`} className={`${colGrid} px-1 py-1 rounded mb-0.5 ${isFilled ? 'bg-green-950/40' : rowCls}`}>
-                  <div className={badgeCls}>
-                    {isFilled ? <span className="text-green-400">✓</span> : (isAbove ? `L(${labelNum})` : `L(-${labelNum})`)}
+                  <div className={isFilled ? 'bg-green-900 text-green-300 text-[8px] font-bold rounded text-center py-0.5' : badgeCls}>
+                    {isAbove ? `L(${labelNum})` : `L(-${labelNum})`}
                   </div>
                   <input type="number" step="0.1" value={level.price_step_pct} disabled={isFilled}
                     onChange={e => updateMatrixLevel(direction, dirIdx, 'price_step_pct', Number(e.target.value))}
-                    className={`bg-gray-900 border border-gray-700 rounded py-1 px-1 text-xs text-gray-100 text-center w-full outline-none focus:border-blue-500 ${isFilled ? 'opacity-50 cursor-not-allowed' : ''}`} />
+                    className={`bg-gray-900 border rounded py-1 px-1 text-xs text-gray-100 text-center w-full outline-none focus:border-blue-500 ${isFilled ? 'opacity-50 cursor-not-allowed' : ''} ${stepInvalid ? 'border-red-500' : 'border-gray-700'}`} />
                   <input type="number" step="0.5" value={level.size_pct} disabled={isFilled}
                     onChange={e => updateMatrixLevel(direction, dirIdx, 'size_pct', Number(e.target.value))}
                     className={`bg-gray-900 border border-gray-700 rounded py-1 px-1 text-xs text-gray-100 text-center w-full outline-none focus:border-blue-500 ${isFilled ? 'opacity-50 cursor-not-allowed' : ''}`} />
@@ -504,7 +514,9 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                     {level.use_signal ? 'Signal' : 'No'}
                   </button>
                   <button onClick={() => removeMatrixLevel(direction, dirIdx)} disabled={isFilled || !canDelete}
-                    className={`text-[11px] text-center ${isFilled || !canDelete ? 'text-gray-700 cursor-not-allowed' : 'text-red-600 hover:text-red-400'}`}>✕</button>
+                    className={`text-[11px] text-center ${isFilled ? 'text-green-400 cursor-not-allowed' : !canDelete ? 'text-gray-700 cursor-not-allowed' : 'text-red-600 hover:text-red-400'}`}>
+                    {isFilled ? '✓' : '✕'}
+                  </button>
                 </div>
               )
             }
@@ -536,24 +548,35 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                   </div>
                 </div>
 
-                {/* ABOVE section */}
-                <div>
-                  <div className="text-[9px] text-gray-400 uppercase tracking-wider flex items-center justify-between pb-1 border-b border-gray-800 mb-1">
-                    <span>Выше точки входа <span className="normal-case text-gray-600 font-normal">(в сторону)</span></span>
-                    <span className="bg-emerald-900/60 text-emerald-400 rounded px-1.5 py-0.5 text-[8px]">{aboveLevels.length} уровней</span>
-                  </div>
-                  <button onClick={addAboveLevel}
-                    className="w-full border border-dashed border-emerald-900 text-emerald-700 rounded py-1 text-[10px] hover:border-emerald-700 hover:text-emerald-400 transition-colors mb-2">
-                    + Добавить уровень выше
-                  </button>
-                  <div>
-                    {[...aboveLevels].reverse().map((level, revIdx) => {
-                      const dirIdx = aboveLevels.length - 1 - revIdx
-                      const labelNum = dirIdx + 1
-                      return levelRow('above', level, dirIdx, labelNum, false, aboveLevels.length > 1)
-                    })}
-                  </div>
-                </div>
+                {/* ABOVE section — for short shows belowLevels (they land above entry), for long shows aboveLevels */}
+                {(() => {
+                  const topLevels = isShort ? belowLevels : aboveLevels
+                  const topDir: 'above' | 'below' = isShort ? 'below' : 'above'
+                  const topAdd = isShort ? addBelowLevel : addAboveLevel
+                  const topLabel = isShort
+                    ? <span>Выше точки входа <span className="normal-case text-gray-600 font-normal">(против направления)</span></span>
+                    : <span>Выше точки входа <span className="normal-case text-gray-600 font-normal">(в сторону)</span></span>
+                  const topCount = topLevels.length
+                  return (
+                    <div>
+                      <div className="text-[9px] text-gray-400 uppercase tracking-wider flex items-center justify-between pb-1 border-b border-gray-800 mb-1">
+                        {topLabel}
+                        <span className="bg-emerald-900/60 text-emerald-400 rounded px-1.5 py-0.5 text-[8px]">{topCount} уровней</span>
+                      </div>
+                      <button onClick={topAdd}
+                        className="w-full border border-dashed border-emerald-900 text-emerald-700 rounded py-1 text-[10px] hover:border-emerald-700 hover:text-emerald-400 transition-colors mb-2">
+                        + Добавить уровень выше
+                      </button>
+                      <div>
+                        {[...topLevels].reverse().map((level, revIdx) => {
+                          const dirIdx = topLevels.length - 1 - revIdx
+                          const labelNum = dirIdx + 1
+                          return levelRow(topDir, level, dirIdx, labelNum, false, topLevels.length > 1)
+                        })}
+                      </div>
+                    </div>
+                  )
+                })()}
 
                 {/* ENTRY level (L0) */}
                 <div className="border border-yellow-700/60 bg-yellow-950/10 rounded-lg p-2">
@@ -561,8 +584,8 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                     ⬡ Нулевой уровень — точка входа L(0)
                   </div>
                   {colHdrs()}
-                  <div className={`${colGrid} px-1 py-1 rounded bg-yellow-950/20`}>
-                    <div className="bg-yellow-800/60 text-yellow-200 text-[8px] font-bold rounded text-center py-0.5">L(0)</div>
+                  <div className={`${colGrid} px-1 py-1 rounded ${entryFilled ? 'bg-green-950/40' : 'bg-yellow-950/20'}`}>
+                    <div className={`text-[8px] font-bold rounded text-center py-0.5 ${entryFilled ? 'bg-green-900 text-green-300' : 'bg-yellow-800/60 text-yellow-200'}`}>L(0)</div>
                     <div className="bg-gray-900 border border-dashed border-gray-700 rounded py-1 text-[9px] text-gray-600 text-center">—</div>
                     <input type="number" step="0.5" value={form.matrix_entry_level.size_pct}
                       onChange={e => updateEntryLevel('size_pct', Number(e.target.value))}
@@ -588,28 +611,42 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                     >
                       {form.matrix_entry_level.use_signal ? 'Signal' : 'No'}
                     </button>
-                    <span />
+                    {entryFilled
+                      ? <span className="text-green-400 text-[11px] text-center">✓</span>
+                      : <span />
+                    }
 
                   </div>
                 </div>
 
-                {/* BELOW section */}
-                <div>
-                  <div>
-                    {belowLevels.map((level, dirIdx) => {
-                      const isFilled = dirIdx < filledLevels
-                      return levelRow('below', level, dirIdx, dirIdx + 1, isFilled, belowLevels.length > 1)
-                    })}
-                  </div>
-                  <div className="text-[9px] text-gray-400 uppercase tracking-wider flex items-center justify-between pt-1 border-t border-gray-800 mt-1 mb-1">
-                    <span>Ниже точки входа <span className="normal-case text-gray-600 font-normal">(против направления)</span></span>
-                    <span className="bg-blue-900/60 text-blue-400 rounded px-1.5 py-0.5 text-[8px]">{belowLevels.length} уровней</span>
-                  </div>
-                  <button onClick={addBelowLevel}
-                    className="w-full border border-dashed border-blue-900 text-blue-600 rounded py-1 text-[10px] hover:border-blue-700 hover:text-blue-400 transition-colors">
-                    + Добавить уровень ниже
-                  </button>
-                </div>
+                {/* BELOW section — for short shows aboveLevels (they land below entry), for long shows belowLevels */}
+                {(() => {
+                  const botLevels = isShort ? aboveLevels : belowLevels
+                  const botDir: 'above' | 'below' = isShort ? 'above' : 'below'
+                  const botAdd = isShort ? addAboveLevel : addBelowLevel
+                  const botLabel = isShort
+                    ? <span>Ниже точки входа <span className="normal-case text-gray-600 font-normal">(в сторону)</span></span>
+                    : <span>Ниже точки входа <span className="normal-case text-gray-600 font-normal">(против направления)</span></span>
+                  const botCount = botLevels.length
+                  return (
+                    <div>
+                      <div>
+                        {botLevels.map((level, dirIdx) => {
+                          const isFilled = dirIdx < filledLevels
+                          return levelRow(botDir, level, dirIdx, dirIdx + 1, isFilled, botLevels.length > 1)
+                        })}
+                      </div>
+                      <div className="text-[9px] text-gray-400 uppercase tracking-wider flex items-center justify-between pt-1 border-t border-gray-800 mt-1 mb-1">
+                        {botLabel}
+                        <span className="bg-blue-900/60 text-blue-400 rounded px-1.5 py-0.5 text-[8px]">{botCount} уровней</span>
+                      </div>
+                      <button onClick={botAdd}
+                        className="w-full border border-dashed border-blue-900 text-blue-600 rounded py-1 text-[10px] hover:border-blue-700 hover:text-blue-400 transition-colors">
+                        + Добавить уровень ниже
+                      </button>
+                    </div>
+                  )
+                })()}
 
                 {/* Signals */}
                 <div className="flex items-center gap-1 text-[10px] text-gray-400 uppercase tracking-wider pb-1 border-b border-gray-800 mt-1">

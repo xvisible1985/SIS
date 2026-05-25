@@ -845,7 +845,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
                     >
                       {cs.state && cs.state.levels.length > 0 ? (
                         (s.strategy_type === 'dca'
-                          ? [...cs.state.levels].sort((a, b) => (b.slot ?? 0) - (a.slot ?? 0))
+                          ? [...cs.state.levels].sort((a, b) => (b.target_price ?? 0) - (a.target_price ?? 0))
                           : cs.state.levels
                         ).map(l => {
                           const tag = lvlTag(l.status)

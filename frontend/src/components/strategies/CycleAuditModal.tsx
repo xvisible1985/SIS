@@ -265,7 +265,7 @@ export function CycleAuditModal({ strategyId, strategySymbol, onClose }: Props) 
                 </thead>
                 <tbody>
                   {(isMatrix
-                    ? [...(data.levels ?? [])].sort((a, b) => (b.slot ?? 0) - (a.slot ?? 0))
+                    ? [...(data.levels ?? [])].sort((a, b) => (b.target_price ?? 0) - (a.target_price ?? 0))
                     : (data.levels ?? [])
                   ).map(l => (
                     <tr key={l.idx} className={`border-b border-white/[.04] ${rowBg(l.flag, l.db_status)}`}>

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -16,6 +17,9 @@ func Connect(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	}
 	cfg.MaxConns = 40
 	cfg.MinConns = 5
+	// pgBouncer transaction mode не поддерживает named prepared statements —
+	// simple protocol отправляет каждый запрос как текст без кеширования на стороне сервера.
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

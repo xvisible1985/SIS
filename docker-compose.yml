@@ -17,6 +17,29 @@ services:
       timeout: 5s
       retries: 10
 
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    environment:
+      DB_HOST: timescaledb
+      DB_PORT: 5432
+      DB_USER: sis
+      DB_PASSWORD: sis_secret
+      DB_NAME: sis
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 300
+      DEFAULT_POOL_SIZE: 20
+      MIN_POOL_SIZE: 5
+      RESERVE_POOL_SIZE: 5
+      RESERVE_POOL_TIMEOUT: 3
+      SERVER_RESET_QUERY: "DISCARD ALL"
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits
+      AUTH_TYPE: plain
+    ports:
+      - "6432:5432"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
   redis:
     image: redis:7-alpine
     ports:
