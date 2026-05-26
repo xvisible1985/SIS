@@ -543,7 +543,7 @@ function TerminalBotsTab({ onSymbolChange }: { onSymbolChange: (sym: string) => 
 // ── Strategies tab ───────────────────────────────────────────────────────────
 type LiveSignal = { signal_state: string; signal_values: Record<string, number> }
 
-function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices, accountId, onStrategySelect, onCycleNumUpdate }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[]; positions: Position[]; tickerPrices?: Map<string, number>; accountId: string | null; onStrategySelect?: (s: Strategy | null) => void; onCycleNumUpdate?: (id: string, cycleNum: number) => void }) {
+function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices, accountId, onStrategySelect, onCycleNumUpdate, freeMargin }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[]; positions: Position[]; tickerPrices?: Map<string, number>; accountId: string | null; onStrategySelect?: (s: Strategy | null) => void; onCycleNumUpdate?: (id: string, cycleNum: number) => void; freeMargin?: number | null }) {
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
   const [loading, setLoading] = useState(true)
@@ -659,14 +659,22 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-3 py-2 flex items-center justify-between border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
-        <span className="text-xs text-gray-500 dark:text-gray-400">{visibleStrategies.length} стратегий</span>
-        <button
-          disabled={!accountId}
-          onClick={() => { setEditTarget(undefined); setModalOpen(true) }}
-          title={!accountId ? 'Выберите активный аккаунт' : undefined}
-          className="text-xs px-2.5 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >+ Новая стратегия</button>
+      <div className="flex-shrink-0">
+        <div className="px-3 py-2 flex items-center justify-between">
+          <span className="text-xs text-gray-500 dark:text-gray-400">{visibleStrategies.length} стратегий</span>
+          <button
+            disabled={!accountId}
+            onClick={() => { setEditTarget(undefined); setModalOpen(true) }}
+            title={!accountId ? 'Выберите активный аккаунт' : undefined}
+            className="text-xs px-2.5 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >+ Новая стратегия</button>
+        </div>
+        <div className="border-t border-gray-200 dark:border-white/[.07] px-3 py-1.5 flex items-center gap-1.5">
+          <span className="text-[11px] text-slate-500 uppercase tracking-[.6px] font-semibold">Свободная маржа</span>
+          <span className={`text-[12px] font-semibold ${freeMargin == null ? 'text-slate-600' : 'text-slate-200'}`}>
+            {freeMargin == null ? '—' : `${freeMargin.toFixed(2)}$`}
+          </span>
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
         {loading && visibleStrategies.length === 0 && <div className="p-8 text-center text-sm text-gray-400">Загрузка…</div>}
@@ -823,7 +831,7 @@ export function TerminalPage() {
     }, { replace: true })
   }, [tf, setSearchParams])
 
-  const { positions, orders, executions, log, status, accountName, loading, reconnect, removeOrder } = usePositionsWs(accountId)
+  const { positions, orders, executions, log, status, accountName, loading, reconnect, removeOrder, freeMargin } = usePositionsWs(accountId)
 
   const [historicalExecs, setHistoricalExecs] = useState<ChartExecution[]>([])
   useEffect(() => {
@@ -993,7 +1001,7 @@ export function TerminalPage() {
           <div className="flex-1 overflow-auto">
             {mobileTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} tickerPrices={tickerPrices} />}
             {mobileTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} onRemoveOrder={removeOrder} strategyLevels={strategyLevels} />}
-            {mobileTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} />}
+            {mobileTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} freeMargin={freeMargin} />}
             {mobileTab === 'trade' && (
               <div className="flex flex-col gap-2 p-2 overflow-y-auto">
                 {accountId ? (
@@ -1155,7 +1163,7 @@ export function TerminalPage() {
               </div>
             </>
           )}
-          {rightTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} />}
+          {rightTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} freeMargin={freeMargin} />}
           {rightTab === 'bots' && <TerminalBotsTab onSymbolChange={setSymbol} />}
         </div>
 

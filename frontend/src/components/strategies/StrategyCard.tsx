@@ -689,6 +689,14 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
             </div>
             <div className="w-px h-2.5 bg-white/[.08]" />
             <div className="relative group/ctip flex items-baseline gap-1.5">
+              <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">Маржа</span>
+              <span className={`text-[13px] font-semibold ${stratPosition?.positionIM ? 'text-slate-200' : 'text-slate-500'}`}>
+                {stratPosition?.positionIM ? `${stratPosition.positionIM.toFixed(2)}$` : '—'}
+              </span>
+              <CardTip text="Начальная маржа позиции (из данных биржи)" />
+            </div>
+            <div className="w-px h-2.5 bg-white/[.08]" />
+            <div className="relative group/ctip flex items-baseline gap-1.5">
               <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">P&L</span>
               <span className={`text-[13px] font-semibold ${
                 pnlUsdt === null ? 'text-slate-500' : pnlUsdt > 0 ? 'text-emerald-300' : pnlUsdt < 0 ? 'text-rose-300' : 'text-slate-500'

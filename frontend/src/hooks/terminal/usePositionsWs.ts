@@ -36,6 +36,7 @@ function mapPosition(p: any): Position {
   const size = parseFloat(p.size ?? '0')
   const pnl = parseFloat(p.unrealisedPnl ?? '0')
   const sizeUsdt = size * (mark > 0 ? mark : entry)
+  const positionIM = p.positionIM ? parseFloat(p.positionIM) : undefined
   return {
     symbol: p.symbol,
     side: p.side,
@@ -51,6 +52,7 @@ function mapPosition(p: any): Position {
     leverage: p.leverage,
     positionIdx: p.positionIdx ?? 0,
     category: p.category ?? 'linear',
+    positionIM: positionIM && positionIM > 0 ? positionIM : undefined,
   }
 }
 
@@ -87,6 +89,7 @@ export function usePositionsWs(accountId: string | null) {
   const [status, setStatus] = useState<WsStatus>('connecting')
   const [accountName, setAccountName] = useState(initialName)
   const [loading, setLoading] = useState(!fromCache && !ls)
+  const [freeMargin, setFreeMargin] = useState<number | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const rawPositions = useRef(new Map<string, any>())
@@ -130,6 +133,11 @@ export function usePositionsWs(accountId: string | null) {
         const msg = JSON.parse(evt.data as string) as WsMsg
         if (msg.type === 'account') {
           setAccountName(msg.accountName)
+          return
+        }
+        if (msg.type === 'wallet') {
+          if (typeof msg.availableBalance === 'number' && msg.availableBalance >= 0)
+            setFreeMargin(msg.availableBalance)
           return
         }
         if (msg.type === 'log') {
@@ -301,5 +309,5 @@ export function usePositionsWs(accountId: string | null) {
     setOrders(prev => prev.filter(o => o.orderId !== orderId && o.orderLinkId !== orderId))
   }, [])
 
-  return { positions, orders, executions, log, status, accountName, loading, reconnect, removeOrder }
+  return { positions, orders, executions, log, status, accountName, loading, reconnect, removeOrder, freeMargin }
 }

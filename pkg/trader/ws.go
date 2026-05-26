@@ -102,10 +102,10 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 				if success, _ := raw["success"].(bool); success {
 					sub, _ := json.Marshal(map[string]any{
 						"op":   "subscribe",
-						"args": []string{"position", "order", "execution"},
+						"args": []string{"position", "order", "execution", "wallet"},
 					})
 					bwsConn.WriteMessage(websocket.TextMessage, sub) //nolint:errcheck
-					logMsg("Авторизация OK, подписка на position, order и execution")
+					logMsg("Авторизация OK, подписка на position, order, execution и wallet")
 					go func() {
 						if err := fetchAndSendSnapshot(ctx, conn, creds); err != nil {
 							logMsg("[REST] Ошибка снапшота: "+err.Error(), true)
@@ -130,6 +130,13 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 						log.Printf("trader ws: %s/delta count=%d", topic, len(items))
 					}
 				}
+				if topic == "wallet" {
+					// Extract totalAvailableBalance from Bybit wallet update and relay to client.
+					avail := extractWalletAvailable(raw["data"])
+					if avail >= 0 {
+						safeSend(conn, map[string]any{"type": "wallet", "availableBalance": avail})
+					}
+				}
 			}
 		}
 	}
@@ -147,5 +154,28 @@ func fetchAndSendSnapshot(ctx context.Context, conn *websocket.Conn, creds Crede
 		return fmt.Errorf("orders: %w", err)
 	}
 	safeSend(conn, map[string]any{"type": "order", "dataType": "snapshot", "data": orders})
+
+	_, available, err := GetWalletBalance(ctx, creds)
+	if err == nil && available >= 0 {
+		safeSend(conn, map[string]any{"type": "wallet", "availableBalance": available})
+	}
 	return nil
+}
+
+// extractWalletAvailable parses totalAvailableBalance from a Bybit wallet WS event data array.
+func extractWalletAvailable(data any) float64 {
+	items, ok := data.([]any)
+	if !ok || len(items) == 0 {
+		return -1
+	}
+	wallet, ok := items[0].(map[string]any)
+	if !ok {
+		return -1
+	}
+	if v, ok := wallet["totalAvailableBalance"].(string); ok {
+		var f float64
+		fmt.Sscanf(v, "%f", &f)
+		return f
+	}
+	return -1
 }

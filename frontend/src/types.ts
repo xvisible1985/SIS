@@ -143,6 +143,7 @@ export interface Position {
   leverage: string
   positionIdx: number
   category: string
+  positionIM?: number
 }
 
 export interface ActiveOrder {
@@ -229,6 +230,7 @@ export type WsMsg =
   | { type: 'position'; dataType: 'snapshot' | 'delta'; data: any[] }
   | { type: 'order'; dataType: 'snapshot' | 'delta'; data: any[] }
   | { type: 'execution'; dataType: 'delta'; data: any[] }
+  | { type: 'wallet'; availableBalance: number }
 
 // Strategies
 export interface SignalConfig {
