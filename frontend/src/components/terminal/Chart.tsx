@@ -352,7 +352,6 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       return slot != null ? `L(${slot})` : lbl
     }
 
-    const drawnTPKeys = new Set<string>()
     for (const ord of orders.filter(o => {
       if (o.symbol !== symbol) return false
       // Hide orders belonging to a different strategy (ghost orders from deleted strategies).
@@ -385,11 +384,6 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       const isLong = ord.side === 'Buy'
       const label = resolveLabel(parseOrderLabel(ord.orderLinkId, ord.side))
       const color = label.startsWith('TP') ? '#5b8cff' : label.startsWith('SL_L') ? '#facc15' : label.startsWith('SL') ? '#f59e0b' : (isLong ? '#34d399' : '#f87171')
-      // Deduplicate TP lines: if a duplicate TP order exists on exchange (backend race),
-      // only draw the first one so the chart doesn't show two identical TP lines.
-      const isTPOrd = label.startsWith('TP')
-      if (isTPOrd && drawnTPKeys.has(`${label}-${ord.side}`)) continue
-      if (isTPOrd) drawnTPKeys.add(`${label}-${ord.side}`)
       if (ord.triggerPrice && parseFloat(ord.triggerPrice) > 0) {
         const p = parseFloat(ord.triggerPrice)
         const usdt = (parseFloat(ord.qty) * p).toFixed(0)
