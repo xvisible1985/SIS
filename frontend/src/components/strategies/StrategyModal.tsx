@@ -536,57 +536,6 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
               </div>
               )}
 
-              {/* Leverage + deposit shown in Tab 1 only for matrix (DCA); for grid they live in Tab 2 */}
-              {form.strategy_type === 'matrix' && (
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className={labelCls}>
-                    Плечо&nbsp;
-                    <span className="font-bold text-white">×{form.leverage}</span>
-                    <Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500. Чем выше плечо — тем больше потенциальная прибыль и тем ближе ликвидация." />
-                  </label>
-                  <input
-                    type="range"
-                    min={1}
-                    max={instrInfo?.max_leverage ?? 100}
-                    step={1}
-                    value={form.leverage}
-                    onChange={e => patch({ leverage: parseInt(e.target.value) })}
-                    className="w-full h-1.5 mt-2 cursor-pointer accent-blue-500"
-                  />
-                  <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
-                    <span>×1</span>
-                    <span>×{instrInfo?.max_leverage ?? 100}</span>
-                  </div>
-                </div>
-                <div>
-                  <label className={labelCls}>
-                    Депозит (USDT)
-                    {instrInfo?.min_order_usdt ? <span className="ml-1.5 text-[10px] text-gray-500">мин. {instrInfo.min_order_usdt.toFixed(2)}$</span> : null}
-                    <Tip text="Базовая сумма, от которой отсчитываются проценты шагов. Итоговый USDT шага = % шага × депозит / 100." />
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <NumericInput
-                      value={form.grid_size_usdt}
-                      onChange={v => patch({ grid_size_usdt: v })}
-                      disabled={minLotEnabled}
-                      className={`${inputCls} [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${minLotEnabled ? 'cursor-not-allowed opacity-50' : ''} ${instrInfo && form.grid_size_usdt < instrInfo.min_order_usdt ? 'border-red-500' : ''}`}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setMinLotEnabled(v => !v)}
-                      className={`shrink-0 rounded-lg border px-3 py-1.5 text-[11px] font-semibold transition-colors ${
-                        minLotEnabled
-                          ? 'border-blue-500/40 bg-blue-500/[.18] text-blue-400'
-                          : 'border-gray-700 bg-gray-800 text-gray-400 hover:bg-gray-700'
-                      }`}
-                    >
-                      min
-                    </button>
-                  </div>
-                </div>
-              </div>
-              )}
 
               <div>
                 <label className={labelCls}>Тип маржи<Tip text="Isolated — маржа ограничена суммой, зарезервированной под конкретную позицию; максимальный убыток не превысит её. Cross — в расчёте ликвидации участвует вся свободная маржа аккаунта." /></label>
@@ -753,17 +702,42 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                 {/* Global params */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className={labelCls}>Депозит (USDT)<Tip text="Базовая сумма в USDT, от которой рассчитывается объём каждого ордера. Объём уровня = Депозит × Объём %." /></label>
+                    <label className={labelCls}>
+                      Депозит (USDT)
+                      {instrInfo?.min_order_usdt ? <span className="ml-1.5 text-[10px] text-gray-500">мин. {instrInfo.min_order_usdt.toFixed(2)}$</span> : null}
+                      <Tip text="Базовая сумма в USDT, от которой рассчитывается объём каждого ордера. Объём уровня = Депозит × Объём %." />
+                    </label>
                     <input type="number" min={1} value={form.grid_size_usdt}
                       onChange={e => patch({ grid_size_usdt: Number(e.target.value) })}
                       className={inputCls} />
                   </div>
                   <div>
-                    <label className={labelCls}>Safe-Zone от SL %<Tip text="После срабатывания стоп-лосса — зона вокруг цены SL, в которой новые ордера матрицы не выставляются. Защита от немедленного повторного входа." /></label>
-                    <input type="number" step="0.1" min={0} value={form.safe_zone_pct}
-                      onChange={e => patch({ safe_zone_pct: Number(e.target.value) })}
-                      className={inputCls} />
+                    <label className={labelCls}>
+                      Плечо&nbsp;
+                      <span className="font-bold text-white">×{form.leverage}</span>
+                      {instrInfo && <span className="ml-1.5 text-[10px] text-gray-500">макс. ×{instrInfo.max_leverage}</span>}
+                      <Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500." />
+                    </label>
+                    <input
+                      type="range"
+                      min={1}
+                      max={instrInfo?.max_leverage ?? 100}
+                      step={1}
+                      value={form.leverage}
+                      onChange={e => patch({ leverage: parseInt(e.target.value) })}
+                      className="w-full h-1.5 mt-2 cursor-pointer accent-blue-500"
+                    />
+                    <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
+                      <span>×1</span>
+                      <span>×{instrInfo?.max_leverage ?? 100}</span>
+                    </div>
                   </div>
+                </div>
+                <div>
+                  <label className={labelCls}>Safe-Zone от SL %<Tip text="После срабатывания стоп-лосса — зона вокруг цены SL, в которой новые ордера матрицы не выставляются. Защита от немедленного повторного входа." /></label>
+                  <input type="number" step="0.1" min={0} value={form.safe_zone_pct}
+                    onChange={e => patch({ safe_zone_pct: Number(e.target.value) })}
+                    className={inputCls} />
                 </div>
 
                 {/* ABOVE section — for short shows belowLevels (they land above entry), for long shows aboveLevels */}
@@ -892,29 +866,8 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
           {/* Tab 2: Grid (non-matrix) */}
           {tab === 1 && form.strategy_type !== 'matrix' && (
             <>
-              {/* Leverage + Deposit live here for grid strategies */}
+              {/* Deposit + Leverage live here for grid strategies */}
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className={labelCls}>
-                    Плечо&nbsp;
-                    <span className="font-bold text-white">×{form.leverage}</span>
-                    {instrInfo && <span className="ml-1.5 text-[10px] text-gray-500">макс. ×{instrInfo.max_leverage}</span>}
-                    <Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500." />
-                  </label>
-                  <input
-                    type="range"
-                    min={1}
-                    max={instrInfo?.max_leverage ?? 100}
-                    step={1}
-                    value={form.leverage}
-                    onChange={e => patch({ leverage: parseInt(e.target.value) })}
-                    className="w-full h-1.5 mt-2 cursor-pointer accent-blue-500"
-                  />
-                  <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
-                    <span>×1</span>
-                    <span>×{instrInfo?.max_leverage ?? 100}</span>
-                  </div>
-                </div>
                 <div>
                   <label className={labelCls}>
                     Депозит (USDT)
@@ -939,6 +892,27 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                     >
                       min
                     </button>
+                  </div>
+                </div>
+                <div>
+                  <label className={labelCls}>
+                    Плечо&nbsp;
+                    <span className="font-bold text-white">×{form.leverage}</span>
+                    {instrInfo && <span className="ml-1.5 text-[10px] text-gray-500">макс. ×{instrInfo.max_leverage}</span>}
+                    <Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500." />
+                  </label>
+                  <input
+                    type="range"
+                    min={1}
+                    max={instrInfo?.max_leverage ?? 100}
+                    step={1}
+                    value={form.leverage}
+                    onChange={e => patch({ leverage: parseInt(e.target.value) })}
+                    className="w-full h-1.5 mt-2 cursor-pointer accent-blue-500"
+                  />
+                  <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
+                    <span>×1</span>
+                    <span>×{instrInfo?.max_leverage ?? 100}</span>
                   </div>
                 </div>
               </div>
