@@ -100,6 +100,7 @@ type Position struct {
 	Leverage      string `json:"leverage"`
 	PositionIdx   int    `json:"positionIdx"`
 	Category      string `json:"category"`
+	PositionIM    string `json:"positionIM"`
 }
 
 type Order struct {
