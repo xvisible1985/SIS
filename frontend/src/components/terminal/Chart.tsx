@@ -31,11 +31,20 @@ interface Props {
 
 function parseOrderLabel(linkId: string, side?: string): string {
   if (!linkId) return ''
+  // Per-level matrix SL orders: SIS_STR-{stratId8}-msl-{slotEncoded}-{seq}
+  // Slot encoding: positive/zero → plain digits, negative → "n{abs}" (e.g. slot -1 → "n1")
+  if (linkId.includes('-msl-')) {
+    const parts = linkId.split('-')
+    const raw = parts.length > 3 ? parts[3] : '?'
+    const display = raw.startsWith('n') ? `-${raw.slice(1)}` : raw
+    return `SL_L(${display})`
+  }
   if (/^(SIS_STR|STP)-[a-f0-9]+-tp(-\d+)+$/.test(linkId))
     return side === 'Sell' ? 'TP_LONG' : side === 'Buy' ? 'TP_SHORT' : 'TP'
   if (/^(SIS_STR|STP)-[a-f0-9]+-sl(-\d+)+$/.test(linkId))
     return side === 'Sell' ? 'SL_LONG' : side === 'Buy' ? 'SL_SHORT' : 'SL'
-  const m = linkId.match(/^(SIS_STR|STR)-[a-f0-9]+-\d+-(\d+)(?:-\d+)?$/)
+  // Grid virtual: -{repriceGen}-v  Matrix virtual: -v{repriceGen}
+  const m = linkId.match(/^(SIS_STR|STR)-[a-f0-9]+-\d+-(\d+)(?:-(?:v\d+|\d+(?:-v)?))?$/)
   return m ? `L${m[2]}` : ''
 }
 
@@ -49,8 +58,8 @@ function extractCycleNum(linkId?: string): number | null {
   // SIS_STR-{id}-tp-{cycle}[-{seq}] or SIS_STR-{id}-sl-{cycle}[-{seq}]
   let m = linkId.match(/^(?:SIS_STR|STP)-[a-f0-9]+-(?:tp|sl)-(\d+)/)
   if (m) return parseInt(m[1])
-  // SIS_STR-{id}-{cycle}-{level}[-{repriceGen}]
-  m = linkId.match(/^(?:SIS_STR|STR)-[a-f0-9]+-(\d+)-\d+(?:-\d+)?$/)
+  // Grid virtual: -{repriceGen}-v  Matrix virtual: -v{repriceGen}
+  m = linkId.match(/^(?:SIS_STR|STR)-[a-f0-9]+-(\d+)-\d+(?:-(?:v\d+|\d+(?:-v)?))?$/)
   if (m) return parseInt(m[1])
   return null
 }
@@ -96,11 +105,13 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
   const lastLoadMoreRef = useRef(0)
   const lastPrecisionRef = useRef(-1)
   const [afterSetData, setAfterSetData] = useState(0)
+  const [timeBadge, setTimeBadge] = useState<{ x: number; label: string } | null>(null)
 
   // Infer direction from live orders or open positions when strategyDir hasn't loaded yet (page refresh).
   const effectiveDir = useMemo(() => {
     if (strategyDir) return strategyDir
     for (const o of orders) {
+      if (o.symbol !== symbol) continue  // only current symbol's orders
       const lbl = parseOrderLabel(o.orderLinkId, o.side)
       if (lbl?.includes('_LONG')) return 'long'
       if (lbl?.includes('_SHORT')) return 'short'
@@ -173,6 +184,18 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
           loadingMoreRef.current = false
         })
       }
+    })
+
+    chart.subscribeCrosshairMove(param => {
+      if (!param.point || param.time == null) {
+        setTimeBadge(null)
+        return
+      }
+      const d = new Date((param.time as number) * 1000)
+      const label = d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+      const w = containerRef.current?.clientWidth ?? 999
+      const clampedX = Math.max(36, Math.min(w - 36, param.point.x))
+      setTimeBadge({ x: clampedX, label })
     })
 
     const themeObserver = new MutationObserver(() => {
@@ -301,19 +324,20 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       const price = parseFloat(pos.entryPrice)
       if (!price) continue
       const isLong = pos.side === 'Buy'
+      const pct = currentPrice > 0 ? ` ${pctFromPrice(price, currentPrice)}` : ''
       priceLines.current.push(series.createPriceLine({
         price,
         color: isLong ? '#059669' : '#dc2626',
         lineWidth: 2,
         lineStyle: 0,
-        axisLabelVisible: true,
-        title: '',
+        axisLabelVisible: !stratIdShort,
+        title: stratIdShort ? '' : `Вход${pct}`,
       }))
     }
 
     const virtualLevelIdxs = new Set(
       (strategyLevels ?? [])
-        .filter(l => l.status === 'pending' || l.force_virtual)
+        .filter(l => (l.status === 'pending' || l.force_virtual) && l.status !== 'cancelled' && l.status !== 'filled' && l.status !== 'sl_closed')
         .map(l => l.level_idx)
     )
     const levelSlotMap = new Map<number, number>(
@@ -351,13 +375,15 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       if (dirFilter) {
         if (lbl.includes('_LONG')) return dirFilter === 'long'
         if (lbl.includes('_SHORT')) return dirFilter === 'short'
+        // Matrix per-level SL (SL_L(N)): closing order — side is opposite to position direction
+        if (/^SL_L\(/.test(lbl)) return dirFilter === 'long' ? o.side === 'Sell' : o.side === 'Buy'
         return dirFilter === 'long' ? o.side === 'Buy' : o.side === 'Sell'
       }
       return true
     })) {
       const isLong = ord.side === 'Buy'
       const label = resolveLabel(parseOrderLabel(ord.orderLinkId, ord.side))
-      const color = label.startsWith('TP') ? '#5b8cff' : label.startsWith('SL') ? '#f59e0b' : (isLong ? '#34d399' : '#f87171')
+      const color = label.startsWith('TP') ? '#5b8cff' : label.startsWith('SL_L') ? '#facc15' : label.startsWith('SL') ? '#f59e0b' : (isLong ? '#34d399' : '#f87171')
       if (ord.triggerPrice && parseFloat(ord.triggerPrice) > 0) {
         const p = parseFloat(ord.triggerPrice)
         const usdt = (parseFloat(ord.qty) * p).toFixed(0)
@@ -389,7 +415,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     }
     // Virtual levels — pending (matrix) or force_virtual (regular strategies)
     if (!overlaySettings || overlaySettings.showPlacedOrders) {
-      for (const lv of (strategyLevels ?? []).filter(l => (l.status === 'pending' || l.force_virtual) && l.target_price > 0)) {
+      for (const lv of (strategyLevels ?? []).filter(l => (l.status === 'pending' || l.force_virtual) && l.status !== 'cancelled' && l.status !== 'filled' && l.status !== 'sl_closed' && l.target_price > 0)) {
         if (dirFilter) {
           const lvLong = lv.side === 'Buy'
           if (dirFilter === 'long' && !lvLong) continue
@@ -421,6 +447,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
           const lbl = parseOrderLabel(e.orderLinkId ?? '', e.side)
           if (lbl.includes('_LONG')) return dirFilter === 'long'
           if (lbl.includes('_SHORT')) return dirFilter === 'short'
+          if (/^SL_L\(/.test(lbl)) return dirFilter === 'long' ? e.side === 'Sell' : e.side === 'Buy'
           return dirFilter === 'long' ? e.side === 'Buy' : e.side === 'Sell'
         }
         return true
@@ -439,6 +466,16 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         activeCycles.add(n)
       }
 
+      // If a TP order is currently active (placed on exchange), hide TP executions to
+      // avoid showing both the [B] placed-order line and a stale execution line simultaneously.
+      // This handles the replace-TP race (old TP filled while new one was being placed)
+      // and partial-fill cases where both the execution and the remaining order would show.
+      const hasActiveTP = orders.some(o => o.symbol === symbol && isTPLinkId(o.orderLinkId))
+
+      // Group executions before drawing: matrix entry levels (L(N)) are merged by slot
+      // so multiple re-entries of the same slot appear as one price line.
+      type ExecAgg = { totalQty: number; totalValue: number; side: string; isTP: boolean; label: string }
+      const execGroups = new Map<string, ExecAgg>()
       for (const e of relevantExecs) {
         if (isOtherStrategyLinkId(e.orderLinkId, stratIdShort)) continue
         const cycleNum = extractCycleNum(e.orderLinkId)
@@ -446,19 +483,35 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         if (stratIdShort && currentCycleNum != null && e.orderLinkId?.includes(stratIdShort) && cycleNum !== currentCycleNum) continue
         if (!e.price || e.price <= 0) continue
         const isTP = isTPLinkId(e.orderLinkId)
+        if (isTP && hasActiveTP) continue
         const isBuy = e.side === 'Buy'
         const label = resolveLabel(parseOrderLabel(e.orderLinkId ?? '', e.side))
-        const color = isTP ? '#5b8cff' : isBuy ? '#059669' : '#dc2626'
-        const usdt = (e.price * parseFloat(e.qty || '0')).toFixed(0)
         const levelLabel = label || (isBuy ? 'Buy' : 'Sell')
-        const pct = currentPrice > 0 ? ` ${pctFromPrice(e.price, currentPrice)}` : ''
+        // Matrix slot entries (L(N) label): merge all re-entries of the same slot into one line
+        const isMatrixSlot = /^L\(-?\d+\)$/.test(label)
+        const groupKey = isMatrixSlot ? `${label}|${e.side}` : (e.orderLinkId || e.execId)
+        const qty = parseFloat(e.qty || '0')
+        const existing = execGroups.get(groupKey)
+        if (existing) {
+          existing.totalQty += qty
+          existing.totalValue += e.price * qty
+        } else {
+          execGroups.set(groupKey, { totalQty: qty, totalValue: e.price * qty, side: e.side, isTP, label: levelLabel })
+        }
+      }
+      for (const [, g] of execGroups) {
+        const avgPrice = g.totalQty > 0 ? g.totalValue / g.totalQty : 0
+        if (avgPrice <= 0) continue
+        const isBuy = g.side === 'Buy'
+        const color = g.isTP ? '#5b8cff' : isBuy ? '#059669' : '#dc2626'
+        const pct = currentPrice > 0 ? ` ${pctFromPrice(avgPrice, currentPrice)}` : ''
         priceLines.current.push(series.createPriceLine({
-          price: e.price,
+          price: avgPrice,
           color,
           lineWidth: 1,
           lineStyle: 0,
           axisLabelVisible: true,
-          title: `${levelLabel} ${usdt}$${pct}`,
+          title: `${g.label} ${g.totalValue.toFixed(0)}$${pct}`,
         }))
       }
     }
@@ -489,6 +542,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         const lbl = parseOrderLabel(e.orderLinkId ?? '', e.side)
         if (lbl.includes('_LONG')) return dirFilter === 'long'
         if (lbl.includes('_SHORT')) return dirFilter === 'short'
+        if (/^SL_L\(/.test(lbl)) return dirFilter === 'long' ? e.side === 'Sell' : e.side === 'Buy'
         return dirFilter === 'long' ? e.side === 'Buy' : e.side === 'Sell'
       }
       return true
@@ -498,17 +552,37 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     // Only show markers for executions whose cycle still has active orders.
     // Manual executions (no cycle number) always show.
     // Build active cycles only from current-cycle orders; exclude all other cycles.
+    // When currentCycleNum is null (page just loaded), derive it from the max cycle seen in open orders
+    // so that stale markers from old cycles don't appear briefly.
+    let effectiveCycleNum: number | null = currentCycleNum ?? null
+    if (effectiveCycleNum === null && stratIdShort) {
+      for (const o of orders) {
+        if (!o.orderLinkId?.includes(stratIdShort)) continue
+        const n = extractCycleNum(o.orderLinkId)
+        if (n !== null && (effectiveCycleNum === null || n > effectiveCycleNum)) effectiveCycleNum = n
+      }
+    }
     const activeCycles = new Set<number>()
     for (const o of orders) {
       const n = extractCycleNum(o.orderLinkId)
       if (n === null) continue
-      if (stratIdShort && currentCycleNum != null && o.orderLinkId?.includes(stratIdShort) && n !== currentCycleNum) continue
+      if (stratIdShort && effectiveCycleNum != null && o.orderLinkId?.includes(stratIdShort) && n !== effectiveCycleNum) continue
       activeCycles.add(n)
     }
 
-    // Snap each execution to the nearest candle time (binary search)
+    // Strategy closed: no active position and no open orders → cycle finished, clear all markers.
+    if (stratIdShort && activeCycles.size === 0 && !positions.some(p => p.symbol === symbol)) {
+      plugin.setMarkers([])
+      return
+    }
+
+    const hasActiveTP = orders.some(o => o.symbol === symbol && isTPLinkId(o.orderLinkId))
+
+    // Group executions by orderLinkId to merge partial fills, or by slot label for matrix
+    // re-entries so multiple fills of the same slot appear as one candle marker.
     type M = { time: number; position: string; shape: string; color: string; size: number; text: string }
-    const markers: M[] = []
+    type ExecGroup = { execs: typeof relevant; candleTime: number; label: string }
+    const groupMap = new Map<string, ExecGroup>()
     for (const e of relevant) {
       const execSec = Math.floor(e.timeMs / 1000)
       let lo = 0, hi = candles.length - 1, candleTime = -1
@@ -521,18 +595,35 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
 
       if (isOtherStrategyLinkId(e.orderLinkId, stratIdShort)) continue
       const cycleNum = extractCycleNum(e.orderLinkId)
-      // Skip executions from completed (inactive) cycles; keep only current cycle and manual trades
+      // In strategy view, skip executions with no cycle number (untracked / manual orders).
+      if (cycleNum === null && stratIdShort) continue
       if (cycleNum !== null && !activeCycles.has(cycleNum)) continue
       if (stratIdShort && currentCycleNum != null && e.orderLinkId?.includes(stratIdShort) && cycleNum !== null && cycleNum !== currentCycleNum) continue
-      const isTP = isTPLinkId(e.orderLinkId)
-      const isBuy = e.side === 'Buy'
-      const color = isTP ? '#5b8cff' : isBuy ? '#00DC82' : '#ef4444'
+      if (isTPLinkId(e.orderLinkId) && hasActiveTP) continue
 
-      const usdt = (e.price * parseFloat(e.qty || '0')).toFixed(0)
-      const levelLabel = resolveMarkerLabel(parseOrderLabel(e.orderLinkId ?? '', e.side))
-      const markerText = levelLabel ? `${levelLabel}:${usdt}$` : `${usdt}$`
+      const resolvedLabel = resolveMarkerLabel(parseOrderLabel(e.orderLinkId ?? '', e.side))
+      const isMatrixSlot = /^L\(-?\d+\)$/.test(resolvedLabel)
+      const key = isMatrixSlot ? `${resolvedLabel}|${e.side}` : (e.orderLinkId || e.execId)
+      if (!groupMap.has(key)) {
+        groupMap.set(key, { execs: [], candleTime, label: resolvedLabel })
+      }
+      const g = groupMap.get(key)!
+      g.execs.push(e)
+      if (candleTime > g.candleTime) g.candleTime = candleTime
+    }
+
+    const markers: M[] = []
+    for (const [, g] of groupMap) {
+      const first = g.execs[0]
+      const isTP = isTPLinkId(first.orderLinkId)
+      const isBuy = first.side === 'Buy'
+      const color = isTP ? '#5b8cff' : isBuy ? '#00DC82' : '#ef4444'
+      const totalUsdt = g.execs.reduce((sum, e) => sum + e.price * parseFloat(e.qty || '0'), 0)
+      // Strip _LONG / _SHORT suffix (direction is already visible from arrow/color).
+      const levelLabel = g.label.replace(/_(LONG|SHORT)$/, '')
+      const markerText = levelLabel ? `${levelLabel} ${totalUsdt.toFixed(0)}$` : `${totalUsdt.toFixed(0)}$`
       markers.push({
-        time: candleTime,
+        time: g.candleTime,
         position: isBuy ? 'belowBar' : 'aboveBar',
         shape: isBuy ? 'arrowUp' : 'arrowDown',
         color,
@@ -541,7 +632,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       })
     }
     plugin.setMarkers(markers.sort((a: M, b: M) => a.time - b.time))
-  }, [executions, candles, symbol, overlaySettings, effectiveDir, orders, stratIdShort, currentCycleNum, strategyLevels])
+  }, [executions, candles, symbol, overlaySettings, effectiveDir, orders, positions, stratIdShort, currentCycleNum, strategyLevels])
 
   // Position overlays (Bybit-style rectangles with P&L)
   useEffect(() => {
@@ -667,6 +758,19 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     <div className="relative w-full h-full">
       <div ref={containerRef} className="absolute inset-0" style={{ zIndex: 1 }} />
       <div ref={overlayRef} className="absolute inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 10 }} />
+      {timeBadge && (
+        <div
+          className="absolute pointer-events-none"
+          style={{ bottom: 2, left: timeBadge.x, transform: 'translateX(-50%)', zIndex: 20 }}
+        >
+          <div
+            className="px-2 py-[3px] rounded text-[11px] font-mono font-semibold text-white whitespace-nowrap"
+            style={{ background: 'rgba(15,20,35,0.96)', border: '1px solid rgba(91,140,255,0.45)', boxShadow: '0 2px 8px rgba(0,0,0,0.5)' }}
+          >
+            {timeBadge.label}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

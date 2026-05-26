@@ -50,7 +50,10 @@ type StrategyRunner struct {
 	// Matrix strategy runtime state
 	matrixSafeZone    *MatrixSafeZone
 	matrixMonitorStop context.CancelFunc
-	matrixSLSeq       int // increments on each per-level SL placement for unique linkIds
+	matrixSLSeq       int     // increments on each per-level SL placement for unique linkIds
+	lastMatrixPrice   float64 // last mark price seen by matrixPriceTick; used to re-trigger virtual levels after a fill
+
+	lastVirtualPrice float64 // last mark price seen by gridVirtualPriceTick; 0 = not yet seen
 
 	// pendingDelete is set (under sr.mu) before the delete goroutine fires so that
 	// a concurrent Notify cannot submit a loadOrStart and restart the strategy.
@@ -182,7 +185,7 @@ func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 		}
 		sr.startMu.Lock()
 		var err2 error
-		if sr.strategy.StrategyType == "dca" {
+		if sr.strategy.StrategyType == "matrix" {
 			err2 = sr.startMatrixCycle(ctx)
 		} else {
 			err2 = sr.startCycle(ctx)
@@ -195,15 +198,46 @@ func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 	}
 
 	// Matrix strategies use their own load path.
-	if sr.strategy.StrategyType == "dca" {
+	if sr.strategy.StrategyType == "matrix" {
 		sr.restoreMatrixSafeZone(ctx)
-		// Trigger virtual L0 immediately if it's still pending on resume.
+
+		// Fetch current price before taking lock (needed for level re-placement).
+		resumePrice, _ := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+
 		sr.mu.Lock()
+		// Trigger virtual L0 immediately if it's still pending on resume.
 		for i := range sr.levels {
 			l := &sr.levels[i]
 			if l.Slot != nil && *l.Slot == 0 && l.Status == LevelPending && sr.matrixIsVirtual(l) {
 				sr.matrixTriggerVirtualLevel(ctx, l)
 				break
+			}
+		}
+		// Re-place cancelled non-virtual levels when strategy resumes with an open position.
+		// This handles the case where Stop was pressed while a position was open (cancelPlacedLevels
+		// set them to 'cancelled' but the cycle was kept alive), and now Start is pressed again.
+		if resumePrice > 0 {
+			hasPos := false
+			for _, l := range sr.levels {
+				if l.Status == LevelFilled {
+					hasPos = true
+					break
+				}
+			}
+			if hasPos {
+				for i := range sr.levels {
+					l := &sr.levels[i]
+					if l.Status == LevelCancelled && l.Slot != nil && !sr.matrixIsVirtual(l) {
+						l.Status = LevelPending
+						l.ExchangeOrderID = ""
+						l.ExchangeLinkID = ""
+						sr.runner.pool.Exec(ctx, //nolint:errcheck
+							`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL WHERE id=$1`, l.ID)
+						if err := sr.placeMatrixLevel(ctx, l, resumePrice); err != nil {
+							sr.errlog(ctx, fmt.Sprintf("Ошибка перевыставления L%d при возобновлении: %v", l.LevelIdx, err))
+						}
+					}
+				}
 			}
 		}
 		sr.mu.Unlock()
@@ -341,11 +375,28 @@ func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 	// while the server was down are applied immediately. On a fresh startup lastTPPrice
 	// and lastSLPrice are 0, so updateTP/updateSL always compare and re-place if needed.
 	// Within a running session their skip conditions prevent unnecessary churn.
-	if err := sr.updateTP(ctx); err != nil {
-		sr.errlog(ctx, fmt.Sprintf("Ошибка восстановления TP: %v", err))
-	}
-	if err := sr.updateSL(ctx); err != nil {
-		sr.errlog(ctx, fmt.Sprintf("Ошибка восстановления SL: %v", err))
+	// Matrix strategies manage TP via matrixUpdateTP and SL via per-level orders;
+	// the grid-style global updateTP/updateSL must not run for them.
+	if sr.strategy.StrategyType == "matrix" {
+		sr.matrixUpdateTP(ctx)
+	} else {
+		if err := sr.updateTP(ctx); err != nil {
+			sr.errlog(ctx, fmt.Sprintf("Ошибка восстановления TP: %v", err))
+		}
+		if err := sr.updateSL(ctx); err != nil {
+			sr.errlog(ctx, fmt.Sprintf("Ошибка восстановления SL: %v", err))
+		}
+		// Resume virtual grid level monitor if any pending virtual levels exist.
+		hasVirtual := false
+		for _, l := range sr.levels {
+			if l.ForceVirtual && l.Status == LevelPending {
+				hasVirtual = true
+				break
+			}
+		}
+		if hasVirtual {
+			go sr.launchGridVirtualMonitor()
+		}
 	}
 	sr.mu.Unlock()
 }
@@ -1306,17 +1357,22 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 				if targetPrice > 0 {
 					prevPrice = targetPrice
 				}
-				sizeUSDT := step.Lots * sr.strategy.GridSizeUSDT
+				sizePct := step.SizePct
+			if sizePct == 0 && step.Lots > 0 {
+				sizePct = step.Lots * 100 // migrate legacy lots→size_pct
+			}
+			sizeUSDT := sizePct / 100 * sr.strategy.GridSizeUSDT
 				priceForQty := price
 				if targetPrice > 0 {
 					priceForQty = targetPrice
 				}
 				qty := trader.FormatQty(sizeUSDT/priceForQty, sr.instr.QtyStep, sr.instr.MinQty)
+				forceVirtual := step.OrderType == "virtual"
 				var levelID string
 				if err := sr.runner.pool.QueryRow(ctx,
-					`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty)
-					 VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-					sr.strategy.ID, cycleID, levelIdx, side, targetPrice, sizeUSDT, qty,
+					`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, force_virtual)
+					 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+					sr.strategy.ID, cycleID, levelIdx, side, targetPrice, sizeUSDT, qty, forceVirtual,
 				).Scan(&levelID); err != nil {
 					log.Printf("strategy %s: insert level %d: %v", sr.strategy.ID, levelIdx, err)
 					levelIdx++
@@ -1325,7 +1381,7 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 				sr.levels = append(sr.levels, GridLevel{
 					ID: levelID, LevelIdx: levelIdx, Side: side,
 					TargetPrice: targetPrice, SizeUSDT: sizeUSDT, Qty: qty,
-					Status: LevelPending,
+					Status: LevelPending, ForceVirtual: forceVirtual,
 				})
 				levelIdx++
 			}
@@ -1365,7 +1421,21 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 				sr.strategy.Symbol, string(sr.strategy.Direction), sr.cycle.CycleNum, price))
 	}
 	sr.clearManualAlert(ctx)
-	return sr.placeNextLevels(ctx)
+	if err := sr.placeNextLevels(ctx); err != nil {
+		return err
+	}
+	// Launch price monitor for virtual grid levels (fires market orders when price crosses target).
+	hasVirtual := false
+	for _, l := range sr.levels {
+		if l.ForceVirtual {
+			hasVirtual = true
+			break
+		}
+	}
+	if hasVirtual {
+		go sr.launchGridVirtualMonitor()
+	}
+	return nil
 }
 
 func sidesForDirection(d Direction) []string {
@@ -1431,6 +1501,17 @@ func (sr *StrategyRunner) placeNextLevels(ctx context.Context) error {
 // placeLevelsBatch places a slice of level indices in one batch REST call.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) placeLevelsBatch(ctx context.Context, indices []int) {
+	// Filter out virtual levels — they are watched by gridVirtualPriceTick.
+	filtered := indices[:0]
+	for _, i := range indices {
+		if !sr.levels[i].ForceVirtual {
+			filtered = append(filtered, i)
+		}
+	}
+	indices = filtered
+	if len(indices) == 0 {
+		return
+	}
 	items := make([]trader.BatchOrderItem, len(indices))
 	refs := make([]orderRef, len(indices))
 	linkIDs := make([]string, len(indices))
@@ -1541,6 +1622,10 @@ func (sr *StrategyRunner) placeLevelsBatch(ctx context.Context, indices []int) {
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) placeLevel(ctx context.Context, idx int) error {
 	l := &sr.levels[idx]
+	if l.ForceVirtual {
+		// Virtual level — watched by gridVirtualPriceTick, not placed on exchange.
+		return nil
+	}
 	linkID := fmt.Sprintf("SIS_STR-%s-%d-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, sr.repriceGen)
 	var req trader.OrderRequest
 	if l.TargetPrice == 0 {
@@ -1670,6 +1755,35 @@ func (sr *StrategyRunner) avgEntry() (avg, totalQty float64) {
 	return
 }
 
+// lastGridLevelPrice returns the TargetPrice of the deepest grid level:
+// Long → lowest target price (furthest below entry).
+// Short → highest target price (furthest above entry).
+// Returns 0 if no usable levels are found.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) lastGridLevelPrice() float64 {
+	var result float64
+	for _, l := range sr.levels {
+		if l.Status == LevelCancelled || l.TargetPrice == 0 {
+			continue
+		}
+		if result == 0 {
+			result = l.TargetPrice
+			continue
+		}
+		switch sr.strategy.Direction {
+		case DirectionLong:
+			if l.TargetPrice < result {
+				result = l.TargetPrice
+			}
+		case DirectionShort:
+			if l.TargetPrice > result {
+				result = l.TargetPrice
+			}
+		}
+	}
+	return result
+}
+
 // projectedAvgEntry returns the weighted average entry across all grid levels —
 // using actual fill prices for filled levels and planned limit prices for pending/placed ones.
 // This lets updateSL place the stop from the first fill without waiting for all levels,
@@ -1726,7 +1840,7 @@ func (sr *StrategyRunner) handleLevelFill(ctx context.Context, levelID string, f
 	}
 
 	// Matrix strategies use their own fill handler.
-	if sr.strategy.StrategyType == "dca" {
+	if sr.strategy.StrategyType == "matrix" {
 		sr.handleMatrixLevelFill(ctx, levelID, filledPrice)
 		return
 	}
@@ -1840,6 +1954,17 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 	return nil
 }
 
+// updateTPByType updates TP for any strategy type.
+// For matrix strategies it calls matrixUpdateTP; for grid strategies it calls updateTP.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) updateTPByType(ctx context.Context) error {
+	if sr.strategy.StrategyType == "matrix" {
+		sr.matrixUpdateTP(ctx)
+		return nil
+	}
+	return sr.updateTP(ctx)
+}
+
 func tpParams(dir Direction, avg, tpPct float64) (side string, price float64) {
 	switch dir {
 	case DirectionLong:
@@ -1872,6 +1997,9 @@ func slParams(dir Direction, avg, slPct float64) (side string, triggerPrice floa
 // already past the SL level — the position is closed at market immediately.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) updateSL(ctx context.Context) error {
+	if sr.strategy.StrategyType == "matrix" {
+		return nil // Matrix manages SL per-level via matrixPlacePerLevelSL
+	}
 	if sr.strategy.SLType != SLTypeConditional || sr.strategy.SLPct >= 0 {
 		return nil
 	}
@@ -1885,16 +2013,10 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 		return nil
 	}
 
-	// Projected avg: includes unfilled levels at their target (limit) prices.
-	// Falls back to actual avg when unfilled levels are above current entry (breakout grids)
-	// to avoid placing an SL trigger above the current price.
-	slAvg := sr.projectedAvgEntry()
+	// SL is anchored to the deepest grid level so all levels are reachable before
+	// the stop fires. Falls back to actual avg entry if no level target prices exist.
+	slAvg := sr.lastGridLevelPrice()
 	if slAvg == 0 {
-		slAvg = actualAvg
-	}
-	if sr.strategy.Direction == DirectionLong && slAvg > actualAvg {
-		slAvg = actualAvg
-	} else if sr.strategy.Direction == DirectionShort && slAvg < actualAvg {
 		slAvg = actualAvg
 	}
 
@@ -1969,7 +2091,7 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 	sr.runner.RegisterOrder(result.OrderId, orderRef{strategyID: sr.strategy.ID, refType: "sl"})
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
 		`UPDATE strategy_cycles SET sl_order_id=$1 WHERE id=$2`, result.OrderId, sr.cycle.ID)
-	sr.info(ctx, fmt.Sprintf("SL выставлен @ %.4f qty=%s (проекц. avg %.4f)", slTrigger, slQty, slAvg))
+	sr.info(ctx, fmt.Sprintf("SL выставлен @ %.4f qty=%s (от посл. уровня %.4f)", slTrigger, slQty, slAvg))
 	return nil
 }
 
@@ -2014,6 +2136,10 @@ func (sr *StrategyRunner) logBotStrategy(ctx context.Context, msg string) {
 func (sr *StrategyRunner) handleTPFill(ctx context.Context, fillPrice, fillQty float64) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
+	if sr.strategy.StrategyType == "matrix" {
+		log.Printf("strategy %s: handleTPFill called for matrix strategy (unexpected)", sr.strategy.ID)
+		return
+	}
 	// Guard against duplicate fill events (e.g. WS reconnect replay): if the
 	// cycle was already closed by a previous call, there is nothing to do.
 	if sr.cycle == nil {
@@ -2093,23 +2219,13 @@ func (sr *StrategyRunner) handleSLFill(ctx context.Context, fillPrice, fillQty f
 func (sr *StrategyRunner) maybeRestart(ctx context.Context) {
 	switch sr.strategy.Status {
 	case StatusActive:
-		// after_stop_mode=delete OR max_cycles reached: remove the strategy so the bot can open a fresh one.
-		if sr.strategy.AfterStopMode == AfterStopModeDelete || (sr.strategy.MaxCycles > 0 && sr.strategy.CycleCount >= sr.strategy.MaxCycles) {
-			sr.pendingDelete = true           // block concurrent Notify from restarting
-			sr.strategy.Status = StatusStopped // prevent any future restart
-			stratID := sr.strategy.ID
-			sr.info(ctx, "Стратегия удалена после TP/SL (режим: удалять)")
-			go func() {
-				// Cancel any surviving exchange orders before removing from DB.
-				// cancelPlacedLevels + closeCycle already ran, but this catches edge cases
-				// where a ghost TP/grid order was left due to an error or race.
-				cCtx, cCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				sr.cancelAllStrategyOrders(cCtx)
-				cCancel()
-				sr.runner.pool.Exec(context.Background(), //nolint:errcheck
-					`DELETE FROM strategies WHERE id=$1`, stratID)
-				sr.runner.removeStrategy(stratID)
-			}()
+		// Bot strategies stop after TP/SL — the bot engine handles cleanup and deletion.
+		// Manual strategies stop when max_cycles is reached.
+		if sr.strategy.BotID != nil || (sr.strategy.MaxCycles > 0 && sr.strategy.CycleCount >= sr.strategy.MaxCycles) {
+			sr.runner.pool.Exec(ctx, //nolint:errcheck
+				`UPDATE strategies SET status='stopped', updated_at=NOW() WHERE id=$1`, sr.strategy.ID)
+			sr.strategy.Status = StatusStopped
+			sr.info(ctx, "Стратегия остановлена после TP/SL")
 			return
 		}
 		sr.submit(func(ctx context.Context) {
@@ -2219,7 +2335,7 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 	}
 
 	// Cancel per-level matrix SL orders and stop price monitor (noop for grid strategies)
-	if sr.strategy.StrategyType == "dca" {
+	if sr.strategy.StrategyType == "matrix" {
 		sr.matrixCancelPerLevelSLs(ctx)
 		if sr.matrixMonitorStop != nil {
 			sr.matrixMonitorStop()
@@ -2247,6 +2363,7 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) cancelPlacedLevels(ctx context.Context) {
 	var items []trader.BatchCancelItem
+	var stopItems []trader.BatchCancelItem // Matrix stop market orders need OrderFilter:"StopOrder"
 	var cancelLines []string
 	for _, l := range sr.levels {
 		if l.Status == LevelPlaced && l.ExchangeOrderID != "" {
@@ -2254,6 +2371,17 @@ func (sr *StrategyRunner) cancelPlacedLevels(ctx context.Context) {
 				Symbol:  sr.strategy.Symbol,
 				OrderId: l.ExchangeOrderID,
 			})
+			// Matrix levels (Slot != nil) may be stop market orders on Bybit.
+			// Bybit ignores cancel requests with wrong OrderFilter, so send a second
+			// batch with OrderFilter:"StopOrder". Per-item errors for non-stop orders
+			// are silently ignored by the batch endpoint.
+			if sr.strategy.StrategyType == "matrix" && l.Slot != nil {
+				stopItems = append(stopItems, trader.BatchCancelItem{
+					Symbol:      sr.strategy.Symbol,
+					OrderId:     l.ExchangeOrderID,
+					OrderFilter: "StopOrder",
+				})
+			}
 			// Do NOT unregister here — if a market-entry order is still in flight its
 			// WS fill event must still route to handleLevelFill so the DB level gets
 			// marked filled. WS cancel/fill events handle deregistration naturally.
@@ -2280,6 +2408,18 @@ func (sr *StrategyRunner) cancelPlacedLevels(ctx context.Context) {
 			sr.warn(ctx, fmt.Sprintf("cancelPlacedLevels: batch cancel: %v", err))
 		}
 	}
+	for start := 0; start < len(stopItems); start += 20 {
+		end := start + 20
+		if end > len(stopItems) {
+			end = len(stopItems)
+		}
+		if err := sr.runner.tradeStream.CancelOrderBatch(ctx, trader.BatchCancelRequest{
+			Category: sr.strategy.Category,
+			Request:  stopItems[start:end],
+		}); err != nil && !isOrderGone(err) {
+			sr.warn(ctx, fmt.Sprintf("cancelPlacedLevels: stop batch cancel: %v", err))
+		}
+	}
 	if sr.cycle != nil {
 		if _, err := sr.runner.pool.Exec(ctx,
 			`UPDATE strategy_levels SET status='cancelled' WHERE cycle_id=$1 AND status IN ('placed','pending')`, sr.cycle.ID,
@@ -2291,10 +2431,10 @@ func (sr *StrategyRunner) cancelPlacedLevels(ctx context.Context) {
 
 // awaitSignal subscribes to the signal engine and calls startCycle when the
 // signal state matches the strategy direction. Runs in a goroutine launched from loadOrStart.
-// startCycleByType starts the correct cycle type: startMatrixCycle for DCA, startCycle for grid.
+// startCycleByType starts the correct cycle type: startMatrixCycle for matrix, startCycle for grid.
 // Must be called with startMu held and WITHOUT sr.mu held.
 func (sr *StrategyRunner) startCycleByType(ctx context.Context) error {
-	if sr.strategy.StrategyType == "dca" {
+	if sr.strategy.StrategyType == "matrix" {
 		return sr.startMatrixCycle(ctx)
 	}
 	return sr.startCycle(ctx)
@@ -2303,7 +2443,7 @@ func (sr *StrategyRunner) startCycleByType(ctx context.Context) error {
 // resumeCycleAfterSignalByType resumes the correct cycle type after signal fires.
 // Must be called with startMu held and WITHOUT sr.mu held.
 func (sr *StrategyRunner) resumeCycleAfterSignalByType(ctx context.Context) {
-	if sr.strategy.StrategyType == "dca" {
+	if sr.strategy.StrategyType == "matrix" {
 		sr.resumeMatrixAfterSignal(ctx)
 	} else {
 		sr.resumeGridAfterSignal(ctx)
@@ -2910,7 +3050,7 @@ func (sr *StrategyRunner) handleStopRequest(ctx context.Context) {
 		sr.info(ctx, "Стратегия остановлена (нет активного цикла)")
 		return
 	}
-	if sr.strategy.StrategyType == "dca" {
+	if sr.strategy.StrategyType == "matrix" {
 		sr.matrixCancelPerLevelSLs(ctx)
 		if sr.matrixMonitorStop != nil {
 			sr.matrixMonitorStop()
@@ -2978,6 +3118,15 @@ func (sr *StrategyRunner) restartCycle(ctx context.Context) {
 			// Position is open — can't close the cycle.
 			// Remember to reprice pending levels when the strategy is next activated.
 			sr.gridChangedWhileStopped = true
+			// In finishing mode the position is still live — apply TP/SL changes immediately.
+			if sr.strategy.Status == StatusFinishing && sr.cycle != nil {
+				if err := sr.updateTPByType(ctx); err != nil {
+					sr.errlog(ctx, "Ошибка обновления TP (finishing): "+err.Error())
+				}
+				if err := sr.updateSL(ctx); err != nil {
+					sr.errlog(ctx, "Ошибка обновления SL (finishing): "+err.Error())
+				}
+			}
 		} else {
 			// No open position — close the stale cycle immediately in DB so the
 			// next loadOrStart calls startCycle with the updated settings.
@@ -3005,12 +3154,18 @@ func (sr *StrategyRunner) restartCycle(ctx context.Context) {
 		sr.info(ctx, "Настройки изменены, позиция открыта — пересчёт отложенных уровней")
 		sr.cancelPlacedLevels(ctx)
 		// Reset placed→pending so they can be re-placed with new prices.
+		// Also restore originally-pending levels in DB: cancelPlacedLevels blanket-sets
+		// placed+pending to 'cancelled', so virtual pending levels would be lost on restart.
 		for i := range sr.levels {
 			if sr.levels[i].Status == LevelPlaced {
 				sr.levels[i].Status = LevelPending
 				sr.levels[i].ExchangeOrderID = ""
 				sr.runner.pool.Exec(ctx, //nolint:errcheck
 					`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL WHERE id=$1`,
+					sr.levels[i].ID)
+			} else if sr.levels[i].Status == LevelPending {
+				sr.runner.pool.Exec(ctx, //nolint:errcheck
+					`UPDATE strategy_levels SET status='pending' WHERE id=$1`,
 					sr.levels[i].ID)
 			}
 		}
@@ -3045,7 +3200,7 @@ func (sr *StrategyRunner) restartCycle(ctx context.Context) {
 		}
 		// Bump so re-placed levels get linkIds Bybit has never seen (avoids 110072).
 		sr.repriceGen++
-		if sr.strategy.StrategyType == "dca" {
+		if sr.strategy.StrategyType == "matrix" {
 			// Matrix: re-place pending slots individually with current price.
 			sr.mu.Unlock()
 			price, ferr := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
@@ -3065,7 +3220,7 @@ func (sr *StrategyRunner) restartCycle(ctx context.Context) {
 				sr.errlog(ctx, fmt.Sprintf("Ошибка выставления уровней: %v", err))
 			}
 		}
-		if err := sr.updateTP(ctx); err != nil {
+		if err := sr.updateTPByType(ctx); err != nil {
 			sr.errlog(ctx, fmt.Sprintf("Ошибка обновления TP: %v", err))
 		}
 		if err := sr.updateSL(ctx); err != nil {
@@ -3107,6 +3262,7 @@ func (sr *StrategyRunner) restartCycle(ctx context.Context) {
 	if err := sr.startCycleByType(ctx); err != nil {
 		log.Printf("strategy %s: start cycle after settings update: %v", sr.strategy.ID, err)
 	}
+	// startCycle launches the monitor via go sr.launchGridVirtualMonitor() — no extra call needed here.
 }
 
 // repriceRemainingFromFills recalculates target prices for pending levels after a
@@ -3153,6 +3309,10 @@ func (sr *StrategyRunner) repriceRemainingFromFills(ctx context.Context) {
 				break
 			}
 			if l.Status != LevelPending {
+				// Advance prevPrice through non-pending levels so the chain stays intact.
+				if l.TargetPrice > 0 {
+					prevPrice = l.TargetPrice
+				}
 				stepIdx++
 				continue
 			}
@@ -3163,7 +3323,11 @@ func (sr *StrategyRunner) repriceRemainingFromFills(ctx context.Context) {
 			} else {
 				target = prevPrice * (1 + step.PriceMovePct/100)
 			}
-			sizeUSDT := step.Lots * sr.strategy.GridSizeUSDT
+			sizePct := step.SizePct
+			if sizePct == 0 && step.Lots > 0 {
+				sizePct = step.Lots * 100 // migrate legacy lots→size_pct
+			}
+			sizeUSDT := sizePct / 100 * sr.strategy.GridSizeUSDT
 			qty := trader.FormatQty(sizeUSDT/target, sr.instr.QtyStep, sr.instr.MinQty)
 			l.TargetPrice = target
 			l.SizeUSDT = sizeUSDT
@@ -3194,7 +3358,11 @@ func (sr *StrategyRunner) repriceRemainingFromFills(ctx context.Context) {
 				} else {
 					target = prevPrice * (1 + step.PriceMovePct/100)
 				}
-				sizeUSDT := step.Lots * sr.strategy.GridSizeUSDT
+				sizePct := step.SizePct
+			if sizePct == 0 && step.Lots > 0 {
+				sizePct = step.Lots * 100 // migrate legacy lots→size_pct
+			}
+			sizeUSDT := sizePct / 100 * sr.strategy.GridSizeUSDT
 				qty := trader.FormatQty(sizeUSDT/target, sr.instr.QtyStep, sr.instr.MinQty)
 				maxIdx++
 				var levelID string
@@ -3898,7 +4066,7 @@ func (sr *StrategyRunner) handlePartialPositionChange(ctx context.Context, excha
 		"Позиция частично закрыта вручную (биржа=%.4f, наш учёт=%.4f, avg=%.4f) — пересчитываем TP/SL",
 		exchangeSize, ourQty, avg,
 	))
-	if err := sr.updateTP(ctx); err != nil {
+	if err := sr.updateTPByType(ctx); err != nil {
 		sr.errlog(ctx, fmt.Sprintf("Пересчёт TP после частичного закрытия: %v", err))
 	}
 	if err := sr.updateSL(ctx); err != nil {
@@ -3925,7 +4093,7 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 	switch refType {
 	case "tp":
 		sr.tpOrderID = "" // already unregistered by OnOrderEvent
-		if err := sr.updateTP(ctx); err != nil {
+		if err := sr.updateTPByType(ctx); err != nil {
 			if isPositionZero(err) {
 				// Race: TP cancel event arrived before position-0 event.
 				// Position is already gone — close the cycle now; the incoming
@@ -4000,6 +4168,21 @@ func (sr *StrategyRunner) handleLevelCancelled(ctx context.Context, levelID stri
 	// order's linkId is still retained by the exchange for some time.
 	sr.repriceGen++
 
+	if lvl.Slot != nil {
+		// Matrix level — use matrix placement logic (determines Limit vs StopMarket by price).
+		price, err := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+		if err != nil {
+			sr.errlog(ctx, fmt.Sprintf("Ошибка получения цены для перевыставления L%d: %v", lvl.LevelIdx, err))
+			return
+		}
+		if err := sr.placeMatrixLevel(ctx, lvl, price); err != nil {
+			sr.errlog(ctx, fmt.Sprintf("Ошибка повторного выставления L%d: %v", lvl.LevelIdx, err))
+		} else {
+			sr.info(ctx, fmt.Sprintf("L%d перевыставлен", lvl.LevelIdx))
+		}
+		return
+	}
+
 	if err := sr.placeLevel(ctx, lvl.LevelIdx-1); err != nil {
 		sr.errlog(ctx, fmt.Sprintf("Ошибка повторного выставления L%d: %v", lvl.LevelIdx, err))
 	} else {
@@ -4020,4 +4203,163 @@ func (sr *StrategyRunner) clearManualAlert(ctx context.Context) {
 	sr.strategy.ManualAlert = ""
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
 		`UPDATE strategies SET manual_alert=NULL WHERE id=$1`, sr.strategy.ID)
+}
+
+// ── Virtual grid level price monitor ─────────────────────────────────────────
+
+// launchGridVirtualMonitor starts a price-watching goroutine for virtual grid levels.
+// When the mark price crosses a virtual level's target, it places a market order.
+// Uses the same matrixMonitorStop slot as matrix so the monitor is cleaned up on restart/stop.
+func (sr *StrategyRunner) launchGridVirtualMonitor() {
+	sr.mu.Lock()
+	if sr.matrixMonitorStop != nil {
+		sr.matrixMonitorStop()
+	}
+	sr.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sr.mu.Lock()
+	sr.matrixMonitorStop = cancel
+	symbol := sr.strategy.Symbol
+	category := sr.strategy.Category
+	creds := sr.runner.creds
+	se := sr.runner.signalEngine
+	sr.mu.Unlock()
+
+	// Immediate startup check: execute any levels whose trigger condition is already met
+	// (handles server restart where price arrived at target while we were down).
+	go func() {
+		if price, err := trader.FetchMarkPrice(ctx, creds, category, symbol); err == nil {
+			sr.submit(func(taskCtx context.Context) {
+				sr.mu.Lock()
+				defer sr.mu.Unlock()
+				sr.gridVirtualPriceTick(taskCtx, price)
+			})
+		}
+	}()
+
+	if se == nil {
+		go func() {
+			defer cancel()
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					sr.mu.Lock()
+					hasCycle := sr.cycle != nil
+					sr.mu.Unlock()
+					if !hasCycle {
+						return
+					}
+					creds := sr.runner.creds
+					category := sr.strategy.Category
+					price, err := trader.FetchMarkPrice(ctx, creds, category, symbol)
+					if err != nil {
+						continue
+					}
+					sr.submit(func(taskCtx context.Context) {
+						sr.mu.Lock()
+						defer sr.mu.Unlock()
+						sr.gridVirtualPriceTick(taskCtx, price)
+					})
+				}
+			}
+		}()
+		return
+	}
+
+	priceCh := make(chan float64, 1)
+	go func() {
+		unsub := se.PriceHub().Subscribe(symbol, func(markPrice float64) {
+			select {
+			case <-priceCh:
+			default:
+			}
+			select {
+			case priceCh <- markPrice:
+			default:
+			}
+		})
+		defer cancel()
+		defer unsub()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case price := <-priceCh:
+				sr.mu.Lock()
+				hasCycle := sr.cycle != nil
+				sr.mu.Unlock()
+				if !hasCycle {
+					return
+				}
+				sr.submit(func(taskCtx context.Context) {
+					sr.mu.Lock()
+					defer sr.mu.Unlock()
+					sr.gridVirtualPriceTick(taskCtx, price)
+				})
+			}
+		}
+	}()
+}
+
+// gridVirtualPriceTick checks if any pending virtual grid level's target has been crossed
+// and executes a market order for each crossed level. Must be called with sr.mu held.
+//
+// Crossing detection: if lastVirtualPrice was on the trigger side of a target but current
+// price has moved away, we still execute — this catches levels missed due to polling gaps
+// (e.g. REST fallback at 5 s intervals) or failed placement on the previous tick.
+func (sr *StrategyRunner) gridVirtualPriceTick(ctx context.Context, price float64) {
+	if sr.cycle == nil {
+		return
+	}
+	last := sr.lastVirtualPrice
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Status != LevelPending || !l.ForceVirtual || l.ExchangeOrderID != "" {
+			continue
+		}
+		var crossed bool
+		if l.TargetPrice == 0 {
+			crossed = true
+		} else if l.Side == "Buy" {
+			// Current price at/below target, OR last price was at/below target (bounce detection).
+			crossed = price <= l.TargetPrice || (last > 0 && last <= l.TargetPrice)
+		} else {
+			// Current price at/above target, OR last price was at/above target (bounce detection).
+			crossed = price >= l.TargetPrice || (last > 0 && last >= l.TargetPrice)
+		}
+		if !crossed {
+			continue
+		}
+		// Execute at market price
+		ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
+		linkID := fmt.Sprintf("SIS_STR-%s-%d-%d-%d-v", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, sr.repriceGen)
+		sr.runner.RegisterOrder(linkID, ref)
+		result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+			Symbol:      sr.strategy.Symbol,
+			Category:    sr.strategy.Category,
+			Side:        l.Side,
+			OrderType:   "Market",
+			Qty:         l.Qty,
+			PositionIdx: positionIdxForOpen(sr.strategy.HedgeMode, l.Side),
+			OrderLinkId: linkID,
+		})
+		if err != nil {
+			sr.runner.UnregisterOrder(linkID)
+			sr.errlog(ctx, fmt.Sprintf("Виртуальный L%d: market fill: %v", l.LevelIdx, err))
+			continue
+		}
+		l.Status = LevelPlaced
+		l.ExchangeOrderID = result.OrderId
+		sr.runner.RegisterOrder(result.OrderId, ref)
+		sr.runner.pool.Exec(ctx, //nolint:errcheck
+			`UPDATE strategy_levels SET status='placed', exchange_order_id=$1, exchange_link_id=$2, placed_at=NOW() WHERE id=$3`,
+			result.OrderId, linkID, l.ID)
+		sr.info(ctx, fmt.Sprintf("Виртуальный L%d %s: маркет @ %.4f (цена достигла %.4f)", l.LevelIdx, l.Side, price, l.TargetPrice))
+	}
+	sr.lastVirtualPrice = price
 }

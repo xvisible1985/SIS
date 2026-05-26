@@ -8,10 +8,12 @@ import (
 	"log"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"sis/pkg/crypto"
 	"sis/pkg/signal"
 	"sis/pkg/trader"
 )
@@ -375,6 +377,14 @@ func (s *Server) botEngineTick(ctx context.Context) {
 	s.botSnapshotCfgs = cfgsSnap
 	s.botSnapshotMu.Unlock()
 
+	// ── STEP 1b: Cleanup stopped bot strategies ──────────────────────────
+	for _, b := range bots {
+		var cfg botCfgJSON
+		if json.Unmarshal(b.stratCfg, &cfg) == nil && cfg.AfterStopMode == "delete" {
+			s.cleanupStoppedBotStrategies(ctx, b, cfg)
+		}
+	}
+
 	// ── STEP 2: Parse configs, build groups ───────────────────────────────
 	groups := make(map[groupKey]*groupEntry)
 
@@ -398,10 +408,21 @@ func (s *Server) botEngineTick(ctx context.Context) {
 			}
 		}
 
-		// Build signal.Config slice for activation check
-		sigCfgs := make([]signal.Config, len(cfg.ActivationSignals))
-		for i, a := range cfg.ActivationSignals {
-			sigCfgs[i] = signal.Config{Name: a.Name, Params: a.Params}
+		// Build signal.Config slice for activation check.
+		// Skip bots whose signals are not registered in the signal engine
+		// (e.g. "bybit-news") — they are handled by dedicated tickers.
+		sigCfgs := make([]signal.Config, 0, len(cfg.ActivationSignals))
+		skipBot := false
+		for _, a := range cfg.ActivationSignals {
+			sc := signal.Config{Name: a.Name, Params: a.Params}
+			if _, err := signal.Build(sc); err != nil {
+				skipBot = true
+				break
+			}
+			sigCfgs = append(sigCfgs, sc)
+		}
+		if skipBot {
+			continue
 		}
 
 		// Symbol-agnostic hash (pass "" as symbol)
@@ -665,11 +686,10 @@ func (s *Server) botEngineTick(ctx context.Context) {
 							if openDir == "" || opened[openKey{r.sym, openDir}] {
 								continue
 							}
-							// score = 1.0 placeholder; swap in e.g. 24 h quote volume for
-							// quality-ranked selection when the limit prevents all from opening.
-							s.sendBotOpportunity(b.id, botOpportunity{
-								sym: r.sym, dir: openDir, score: 1.0, source: "tick",
-							})
+							score := computeOpportunityScore(s.signalEngine, r.sym, key.interval, entry.sigCfgs, cfg.PrioritySignal)
+						s.sendBotOpportunity(b.id, botOpportunity{
+							sym: r.sym, dir: openDir, score: score, source: "tick",
+						})
 						}
 					} else {
 						s.logBotEvent(ctx, b.id,
@@ -718,6 +738,7 @@ type botCfgJSON struct {
 	TrailingCallPct  float64 `json:"trailing_callback_pct"`
 	AfterStopMode    string  `json:"after_stop_mode"`
 	MaxCycles        int     `json:"max_cycles"`
+	PrioritySignal string `json:"priority_signal"`
 	ActivationSignals []struct {
 		Name   string                 `json:"name"`
 		Params map[string]interface{} `json:"params"`
@@ -730,6 +751,28 @@ type botCfgJSON struct {
 		PriceMovePct float64 `json:"price_move_pct"`
 		Lots         float64 `json:"lots"`
 	} `json:"steps"`
+}
+
+// computeOpportunityScore returns a ranking score for a symbol based on the bot's
+// priority_signal setting. Higher score = higher priority.
+// "st-flip" → TTL remaining (more time left = more recent signal); anything else → signal value.
+func computeOpportunityScore(eng *signal.Engine, sym, interval string, cfgs []signal.Config, priority string) float64 {
+	if priority == "" {
+		return 1.0
+	}
+	if priority == "st-flip" {
+		ttl := eng.QueryTTLRemaining(sym, interval, cfgs)
+		if ttl >= 0 {
+			return ttl
+		}
+		return 0
+	}
+	if vals := eng.QueryValues(sym, interval, cfgs); vals != nil {
+		if v, ok := vals[priority]; ok {
+			return v
+		}
+	}
+	return 1.0
 }
 
 // joinMax joins up to n items and appends "..." if more.
@@ -818,8 +861,11 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		tpPct = 2.0
 	}
 	slPct := cfg.SLPct
+	if slPct > 0 {
+		slPct = -slPct
+	}
 	if slPct == 0 {
-		slPct = 5.0
+		slPct = -5.0
 	}
 
 	scJSON, _ := json.Marshal(cfg.SignalConfigs)
@@ -857,22 +903,22 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		   tp_mode, tp_pct, sl_type, sl_pct, signal_filter,
 		   leverage, margin_type, hedge_mode, strategy_type, entry_order_type,
 		   signal_configs, steps,
-		   trailing_stop_enabled, trailing_activation_pct, trailing_callback_pct, after_stop_mode,
+		   trailing_stop_enabled, trailing_activation_pct, trailing_callback_pct,
 		   cycle_count, max_cycles)
 		VALUES ($1,$2,$3,$4,$5,$6,'active',
 		        $7,$8,$9,$10,
 		        $11,$12,$13,$14,$15,
 		        $16,$17,$18,$19,$20,
 		        $21::jsonb, ($22::text)::jsonb,
-		        $23,$24,$25,$26,
-		        $27, $28)
+		        $23,$24,$25,
+		        $26, $27)
 		RETURNING id`,
 		b.ownerID, b.accountID, b.id, sym, category, dir,
 		gridLevels, gridActive, gridStep, gridSize,
 		tpMode, tpPct, slType, slPct, cfg.SignalFilter,
 		leverage, marginType, cfg.HedgeMode, stratType, entryType,
 		string(scJSON), stepsParam,
-		cfg.TrailingEnabled, trailingActPct, trailingCallPct, cfg.AfterStopMode,
+		cfg.TrailingEnabled, trailingActPct, trailingCallPct,
 		0, cfg.MaxCycles,
 	).Scan(&id)
 	if err != nil {
@@ -882,6 +928,91 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 	// Notify strategy engine to load and start this new strategy
 	go s.engine.Notify(context.Background(), id)
 	return nil
+}
+
+// loadBotAccountCreds decrypts and returns trading credentials for an exchange account.
+func (s *Server) loadBotAccountCreds(ctx context.Context, accountID string) (trader.Credentials, error) {
+	var apiKeyEnc, secretEnc string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT api_key_enc, secret_enc FROM exchange_accounts WHERE id=$1`, accountID,
+	).Scan(&apiKeyEnc, &secretEnc); err != nil {
+		return trader.Credentials{}, err
+	}
+	apiKey, err := crypto.Decrypt(apiKeyEnc, s.encKey)
+	if err != nil {
+		return trader.Credentials{}, err
+	}
+	secret, err := crypto.Decrypt(secretEnc, s.encKey)
+	if err != nil {
+		return trader.Credentials{}, err
+	}
+	return trader.Credentials{APIKey: apiKey, SecretKey: secret}, nil
+}
+
+// cleanupStoppedBotStrategies deletes stopped bot strategies that have no open exchange position.
+// Called each tick for bots configured with after_stop_mode="delete".
+func (s *Server) cleanupStoppedBotStrategies(ctx context.Context, b botEngineRow, cfg botCfgJSON) {
+	type stoppedStrategy struct {
+		id       string
+		symbol   string
+		category string
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, symbol, category FROM strategies WHERE bot_id=$1 AND status='stopped'`, b.id)
+	if err != nil {
+		return
+	}
+	var stopped []stoppedStrategy
+	for rows.Next() {
+		var st stoppedStrategy
+		if rows.Scan(&st.id, &st.symbol, &st.category) == nil {
+			stopped = append(stopped, st)
+		}
+	}
+	rows.Close()
+
+	if len(stopped) == 0 {
+		return
+	}
+
+	creds, err := s.loadBotAccountCreds(ctx, b.accountID)
+	if err != nil {
+		s.logBotEvent(ctx, b.id, fmt.Sprintf("Очистка: ошибка загрузки ключей аккаунта: %v", err), "error", "system")
+		return
+	}
+
+	positions, err := trader.FetchPositions(ctx, creds)
+	if err != nil {
+		s.logBotEvent(ctx, b.id, fmt.Sprintf("Очистка: ошибка получения позиций с биржи: %v", err), "error", "system")
+		return
+	}
+
+	openPositions := make(map[string]bool, len(positions))
+	for _, p := range positions {
+		if size, err2 := strconv.ParseFloat(p.Size, 64); err2 == nil && size > 0 {
+			openPositions[p.Symbol] = true
+		}
+	}
+
+	for _, st := range stopped {
+		if openPositions[st.symbol] {
+			s.logBotEvent(ctx, b.id,
+				fmt.Sprintf("Очистка: стратегия %s ожидает закрытия позиции на бирже", st.symbol),
+				"info", "strategy")
+			continue
+		}
+		if _, err := s.pool.Exec(ctx, `DELETE FROM strategies WHERE id=$1`, st.id); err != nil {
+			s.logBotEvent(ctx, b.id,
+				fmt.Sprintf("Очистка: ошибка удаления стратегии %s: %v", st.symbol, err),
+				"error", "strategy")
+			continue
+		}
+		s.engine.ForceRemoveStrategy(ctx, st.id, b.accountID)
+		s.logBotEvent(ctx, b.id,
+			fmt.Sprintf("Очистка: стратегия %s удалена (позиция закрыта)", st.symbol),
+			"info", "strategy")
+	}
 }
 
 // parseLeverage extracts the numeric leverage from strings like "50x".
@@ -1081,12 +1212,20 @@ func (s *Server) runReactiveProcessor(ctx context.Context) {
 func (s *Server) runNewsBotTicker(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
+	running := make(chan struct{}, 1) // prevents concurrent processNewsBots calls
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.processNewsBots(ctx)
+			select {
+			case running <- struct{}{}: // acquired
+				go func() {
+					defer func() { <-running }()
+					s.processNewsBots(ctx)
+				}()
+			default: // previous call still running, skip tick
+			}
 		}
 	}
 }
@@ -1189,8 +1328,9 @@ func (s *Server) processBotSymbol(ctx context.Context, symbol, interval, hash st
 		// The worker applies limits and ranking — no race conditions possible
 		// because only one goroutine per bot ever calls createBotStrategy.
 		s.ensureBotWorker(ctx, b.id)
+		reactiveScore := computeOpportunityScore(s.signalEngine, symbol, interval, sigCfgs, cfg.PrioritySignal)
 		s.sendBotOpportunity(b.id, botOpportunity{
-			sym: symbol, dir: openDir, score: 1.0, source: "reactive",
+			sym: symbol, dir: openDir, score: reactiveScore, source: "reactive",
 		})
 	}
 }

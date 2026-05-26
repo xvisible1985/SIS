@@ -12,6 +12,13 @@ import (
 	"sis/pkg/trader"
 )
 
+func slotStr(s *int) string {
+	if s == nil {
+		return "nil"
+	}
+	return strconv.Itoa(*s)
+}
+
 // calculateMatrixPrices returns a map from slot index to target price.
 // Slot 0 = start price (market entry), negative slots = below, positive slots = above.
 // For short direction stepMul=-1 inverts all steps so positive slots land below entry and
@@ -471,7 +478,7 @@ func (sr *StrategyRunner) placeMatrixLevel(ctx context.Context, l *GridLevel, cu
 			l.ForceVirtual = true
 			sr.runner.pool.Exec(ctx, //nolint:errcheck
 				`UPDATE strategy_levels SET force_virtual=true WHERE id=$1`, l.ID)
-			sr.warn(ctx, fmt.Sprintf("Matrix L%d (slot %v): недостаточно баланса — переведён в виртуальный режим", l.LevelIdx, l.Slot))
+			sr.warn(ctx, fmt.Sprintf("Matrix L%d (slot %s): недостаточно баланса — переведён в виртуальный режим", l.LevelIdx, slotStr(l.Slot)))
 			return nil
 		}
 		return err
@@ -694,6 +701,7 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 	if sr.cycle == nil {
 		return
 	}
+	sr.lastMatrixPrice = currentPrice
 
 	// 1. Check Safe Zone exit
 	if sr.matrixSafeZone != nil && !sr.matrixSafeZone.Contains(currentPrice) {
@@ -781,7 +789,7 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 		}
 		sr.matrixSLSeq++
 		linkID := fmt.Sprintf("SIS_STR-%s-msl-%s-%d",
-			sr.strategy.ID[:8], l.ID[:8], sr.matrixSLSeq)
+			sr.strategy.ID[:8], matrixSlotLinkStr(l), sr.matrixSLSeq)
 		qty, _ := strconv.ParseFloat(l.Qty, 64)
 		fmtQty := trader.FormatQty(qty, sr.instr.QtyStep, sr.instr.MinQty)
 		if fmtQty == "0" || fmtQty == "" {
@@ -820,6 +828,45 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 		)
 		sr.info(ctx, fmt.Sprintf("Matrix SL L%d переставлен → %.4f (stop cond сработал)", l.LevelIdx, newTrigger))
 	}
+
+	// 4. Retry placing per-level SL for filled levels where SL is missing.
+	// Handles cases where SL placement failed at fill time: zero fill price (race with
+	// position creation) or Bybit rejection. Retries only when price is at or past the
+	// fill level and the trigger would not fire immediately.
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Status != LevelFilled || l.SLOrderID != "" || l.Slot == nil {
+			continue
+		}
+		_, stopPct, _, _ := sr.matrixLevelConfig(*l.Slot)
+		if stopPct == nil {
+			continue
+		}
+		// Use fill price if available; fall back to current price (e.g. L0 market fill with AvgPrice=0).
+		priceRef := l.FilledPrice
+		if priceRef <= 0 {
+			priceRef = currentPrice
+		}
+		trigger := matrixSLTrigger(sr.strategy.Direction, priceRef, *stopPct)
+		// Skip if current price would immediately fire the stop.
+		if sr.strategy.Direction == DirectionShort && currentPrice >= trigger {
+			continue
+		}
+		if sr.strategy.Direction == DirectionLong && currentPrice <= trigger {
+			continue
+		}
+		// For levels with a known fill price: only retry once price returns to the fill level.
+		if l.FilledPrice > 0 {
+			if sr.strategy.Direction == DirectionShort && currentPrice < l.FilledPrice {
+				continue
+			}
+			if sr.strategy.Direction == DirectionLong && currentPrice > l.FilledPrice {
+				continue
+			}
+		}
+		sr.warn(ctx, fmt.Sprintf("Matrix L%d: SL не выставлен — повторная попытка (ref=%.4f)", l.LevelIdx, priceRef))
+		sr.matrixPlacePerLevelSL(ctx, l, priceRef, *stopPct)
+	}
 }
 
 // matrixTriggerVirtualLevel fires a virtual level by placing a market order.
@@ -848,7 +895,7 @@ func (sr *StrategyRunner) matrixTriggerVirtualLevel(ctx context.Context, l *Grid
 	l.ExchangeOrderID = result.OrderId
 	l.ExchangeLinkID = linkID
 	sr.runner.RegisterOrder(result.OrderId, ref)
-	sr.info(ctx, fmt.Sprintf("Matrix virtual L%d (slot %v) запущен @ market", l.LevelIdx, l.Slot))
+	sr.info(ctx, fmt.Sprintf("Matrix virtual L%d (slot %s) запущен @ market", l.LevelIdx, slotStr(l.Slot)))
 }
 
 // matrixReplaceSlots re-places levels for any slot that has no active (pending/placed/filled) row.
@@ -914,6 +961,21 @@ func (sr *StrategyRunner) matrixReplaceSlots(ctx context.Context, currentPrice f
 			priceForQty = currentPrice
 		}
 		qty := trader.FormatQty(sizeUSDT/priceForQty, sr.instr.QtyStep, sr.instr.MinQty)
+
+		// Remove any sl_closed rows for this slot before inserting a fresh pending row.
+		// This keeps exactly one strategy_levels row per slot in the DB.
+		var kept []GridLevel
+		for _, l := range sr.levels {
+			if l.Slot != nil && *l.Slot == slot && l.Status == LevelSLClosed {
+				sr.runner.pool.Exec(ctx, //nolint:errcheck
+					`DELETE FROM strategy_levels WHERE id=$1`, l.ID)
+				continue
+			}
+			kept = append(kept, l)
+		}
+		sr.levels = kept
+		levelIdx = len(sr.levels) + 1
+
 		s := slot
 		var levelID string
 		if err := sr.runner.pool.QueryRow(ctx,
@@ -968,6 +1030,20 @@ func (sr *StrategyRunner) resumeMatrixAfterSignal(ctx context.Context) {
 
 // matrixSLTrigger computes the per-level SL trigger price.
 // stopPct is expected negative (e.g. -2.0 means 2% adverse from fill).
+// matrixSlotLinkStr encodes a slot number for use inside a linkId segment.
+// Negative slots use "n{abs}" to avoid a bare "-" that would split the linkId.
+// Positive slots (including 0) are formatted as plain digits.
+func matrixSlotLinkStr(l *GridLevel) string {
+	if l.Slot == nil {
+		return fmt.Sprintf("%d", l.LevelIdx) // fallback: should not happen
+	}
+	s := *l.Slot
+	if s < 0 {
+		return fmt.Sprintf("n%d", -s)
+	}
+	return fmt.Sprintf("%d", s)
+}
+
 func matrixSLTrigger(dir Direction, fillPrice, stopPct float64) float64 {
 	if dir == DirectionLong {
 		return fillPrice * (1 + stopPct/100) // stopPct < 0 → trigger below fill
@@ -976,7 +1052,7 @@ func matrixSLTrigger(dir Direction, fillPrice, stopPct float64) float64 {
 }
 
 // handleMatrixLevelFill is the matrix-specific handler called when a level fill event arrives
-// for a strategy_type="dca" strategy.
+// for a strategy_type="matrix" strategy.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) handleMatrixLevelFill(ctx context.Context, levelID string, filledPrice float64) {
 	// Idempotency guard
@@ -997,8 +1073,8 @@ func (sr *StrategyRunner) handleMatrixLevelFill(ctx context.Context, levelID str
 			sr.levels[i].Status = LevelFilled
 			sr.levels[i].FilledPrice = filledPrice
 			filled = &sr.levels[i]
-			sr.info(ctx, fmt.Sprintf("Matrix L%d (slot %v) %s @ %.4f исполнен",
-				sr.levels[i].LevelIdx, sr.levels[i].Slot, sr.levels[i].Side, filledPrice))
+			sr.info(ctx, fmt.Sprintf("Matrix L%d (slot %s) %s @ %.4f исполнен",
+				sr.levels[i].LevelIdx, slotStr(sr.levels[i].Slot), sr.levels[i].Side, filledPrice))
 			break
 		}
 	}
@@ -1016,11 +1092,30 @@ func (sr *StrategyRunner) handleMatrixLevelFill(ctx context.Context, levelID str
 
 	// Update global TP based on latest active fill
 	sr.matrixUpdateTP(ctx)
+
+	// Re-run price check so that any pending virtual levels whose target was already
+	// crossed (but whose tick was dropped during fill processing) are triggered now.
+	if sr.lastMatrixPrice > 0 {
+		sr.matrixPriceTick(ctx, sr.lastMatrixPrice)
+	}
 }
 
 // matrixPlacePerLevelSL places a reduce-only stop-market SL for one filled level.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixPlacePerLevelSL(ctx context.Context, l *GridLevel, fillPrice, stopPct float64) {
+	if sr.strategy.MaxStopActive > 0 {
+		active := 0
+		for _, lv := range sr.levels {
+			if lv.SLOrderID != "" {
+				active++
+			}
+		}
+		if active >= sr.strategy.MaxStopActive {
+			sr.warn(ctx, fmt.Sprintf("Matrix per-level SL для L%d: лимит %d условных стопов на бирже достигнут — отложено",
+				l.LevelIdx, sr.strategy.MaxStopActive))
+			return
+		}
+	}
 	trigger := matrixSLTrigger(sr.strategy.Direction, fillPrice, stopPct)
 
 	var slSide string
@@ -1033,7 +1128,7 @@ func (sr *StrategyRunner) matrixPlacePerLevelSL(ctx context.Context, l *GridLeve
 
 	sr.matrixSLSeq++
 	linkID := fmt.Sprintf("SIS_STR-%s-msl-%s-%d",
-		sr.strategy.ID[:8], l.ID[:8], sr.matrixSLSeq)
+		sr.strategy.ID[:8], matrixSlotLinkStr(l), sr.matrixSLSeq)
 
 	qty, _ := strconv.ParseFloat(l.Qty, 64)
 	fmtQty := trader.FormatQty(qty, sr.instr.QtyStep, sr.instr.MinQty)
@@ -1061,7 +1156,8 @@ func (sr *StrategyRunner) matrixPlacePerLevelSL(ctx context.Context, l *GridLeve
 	})
 	if err != nil {
 		sr.runner.UnregisterOrder(linkID)
-		sr.errlog(ctx, fmt.Sprintf("Matrix per-level SL для L%d: %v", l.LevelIdx, err))
+		sr.errlog(ctx, fmt.Sprintf("Matrix per-level SL для L%d: trigger=%.4f fillRef=%.4f qty=%s err=%v",
+			l.LevelIdx, trigger, fillPrice, fmtQty, err))
 		return
 	}
 
@@ -1207,8 +1303,8 @@ func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string
 	)
 	closed.Status = LevelSLClosed
 	closed.SLOrderID = ""
-	sr.warn(ctx, fmt.Sprintf("Matrix SL сработал L%d (slot %v) @ %.4f",
-		closed.LevelIdx, closed.Slot, slTrigger))
+	sr.warn(ctx, fmt.Sprintf("Matrix SL сработал L%d (slot %s) @ %.4f",
+		closed.LevelIdx, slotStr(closed.Slot), slTrigger))
 
 	// Create Safe Zone
 	if sr.strategy.SafeZonePct > 0 {
@@ -1264,6 +1360,9 @@ func (sr *StrategyRunner) matrixCancelPerLevelSLs(ctx context.Context) {
 		orderID := l.SLOrderID
 		sr.runner.UnregisterOrder(orderID)
 		l.SLOrderID = ""
+		l.SLPrice = 0
+		sr.runner.pool.Exec(ctx, //nolint:errcheck
+			`UPDATE strategy_levels SET sl_order_id=NULL, sl_price=NULL WHERE id=$1`, l.ID)
 		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
 			Symbol:      sr.strategy.Symbol,
 			Category:    sr.strategy.Category,

@@ -490,21 +490,20 @@ const MOCK_BALANCES: Record<string, BalanceResult> = {
 }
 const S = (id: string, accId: string, status: Strategy['status'], type: Strategy['strategy_type'], symbol: string): Strategy => ({
   id, account_id: accId, status, strategy_type: type, symbol,
-  category: 'linear', direction: 'both', grid_levels: 8, grid_active: 4,
+  category: 'linear', direction: 'both', grid_levels: 8, grid_active: 4, max_stop_active: 0,
   grid_step_pct: 1, grid_size_usdt: 300, tp_mode: 'total', tp_pct: 2,
   sl_type: 'conditional', sl_pct: 5, signal_filter: false, leverage: 5,
   margin_type: 'isolated', hedge_mode: false, entry_order_type: 'limit',
   signal_configs: [], steps: null, trailing_stop_enabled: false,
   trailing_activation_pct: null, trailing_callback_pct: null,
-  after_stop_mode: 'restart',
   active_levels: 4, last_pnl: 0, created_at: '', updated_at: '', volume_usdt: 0,
 })
 
 const MOCK_STRATEGIES: Strategy[] = [
   S('ms-1', 'mock-1', 'active',  'grid', 'BTCUSDT'),
-  S('ms-2', 'mock-1', 'stopped', 'dca',  'ETHUSDT'),
+  S('ms-2', 'mock-1', 'stopped', 'matrix',  'ETHUSDT'),
   S('ms-3', 'mock-1', 'active',  'grid', 'SOLUSDT'),
-  S('ms-4', 'mock-2', 'active',  'dca',  'BTCUSDT'),
+  S('ms-4', 'mock-2', 'active',  'matrix',  'BTCUSDT'),
   S('ms-5', 'mock-4', 'active',  'grid', 'BNBUSDT'),
 ]
 

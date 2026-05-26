@@ -18,7 +18,7 @@ export type StrategyConfig = {
   symbol?: string;
   category?: string;
   direction?: 'long' | 'short' | 'both';
-  strategy_type?: 'grid' | 'dca';
+  strategy_type?: 'grid' | 'matrix';
   entry_order_type?: 'limit' | 'stop_market';
   leverage?: number;
   margin_type?: 'isolated' | 'cross';
@@ -27,7 +27,7 @@ export type StrategyConfig = {
   grid_active?: number;
   grid_step_pct?: number;
   grid_size_usdt?: number;
-  steps?: { price_move_pct: number; lots: number }[];
+  steps?: { price_move_pct: number; lots?: number; size_pct?: number }[];
   signal_configs?: { name: string; params?: Record<string, unknown> }[];
   activation_signals?: { name: string; params?: Record<string, unknown> }[];
   tp_mode?: 'per_level' | 'total';
@@ -40,6 +40,7 @@ export type StrategyConfig = {
   trailing_callback_pct?: number;
   after_stop_mode?: 'delete' | 'restart';
   max_cycles?: number;
+  priority_signal?: string;
 };
 
 export type Bot = {

@@ -1,4 +1,4 @@
-export type BotStrategy = 'grid' | 'dca' | 'signal' | 'scalp' | 'arbitrage' | 'copy' | 'trend' | 'hold';
+export type BotStrategy = 'grid' | 'matrix' | 'signal' | 'scalp' | 'arbitrage' | 'copy' | 'trend' | 'hold';
 export type RiskLevel  = 'low' | 'medium' | 'high';
 export type TradeMode  = 'spot' | 'futures';
 export type RunStatus  = 'running' | 'paused' | 'stopped';

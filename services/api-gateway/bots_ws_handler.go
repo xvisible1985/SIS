@@ -111,6 +111,7 @@ func (s *Server) computeOneBotSignalCount(
 			Name   string                 `json:"name"`
 			Params map[string]interface{} `json:"params"`
 		} `json:"activation_signals"`
+		Direction string `json:"direction"`
 	}
 	if err := json.Unmarshal(strategyConfig, &cfg); err != nil || len(cfg.ActivationSignals) == 0 {
 		return botSignalUpdate{}, false
@@ -126,6 +127,7 @@ func (s *Server) computeOneBotSignalCount(
 			}
 		}
 	}
+	direction := cfg.Direction
 
 	globalBlacklist := s.GetDelistingSymbols()
 	symbols := resolveSymbolList(whitelist, blacklist, globalBlacklist, allSymbols)
@@ -151,7 +153,16 @@ func (s *Server) computeOneBotSignalCount(
 			}
 			defer func() { <-sem }()
 			st := s.signalEngine.ComputeStateForce(sym, interval, sigCfgs)
-			if st != signal.Neutral {
+			match := false
+			switch direction {
+			case "long":
+				match = st == signal.Buy
+			case "short":
+				match = st == signal.Sell
+			default:
+				match = st != signal.Neutral
+			}
+			if match {
 				cntMu.Lock()
 				count++
 				cntMu.Unlock()

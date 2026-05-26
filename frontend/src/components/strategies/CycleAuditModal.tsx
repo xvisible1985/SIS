@@ -148,7 +148,7 @@ export function CycleAuditModal({ strategyId, strategySymbol, onClose }: Props) 
   const pos = data?.position
   const delta = data && !data.no_active_cycle ? parseFloat(data.qty_discrepancy ?? '0') : 0
   const isNoCycle = data?.no_active_cycle
-  const isMatrix = data?.strategy_type === 'dca'
+  const isMatrix = data?.strategy_type === 'matrix'
 
   return (
     <div

@@ -49,11 +49,11 @@ func New(pool *pgxpool.Pool, encKey string) *Engine {
 func (e *Engine) Start(ctx context.Context) {
 	rows, err := e.pool.Query(ctx,
 		`SELECT id, owner_id, account_id, symbol, category, direction, status,
-		        grid_levels, grid_active, grid_step_pct, grid_size_usdt,
+		        grid_levels, grid_active, COALESCE(max_stop_active,0), grid_step_pct, grid_size_usdt,
 		        tp_mode, tp_pct, sl_type, sl_pct, signal_filter, hedge_mode,
 		        entry_order_type, COALESCE(steps::text,'[]'),
 		        COALESCE(signal_configs::text,'[]'),
-		        after_stop_mode, cycle_count, max_cycles, bot_id, COALESCE(matrix_levels::text,''), COALESCE(safe_zone_pct,0), COALESCE(matrix_entry_level::text,''),
+		        cycle_count, max_cycles, bot_id, COALESCE(matrix_levels::text,''), COALESCE(safe_zone_pct,0), COALESCE(matrix_entry_level::text,''),
 		        COALESCE(strategy_type,'grid')
 		 FROM strategies WHERE status IN ('active','finishing')`)
 	if err != nil {
@@ -74,11 +74,11 @@ func (e *Engine) Notify(ctx context.Context, strategyID string) {
 	var s Strategy
 	row := e.pool.QueryRow(ctx,
 		`SELECT id, owner_id, account_id, symbol, category, direction, status,
-		        grid_levels, grid_active, grid_step_pct, grid_size_usdt,
+		        grid_levels, grid_active, COALESCE(max_stop_active,0), grid_step_pct, grid_size_usdt,
 		        tp_mode, tp_pct, sl_type, sl_pct, signal_filter, hedge_mode,
 		        entry_order_type, COALESCE(steps::text,'[]'),
 		        COALESCE(signal_configs::text,'[]'),
-		        after_stop_mode, cycle_count, max_cycles, bot_id, COALESCE(matrix_levels::text,''), COALESCE(safe_zone_pct,0), COALESCE(matrix_entry_level::text,''),
+		        cycle_count, max_cycles, bot_id, COALESCE(matrix_levels::text,''), COALESCE(safe_zone_pct,0), COALESCE(matrix_entry_level::text,''),
 		        COALESCE(strategy_type,'grid')
 		 FROM strategies WHERE id=$1`, strategyID)
 	if err := scanStrategyRow(row, &s); err != nil {
@@ -112,6 +112,31 @@ func (e *Engine) loadStrategy(ctx context.Context, s Strategy) {
 // LogUserAction writes a user-initiated action to the strategy event log.
 func (e *Engine) LogUserAction(ctx context.Context, strategyID, msg string) {
 	logEvent(ctx, e.pool, strategyID, "info", msg)
+}
+
+// ForceRemoveStrategy cancels all exchange orders for a strategy and removes its
+// in-memory runner. Called when a strategy is deleted via the API so that TP/SL
+// orders are not left dangling on the exchange after a server restart.
+func (e *Engine) ForceRemoveStrategy(ctx context.Context, strategyID, accountID string) {
+	e.mu.RLock()
+	runner, ok := e.runners[accountID]
+	e.mu.RUnlock()
+	if !ok {
+		return
+	}
+	runner.mu.RLock()
+	sr, ok := runner.strategies[strategyID]
+	runner.mu.RUnlock()
+	if !ok {
+		return
+	}
+	go func() {
+		// cancelAllStrategyOrders cancels every open order with the strategy prefix
+		// (L-orders, TP, SL). Must be called before removeStrategy so the order
+		// index entries are still valid during the cancellation loop.
+		sr.cancelAllStrategyOrders(ctx)
+		runner.removeStrategy(strategyID)
+	}()
 }
 
 // ActiveStats returns counts of active strategies and active cycles across all accounts.
@@ -233,7 +258,7 @@ func (e *Engine) UpdateTPSL(ctx context.Context, strategyID string) {
 			sr.submit(func(ctx context.Context) {
 				sr.mu.Lock()
 				defer sr.mu.Unlock()
-				if sr.cycle == nil || sr.strategy.Status != StatusActive {
+				if sr.cycle == nil || (sr.strategy.Status != StatusActive && sr.strategy.Status != StatusFinishing) {
 					return
 				}
 				if err := sr.updateTP(ctx); err != nil {
@@ -412,15 +437,15 @@ func (e *Engine) loadAccountInfo(ctx context.Context, accountID string) (account
 
 // scanStrategy scans a pgx row into a Strategy.
 func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
-	var dir, stat, tpm, slt, stepsJSON, signalConfigsJSON, afterStopMode, matrixJSON, entryLevelJSON string
+	var dir, stat, tpm, slt, stepsJSON, signalConfigsJSON, matrixJSON, entryLevelJSON string
 	var sf, hm bool
 	err := rows.Scan(
 		&s.ID, &s.OwnerID, &s.AccountID, &s.Symbol, &s.Category,
 		&dir, &stat,
-		&s.GridLevels, &s.GridActive, &s.GridStepPct, &s.GridSizeUSDT,
+		&s.GridLevels, &s.GridActive, &s.MaxStopActive, &s.GridStepPct, &s.GridSizeUSDT,
 		&tpm, &s.TPPct, &slt, &s.SLPct, &sf, &hm,
 		&s.EntryOrderType, &stepsJSON, &signalConfigsJSON,
-		&afterStopMode, &s.CycleCount, &s.MaxCycles, &s.BotID, &matrixJSON, &s.SafeZonePct, &entryLevelJSON,
+		&s.CycleCount, &s.MaxCycles, &s.BotID, &matrixJSON, &s.SafeZonePct, &entryLevelJSON,
 		&s.StrategyType,
 	)
 	if err != nil {
@@ -432,7 +457,6 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 	s.SLType = SLType(slt)
 	s.SignalFilter = sf
 	s.HedgeMode = hm
-	s.AfterStopMode = AfterStopMode(afterStopMode)
 	if stepsJSON != "" && stepsJSON != "[]" {
 		_ = json.Unmarshal([]byte(stepsJSON), &s.Steps)
 	}
@@ -710,6 +734,25 @@ func (ar *AccountRunner) OnOrderEvent(ev trader.OrderEvent) {
 				levelID := ref.levelID
 				sr.submit(func(ctx context.Context) { sr.handleMatrixSLCancelled(ctx, levelID) })
 			}
+		}
+		return
+	}
+	// "Deactivated" is sent by Bybit for conditional (stop) orders when the position closes.
+	// For entry level orders, treat it the same as "Cancelled" so they get re-placed if the
+	// strategy is still active. TP/SL deactivation is intentional (position closed) — skip.
+	if ev.OrderStatus == "Deactivated" {
+		ar.mu.Lock()
+		ref, hasRef := ar.orderIndex[ev.OrderID]
+		if !hasRef {
+			ref, hasRef = ar.orderIndex[ev.OrderLinkID]
+		}
+		delete(ar.orderIndex, ev.OrderID)
+		delete(ar.orderIndex, ev.OrderLinkID)
+		sr := ar.strategies[ref.strategyID]
+		ar.mu.Unlock()
+		if hasRef && sr != nil && ref.refType == "level" {
+			levelID, orderID := ref.levelID, ev.OrderID
+			sr.submit(func(ctx context.Context) { sr.handleLevelCancelled(ctx, levelID, orderID) })
 		}
 		return
 	}

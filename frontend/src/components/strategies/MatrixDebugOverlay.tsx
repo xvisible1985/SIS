@@ -155,7 +155,7 @@ interface Props {
 }
 
 export function MatrixDebugOverlay({ strategies, onClose }: Props) {
-  const dcaStrategies = strategies.filter(s => s.strategy_type === 'dca')
+  const dcaStrategies = strategies.filter(s => s.strategy_type === 'matrix')
   const [selectedId, setSelectedId] = useState<string>(dcaStrategies[0]?.id ?? '')
   const [state, setState] = useState<StrategyState | null>(null)
   const [events, setEvents] = useState<StrategyEvent[]>([])

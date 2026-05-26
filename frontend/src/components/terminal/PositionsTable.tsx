@@ -1,6 +1,7 @@
-import type { Position } from '../../types'
+import type { Position, Strategy } from '../../types'
 import { placeOrder } from '../../api/trader'
-import { useState } from 'react'
+import { createStrategy, listStrategies } from '../../api/strategies'
+import { useState, useEffect, useRef } from 'react'
 import { ClosePositionModal, makeCloseConfirm, type CloseConfirm } from '../common/ClosePositionModal'
 
 interface Props {
@@ -15,9 +16,43 @@ function coinIcon(s: string) {
   return `https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons/32/color/${s.replace(/USDT|USDC|USD$/, '').toLowerCase()}.png`
 }
 
+function getPositionOwner(pos: Position, strategies: Strategy[], accountId: string): string {
+  const posDir = pos.side === 'Buy' ? 'long' : 'short'
+  const match = strategies.find(s =>
+    s.account_id === accountId &&
+    s.symbol === pos.symbol &&
+    (s.direction === posDir || s.direction === 'both')
+  )
+  if (!match) return ''
+  return match.bot_id ? (match.bot_name ?? match.bot_id) : 'Manual'
+}
+
 export function PositionsTable({ accountId, positions, onSelect, loading, tickerPrices }: Props) {
   const [closing, setClosing] = useState(false)
   const [confirm, setConfirm] = useState<CloseConfirm | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ pos: Position; x: number; y: number } | null>(null)
+  const [creatingFor, setCreatingFor] = useState<string | null>(null)
+  const [flashMsg, setFlashMsg] = useState<{ text: string; ok: boolean } | null>(null)
+  const [strategies, setStrategies] = useState<Strategy[]>([])
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!accountId) return
+    listStrategies().then(setStrategies).catch(() => {})
+  }, [accountId])
+
+  useEffect(() => {
+    if (!contextMenu) return
+    function onDown(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setContextMenu(null)
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setContextMenu(null)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
+  }, [contextMenu])
 
   function handleCloseClick(pos: Position) {
     setConfirm(makeCloseConfirm(pos, accountId))
@@ -42,6 +77,61 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
     setConfirm(null)
   }
 
+  async function handleCreateStrategy(pos: Position) {
+    setContextMenu(null)
+    const posDir = pos.side === 'Buy' ? 'long' : 'short'
+    const existing = strategies.find(s =>
+      s.account_id === accountId &&
+      s.symbol === pos.symbol &&
+      (s.direction === posDir || s.direction === 'both')
+    )
+    if (existing) {
+      setFlashMsg({ text: `Стратегия по ${pos.symbol} уже существует`, ok: false })
+      setTimeout(() => setFlashMsg(null), 4000)
+      return
+    }
+    const key = `${pos.symbol}-${pos.side}`
+    setCreatingFor(key)
+    try {
+      await createStrategy({
+        account_id: accountId,
+        symbol: pos.symbol,
+        category: pos.category,
+        direction: pos.side === 'Buy' ? 'long' : 'short',
+        strategy_type: 'grid',
+        robot_enabled: false,
+        virtual_orders: false,
+        entry_order_type: 'limit',
+        leverage: parseInt(pos.leverage) || 1,
+        grid_size_usdt: pos.sizeUsdt,
+        margin_type: 'isolated',
+        hedge_mode: pos.positionIdx !== 0,
+        steps: [{ price_move_pct: 0, size_pct: 100 }],
+        grid_active: 0,
+        max_stop_active: 10,
+        signal_configs: [],
+        tp_pct: 1.5,
+        tp_mode: 'total',
+        sl_pct: -100,
+        sl_type: 'conditional',
+        trailing_stop_enabled: false,
+        trailing_activation_pct: 1.5,
+        trailing_callback_pct: 0.5,
+        matrix_levels: [],
+        safe_zone_pct: 1.5,
+        matrix_entry_level: { size_pct: 100, stop_pct: null, stop_cond_pct: null, stop_replace_pct: null, tp_pct: 1.5 },
+      })
+      listStrategies().then(setStrategies).catch(() => {})
+      window.dispatchEvent(new CustomEvent('strategy-created'))
+      setFlashMsg({ text: `Стратегия ${pos.symbol} создана`, ok: true })
+    } catch (e: any) {
+      setFlashMsg({ text: `Ошибка: ${e?.response?.data?.error ?? e?.message ?? 'неизвестная ошибка'}`, ok: false })
+    } finally {
+      setCreatingFor(null)
+      setTimeout(() => setFlashMsg(null), 4000)
+    }
+  }
+
   if (loading) return (
     <div className="flex items-center justify-center h-full text-gray-500 dark:text-gray-400 text-sm">
       <span className="animate-pulse">Загрузка данных...</span>
@@ -56,7 +146,7 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
   )
 
   return (
-    <>
+    <div className="relative h-full">
       {confirm && (
         <ClosePositionModal
           confirm={confirm}
@@ -65,17 +155,51 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
           closing={closing}
         />
       )}
-      <div className="overflow-x-auto">
-      <table className="w-full text-xs min-w-[640px]">
+
+      {flashMsg && (
+        <div className={`absolute top-2 left-1/2 -translate-x-1/2 z-50 px-3 py-1.5 rounded text-xs font-medium shadow-lg whitespace-nowrap ${flashMsg.ok ? 'bg-green-900/90 text-green-300 border border-green-700/50' : 'bg-red-900/90 text-red-300 border border-red-700/50'}`}>
+          {flashMsg.text}
+        </div>
+      )}
+
+      {contextMenu && (() => {
+        const cmDir = contextMenu.pos.side === 'Buy' ? 'long' : 'short'
+        const strategyExists = strategies.some(s =>
+          s.account_id === accountId &&
+          s.symbol === contextMenu.pos.symbol &&
+          (s.direction === cmDir || s.direction === 'both')
+        )
+        return (
+          <div
+            ref={menuRef}
+            className="fixed z-50 bg-gray-800 border border-gray-600 rounded shadow-xl py-1 min-w-[170px]"
+            style={{ top: contextMenu.y, left: contextMenu.x }}
+          >
+            <button
+              onClick={() => handleCreateStrategy(contextMenu.pos)}
+              disabled={!!creatingFor || strategyExists}
+              title={strategyExists ? 'Стратегия по этой паре уже существует' : undefined}
+              className={`w-full px-3 py-1.5 text-left text-xs transition-colors ${strategyExists ? 'text-gray-500 cursor-not-allowed' : 'text-gray-200 hover:bg-gray-700'}`}
+            >
+              Создать стратегию
+              {strategyExists && <span className="ml-1.5 text-[10px] text-gray-600">— уже есть</span>}
+            </button>
+          </div>
+        )
+      })()}
+
+      <div className="relative overflow-x-auto">
+      <table className="w-full text-xs min-w-[700px]">
         <thead className="sticky top-0 z-10 bg-white dark:bg-gray-900">
           <tr className="text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
-            {['Символ', 'Сторона', 'Размер', 'Цена входа', 'Mark Price', 'PnL', 'Плечо', ''].map(h => (
+            {['Символ', 'Сторона', 'Размер', 'Цена входа', 'Mark Price', 'PnL', 'Плечо', 'Владелец', ''].map(h => (
               <th key={h} className="px-3 py-2 font-medium text-left">{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {positions.map(pos => {
+            const posKey = `${pos.symbol}-${pos.side}`
             const entry = parseFloat(pos.entryPrice)
             const size = parseFloat(pos.size)
             const liveMarkPrice = tickerPrices?.get(pos.symbol)
@@ -84,9 +208,14 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
               ? (pos.side === 'Buy' ? (mark - entry) : (entry - mark)) * size
               : parseFloat(pos.unrealisedPnl)
             const pnlPct = entry > 0 && size > 0 ? (pnl / (size * entry)) * 100 : 0
+            const owner = getPositionOwner(pos, strategies, accountId)
             return (
-              <tr key={`${pos.symbol}-${pos.side}`} onClick={() => onSelect(pos.symbol)}
-                className="border-b border-gray-200 dark:border-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-800/60 transition-colors cursor-pointer">
+              <tr
+                key={posKey}
+                onClick={() => onSelect(pos.symbol)}
+                onContextMenu={e => { e.preventDefault(); setContextMenu({ pos, x: e.clientX, y: e.clientY }) }}
+                className="border-b border-gray-200 dark:border-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-800/60 transition-colors cursor-pointer"
+              >
                 <td className="px-3 py-2 font-mono font-medium">
                   <div className="flex items-center gap-1.5">
                     <img src={coinIcon(pos.symbol)} className="w-4 h-4 rounded-full shrink-0" onError={e => (e.currentTarget.style.display = 'none')} />
@@ -105,6 +234,15 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
                   {pnl >= 0 ? '+' : ''}{pnl.toFixed(4)} <span className="text-gray-500 dark:text-gray-400 font-normal">({pnlPct.toFixed(2)}%)</span>
                 </td>
                 <td className="px-3 py-2 text-left font-mono">{pos.leverage}x</td>
+                <td className="px-3 py-2 text-left">
+                  {creatingFor === posKey ? (
+                    <span className="text-[10px] text-blue-400 animate-pulse">создаём...</span>
+                  ) : owner ? (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${owner === 'Manual' ? 'bg-blue-500/15 text-blue-400' : 'bg-purple-500/15 text-purple-400'}`}>
+                      {owner}
+                    </span>
+                  ) : null}
+                </td>
                 <td className="px-3 py-2 text-right" onClick={e => e.stopPropagation()}>
                   <button
                     onClick={() => handleCloseClick(pos)}
@@ -119,6 +257,6 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
         </tbody>
       </table>
       </div>
-    </>
+    </div>
   )
 }

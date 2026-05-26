@@ -42,6 +42,9 @@ type GlobalWarmer struct {
 	intervals map[string]bool // bybit interval strings, e.g. "15", "60"
 	symbols   []string        // all linear USDT symbols
 
+	priorityMu      sync.RWMutex
+	prioritySymbols map[string]bool // subscribed first during prefetch
+
 	startedAt  time.Time
 	prefetchMs int64 // atomic; ms taken for initial bulk prefetch
 }
@@ -49,11 +52,23 @@ type GlobalWarmer struct {
 // NewGlobalWarmer creates a GlobalWarmer backed by the given KlineHub and TickerHub.
 func NewGlobalWarmer(hub *KlineHub, tickerHub *TickerHub) *GlobalWarmer {
 	return &GlobalWarmer{
-		hub:       hub,
-		tickerHub: tickerHub,
-		intervals: make(map[string]bool),
-		startedAt: time.Now(),
+		hub:             hub,
+		tickerHub:       tickerHub,
+		intervals:       make(map[string]bool),
+		prioritySymbols: make(map[string]bool),
+		startedAt:       time.Now(),
 	}
+}
+
+// SetPrioritySymbols registers symbols that should be prefetched before all others.
+// Safe to call before or after Start.
+func (w *GlobalWarmer) SetPrioritySymbols(syms []string) {
+	w.priorityMu.Lock()
+	w.prioritySymbols = make(map[string]bool, len(syms))
+	for _, s := range syms {
+		w.prioritySymbols[s] = true
+	}
+	w.priorityMu.Unlock()
 }
 
 // Start fetches all linear USDT symbols, subscribes them for every currently
@@ -163,8 +178,26 @@ func (w *GlobalWarmer) loadAndSubscribeAll(ctx context.Context) error {
 		return nil // no intervals registered yet; subscriptions will come via EnsureIntervals
 	}
 
-	start := time.Now()
+	// Subscribe priority symbols first so their prefetch goroutines grab semaphore slots
+	// before the rest of the list.
+	w.priorityMu.RLock()
+	priority := w.prioritySymbols
+	w.priorityMu.RUnlock()
+
+	ordered := make([]string, 0, len(syms))
 	for _, sym := range syms {
+		if priority[sym] {
+			ordered = append(ordered, sym)
+		}
+	}
+	for _, sym := range syms {
+		if !priority[sym] {
+			ordered = append(ordered, sym)
+		}
+	}
+
+	start := time.Now()
+	for _, sym := range ordered {
 		for _, iv := range ivs {
 			w.hub.Subscribe(sym, iv, nil)
 		}

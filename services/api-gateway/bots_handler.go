@@ -18,7 +18,7 @@ import (
 	"sis/pkg/trader"
 )
 
-// в”Ђв”Ђ Types в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// в"Ђв"Ђ Types в"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђ
 
 type botResp struct {
 	ID                    string          `json:"id"`
@@ -66,7 +66,7 @@ type scanHit struct {
 	TTLRemainingSec float64 `json:"ttl_remaining_sec"` // -1 = no TTL; в‰Ґ0 = seconds left
 }
 
-// в”Ђв”Ђ Helpers в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// в"Ђв"Ђ Helpers в"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђ
 
 const botCols = `b.id, b.name, b.description, b.full_description, b.avatar_url, b.owner_id, u.email,
 	b.is_public, b.is_official, b.status, b.source_bot_id, b.is_fork,
@@ -122,7 +122,7 @@ func fetchBot(s *Server, r *http.Request, botID, callerID string) (botResp, bool
 	return bots[0], true
 }
 
-// в”Ђв”Ђ Handlers в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// в"Ђв"Ђ Handlers в"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђ
 
 // GET /bots
 func (s *Server) ListBots(w http.ResponseWriter, r *http.Request) {
@@ -372,7 +372,7 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 	addInt("maxLongStrategies", "max_long_strategies")
 	addInt("maxShortStrategies", "max_short_strategies")
 	addFloat("maxMarginUsdt", "max_margin_usdt")
-	addInt("MaxSymConsecutiveRuns", "max_sym_consecutive_runs")
+	addInt("maxSymConsecutiveRuns", "max_sym_consecutive_runs")
 
 	if len(sets) == 0 {
 		bot, ok := fetchBot(s, r, botID, callerID)
@@ -494,15 +494,14 @@ func (s *Server) syncBotStrategies(ctx context.Context, botID string) {
 		   tp_mode = $5, tp_pct = $6, sl_type = $7, sl_pct = $8, signal_filter = $9,
 		   leverage = $10, margin_type = $11, hedge_mode = $12,
 		   signal_configs = $13::jsonb, steps = ($14::text)::jsonb,
-		   trailing_stop_enabled = $15, trailing_activation_pct = $16, trailing_callback_pct = $17,
-		   after_stop_mode = $18
-		 WHERE bot_id = $19 AND status IN ('active','finishing')
+		   trailing_stop_enabled = $15, trailing_activation_pct = $16, trailing_callback_pct = $17
+		 WHERE bot_id = $18 AND status IN ('active','finishing')
 		 RETURNING id`,
 		gridLevels, gridActive, gridStep, gridSize,
 		tpMode, tpPct, slType, slPct, cfg.SignalFilter,
 		leverage, marginType, cfg.HedgeMode,
 		string(scJSON), stepsParam,
-		cfg.TrailingEnabled, trailingActPct, trailingCallPct, cfg.AfterStopMode,
+		cfg.TrailingEnabled, trailingActPct, trailingCallPct,
 		botID,
 	)
 	if err != nil {
@@ -540,7 +539,7 @@ func (s *Server) DeleteBot(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /bots/{id}/deploy вЂ” creates a subscription (linked copy) for the caller.
+// POST /bots/{id}/deploy вЂ" creates a subscription (linked copy) for the caller.
 func (s *Server) DeployBot(w http.ResponseWriter, r *http.Request) {
 	callerID := UserIDFromCtx(r.Context())
 	sourceID := chi.URLParam(r, "id")
@@ -597,7 +596,7 @@ func (s *Server) DeployBot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, bot)
 }
 
-// POST /bots/{id}/fork вЂ” unlinks a subscription so it can be edited independently.
+// POST /bots/{id}/fork вЂ" unlinks a subscription so it can be edited independently.
 func (s *Server) ForkBot(w http.ResponseWriter, r *http.Request) {
 	callerID := UserIDFromCtx(r.Context())
 	botID := chi.URLParam(r, "id")
@@ -777,14 +776,15 @@ func (s *Server) PublishBot(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /bots/signal-scan вЂ” scan available symbols against provided signal configs.
-// Returns all symbols where the combined signal state is non-neutral (buy or sell).
+// POST /bots/signal-scan — scan available symbols against provided signal configs.
+// Applies direction filtering (like ScanBot) so counts match across the UI.
 func (s *Server) ScanSignals(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		SignalConfigs []signal.Config `json:"signal_configs"`
 		Whitelist     []string        `json:"whitelist"`
 		Blacklist     []string        `json:"blacklist"`
 		Interval      string          `json:"interval"`
+		Direction     string          `json:"direction"` // "long", "short", "both" (empty = both)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -840,25 +840,42 @@ func (s *Server) ScanSignals(w http.ResponseWriter, r *http.Request) {
 		sym := sym
 		go func() {
 			defer wg.Done()
-			// Bail immediately if context expired before acquiring semaphore slot.
 			select {
 			case <-ctx.Done():
 				return
 			case sem <- struct{}{}:
 			}
 			defer func() { <-sem }()
-			// Re-check after acquiring slot (context may have expired while waiting).
 			select {
 			case <-ctx.Done():
 				return
 			default:
 			}
-			st, _ := s.signalEngine.QueryState(sym, req.Interval, req.SignalConfigs)
-			if st != signal.Neutral {
-				mu.Lock()
-				matches = append(matches, scanResult{Symbol: sym, State: string(st)})
-				mu.Unlock()
+			// ComputeStateForce always produces a fresh result for uncached symbols,
+			// unlike QueryState which returns Neutral for unsubscribed units.
+			st := s.signalEngine.ComputeStateForce(sym, req.Interval, req.SignalConfigs)
+			if st == signal.Neutral {
+				return
 			}
+			// Apply direction filter: match logic used in ScanBot so counts align.
+			var stateStr string
+			switch req.Direction {
+			case "long":
+				if st != signal.Buy {
+					return // sell signal doesn't match a long-only bot
+				}
+				stateStr = string(st)
+			case "short":
+				if st != signal.Sell {
+					return // buy signal doesn't match a short-only bot
+				}
+				stateStr = string(st)
+			default: // "both" or unset
+				stateStr = string(st)
+			}
+			mu.Lock()
+			matches = append(matches, scanResult{Symbol: sym, State: stateStr})
+			mu.Unlock()
 		}()
 	}
 
@@ -870,7 +887,7 @@ func (s *Server) ScanSignals(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"results": matches})
 }
 
-// GET /bots/{id}/scan вЂ” run signal scan for this bot and return matching symbols.
+// GET /bots/{id}/scan вЂ" run signal scan for this bot and return matching symbols.
 func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 	callerID := UserIDFromCtx(r.Context())
 	botID := chi.URLParam(r, "id")
@@ -961,24 +978,41 @@ func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Get raw signal value and compute strength for sorting
+			// Get raw signal value for the priority signal (or first available).
+			vals := s.signalEngine.QueryValues(sym, interval, sigCfgs)
 			var sigVal float64
-			if vals := s.signalEngine.QueryValues(sym, interval, sigCfgs); vals != nil {
-				for _, v := range vals {
-					sigVal = v
-					break
+			if vals != nil {
+				if cfg.PrioritySignal != "" {
+					sigVal = vals[cfg.PrioritySignal]
+				} else {
+					for _, v := range vals {
+						sigVal = v
+						break
+					}
 				}
-			}
-			// Strength: for buy вЂ” lower value is stronger; for sell вЂ” higher value is stronger.
-			// Negate buy so that both cases sort descending by strength.
-			var strength float64
-			if st == signal.Buy {
-				strength = -sigVal
-			} else {
-				strength = sigVal
 			}
 
 			ttlRem := s.signalEngine.QueryTTLRemaining(sym, interval, sigCfgs)
+
+			// Strength = sort key (higher = preferred).
+			// priority_signal=st-flip  → TTL remaining (more = more recent signal)
+			// priority_signal=<other>  → signal value (higher = stronger)
+			// no priority_signal       → buy: negate value (lower RSI = stronger); sell: value
+			var strength float64
+			switch {
+			case cfg.PrioritySignal == "st-flip":
+				if ttlRem >= 0 {
+					strength = ttlRem
+				}
+			case cfg.PrioritySignal != "":
+				strength = sigVal
+			default:
+				if st == signal.Buy {
+					strength = -sigVal
+				} else {
+					strength = sigVal
+				}
+			}
 
 			var dir string
 			switch cfg.Direction {
@@ -1050,7 +1084,7 @@ func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// POST /bots/{id}/trigger вЂ” manually trigger strategy creation for a specific symbol.
+// POST /bots/{id}/trigger вЂ" manually trigger strategy creation for a specific symbol.
 // Body: { "symbol": "BTCUSDT", "direction": "long" }
 func (s *Server) TriggerBot(w http.ResponseWriter, r *http.Request) {
 	callerID := UserIDFromCtx(r.Context())
@@ -1140,9 +1174,9 @@ func (s *Server) TriggerBot(w http.ResponseWriter, r *http.Request) {
 }
 
 // sortHits orders scan hits:
-//  1. actionable (not blocked, not open) вЂ” sorted by signal strength desc
-//  2. already open вЂ” sorted by signal strength desc
-//  3. direction blocked вЂ” sorted by signal strength desc
+//  1. actionable (not blocked, not open) вЂ" sorted by signal strength desc
+//  2. already open вЂ" sorted by signal strength desc
+//  3. direction blocked вЂ" sorted by signal strength desc
 func sortHits(hits []scanHit) {
 	rank := func(h scanHit) int {
 		if h.DirBlocked {
@@ -1163,9 +1197,9 @@ func sortHits(hits []scanHit) {
 	})
 }
 
-// в”Ђв”Ђ Admin handlers в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// в"Ђв"Ђ Admin handlers в"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђ
 
-// GET /admin/bots вЂ” list all bots (admin only)
+// GET /admin/bots вЂ" list all bots (admin only)
 func (s *Server) ListAdminBots(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	rows, err := s.pool.Query(ctx,
@@ -1182,7 +1216,7 @@ func (s *Server) ListAdminBots(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, bots)
 }
 
-// POST /admin/bots вЂ” create an official NovaBot (admin only)
+// POST /admin/bots вЂ" create an official NovaBot (admin only)
 func (s *Server) CreateOfficialBot(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	callerID := UserIDFromCtx(ctx)

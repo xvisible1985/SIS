@@ -20,6 +20,11 @@ function shortId(id?: string | null) { return id ? id.slice(0, 8) : '—' }
 
 function parseLinkLabel(linkId?: string | null): string {
   if (!linkId) return '?'
+  if (linkId.includes('-msl-')) {
+    const parts = linkId.split('-')
+    const levelIdx = parts.length > 3 ? parts[3] : '?'
+    return `SL_L(${levelIdx})`
+  }
   if (linkId.includes('-tp-')) return 'TP'
   if (linkId.includes('-sl-')) return 'SL'
   const m = linkId.match(/-\d+-(\d+)(?:-\d+)?$/)
@@ -147,11 +152,13 @@ export function DebugCycleWindow({ strategy, orders, onClose, liveSignal }: Prop
   const cyclePrefix = state ? `SIS_STR-${strategy.id.slice(0, 8)}-${state.cycle_num}-` : null
   const tpPrefix    = state ? `SIS_STR-${strategy.id.slice(0, 8)}-tp-${state.cycle_num}` : null
   const slPrefix    = state ? `SIS_STR-${strategy.id.slice(0, 8)}-sl-${state.cycle_num}` : null
+  // Per-level SL orders for matrix strategies use "-msl-" prefix (not cycle-num-based)
+  const mslPrefix   = `SIS_STR-${strategy.id.slice(0, 8)}-msl-`
 
   const cycleOrders = cyclePrefix
     ? orders.filter(o => {
         const lk = o.orderLinkId ?? ''
-        return lk.startsWith(cyclePrefix) || (tpPrefix && lk.startsWith(tpPrefix)) || (slPrefix && lk.startsWith(slPrefix))
+        return lk.startsWith(cyclePrefix) || (tpPrefix && lk.startsWith(tpPrefix)) || (slPrefix && lk.startsWith(slPrefix)) || lk.startsWith(mslPrefix)
       })
     : orders
 
@@ -295,6 +302,7 @@ export function DebugCycleWindow({ strategy, orders, onClose, liveSignal }: Prop
                   const onExch = l.exchange_order_id
                     ? !!(exchById[l.exchange_order_id] || exchByLink[l.exchange_order_id])
                     : null
+                  const slOnExch = l.sl_order_id ? !!exchById[l.sl_order_id] : null
                   return (
                     <tr key={i} className="border-b hover:bg-white/[.03]" style={{ borderColor: '#1e1e30' }}>
                       <td className="px-2 py-1 text-slate-300">L{l.level_idx} <span className="text-slate-500">{l.side[0]}</span></td>
@@ -307,16 +315,27 @@ export function DebugCycleWindow({ strategy, orders, onClose, liveSignal }: Prop
                       </td>
                       <td className="px-2 py-1 text-right text-slate-400">{l.size_usdt}$</td>
                       <td className="px-2 py-1">
-                        {l.exchange_order_id
-                          ? <span
-                              className={onExch ? 'text-emerald-400' : 'text-amber-400'}
-                              title={l.exchange_order_id}
+                        <div className="flex flex-col gap-0.5">
+                          {l.exchange_order_id
+                            ? <span
+                                className={onExch ? 'text-emerald-400' : 'text-amber-400'}
+                                title={l.exchange_order_id}
+                              >
+                                {shortId(l.exchange_order_id)}
+                                {!onExch && <span className="ml-1 text-amber-500 text-[9px]">⚠нет</span>}
+                              </span>
+                            : <span className="text-slate-600">—</span>
+                          }
+                          {l.sl_order_id && (
+                            <span
+                              className={`text-[9px] ${slOnExch ? 'text-yellow-400' : 'text-amber-400'}`}
+                              title={`SL: ${l.sl_order_id}`}
                             >
-                              {shortId(l.exchange_order_id)}
-                              {!onExch && <span className="ml-1 text-amber-500 text-[9px]">⚠нет</span>}
+                              SL:{shortId(l.sl_order_id)}
+                              {!slOnExch && <span className="ml-0.5 text-amber-500">⚠нет</span>}
                             </span>
-                          : <span className="text-slate-600">—</span>
-                        }
+                          )}
+                        </div>
                       </td>
                     </tr>
                   )
@@ -387,7 +406,7 @@ export function DebugCycleWindow({ strategy, orders, onClose, liveSignal }: Prop
               <tbody>
                 {cycleOrders.map((o, i) => {
                   const label = parseLinkLabel(o.orderLinkId)
-                  const labelColor = label === 'TP' ? 'text-blue-400' : label === 'SL' ? 'text-yellow-400' : 'text-slate-200'
+                  const labelColor = label === 'TP' ? 'text-blue-400' : label === 'SL' || label.startsWith('SL_L') ? 'text-yellow-400' : 'text-slate-200'
                   const price = o.triggerPrice && parseFloat(o.triggerPrice) > 0
                     ? o.triggerPrice : o.price
                   const inDbById = o.orderId ? !!(

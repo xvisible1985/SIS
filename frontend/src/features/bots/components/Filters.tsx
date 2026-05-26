@@ -7,7 +7,7 @@ type Props = {
   onChange: (next: BotFilters) => void;
 };
 
-const STRATEGIES: (BotStrategy | 'all')[] = ['all', 'grid', 'dca', 'signal', 'scalp', 'arbitrage', 'copy', 'trend', 'hold'];
+const STRATEGIES: (BotStrategy | 'all')[] = ['all', 'grid', 'matrix', 'signal', 'scalp', 'arbitrage', 'copy', 'trend', 'hold'];
 const RISKS:      (RiskLevel | 'all')[]   = ['all', 'low', 'medium', 'high'];
 const MODES:      (TradeMode | 'all')[]   = ['all', 'spot', 'futures'];
 

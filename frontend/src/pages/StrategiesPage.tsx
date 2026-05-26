@@ -112,7 +112,7 @@ export function StrategiesPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Стратегии</h1>
         <div className="flex items-center gap-2">
-          {strategies.some(s => s.strategy_type === 'dca') && (
+          {strategies.some(s => s.strategy_type === 'matrix') && (
             <button
               onClick={() => setMatrixDebugOpen(true)}
               className="px-3 py-2 bg-gray-700 text-gray-200 text-sm rounded-lg hover:bg-gray-600 transition-colors border border-gray-600"

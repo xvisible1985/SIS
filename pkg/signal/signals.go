@@ -408,7 +408,11 @@ func (s *superTrendFlip) Compute(c []Candle) State {
 	}
 	now := time.Now()
 	if s.firedAt.IsZero() {
-		s.firedAt = now
+		if fired := superTrendLookbackFiredAt(c, s.atrPeriod, s.mult, dir); !fired.IsZero() && fired.Before(now) {
+			s.firedAt = fired
+		} else {
+			s.firedAt = now
+		}
 	}
 	if now.Sub(s.firedAt) >= s.ttl {
 		return Neutral
@@ -489,6 +493,77 @@ func superTrendDir(c []Candle, period int, mult float64) State {
 		}
 	}
 	return dir
+}
+
+// superTrendDirAll runs the Supertrend algorithm over all candles and returns
+// the direction at each index. Entries before the ATR warm-up are Neutral.
+func superTrendDirAll(c []Candle, period int, mult float64) []State {
+	result := make([]State, len(c))
+	for i := range result {
+		result[i] = Neutral
+	}
+	if len(c) < period+1 {
+		return result
+	}
+	h := highs(c)
+	l := lows(c)
+	cl := closes(c)
+	atrArr := wilderATR(h, l, cl, period)
+	if len(atrArr) == 0 {
+		return result
+	}
+	off := len(c) - len(atrArr)
+	var fub, flb float64
+	dir := Sell
+	for i, atrVal := range atrArr {
+		idx := i + off
+		mid := (h[idx] + l[idx]) / 2
+		bub := mid + mult*atrVal
+		blb := mid - mult*atrVal
+		if i == 0 {
+			fub, flb = bub, blb
+			result[idx] = dir
+			continue
+		}
+		pc := cl[idx-1]
+		if bub < fub || pc > fub {
+			fub = bub
+		}
+		if blb > flb || pc < flb {
+			flb = blb
+		}
+		if dir == Sell {
+			if cl[idx] > fub {
+				dir = Buy
+			}
+		} else {
+			if cl[idx] < flb {
+				dir = Sell
+			}
+		}
+		result[idx] = dir
+	}
+	return result
+}
+
+// superTrendLookbackFiredAt finds when the current Supertrend direction streak
+// started by scanning the candle history backwards. Returns the open time of
+// the first candle in that streak, so TTL is calculated from the actual signal
+// origin rather than from bot startup time.
+func superTrendLookbackFiredAt(c []Candle, period int, mult float64, currentDir State) time.Time {
+	dirs := superTrendDirAll(c, period, mult)
+	n := len(dirs)
+	if n == 0 {
+		return time.Time{}
+	}
+	startIdx := n - 1
+	for i := n - 2; i >= 0; i-- {
+		if dirs[i] == Neutral || dirs[i] != currentDir {
+			break
+		}
+		startIdx = i
+	}
+	return time.UnixMilli(c[startIdx].Time)
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -788,11 +863,24 @@ func (s *superTrendContinuous) Compute(c []Candle) State {
 	}
 	now := time.Now()
 	if base != s.lastDir {
-		// Direction changed — reset TTL timer
-		s.firedAt = now
 		s.lastDir = base
+		if s.firedAt.IsZero() {
+			// First computation after start/restart — look back in history
+			if fired := superTrendLookbackFiredAt(c, s.atrPeriod, s.mult, base); !fired.IsZero() && fired.Before(now) {
+				s.firedAt = fired
+			} else {
+				s.firedAt = now
+			}
+		} else {
+			// Live direction change — TTL starts from this candle
+			s.firedAt = now
+		}
 	} else if s.firedAt.IsZero() {
-		s.firedAt = now
+		if fired := superTrendLookbackFiredAt(c, s.atrPeriod, s.mult, base); !fired.IsZero() && fired.Before(now) {
+			s.firedAt = fired
+		} else {
+			s.firedAt = now
+		}
 	}
 	if now.Sub(s.firedAt) >= s.ttl {
 		return Neutral

@@ -238,9 +238,10 @@ export interface SignalConfig {
 
 export interface GridStep {
   price_move_pct: number
-  lots: number
+  size_pct: number
   order_type?: 'exchange' | 'virtual'
   use_signal?: boolean
+  signal_key?: string
 }
 
 export interface Strategy {
@@ -252,6 +253,7 @@ export interface Strategy {
   status: 'active' | 'finishing' | 'stopped'
   grid_levels: number
   grid_active: number
+  max_stop_active: number
   grid_step_pct: number
   grid_size_usdt: number
   tp_mode: 'total' | 'per_level'
@@ -262,7 +264,7 @@ export interface Strategy {
   leverage: number
   margin_type: 'isolated' | 'cross'
   hedge_mode: boolean
-  strategy_type: 'grid' | 'dca' | 'manual'
+  strategy_type: 'grid' | 'matrix' | 'manual'
   entry_order_type: 'limit' | 'stop_market'
   signal_configs: SignalConfig[]
   steps: GridStep[] | null
@@ -272,7 +274,6 @@ export interface Strategy {
   trailing_stop_enabled: boolean
   trailing_activation_pct: number | null
   trailing_callback_pct: number | null
-  after_stop_mode: 'delete' | 'restart' | null
   created_at: string
   updated_at: string
   // Computed by server
@@ -340,6 +341,7 @@ export interface MatrixLevel {
 }
 
 export interface MatrixEntryLevel {
+  price_step_pct?: number | null
   size_pct: number
   stop_pct: number | null
   stop_cond_pct: number | null
@@ -354,7 +356,7 @@ export interface StrategyFormData {
   symbol: string
   category: string
   direction: 'long' | 'short'
-  strategy_type: 'grid' | 'dca' | 'manual'
+  strategy_type: 'grid' | 'matrix' | 'manual'
   robot_enabled: boolean
   virtual_orders: boolean
   entry_order_type: 'limit' | 'stop_market'
@@ -364,6 +366,7 @@ export interface StrategyFormData {
   hedge_mode: boolean
   steps: GridStep[]
   grid_active: number
+  max_stop_active: number
   signal_configs: SignalConfig[]
   tp_pct: number
   tp_mode: 'total' | 'per_level'
@@ -372,7 +375,6 @@ export interface StrategyFormData {
   trailing_stop_enabled: boolean
   trailing_activation_pct: number
   trailing_callback_pct: number
-  after_stop_mode: 'delete' | 'restart'
   matrix_levels: MatrixLevel[]
   safe_zone_pct: number
   matrix_entry_level: MatrixEntryLevel

@@ -32,13 +32,6 @@ const (
 	SLTypeProgrammatic SLType = "programmatic"
 )
 
-type AfterStopMode string
-
-const (
-	AfterStopModeDelete  AfterStopMode = "delete"
-	AfterStopModeRestart AfterStopMode = "restart"
-)
-
 type LevelStatus string
 
 const (
@@ -56,7 +49,10 @@ type SignalConfig struct {
 
 type GridStep struct {
 	PriceMovePct float64 `json:"price_move_pct"`
-	Lots         float64 `json:"lots"`
+	SizePct      float64 `json:"size_pct"`
+	Lots         float64 `json:"lots,omitempty"`       // legacy field — migrated from old format
+	OrderType    string  `json:"order_type,omitempty"` // "exchange" | "virtual"
+	UseSignal    bool    `json:"use_signal,omitempty"` // gate this level on signal before placing
 }
 
 type MatrixLevel struct {
@@ -71,6 +67,7 @@ type MatrixLevel struct {
 }
 
 type MatrixEntryLevel struct {
+	PriceStepPct   *float64 `json:"price_step_pct,omitempty"`
 	SizePct        float64  `json:"size_pct"`
 	StopPct        *float64 `json:"stop_pct,omitempty"`
 	StopCondPct    *float64 `json:"stop_cond_pct,omitempty"`
@@ -90,6 +87,7 @@ type Strategy struct {
 	Status                Status
 	GridLevels            int
 	GridActive            int
+	MaxStopActive         int
 	GridStepPct           float64
 	GridSizeUSDT          float64
 	TPMode                TPMode
@@ -106,7 +104,6 @@ type Strategy struct {
 	TrailingStopEnabled   bool
 	TrailingActivationPct float64
 	TrailingCallbackPct   float64
-	AfterStopMode         AfterStopMode
 	MaxCycles             int
 	CycleCount            int
 	EntryOrderType        string

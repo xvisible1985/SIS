@@ -254,7 +254,7 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 						sr.tpOrderID = ""
 						_, posQty := sr.avgEntry()
 						if posQty > 0 && sr.strategy.TPPct > 0 {
-							if err := sr.updateTP(ctx); err != nil {
+							if err := sr.updateTPByType(ctx); err != nil {
 								log.Printf("strategy reconcile: TP re-place cycle %s: %v", cycleID, err)
 							}
 						}
@@ -271,7 +271,7 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 				_, posQty := sr.avgEntry()
 				if posQty > 0 && sr.tpOrderID == "" && sr.strategy.TPPct > 0 {
 					log.Printf("strategy reconcile: cycle %s has position (qty=%.6f) but no TP — placing", cycleID, posQty)
-					if err := sr.updateTP(ctx); err != nil {
+					if err := sr.updateTPByType(ctx); err != nil {
 						log.Printf("strategy reconcile: TP missing-place cycle %s: %v", cycleID, err)
 					}
 				}
@@ -319,7 +319,42 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 		}
 	}
 
-	// --- 8. Orphan detection ---
+	// --- 8. Matrix per-level SL health-check ---
+	// Runs every reconcile tick (20 s). For each active matrix runner, checks in-memory
+	// filled levels where SL was never placed (SLOrderID == "") and retries placement.
+	// Complements the price-triggered retry in matrixPriceTick (block 4): that one only
+	// fires when price crosses back through the fill level; this provides a timer-based
+	// safety net for levels that might never see that crossover.
+	for stratID, sr := range strategyRefs {
+		if sr.strategy.StrategyType != "matrix" {
+			continue
+		}
+		stratIDcopy := stratID
+		sr.submit(func(ctx context.Context) {
+			sr.mu.Lock()
+			defer sr.mu.Unlock()
+			for i := range sr.levels {
+				l := &sr.levels[i]
+				if l.Status != LevelFilled || l.SLOrderID != "" || l.Slot == nil {
+					continue
+				}
+				_, stopPct, _, _ := sr.matrixLevelConfig(*l.Slot)
+				if stopPct == nil {
+					continue
+				}
+				ref := l.FilledPrice
+				if ref <= 0 {
+					// FilledPrice not recorded yet — matrixPriceTick will handle it on next tick.
+					continue
+				}
+				log.Printf("strategy reconcile: matrix L%d (strategy %s) — SL не выставлен, повтор @ fillPrice=%.4f",
+					l.LevelIdx, stratIDcopy[:8], ref)
+				sr.matrixPlacePerLevelSL(ctx, l, ref, *stopPct)
+			}
+		})
+	}
+
+	// --- 9. Orphan detection ---
 	// Format: SIS_STR-{id8}-{cycleNum}-{levelIdx}-{gen}  (grid level)
 	//         SIS_STR-{id8}-tp-{cycleNum}-{seq}          (TP)
 	//         SIS_STR-{id8}-sl-{cycleNum}-{seq}          (SL)

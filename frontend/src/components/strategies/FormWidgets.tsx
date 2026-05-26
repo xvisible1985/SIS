@@ -106,17 +106,30 @@ const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1D'] as const
 
 function inferSignalDir(sc: { name: string; params?: Record<string, unknown> }): 'buy' | 'sell' | 'neutral' {
   const dir = sc.params?.dir as string | undefined
-  if (dir === 'вверх' || dir === 'up' || dir === 'bull') return 'buy'
-  if (dir === 'вниз' || dir === 'down' || dir === 'bear') return 'sell'
+  if (dir === 'вверх' || dir === 'up' || dir === 'bull' || dir === 'лонг') return 'buy'
+  if (dir === 'вниз' || dir === 'down' || dir === 'bear' || dir === 'short') return 'sell'
   if (dir === 'оба') return 'neutral'
   const sig = SIGNALS.find(s => s.id === sc.name)
   return (sig?.state as 'buy' | 'sell' | 'neutral' | undefined) ?? 'neutral'
 }
 
-export function SignalPickerField({ configs, onChange, onAutoSave }: {
+function mapParamDir(val: string): string {
+  if (val === 'bull') return 'лонг'
+  if (val === 'bear') return 'short'
+  return val
+}
+
+interface LiveSignalState {
+  signal_state: string
+  signal_values: Record<string, number>
+}
+
+export function SignalPickerField({ configs, onChange, onAutoSave, direction, liveSignal }: {
   configs: SignalConfig[]
   onChange: (configs: SignalConfig[]) => void
   onAutoSave?: (configs: SignalConfig[]) => void
+  direction?: string
+  liveSignal?: LiveSignalState
 }) {
   const [open, setOpen] = useState(false)
   const [step, setStep] = useState<'list' | 'config' | 'edit'>('list')
@@ -217,7 +230,21 @@ export function SignalPickerField({ configs, onChange, onAutoSave }: {
           neutral: { bg: 'rgba(91,140,255,.06)',  border: 'rgba(91,140,255,.13)',  name: '#c4d2ff' },
         }
         const cs = CARD_STYLE[statusKey]
-        const paramBadge = (sc.params?.dir ?? sc.params?.kind) as string | undefined
+        const rawParamBadge = (sc.params?.dir ?? sc.params?.kind) as string | undefined
+        const paramBadge = rawParamBadge ? mapParamDir(rawParamBadge) : undefined
+
+        // Live signal state badge
+        const liveStateRaw = liveSignal?.signal_state
+        const ttl = sc.params?.ttl as number | undefined
+        const liveSignalValue = liveSignal?.signal_values?.[sc.name]
+        // TTL check: if signal has ttl > 0 and no fresh value, treat as neutral
+        const effectiveLive = (ttl != null && ttl > 0 && liveSignalValue == null)
+          ? 'neutral'
+          : (liveStateRaw === 'buy' || liveStateRaw === 'sell' || liveStateRaw === 'neutral' ? liveStateRaw : null)
+        const liveLabel = effectiveLive === 'buy' ? 'лонг' : effectiveLive === 'sell' ? 'шорт' : effectiveLive === 'neutral' ? 'нейтрал' : null
+        const stratDir = direction === 'long' ? 'buy' : direction === 'short' ? 'sell' : null
+        const liveMatches = effectiveLive != null && stratDir != null && effectiveLive === stratDir
+
         return (
           <div key={sc.name} className="flex items-center gap-2 min-w-0">
             <div
@@ -240,6 +267,17 @@ export function SignalPickerField({ configs, onChange, onAutoSave }: {
               {paramBadge && (
                 <span className="shrink-0 px-2 py-[3px] rounded-[5px] text-[10px] font-mono text-[#8b9ab8] bg-black/20 border border-white/[.07]">
                   {paramBadge}
+                </span>
+              )}
+              {liveLabel && (
+                <span
+                  className="shrink-0 px-2 py-[3px] rounded-[5px] text-[10px] font-mono font-semibold border"
+                  style={liveMatches
+                    ? { color: effectiveLive === 'buy' ? '#4ade80' : '#f87171', background: effectiveLive === 'buy' ? 'rgba(74,222,128,.12)' : 'rgba(248,113,113,.12)', borderColor: effectiveLive === 'buy' ? 'rgba(74,222,128,.3)' : 'rgba(248,113,113,.3)' }
+                    : { color: '#8b9ab8', background: 'rgba(0,0,0,.2)', borderColor: 'rgba(255,255,255,.07)' }
+                  }
+                >
+                  {liveLabel}
                 </span>
               )}
               <button

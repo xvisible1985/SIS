@@ -37,9 +37,9 @@ function defaultConfig(bot?: BotType): StrategyConfig {
     grid_size_usdt:        s.grid_size_usdt        ?? 100,
     grid_active:           s.grid_active           ?? 0,
     steps:                 s.steps                 ?? [
-      { price_move_pct: 1.0, lots: 1 },
-      { price_move_pct: 1.5, lots: 2 },
-      { price_move_pct: 2.0, lots: 2 },
+      { price_move_pct: 0,   size_pct: 50 },
+      { price_move_pct: 1.5, size_pct: 100 },
+      { price_move_pct: 2.0, size_pct: 150 },
     ],
     signal_configs:        (s.signal_configs        as SignalConfig[] | undefined) ?? [],
     activation_signals:    (s.activation_signals    as SignalConfig[] | undefined) ?? [],
@@ -53,6 +53,7 @@ function defaultConfig(bot?: BotType): StrategyConfig {
     trailing_callback_pct:   s.trailing_callback_pct   ?? 0.5,
     after_stop_mode:         s.after_stop_mode         ?? 'restart',
     max_cycles:              s.max_cycles              ?? 0,
+    priority_signal:         s.priority_signal         ?? undefined,
   };
 }
 
@@ -165,7 +166,7 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
     setConfig(c => ({ ...c, ...partial }));
   }
 
-  function patchStep(i: number, field: 'price_move_pct' | 'lots', value: number) {
+  function patchStep(i: number, field: 'price_move_pct' | 'size_pct', value: number) {
     const steps = (config.steps ?? []).map((s, idx) =>
       idx === i ? { ...s, [field]: value } : s
     );
@@ -173,7 +174,7 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
   }
 
   function addStep() {
-    patch({ steps: [...(config.steps ?? []), { price_move_pct: 1.0, lots: 1 }] });
+    patch({ steps: [...(config.steps ?? []), { price_move_pct: 1.0, size_pct: 50 }] });
   }
 
   function removeStep(i: number) {
@@ -191,6 +192,11 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
       setScanError('Список символов ещё загружается');
       return;
     }
+    // Extract interval from signal config (params.tf), fall back to '15'.
+    const interval: string = signals.reduce<string>((acc, s) => {
+      const tf = (s as { params?: Record<string, unknown> }).params?.tf;
+      return acc !== '15' ? acc : (typeof tf === 'string' && tf ? tf : acc);
+    }, '15');
     setScanLoading(true);
     setScanError(null);
     setScanResult(null);
@@ -199,7 +205,8 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
         signal_configs: signals,
         whitelist: targets,   // уже разрешённый список, маски применены на фронте
         blacklist: [],
-        interval: '15',
+        interval,
+        direction: config.direction ?? 'both',
       });
       setScanResult(res.data.results ?? []);
     } catch {
@@ -519,11 +526,17 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
 
           {outerTab === 'strategy' && (
             <div className="flex flex-col gap-4">
+              {bot && (
+                <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/[.08] px-3 py-2.5 text-[11.5px] text-amber-300 leading-relaxed">
+                  <span className="mt-px shrink-0 text-amber-400">⚠</span>
+                  <span>Изменения настроек стратегии применятся только к <strong className="text-amber-200">новым стратегиям</strong>, которые бот создаст в будущем. Уже запущенные стратегии затронуты не будут.</span>
+                </div>
+              )}
               {/* strategy type selector */}
               <div className="flex items-center gap-3">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Тип стратегии</span>
                 <div className="flex gap-1">
-                  {(['grid', 'dca'] as const).map(t => (
+                  {(['grid', 'matrix'] as const).map(t => (
                     <button
                       key={t}
                       type="button"
@@ -713,19 +726,19 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                             className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
                           />
                           <input
-                            type="number" step="0.1" min="0.1"
-                            value={step.lots}
-                            onChange={e => patchStep(i, 'lots', Number(e.target.value))}
+                            type="number" step="0.01"
+                            value={step.size_pct}
+                            onChange={e => patchStep(i, 'size_pct', Number(e.target.value))}
                             className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
                           />
                           <input
-                            type="number" step="1" min="1"
-                            value={+(step.lots * (config.grid_size_usdt ?? 100)).toFixed(2)}
+                            type="number" step="1"
+                            value={+((step.size_pct ?? 0) / 100 * (config.grid_size_usdt ?? 100)).toFixed(2)}
                             onChange={e => {
                               const usdt = Number(e.target.value);
                               const base = config.grid_size_usdt ?? 100;
-                              if (usdt > 0 && base > 0)
-                                patchStep(i, 'lots', Math.round(usdt / base * 100) / 100);
+                              if (base > 0)
+                                patchStep(i, 'size_pct', Math.round(usdt / base * 10000) / 100);
                             }}
                             className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
                           />
@@ -910,9 +923,54 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                 </div>
                 <SignalPickerField
                   configs={(config.activation_signals as SignalConfig[]) ?? []}
-                  onChange={v => patch({ activation_signals: v })}
+                  onChange={v => {
+                    const names = new Set((v as SignalConfig[]).map(s => s.name));
+                    const keep = config.priority_signal && names.has(config.priority_signal)
+                      ? config.priority_signal
+                      : undefined;
+                    patch({ activation_signals: v, priority_signal: keep });
+                  }}
                 />
               </div>
+
+              {/* Priority signal selector */}
+              {((config.activation_signals as SignalConfig[]) ?? []).length > 0 && (
+                <div>
+                  <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 pb-1 border-b border-white/[.05] mb-2">
+                    Приоритетный сигнал
+                    <Tip text="Бот сортирует монеты по этому сигналу. Volume Spike — по величине объёма. SuperTrend — по остатку TTL (самый свежий первым)." />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    {((config.activation_signals as SignalConfig[]) ?? []).map(sig => (
+                      <label key={sig.name} className="flex items-center gap-2.5 cursor-pointer group">
+                        <input
+                          type="radio"
+                          name="priority_signal"
+                          value={sig.name}
+                          checked={config.priority_signal === sig.name}
+                          onChange={() => patch({ priority_signal: sig.name })}
+                          className="accent-[#5b8cff] h-3.5 w-3.5 cursor-pointer"
+                        />
+                        <span className="text-[12px] text-slate-300 group-hover:text-slate-100 transition-colors">
+                          {sigLabel(sig.name)}
+                        </span>
+                        {config.priority_signal === sig.name && SIG_SORT_HINT[sig.name] && (
+                          <span className="text-[10px] text-slate-500">— {SIG_SORT_HINT[sig.name]}</span>
+                        )}
+                      </label>
+                    ))}
+                    {config.priority_signal && (
+                      <button
+                        type="button"
+                        onClick={() => patch({ priority_signal: undefined })}
+                        className="mt-0.5 self-start text-[10px] text-slate-600 hover:text-slate-400 underline underline-offset-2"
+                      >
+                        Сбросить
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Whitelist */}
               <div>
@@ -1088,3 +1146,25 @@ const inputCls =
   'w-full rounded-lg border border-white/[.08] bg-black/[.25] px-3 py-2 text-[13px] text-slate-200 outline-none transition-colors placeholder:text-slate-500 focus:border-[#5b8cff]/50';
 
 const labelCls = 'flex items-center text-xs text-gray-500 mb-1';
+
+const SIG_LABELS: Record<string, string> = {
+  'rsi-os':    'RSI Oversold',
+  'macd-x':    'MACD Crossover',
+  'gc':        'Golden Cross',
+  'bb-sq':     'BB Squeeze',
+  'stoch-x':   'Stochastic Cross',
+  'vol-spike': 'Volume Spike',
+  'breakout':  'Range Breakout',
+  'ema-x':     'EMA Crossover',
+  'div':       'RSI Divergence',
+  'st-flip':   'SuperTrend Flip',
+};
+
+function sigLabel(name: string): string {
+  return SIG_LABELS[name] ?? name;
+}
+
+const SIG_SORT_HINT: Record<string, string> = {
+  'st-flip':   'сначала с наибольшим остатком TTL',
+  'vol-spike': 'сначала с наибольшим всплеском объёма',
+};

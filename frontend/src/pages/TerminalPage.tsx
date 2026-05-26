@@ -568,6 +568,12 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
 
   useEffect(() => { load() }, [])
 
+  useEffect(() => {
+    function onCreated() { load() }
+    window.addEventListener('strategy-created', onCreated)
+    return () => window.removeEventListener('strategy-created', onCreated)
+  }, [])
+
   // Restore parent state after refresh when selected strategy was saved in localStorage.
   const restoredRef = useRef(false)
   useEffect(() => {
@@ -702,6 +708,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
           defaultAccountId={accountId ?? undefined}
           onClose={() => setModalOpen(false)}
           onSaved={() => { setModalOpen(false); load() }}
+          liveSignal={editTarget ? signalStates[editTarget.id] : undefined}
         />
       )}
     </div>
@@ -752,8 +759,9 @@ export function TerminalPage() {
     const t = setInterval(fetch, 3000)
     return () => clearInterval(t)
   }, [selectedStrategy?.id])
-  const currentCycleNum = selectedStrategy ? (strategyCycleNums[selectedStrategy.id] ?? null) : null
-  const stratIdShort = selectedStrategy ? selectedStrategy.id.slice(0, 8) : null
+  const stratMatchesSymbol = selectedStrategy?.symbol === symbol
+  const currentCycleNum = stratMatchesSymbol ? (strategyCycleNums[selectedStrategy!.id] ?? null) : null
+  const stratIdShort = stratMatchesSymbol ? selectedStrategy!.id.slice(0, 8) : null
 
   const [rowSplit, setRowSplit] = useState(() => parseFloat(localStorage.getItem('t_row') ?? '65'))
   const containerRef = useRef<HTMLDivElement>(null)
@@ -960,7 +968,7 @@ export function TerminalPage() {
         <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden" style={{ height: '42vh' }}>
           {chartToolbar}
           <div className="flex-1 min-h-0">
-            <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={selectedStrategy?.direction as 'long' | 'short' | null ?? null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={strategyLevels} tickerPrices={tickerPrices} />
+            <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} tickerPrices={tickerPrices} />
           </div>
         </div>
         {/* Mobile tabs */}
@@ -1045,7 +1053,7 @@ export function TerminalPage() {
             </div>
           </div>
           <div className="flex-1 min-h-0">
-            <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={selectedStrategy?.direction as 'long' | 'short' | null ?? null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={strategyLevels} tickerPrices={tickerPrices} />
+            <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} tickerPrices={tickerPrices} />
           </div>
         </div>
 

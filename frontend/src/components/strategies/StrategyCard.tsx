@@ -41,6 +41,7 @@ interface CardState {
   eventTotal: number
   loading: boolean
   acting: boolean
+  actionError: string | null
 }
 
 // ── icons ──────────────────────────────────────────────────────────────────────
@@ -303,7 +304,7 @@ function logLvlStyle(lvl: string) {
 // ── main component ─────────────────────────────────────────────────────────────
 export function StrategyCard({ strategy: s, accounts, orders, positions, tickerPrices, onEdit, onChanged, selected, onSelect, isOpen, onToggleOpen, liveSignal }: Props) {
   const navigate = useNavigate()
-  const [cs, setCs] = useState<CardState>({ state: null, events: [], eventTotal: 0, loading: false, acting: false })
+  const [cs, setCs] = useState<CardState>({ state: null, events: [], eventTotal: 0, loading: false, acting: false, actionError: null })
   const [localEvents, setLocalEvents] = useState<StrategyEvent[] | null>(null)
   const [copiedLogIdx, setCopiedLogIdx] = useState<number | null>(null)
   const [logOpen, setLogOpen] = useState(false)
@@ -466,7 +467,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
 
   // ── actions ──────────────────────────────────────────────────────────────────
   async function handleStatus(status: StratStatus) {
-    setCs(p => ({ ...p, acting: true }))
+    setCs(p => ({ ...p, acting: true, actionError: null }))
     try {
       await setStrategyStatus(s.id, status)
       onChanged()
@@ -476,8 +477,9 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
         getStrategyEvents(s.id).catch(() => ({ total: 0, events: [] as StrategyEvent[] })),
       ])
       setCs(p => ({ ...p, state, events: evRes.events, eventTotal: evRes.total, acting: false }))
-    } catch {
-      setCs(p => ({ ...p, acting: false }))
+    } catch (e: any) {
+      const msg = e?.response?.data?.error ?? e?.message ?? 'Ошибка'
+      setCs(p => ({ ...p, acting: false, actionError: msg }))
     }
   }
 
@@ -639,7 +641,14 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
           {/* right: status · gear */}
           {s.bot_id
             ? <BotBadge botName={s.bot_name ?? 'Bot'} strategyId={s.id} onDetached={onChanged} onInteract={() => onSelect?.(s)} />
-            : <StatusPicker value={s.status} acting={cs.acting} onChange={handleStatus} onInteract={() => onSelect?.(s)} />
+            : (
+              <div className="flex flex-col items-end gap-0.5">
+                <StatusPicker value={s.status} acting={cs.acting} onChange={handleStatus} onInteract={() => onSelect?.(s)} />
+                {cs.actionError && (
+                  <span className="text-[9px] text-red-400 max-w-[140px] text-right leading-tight">{cs.actionError}</span>
+                )}
+              </div>
+            )
           }
           <button
             type="button"
@@ -663,12 +672,12 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
           <div className="min-w-0 flex-1 flex items-center gap-3.5 flex-wrap">
             <div className="relative group/ctip flex items-baseline gap-1.5">
               <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">
-                {s.strategy_type === 'dca' ? 'Матрица' : 'Grid'}
+                {s.strategy_type === 'matrix' ? 'Матрица' : 'Grid'}
               </span>
               <span className={`text-[13px] font-semibold ${s.active_levels > 0 ? 'text-slate-200' : 'text-slate-500'}`}>
                 {s.active_levels}/{s.grid_levels}
               </span>
-              <CardTip text={s.strategy_type === 'dca' ? 'Заполненных слотов матрицы / всего слотов в цикле' : 'Исполненных уровней сетки / всего уровней в текущем цикле'} />
+              <CardTip text={s.strategy_type === 'matrix' ? 'Заполненных слотов матрицы / всего слотов в цикле' : 'Исполненных уровней сетки / всего уровней в текущем цикле'} />
             </div>
             <div className="w-px h-2.5 bg-white/[.08]" />
             <div className="relative group/ctip flex items-baseline gap-1.5">
@@ -834,21 +843,33 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
                   <div className="bg-black/[.18] border border-white/[.05] rounded-[10px] p-3">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-[10px] text-slate-400 uppercase tracking-[1.3px] font-semibold">
-                        {s.strategy_type === 'dca' ? 'Слоты матрицы' : 'Уровни'} · {cs.state?.levels.filter(l => l.status === 'filled' || l.status === 'sl_closed').length ?? 0}/{s.grid_levels}
+                        {s.strategy_type === 'matrix' ? 'Слоты матрицы' : 'Уровни'} · {cs.state?.levels.filter(l => l.status === 'filled' || l.status === 'sl_closed').length ?? 0}/{s.grid_levels}
                       </span>
-                      <span className="text-[10px] text-[#5b6479] font-mono font-medium">{s.strategy_type === 'dca' ? `${s.grid_levels} слотов` : `L1–L${s.grid_levels}`}</span>
+                      <span className="text-[10px] text-[#5b6479] font-mono font-medium">{s.strategy_type === 'matrix' ? `${s.grid_levels} слотов` : `L1–L${s.grid_levels}`}</span>
                     </div>
+                    {s.status === 'active' && s.signal_filter && !!(s.signal_configs?.length) &&
+                     !['buy', 'sell'].includes((liveSignal?.signal_state ?? cs.state?.signal_state) ?? '') && (
+                      <div className="mb-1.5 px-2 py-[5px] rounded-[5px] bg-amber-500/10 border border-amber-500/15 text-amber-300/80 text-[10px] text-center font-semibold tracking-[.3px]">
+                        Ожидание сигнала
+                      </div>
+                    )}
                     <div
                       ref={levelsScrollRef}
                       className="max-h-[180px] overflow-y-auto flex flex-col gap-px"
                       style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,.14) transparent' }}
                     >
                       {cs.state && cs.state.levels.length > 0 ? (
-                        (s.strategy_type === 'dca'
+                        (s.strategy_type === 'matrix'
                           ? [...cs.state.levels].sort((a, b) => (b.target_price ?? 0) - (a.target_price ?? 0))
                           : cs.state.levels
                         ).map(l => {
-                          const tag = lvlTag(l.status)
+                          const levelStep = s.strategy_type === 'grid' ? s.steps?.[l.level_idx - 1] : undefined
+                          const sigState = liveSignal?.signal_state ?? cs.state?.signal_state
+                          const tag = s.status === 'active' && s.signal_filter && !!(s.signal_configs?.length) &&
+                            !['buy', 'sell'].includes(sigState ?? '') &&
+                            l.status === 'pending' && levelStep?.use_signal
+                            ? { label: 'сигнал', cls: 'bg-amber-500/20 text-amber-300' }
+                            : lvlTag(l.status)
                           const isFilled = l.status === 'filled' || l.status === 'sl_closed'
                           // find matching active order for filled levels to show real executed volume
                           const order = isFilled ? strategyOrders.find(o => o.orderId === l.exchange_order_id) : null
@@ -859,7 +880,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
                                 : Math.round(l.size_usdt))
                             : Math.round(l.size_usdt)
                           const priceVal = isFilled && l.filled_price > 0 ? l.filled_price : l.target_price
-                          const isMatrix = s.strategy_type === 'dca'
+                          const isMatrix = s.strategy_type === 'matrix'
                           return (
                             <div key={l.level_idx} data-lvl-status={l.status}
                               className="grid gap-2 items-center px-1 py-[5px] rounded-[5px] font-mono text-[11px]"
@@ -867,9 +888,10 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
                             >
                               {isMatrix && l.slot != null
                                 ? <span className={`text-[9px] px-[4px] py-[1px] rounded-[3px] font-bold ${
-                                    l.slot === 0 ? 'bg-violet-500/20 text-violet-300' :
+                                    l.slot === 0 ? 'bg-yellow-500/25 text-yellow-300' :
                                     l.slot < 0   ? 'bg-blue-500/20 text-blue-300' :
-                                                   'bg-amber-500/20 text-amber-300'
+                                    s.direction === 'long' ? 'bg-emerald-500/25 text-emerald-300' :
+                                                             'bg-red-500/25 text-red-300'
                                   }`}>L({l.slot})</span>
                                 : <span className="text-[10px] text-[#5b6479] w-[18px]">L{l.level_idx}</span>
                               }
@@ -907,7 +929,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
                       </div>
                       <CardTip text="Цена закрытия позиции в прибыль. Рассчитывается от средней цены входа по всем взятым уровням." />
                     </div>
-                    {s.strategy_type === 'dca' ? (
+                    {s.strategy_type === 'matrix' ? (
                       <div className="relative group/ctip bg-black/[.18] border border-white/[.06] rounded-[10px] p-2.5 flex flex-col gap-1.5">
                         <div className="flex items-center justify-between">
                           <span className="flex items-center gap-1.5 text-[12px] font-semibold text-rose-300">
@@ -932,7 +954,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
                           <span className="text-[9px] text-slate-500 uppercase tracking-[.6px] font-semibold">{s.sl_type === 'conditional' ? 'cond.' : 'prog.'}</span>
                         </div>
                         <div className="font-display text-[18px] font-bold tracking-[-0.4px] text-rose-300">
-                          −{s.sl_pct}%
+                          {s.sl_pct < 0 ? s.sl_pct : `-${s.sl_pct}`}%
                         </div>
                         <div className="text-[11px] text-slate-500">
                           {slPrice() ? slPrice()!.toFixed(2) + ' от start' : 'от start price'}

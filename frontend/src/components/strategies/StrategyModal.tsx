@@ -3,6 +3,7 @@ import { TemplateSelector } from './TemplateSelector'
 import { Toggle, Tip, SignalPickerField } from './FormWidgets'
 import { createStrategy, updateStrategy, getStrategyState, getInstrumentConstraints, type InstrumentConstraints } from '../../api/strategies'
 import { CoinPicker } from '../common/CoinPicker'
+import { SIGNALS } from '../../features/indicators/signals'
 import type { Strategy, StrategyFormData, GridStep, MatrixLevel, MatrixEntryLevel } from '../../types'
 
 const DEFAULT_MATRIX_LEVELS: MatrixLevel[] = [
@@ -14,7 +15,7 @@ const DEFAULT_MATRIX_LEVELS: MatrixLevel[] = [
 ]
 
 const DEFAULT_MATRIX_ENTRY: MatrixEntryLevel = {
-  size_pct: 10, stop_pct: -5.0, stop_cond_pct: -2.0, stop_replace_pct: 1.0, tp_pct: 2.0,
+  price_step_pct: null, size_pct: 10, stop_pct: -5.0, stop_cond_pct: -2.0, stop_replace_pct: 1.0, tp_pct: 2.0,
 }
 
 function defaultForm(): StrategyFormData {
@@ -32,11 +33,12 @@ function defaultForm(): StrategyFormData {
     margin_type: 'isolated',
     hedge_mode: false,
     steps: [
-      { price_move_pct: 1.0, lots: 1 },
-      { price_move_pct: 1.5, lots: 2 },
-      { price_move_pct: 2.0, lots: 2 },
+      { price_move_pct: 0,   size_pct: 50 },
+      { price_move_pct: 1.5, size_pct: 100 },
+      { price_move_pct: 2.0, size_pct: 150 },
     ],
     grid_active: 0,
+    max_stop_active: 10,
     signal_configs: [],
     tp_pct: 2.0,
     tp_mode: 'total',
@@ -45,7 +47,6 @@ function defaultForm(): StrategyFormData {
     trailing_stop_enabled: false,
     trailing_activation_pct: 1.5,
     trailing_callback_pct: 0.5,
-    after_stop_mode: 'restart',
     matrix_levels: DEFAULT_MATRIX_LEVELS,
     safe_zone_pct: 1.5,
     matrix_entry_level: DEFAULT_MATRIX_ENTRY,
@@ -66,8 +67,9 @@ function strategyToForm(s: Strategy): StrategyFormData {
     grid_size_usdt: s.grid_size_usdt,
     margin_type: s.margin_type,
     hedge_mode: s.hedge_mode,
-    steps: s.steps ?? [{ price_move_pct: s.grid_step_pct, lots: 1 }],
+    steps: s.steps ?? [{ price_move_pct: s.grid_step_pct, size_pct: 50 }],
     grid_active: s.grid_active ?? 0,
+    max_stop_active: s.max_stop_active ?? 10,
     signal_configs: s.signal_configs ?? [],
     tp_pct: s.tp_pct,
     tp_mode: s.tp_mode,
@@ -76,7 +78,6 @@ function strategyToForm(s: Strategy): StrategyFormData {
     trailing_stop_enabled: s.trailing_stop_enabled,
     trailing_activation_pct: s.trailing_activation_pct ?? 1.5,
     trailing_callback_pct: s.trailing_callback_pct ?? 0.5,
-    after_stop_mode: s.after_stop_mode ?? 'restart',
     matrix_levels: (s.matrix_levels ?? DEFAULT_MATRIX_LEVELS).map(l => ({
       direction: (l as any).direction ?? 'below',
       price_step_pct: l.price_step_pct,
@@ -93,15 +94,132 @@ function strategyToForm(s: Strategy): StrategyFormData {
   }
 }
 
+// MatrixTooltip renders a crimson error tooltip above an input, shown on hover.
+function MatrixTooltip({ msg }: { msg: string }) {
+  return (
+    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 z-[200] px-2 py-1 text-[10px] bg-fuchsia-950 border border-fuchsia-600 text-fuchsia-200 rounded whitespace-nowrap pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-150 shadow-lg">
+      {msg}
+      <div className="absolute top-full left-1/2 -translate-x-1/2 border-[5px] border-transparent border-t-fuchsia-600" />
+    </div>
+  )
+}
+
+// NumericInput keeps the raw string while focused so clearing the field
+// shows empty instead of snapping to 0.
+function NumericInput({ value, onChange, className, step, placeholder, disabled, errorMsg }: {
+  value: number
+  onChange: (v: number) => void
+  className?: string
+  step?: string | number
+  placeholder?: string
+  disabled?: boolean
+  errorMsg?: string | null
+}) {
+  const [draft, setDraft] = useState<string | null>(null)
+
+  function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const raw = e.target.value
+    setDraft(raw)
+    if (raw === '' || raw === '-') return
+    const n = parseFloat(raw)
+    if (!isNaN(n)) onChange(n)
+  }
+
+  function handleBlur() {
+    if (draft !== null && draft !== '' && draft !== '-') {
+      const n = parseFloat(draft)
+      if (!isNaN(n)) onChange(n)
+    }
+    setDraft(null)
+  }
+
+  return (
+    <div className="relative group">
+      <input
+        type="text"
+        inputMode="decimal"
+        step={step}
+        placeholder={placeholder}
+        disabled={disabled}
+        value={draft !== null ? draft : value}
+        onChange={handleChange}
+        onBlur={handleBlur}
+        onFocus={() => setDraft(String(value))}
+        className={className}
+      />
+      {errorMsg && <MatrixTooltip msg={errorMsg} />}
+    </div>
+  )
+}
+
+// NullableNumericInput — same as NumericInput but value can be null (empty field = null).
+function NullableNumericInput({ value, onChange, className, disabled, errorMsg }: {
+  value: number | null
+  onChange: (v: number | null) => void
+  className?: string
+  disabled?: boolean
+  errorMsg?: string | null
+}) {
+  const [draft, setDraft] = useState<string | null>(null)
+
+  function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const raw = e.target.value
+    setDraft(raw)
+    if (raw === '' || raw === '-') return
+    const n = parseFloat(raw)
+    if (!isNaN(n)) onChange(n)
+  }
+
+  function handleBlur() {
+    if (draft !== null) {
+      if (draft === '' || draft === '-') {
+        onChange(null)
+      } else {
+        const n = parseFloat(draft)
+        onChange(isNaN(n) ? null : n)
+      }
+    }
+    setDraft(null)
+  }
+
+  const isFocused = draft !== null
+  const displayValue = isFocused ? draft : (value === null ? '' : String(value))
+  const isNull = value === null && !isFocused
+  const hasError = !!errorMsg
+
+  return (
+    <div className="relative group">
+      <input
+        type="text"
+        inputMode="decimal"
+        value={displayValue}
+        placeholder="—"
+        disabled={disabled}
+        onChange={handleChange}
+        onBlur={handleBlur}
+        onFocus={() => setDraft(value === null ? '' : String(value))}
+        className={`bg-gray-900 border rounded py-1 px-1 text-xs text-center w-full outline-none focus:border-blue-500 ${hasError ? 'border-red-500 text-gray-100' : isNull ? 'border-dashed border-gray-700 text-gray-500 placeholder-gray-700' : 'border-gray-700 text-gray-100'} ${className ?? ''} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+      />
+      {errorMsg && <MatrixTooltip msg={errorMsg} />}
+    </div>
+  )
+}
+
+interface LiveSignalState {
+  signal_state: string
+  signal_values: Record<string, number>
+}
+
 interface Props {
   strategy?: Strategy
   filledLevels?: number
   defaultAccountId?: string
   onClose: () => void
   onSaved: () => void
+  liveSignal?: LiveSignalState
 }
 
-export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, defaultAccountId, onClose, onSaved }: Props) {
+export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, defaultAccountId, onClose, onSaved, liveSignal }: Props) {
   const [tab, setTab] = useState(0)
   const [form, setForm] = useState<StrategyFormData>(
     strategy ? strategyToForm(strategy) : { ...defaultForm(), account_id: defaultAccountId ?? '' }
@@ -112,6 +230,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
   const [entryFilled, setEntryFilled] = useState(false)
   const [instrInfo, setInstrInfo] = useState<InstrumentConstraints | null>(null)
   const [minLotEnabled, setMinLotEnabled] = useState(false)
+  const [openOrderTypeDrop, setOpenOrderTypeDrop] = useState<number | null>(null)
 
   // Fetch live filled count when editing — card state may not be loaded yet.
   useEffect(() => {
@@ -146,18 +265,15 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
   }
 
   function addStep() {
-    patch({ steps: [...form.steps, { price_move_pct: 1.0, lots: 1 }] })
+    setForm(f => ({ ...f, steps: [...f.steps, { price_move_pct: 1.0, size_pct: 50 }] }))
   }
 
   function removeStep(i: number) {
-    patch({ steps: form.steps.filter((_, idx) => idx !== i) })
+    setForm(f => ({ ...f, steps: f.steps.filter((_, idx) => idx !== i) }))
   }
 
-  function updateStep(i: number, field: keyof GridStep, value: number | string | boolean) {
-    const steps = form.steps.map((s, idx) =>
-      idx === i ? { ...s, [field]: value } : s
-    )
-    patch({ steps })
+  function updateStep(i: number, partial: Partial<GridStep>) {
+    setForm(f => ({ ...f, steps: f.steps.map((s, idx) => idx === i ? { ...s, ...partial } : s) }))
   }
 
   const aboveLevels = form.matrix_levels.filter(l => l.direction === 'above')
@@ -207,12 +323,40 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
   }
 
   function loadTemplate(config: Partial<StrategyFormData>) {
-    setForm(f => ({ ...f, ...config }))
+    // Never let a template override symbol or strategy_type —
+    // type is controlled by the switcher, symbol is fixed for existing strategies.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { symbol, strategy_type, ...rest } = config
+    setForm(f => ({ ...f, ...rest, ...(symbol && !strategy ? { symbol } : {}) }))
   }
 
   async function handleSubmit() {
     if (!form.account_id || !form.symbol) {
       setError('Заполните символ и аккаунт')
+      return
+    }
+    if (form.sl_pct > 0) {
+      setError('Stop Loss должен быть отрицательным (например, -5 = 5% ниже цены входа)')
+      return
+    }
+    const currentStepErrors = form.steps.map((s, i) => ({
+      price_move_pct: i > 0 && s.price_move_pct <= 0,
+      size_pct: s.size_pct <= 0,
+    }))
+    const hasStepErrors = currentStepErrors.some(e => e.price_move_pct || e.size_pct)
+    const hasMatrixErrors = form.strategy_type === 'matrix' && (
+      matrixLevelErrors.some(e => e.price_step_pct || e.size_pct || e.stop_pct || e.stop_cond_pct) ||
+      !!(matrixEntryErrors.size_pct || matrixEntryErrors.stop_pct || matrixEntryErrors.stop_cond_pct)
+    )
+    const currentFieldErrors = {
+      tp_pct: form.tp_pct <= 0,
+      trailing_activation_pct: form.trailing_stop_enabled && form.trailing_activation_pct <= 0,
+      trailing_callback_pct: form.trailing_stop_enabled && form.trailing_callback_pct <= 0,
+    }
+    const hasFieldErrors = Object.values(currentFieldErrors).some(Boolean)
+    if (hasStepErrors || hasMatrixErrors || hasFieldErrors) {
+      setError('Исправьте ошибки в форме (поля, выделенные красным)')
+      setTab(hasStepErrors || hasMatrixErrors ? 1 : 2)
       return
     }
     if (instrInfo) {
@@ -228,7 +372,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
     setSaving(true)
     setError(null)
     try {
-      const isMatrix = form.strategy_type === 'dca'
+      const isMatrix = form.strategy_type === 'matrix'
       const totalMatrixLevels = aboveLevels.length + 1 + belowLevels.length
       const payload = {
         ...form,
@@ -259,13 +403,46 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
     }
   }
 
-  const tabLabels = ['1. Базовые', form.strategy_type === 'dca' ? '2. Матрица' : '2. Сетка ордеров', '3. Завершение']
+  const tabLabels = ['1. Базовые', form.strategy_type === 'matrix' ? '2. Матрица' : '2. Сетка ордеров', '3. Завершение']
   const inputCls = 'w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-blue-500'
   const labelCls = 'flex items-center text-xs text-gray-400 mb-1'
 
+  // Inline validation — computed from current form state
+  const stepErrors = form.steps.map((s, i) => ({
+    price_move_pct: i > 0 && s.price_move_pct <= 0, // step 0 allows 0 (market entry)
+    size_pct: s.size_pct <= 0,
+  }))
+  const matrixLevelErrors = form.matrix_levels.map(l => ({
+    price_step_pct: l.direction === 'above' && l.price_step_pct <= 0 ? 'Должно быть положительным (уровень выше входа)'
+                  : l.direction === 'below' && l.price_step_pct >= 0 ? 'Должно быть отрицательным (уровень ниже входа)'
+                  : null,
+    size_pct:      l.size_pct <= 0 ? 'Объём должен быть больше нуля' : null,
+    stop_pct:      l.stop_pct !== null && l.stop_pct >= 0 ? 'Стоп должен быть отрицательным' : null,
+    stop_cond_pct: l.stop_cond_pct !== null && l.stop_cond_pct <= 0 ? 'Условие перевыставления должно быть положительным' : null,
+  }))
+  const matrixEntryErrors = {
+    size_pct:      form.matrix_entry_level.size_pct <= 0 ? 'Объём должен быть больше нуля' : null,
+    stop_pct:      form.matrix_entry_level.stop_pct !== null && form.matrix_entry_level.stop_pct >= 0 ? 'Стоп должен быть отрицательным' : null,
+    stop_cond_pct: form.matrix_entry_level.stop_cond_pct !== null && form.matrix_entry_level.stop_cond_pct <= 0 ? 'Условие перевыставления должно быть положительным' : null,
+  }
+  const fieldErrors = {
+    grid_active: form.grid_active < 0 || form.grid_active > form.steps.length,
+    max_stop_active: form.max_stop_active < 0 || form.max_stop_active > 10,
+    tp_pct: form.tp_pct <= 0,
+    trailing_activation_pct: form.trailing_stop_enabled && form.trailing_activation_pct <= 0,
+    trailing_callback_pct: form.trailing_stop_enabled && form.trailing_callback_pct <= 0,
+    sl_pct: form.sl_pct >= 0,
+  }
+  const errCls = (hasErr: boolean) =>
+    hasErr
+      ? 'w-full bg-gray-800 border border-red-500 rounded-md px-3 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-red-400'
+      : inputCls
+  const stepErrCls = (hasErr: boolean) =>
+    `bg-gray-800 border ${hasErr ? 'border-red-500' : 'border-gray-700'} rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full`
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-gray-900 border border-gray-700 rounded-xl w-[740px] shadow-2xl flex flex-col max-h-[90vh]">
+      <div className="bg-gray-900 border border-gray-700 rounded-xl w-[740px] shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-700">
           <span className="text-gray-100 font-semibold">
@@ -278,7 +455,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
         <TemplateSelector
           formData={form}
           onLoad={loadTemplate}
-          strategyType={form.strategy_type as 'grid' | 'dca'}
+          strategyType={form.strategy_type as 'grid' | 'matrix'}
           onStrategyTypeChange={t => patch({ strategy_type: t })}
         />
 
@@ -345,7 +522,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                 </div>
               </div>
 
-              {form.strategy_type !== 'dca' && (
+              {form.strategy_type !== 'matrix' && (
               <div>
                 <label className={labelCls}>Тип входного ордера<Tip text="Limit — мейкер-ордер ждёт своей цены в стакане (комиссия ~0.02%). Stop Market — тейкер-ордер срабатывает при пробое уровня (комиссия ~0.055%). Limit дешевле, Stop Market гарантирует исполнение." /></label>
                 <Toggle
@@ -359,6 +536,8 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
               </div>
               )}
 
+              {/* Leverage + deposit shown in Tab 1 only for matrix (DCA); for grid they live in Tab 2 */}
+              {form.strategy_type === 'matrix' && (
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className={labelCls}>
@@ -366,24 +545,22 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                     {instrInfo && <span className="ml-1.5 text-[10px] text-gray-500">макс. ×{instrInfo.max_leverage}</span>}
                     <Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500. Чем выше плечо — тем больше потенциальная прибыль и тем ближе ликвидация." />
                   </label>
-                  <input
-                    type="number" min={1} max={instrInfo?.max_leverage ?? 100}
+                  <NumericInput
                     value={form.leverage}
-                    onChange={e => patch({ leverage: Math.min(Number(e.target.value), instrInfo?.max_leverage ?? 100) })}
+                    onChange={v => patch({ leverage: Math.min(v, instrInfo?.max_leverage ?? 100) })}
                     className={inputCls}
                   />
                 </div>
                 <div>
                   <label className={labelCls}>
-                    Объём 1 лота (USDT)
+                    Депозит (USDT)
                     {instrInfo?.min_order_usdt ? <span className="ml-1.5 text-[10px] text-gray-500">мин. {instrInfo.min_order_usdt.toFixed(2)}$</span> : null}
-                    <Tip text="Размер одного базового ордера в USDT. Итоговый объём каждого уровня сетки = лоты шага × этот размер. Например, при 100 USDT/лот и 2 лотах на шаге — ордер на 200 USDT." />
+                    <Tip text="Базовая сумма, от которой отсчитываются проценты шагов. Итоговый USDT шага = % шага × депозит / 100." />
                   </label>
                   <div className="flex items-center gap-2">
-                    <input
-                      type="number" min={instrInfo?.min_order_usdt ?? 1}
+                    <NumericInput
                       value={form.grid_size_usdt}
-                      onChange={e => patch({ grid_size_usdt: Number(e.target.value) })}
+                      onChange={v => patch({ grid_size_usdt: v })}
                       disabled={minLotEnabled}
                       className={`${inputCls} [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${minLotEnabled ? 'cursor-not-allowed opacity-50' : ''} ${instrInfo && form.grid_size_usdt < instrInfo.min_order_usdt ? 'border-red-500' : ''}`}
                     />
@@ -401,6 +578,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                   </div>
                 </div>
               </div>
+              )}
 
               <div>
                 <label className={labelCls}>Тип маржи<Tip text="Isolated — маржа ограничена суммой, зарезервированной под конкретную позицию; максимальный убыток не превысит её. Cross — в расчёте ликвидации участвует вся свободная маржа аккаунта." /></label>
@@ -419,24 +597,40 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                   onChange={v => patch({ hedge_mode: v === 'true' })}
                 />
               </div>
+
+              <div>
+                <label className={labelCls}>Одновременно на бирже<Tip text="Лимиты на количество активных ордеров одновременно. Bybit ограничивает условные StopOrder-ордера до ~10 на символ." /></label>
+                <div className="flex gap-2">
+                  {form.strategy_type === 'grid' && (
+                    <div className="flex-1">
+                      <p className="text-[10px] text-gray-500 mb-1">Лимитных (0 = все)</p>
+                      <NumericInput
+                        value={form.grid_active}
+                        onChange={v => patch({ grid_active: v })}
+                        className={errCls(fieldErrors.grid_active)}
+                        placeholder="0"
+                      />
+                    </div>
+                  )}
+                  <div className="flex-1">
+                    <p className="text-[10px] text-gray-500 mb-1">Условных стопов (макс. 10)</p>
+                    <NumericInput
+                      value={form.max_stop_active}
+                      onChange={v => patch({ max_stop_active: v ?? 10 })}
+                      className={errCls(fieldErrors.max_stop_active)}
+                      placeholder="10"
+                    />
+                    {fieldErrors.max_stop_active && (
+                      <p className="text-[10px] text-red-400 mt-0.5">Значение от 0 до 10</p>
+                    )}
+                  </div>
+                </div>
+              </div>
             </>
           )}
 
           {/* Tab 2: Matrix */}
-          {tab === 1 && form.strategy_type === 'dca' && (() => {
-            const miniInput = (
-              value: number | null,
-              onChange: (v: number | null) => void,
-              extraCls = ''
-            ) => (
-              <input
-                type="number" step="0.1"
-                value={value ?? ''}
-                placeholder="—"
-                onChange={e => onChange(e.target.value === '' ? null : Number(e.target.value))}
-                className={`bg-gray-900 border rounded py-1 px-1 text-xs text-gray-100 text-center w-full outline-none focus:border-blue-500 ${value === null ? 'border-dashed border-gray-700 text-gray-600 placeholder-gray-700' : 'border-gray-700'} ${extraCls}`}
-              />
-            )
+          {tab === 1 && form.strategy_type === 'matrix' && (() => {
             const colHdrCls = 'text-[8px] text-gray-400 text-center flex items-center justify-center gap-0.5'
             const colGrid = 'grid grid-cols-[34px_1fr_1fr_6px_1fr_1fr_1fr_1fr_46px_40px_18px] gap-[3px] items-center'
             const sep = <div className="flex items-center justify-center"><div className="w-px h-[22px] bg-gray-700/60" /></div>
@@ -470,6 +664,8 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
               </div>
             )
             const isShort = form.direction === 'short'
+            const numCls = (err: boolean, disabled: boolean) =>
+              `bg-gray-900 border rounded py-1 px-1 text-xs text-gray-100 text-center w-full outline-none focus:border-blue-500 ${err ? 'border-red-500' : 'border-gray-700'} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`
             const levelRow = (
               direction: 'above' | 'below',
               level: MatrixLevel,
@@ -479,27 +675,41 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
               canDelete: boolean
             ) => {
               const isAbove = direction === 'above'
+              // For SHORT strategies L(1)..L(N) go against the position → red
               const badgeCls = isAbove
-                ? 'bg-emerald-900 text-emerald-300 text-[8px] font-bold rounded text-center py-0.5'
+                ? (isShort
+                    ? 'bg-red-900 text-red-300 text-[8px] font-bold rounded text-center py-0.5'
+                    : 'bg-emerald-900 text-emerald-300 text-[8px] font-bold rounded text-center py-0.5')
                 : 'bg-blue-900 text-blue-300 text-[8px] font-bold rounded text-center py-0.5'
-              const rowCls = isAbove ? 'bg-emerald-950/20' : 'bg-blue-950/30'
-              const stepInvalid = !isFilled && (isAbove ? level.price_step_pct <= 0 : level.price_step_pct >= 0)
+              const rowCls = isAbove
+                ? (isShort ? 'bg-red-950/20' : 'bg-emerald-950/20')
+                : 'bg-blue-950/30'
+              const globalIdx = form.matrix_levels.indexOf(level)
+              const errs = matrixLevelErrors[globalIdx] ?? { price_step_pct: false, size_pct: false }
               return (
                 <div key={`${direction}-${dirIdx}`} className={`${colGrid} px-1 py-1 rounded mb-0.5 ${isFilled ? 'bg-green-950/40' : rowCls}`}>
                   <div className={isFilled ? 'bg-green-900 text-green-300 text-[8px] font-bold rounded text-center py-0.5' : badgeCls}>
                     {isAbove ? `L(${labelNum})` : `L(-${labelNum})`}
                   </div>
-                  <input type="number" step="0.1" value={level.price_step_pct} disabled={isFilled}
-                    onChange={e => updateMatrixLevel(direction, dirIdx, 'price_step_pct', Number(e.target.value))}
-                    className={`bg-gray-900 border rounded py-1 px-1 text-xs text-gray-100 text-center w-full outline-none focus:border-blue-500 ${isFilled ? 'opacity-50 cursor-not-allowed' : ''} ${stepInvalid ? 'border-red-500' : 'border-gray-700'}`} />
-                  <input type="number" step="0.5" value={level.size_pct} disabled={isFilled}
-                    onChange={e => updateMatrixLevel(direction, dirIdx, 'size_pct', Number(e.target.value))}
-                    className={`bg-gray-900 border border-gray-700 rounded py-1 px-1 text-xs text-gray-100 text-center w-full outline-none focus:border-blue-500 ${isFilled ? 'opacity-50 cursor-not-allowed' : ''}`} />
+                  <NumericInput
+                    value={level.price_step_pct}
+                    onChange={v => updateMatrixLevel(direction, dirIdx, 'price_step_pct', v)}
+                    disabled={isFilled}
+                    errorMsg={isFilled ? null : errs.price_step_pct}
+                    className={numCls(!isFilled && !!errs.price_step_pct, isFilled)}
+                  />
+                  <NumericInput
+                    value={level.size_pct}
+                    onChange={v => updateMatrixLevel(direction, dirIdx, 'size_pct', v)}
+                    disabled={isFilled}
+                    errorMsg={isFilled ? null : errs.size_pct}
+                    className={numCls(!isFilled && !!errs.size_pct, isFilled)}
+                  />
                   {sep}
-                  {miniInput(level.stop_pct, v => updateMatrixLevel(direction, dirIdx, 'stop_pct', v))}
-                  {miniInput(level.stop_cond_pct, v => updateMatrixLevel(direction, dirIdx, 'stop_cond_pct', v))}
-                  {miniInput(level.stop_replace_pct, v => updateMatrixLevel(direction, dirIdx, 'stop_replace_pct', v))}
-                  {miniInput(level.tp_pct, v => updateMatrixLevel(direction, dirIdx, 'tp_pct', v))}
+                  <NullableNumericInput value={level.stop_pct} disabled={isFilled} errorMsg={isFilled ? null : errs.stop_pct} onChange={v => updateMatrixLevel(direction, dirIdx, 'stop_pct', v)} />
+                  <NullableNumericInput value={level.stop_cond_pct} disabled={isFilled} errorMsg={isFilled ? null : errs.stop_cond_pct} onChange={v => updateMatrixLevel(direction, dirIdx, 'stop_cond_pct', v)} />
+                  <NullableNumericInput value={level.stop_replace_pct} disabled={isFilled} onChange={v => updateMatrixLevel(direction, dirIdx, 'stop_replace_pct', v)} />
+                  <NullableNumericInput value={level.tp_pct} disabled={isFilled} onChange={v => updateMatrixLevel(direction, dirIdx, 'tp_pct', v)} />
                   {orderTypeBtn(level.order_type === 'virtual', isFilled, () => updateMatrixLevel(direction, dirIdx, 'order_type', level.order_type === 'virtual' ? 'exchange' : 'virtual'))}
                   <button
                     onClick={() => !isFilled && updateMatrixLevel(direction, dirIdx, 'use_signal', !level.use_signal)}
@@ -586,15 +796,21 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                   {colHdrs()}
                   <div className={`${colGrid} px-1 py-1 rounded ${entryFilled ? 'bg-green-950/40' : 'bg-yellow-950/20'}`}>
                     <div className={`text-[8px] font-bold rounded text-center py-0.5 ${entryFilled ? 'bg-green-900 text-green-300' : 'bg-yellow-800/60 text-yellow-200'}`}>L(0)</div>
-                    <div className="bg-gray-900 border border-dashed border-gray-700 rounded py-1 text-[9px] text-gray-600 text-center">—</div>
-                    <input type="number" step="0.5" value={form.matrix_entry_level.size_pct}
-                      onChange={e => updateEntryLevel('size_pct', Number(e.target.value))}
-                      className="bg-gray-900 border border-gray-700 rounded py-1 px-1 text-xs text-gray-100 text-center w-full outline-none focus:border-blue-500" />
+                    <NullableNumericInput
+                      value={form.matrix_entry_level.price_step_pct ?? null}
+                      onChange={v => updateEntryLevel('price_step_pct', v)}
+                    />
+                    <NumericInput
+                      value={form.matrix_entry_level.size_pct}
+                      onChange={v => updateEntryLevel('size_pct', v)}
+                      errorMsg={matrixEntryErrors.size_pct}
+                      className={numCls(!!matrixEntryErrors.size_pct, false)}
+                    />
                     {sep}
-                    {miniInput(form.matrix_entry_level.stop_pct, v => updateEntryLevel('stop_pct', v))}
-                    {miniInput(form.matrix_entry_level.stop_cond_pct, v => updateEntryLevel('stop_cond_pct', v))}
-                    {miniInput(form.matrix_entry_level.stop_replace_pct, v => updateEntryLevel('stop_replace_pct', v))}
-                    {miniInput(form.matrix_entry_level.tp_pct, v => updateEntryLevel('tp_pct', v))}
+                    <NullableNumericInput value={form.matrix_entry_level.stop_pct} errorMsg={matrixEntryErrors.stop_pct} onChange={v => updateEntryLevel('stop_pct', v)} />
+                    <NullableNumericInput value={form.matrix_entry_level.stop_cond_pct} errorMsg={matrixEntryErrors.stop_cond_pct} onChange={v => updateEntryLevel('stop_cond_pct', v)} />
+                    <NullableNumericInput value={form.matrix_entry_level.stop_replace_pct} onChange={v => updateEntryLevel('stop_replace_pct', v)} />
+                    <NullableNumericInput value={form.matrix_entry_level.tp_pct} onChange={v => updateEntryLevel('tp_pct', v)} />
                     {orderTypeBtn(
                       form.matrix_entry_level.order_type === 'virtual',
                       false,
@@ -658,95 +874,176 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                   onAutoSave={strategy ? (newConfigs) => {
                     updateStrategy(strategy.id, { ...form, signal_configs: newConfigs, signal_filter: newConfigs.length > 0 } as any).catch(() => {})
                   } : undefined}
+                  direction={form.direction}
+                  liveSignal={liveSignal}
                 />
               </>
             )
           })()}
 
           {/* Tab 2: Grid (non-matrix) */}
-          {tab === 1 && form.strategy_type !== 'dca' && (
+          {tab === 1 && form.strategy_type !== 'matrix' && (
             <>
+              {/* Leverage + Deposit live here for grid strategies */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>
+                    Плечо (×)
+                    {instrInfo && <span className="ml-1.5 text-[10px] text-gray-500">макс. ×{instrInfo.max_leverage}</span>}
+                    <Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500." />
+                  </label>
+                  <NumericInput
+                    value={form.leverage}
+                    onChange={v => patch({ leverage: Math.min(v, instrInfo?.max_leverage ?? 100) })}
+                    className={inputCls}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>
+                    Депозит (USDT)
+                    {instrInfo?.min_order_usdt ? <span className="ml-1.5 text-[10px] text-gray-500">мин. {instrInfo.min_order_usdt.toFixed(2)}$</span> : null}
+                    <Tip text="Базовая сумма, от которой считается % каждого шага. USDT шага = % × депозит / 100." />
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <NumericInput
+                      value={form.grid_size_usdt}
+                      onChange={v => patch({ grid_size_usdt: v })}
+                      disabled={minLotEnabled}
+                      className={`${inputCls} [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${minLotEnabled ? 'cursor-not-allowed opacity-50' : ''} ${instrInfo && form.grid_size_usdt < instrInfo.min_order_usdt ? 'border-red-500' : ''}`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setMinLotEnabled(v => !v)}
+                      className={`shrink-0 rounded-lg border px-3 py-1.5 text-[11px] font-semibold transition-colors ${
+                        minLotEnabled
+                          ? 'border-blue-500/40 bg-blue-500/[.18] text-blue-400'
+                          : 'border-gray-700 bg-gray-800 text-gray-400 hover:bg-gray-700'
+                      }`}
+                    >
+                      min
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               <div className="text-[10px] text-gray-400 uppercase tracking-wider pb-1 border-b border-gray-800">
-                Шаги усреднения
+                Уровни усреднения
               </div>
               <div>
-                <div className="grid grid-cols-[28px_1fr_1fr_1fr_46px_40px_28px] gap-2 text-[10px] text-gray-400 mb-1 px-0.5">
-                  <div className="flex items-center justify-center">#<Tip text="Номер шага усреднения. Шаги исполняются последовательно по мере движения цены." /></div>
-                  <div className="flex items-center justify-center">Движение %<Tip text="Процент движения цены от предыдущего шага. На этом расстоянии выставляется ордер." /></div>
-                  <div className="flex items-center justify-center">Лотов<Tip text="Количество лотов на этом шаге. Итоговый объём = Лотов × Объём 1 лота (USDT)." /></div>
-                  <div className="flex items-center justify-center">USDT<Tip text="Итоговый объём ордера в USDT. Редактируется напрямую — автоматически пересчитывает Лотов." /></div>
-                  <div className="flex items-center justify-center text-[8px]">Тип<Tip text="Broker — ордер сразу выставляется на биржу. Virtual — бот следит за ценой и выставляет ордер в нужный момент." /></div>
-                  <div className="flex items-center justify-center text-[8px]">Сигн<Tip text="Signal — ордер выставляется только при активном сигнале стратегии. No — независимо от сигнала." /></div>
+                {/* col layout: label | move% | size% | usdt | sep | order-type | signal | del */}
+                <div className="grid grid-cols-[32px_1fr_1fr_1fr_9px_108px_108px_22px] gap-1.5 text-[9px] text-gray-500 mb-1 px-0.5">
+                  <div className="text-center">#</div>
+                  <div className="text-center">Движение<br/>%<Tip text="Процент движения цены от предыдущего уровня. L1 = 0 означает вход по текущей цене." /></div>
+                  <div className="text-center">%<br/>депоз.<Tip text="Доля депозита на этот уровень. USDT = % × Депозит / 100." /></div>
+                  <div className="text-center">USDT<Tip text="Объём ордера в USDT. Редактируется напрямую — пересчитывает % депозита." /></div>
+                  <div />
+                  <div className="text-center">Тип<Tip text="Биржевой — ордер сразу выставляется на биржу. Виртуальный — бот следит за ценой и выставляет ордер в нужный момент." /></div>
+                  <div className="text-center">Сигнал<Tip text="Условие по сигналу для выставления этого уровня. «Нет» — выставлять независимо от сигнала." /></div>
                   <div />
                 </div>
-                <div className="max-h-[216px] overflow-y-auto">
+                <div className="space-y-0.5">
                   {form.steps.map((step, i) => {
                     const isFilled = i < filledLevels
                     const isVirtual = step.order_type === 'virtual'
+                    const isDropOpen = openOrderTypeDrop === i
                     return (
                       <div
                         key={i}
-                        className={`grid grid-cols-[28px_1fr_1fr_1fr_46px_40px_28px] gap-2 items-center py-1.5 border-b border-gray-800/60 last:border-0 ${isFilled ? 'bg-green-950/30' : ''}`}
+                        className={`grid grid-cols-[32px_1fr_1fr_1fr_9px_108px_108px_22px] gap-1.5 items-center py-1 border-b border-gray-800/50 last:border-0 ${isFilled ? 'bg-green-950/20' : ''}`}
                       >
-                        <div className="text-center text-[10px]">
+                        {/* Label */}
+                        <div className="text-center text-[9px] font-semibold">
                           {isFilled
-                            ? <span className="text-green-400 font-bold">✓</span>
-                            : <span className="text-gray-500">{i + 1}</span>
+                            ? <span className="text-green-400">✓</span>
+                            : <span className="text-blue-400/70">L{i + 1}</span>
                           }
                         </div>
-                        <input
-                          type="number" step="0.1" min="0"
+                        {/* Движение % */}
+                        <NumericInput
+                          step="0.1"
                           value={step.price_move_pct}
-                          onChange={e => updateStep(i, 'price_move_pct', Number(e.target.value))}
-                          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
+                          onChange={v => updateStep(i, { price_move_pct: v })}
+                          className={stepErrCls(stepErrors[i].price_move_pct)}
                         />
-                        <input
-                          type="number" step="0.1" min="0.1"
-                          value={step.lots}
-                          onChange={e => updateStep(i, 'lots', Number(e.target.value))}
-                          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
+                        {/* % депозита */}
+                        <NumericInput
+                          step="0.01"
+                          value={step.size_pct}
+                          onChange={v => updateStep(i, { size_pct: v })}
+                          className={stepErrCls(stepErrors[i].size_pct)}
                         />
-                        <input
-                          type="number" step="1" min="1"
-                          value={+(step.lots * form.grid_size_usdt).toFixed(2)}
-                          onChange={e => {
-                            const usdt = Number(e.target.value)
-                            if (usdt > 0 && form.grid_size_usdt > 0)
-                              updateStep(i, 'lots', Math.round(usdt / form.grid_size_usdt * 100) / 100)
+                        {/* USDT */}
+                        <NumericInput
+                          step="1"
+                          value={+(step.size_pct / 100 * form.grid_size_usdt).toFixed(2)}
+                          onChange={usdt => {
+                            if (form.grid_size_usdt > 0)
+                              updateStep(i, { size_pct: Math.round(usdt / form.grid_size_usdt * 10000) / 100 })
                           }}
-                          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
+                          className={stepErrCls(stepErrors[i].size_pct)}
                         />
-                        <button
-                          onClick={() => !isFilled && updateStep(i, 'order_type', isVirtual ? 'exchange' : 'virtual')}
-                          disabled={isFilled}
-                          title={isVirtual ? 'Виртуальный — бот следит за ценой и выставляет ордер в нужный момент' : 'Биржевой — ордер сразу выставляется на биржу'}
-                          className={`text-[8px] leading-4 font-bold rounded w-full py-1 transition-colors ${
-                            isFilled ? 'opacity-40 cursor-not-allowed bg-gray-800 text-gray-600 border border-gray-700' :
-                            isVirtual ? 'bg-violet-950/60 text-violet-300 border border-violet-800/50 hover:bg-violet-900/60' :
-                            'bg-gray-800 text-gray-500 border border-gray-700 hover:text-gray-300'
+                        {/* Vertical separator */}
+                        <div className="flex justify-center">
+                          <div className="w-px h-6 bg-gray-700/60" />
+                        </div>
+                        {/* Order type dropdown */}
+                        <div className="relative">
+                          <button
+                            onClick={() => !isFilled && setOpenOrderTypeDrop(isDropOpen ? null : i)}
+                            disabled={isFilled}
+                            className={`w-full h-[26px] flex items-center justify-between px-2 rounded border text-[11px] transition-colors ${
+                              isFilled
+                                ? 'opacity-40 cursor-not-allowed bg-gray-800 border-gray-700 text-gray-500'
+                                : isVirtual
+                                  ? 'bg-violet-950/50 border-violet-800/60 text-violet-300 hover:bg-violet-950/70'
+                                  : 'bg-gray-800 border-gray-600 text-gray-300 hover:border-gray-500'
+                            }`}
+                          >
+                            <span>{isVirtual ? 'Виртуальный' : 'Биржевой'}</span>
+                            <span className="text-gray-500 ml-1">▾</span>
+                          </button>
+                          {isDropOpen && (
+                            <div className="absolute top-full mt-0.5 left-0 right-0 bg-gray-800 border border-gray-600 rounded shadow-xl z-30">
+                              <button
+                                onClick={() => { updateStep(i, { order_type: 'exchange' }); setOpenOrderTypeDrop(null) }}
+                                className={`w-full px-2 py-1.5 text-[11px] text-left hover:bg-gray-700 rounded-t transition-colors ${!isVirtual ? 'text-white bg-gray-700/50' : 'text-gray-300'}`}
+                              >Биржевой</button>
+                              <button
+                                onClick={() => { updateStep(i, { order_type: 'virtual' }); setOpenOrderTypeDrop(null) }}
+                                className={`w-full px-2 py-1.5 text-[11px] text-left hover:bg-gray-700 rounded-b border-t border-gray-700 transition-colors ${isVirtual ? 'text-violet-300 bg-violet-950/30' : 'text-gray-300'}`}
+                              >Виртуальный</button>
+                            </div>
+                          )}
+                        </div>
+                        {/* Signal picker */}
+                        <select
+                          value={step.signal_key ?? ''}
+                          onChange={e => {
+                            const val = e.target.value
+                            updateStep(i, { signal_key: val || undefined, use_signal: !!val })
+                          }}
+                          disabled={isFilled || form.signal_configs.length === 0}
+                          className={`h-[26px] w-full bg-gray-800 border rounded px-1.5 text-[11px] text-gray-100 outline-none transition-colors ${
+                            isFilled || form.signal_configs.length === 0
+                              ? 'opacity-40 cursor-not-allowed border-gray-700 text-gray-500'
+                              : step.signal_key
+                                ? 'border-emerald-700 text-emerald-300'
+                                : 'border-gray-700 text-gray-400'
                           }`}
                         >
-                          {isVirtual ? 'Virtual' : 'Broker'}
-                        </button>
-                        <button
-                          onClick={() => !isFilled && updateStep(i, 'use_signal', !step.use_signal)}
-                          disabled={isFilled}
-                          title={step.use_signal ? 'Выставлять уровень только при активном сигнале' : 'Выставлять уровень независимо от сигнала'}
-                          className={`text-[8px] leading-4 font-bold rounded w-full py-1 transition-colors ${
-                            isFilled ? 'opacity-40 cursor-not-allowed bg-gray-800 text-gray-600 border border-gray-700' :
-                            step.use_signal ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/50 hover:bg-emerald-900/60' :
-                            'bg-gray-800 text-gray-600 border border-gray-700 hover:text-gray-400'
-                          }`}
-                        >
-                          {step.use_signal ? 'Signal' : 'No'}
-                        </button>
+                          <option value="">Нет</option>
+                          {form.signal_configs.map(sc => (
+                            <option key={sc.name} value={sc.name}>
+                              {SIGNALS.find(s => s.id === sc.name)?.name ?? sc.name}
+                            </option>
+                          ))}
+                        </select>
+                        {/* Delete */}
                         <button
                           onClick={() => removeStep(i)}
                           disabled={isFilled}
                           className={`text-center text-sm ${isFilled ? 'text-gray-700 cursor-not-allowed' : 'text-red-500 hover:text-red-400'}`}
-                        >
-                          ✕
-                        </button>
+                        >✕</button>
                       </div>
                     )
                   })}
@@ -755,22 +1052,8 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                   onClick={addStep}
                   className="mt-2 w-full border border-dashed border-blue-800 text-blue-500 rounded-md py-1.5 text-[11px] hover:border-blue-600 hover:text-blue-400 transition-colors"
                 >
-                  + Добавить шаг
+                  + Добавить уровень
                 </button>
-              </div>
-
-              <div>
-                <label className={labelCls}>Одновременно на бирже (0 = все шаги)<Tip text="Сколько ордеров из сетки висит на бирже в один момент. При 0 — сразу все. При значении N — после заполнения одного ордера автоматически выставляется следующий, поддерживая N активных заявок." /></label>
-                <input
-                  type="number" min={0} max={form.steps.length}
-                  value={form.grid_active}
-                  onChange={e => patch({ grid_active: Number(e.target.value) })}
-                  className={inputCls}
-                  placeholder="0"
-                />
-                <p className="text-[10px] text-gray-500 mt-1">
-                  При заполнении ордера автоматически выставляется следующий шаг.
-                </p>
               </div>
 
               <div className="flex items-center gap-1 text-[10px] text-gray-400 uppercase tracking-wider pb-1 border-b border-gray-800 mt-2">
@@ -790,17 +1073,19 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                   }
                   updateStrategy(strategy.id, payload as any).catch(() => {})
                 } : undefined}
+                direction={form.direction}
+                liveSignal={liveSignal}
               />
             </>
           )}
 
           {/* Tab 3: Exit */}
-          {tab === 2 && form.strategy_type === 'dca' && (
+          {tab === 2 && form.strategy_type === 'matrix' && (
             <div className="py-10 text-center text-gray-500 text-sm">
               Настройки завершения для матрикс-стратегии будут добавлены позже.
             </div>
           )}
-          {tab === 2 && form.strategy_type !== 'dca' && (
+          {tab === 2 && form.strategy_type !== 'matrix' && (
             <>
               {/* TP */}
               <div className="border border-green-900/50 bg-green-950/20 rounded-lg p-3 space-y-3">
@@ -808,11 +1093,11 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className={labelCls}>TP %<Tip text="Процент прибыли от средней цены входа по всей позиции, при достижении которого выставляется ордер закрытия. Отсчитывается от средневзвешенной цены всех заполненных уровней." /></label>
-                    <input
-                      type="number" step="0.1" min="0.1"
+                    <NumericInput
+                      step="0.1"
                       value={form.tp_pct}
-                      onChange={e => patch({ tp_pct: Number(e.target.value) })}
-                      className={inputCls}
+                      onChange={v => patch({ tp_pct: v })}
+                      className={errCls(fieldErrors.tp_pct)}
                     />
                   </div>
                   <div>
@@ -848,20 +1133,20 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className={labelCls}>Активация %<Tip text="Прибыль от средней цены входа, при достижении которой трейлинг-стоп начинает следить за ценой. До этого порога стоп стоит на фиксированном уровне SL." /></label>
-                        <input
-                          type="number" step="0.1" min="0.1"
+                        <NumericInput
+                          step="0.1"
                           value={form.trailing_activation_pct}
-                          onChange={e => patch({ trailing_activation_pct: Number(e.target.value) })}
-                          className={inputCls}
+                          onChange={v => patch({ trailing_activation_pct: v })}
+                          className={errCls(fieldErrors.trailing_activation_pct)}
                         />
                       </div>
                       <div>
                         <label className={labelCls}>Callback %<Tip text="Максимальный откат от пика цены, после которого трейлинг-стоп срабатывает и закрывает позицию. Чем меньше значение — тем раньше фиксируется прибыль, но выше риск закрыться на случайном колебании." /></label>
-                        <input
-                          type="number" step="0.1" min="0.1"
+                        <NumericInput
+                          step="0.1"
                           value={form.trailing_callback_pct}
-                          onChange={e => patch({ trailing_callback_pct: Number(e.target.value) })}
-                          className={inputCls}
+                          onChange={v => patch({ trailing_callback_pct: v })}
+                          className={errCls(fieldErrors.trailing_callback_pct)}
                         />
                       </div>
                     </div>
@@ -875,11 +1160,11 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className={labelCls}>SL %<Tip text="Расстояние стоп-лосса от средней цены входа. Отрицательное значение = ниже средней для Long (например, -5 = SL на 5% ниже). Положительное значение = выше средней (для Short SL)." /></label>
-                    <input
-                      type="number" step="0.1"
+                    <NumericInput
+                      step="0.1"
                       value={form.sl_pct}
-                      onChange={e => patch({ sl_pct: Number(e.target.value) })}
-                      className={inputCls}
+                      onChange={v => patch({ sl_pct: v })}
+                      className={errCls(fieldErrors.sl_pct)}
                     />
                   </div>
                   <div>

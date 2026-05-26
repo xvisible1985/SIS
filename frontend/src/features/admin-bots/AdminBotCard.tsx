@@ -77,7 +77,7 @@ export function AdminBotCard({ bot, onEdit, onTogglePublic, onDelete }: Props) {
       {/* chips */}
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         {strat in STRAT_META && (
-          <StrategyChip strategy={strat as 'grid' | 'dca'} size="sm" />
+          <StrategyChip strategy={strat as 'grid' | 'matrix'} size="sm" />
         )}
         <span className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${dirBg} ${dirColor}`}>
           {dir === 'long' ? 'Long' : dir === 'short' ? 'Short' : 'Both'}

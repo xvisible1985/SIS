@@ -90,6 +90,23 @@ func main() {
 
 	// Start bot automation engine
 	go s.RunBotEngine(ctx)
+
+	// Prime warmer with active strategy symbols so their kline history is fetched first.
+	if rows, err := pool.Query(ctx,
+		`SELECT DISTINCT symbol FROM strategies WHERE status IN ('active','finishing')`); err == nil {
+		var prioritySyms []string
+		for rows.Next() {
+			var sym string
+			if rows.Scan(&sym) == nil {
+				prioritySyms = append(prioritySyms, sym)
+			}
+		}
+		rows.Close()
+		if len(prioritySyms) > 0 {
+			s.globalWarmer.SetPrioritySymbols(prioritySyms)
+			log.Printf("global warmer: priority symbols: %v", prioritySyms)
+		}
+	}
 	go s.globalWarmer.Start(ctx)
 
 	r := chi.NewRouter()

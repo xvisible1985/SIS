@@ -20,6 +20,13 @@ function orderLabel(ord: ActiveOrder, slotMap: Map<number, number>): string {
   // SL: SIS_STR-id-sl-cycle-seq
   if (/^(SIS_STR|STP)-[a-f0-9]+-sl-\d+-\d+$/.test(id))
     return 'SL'
+  // Per-level matrix SL: SIS_STR-id-msl-levelIdx-seq
+  const msl = id.match(/^(SIS_STR|STP)-[a-f0-9]+-msl-(\d+)-\d+$/)
+  if (msl) {
+    const idx = parseInt(msl[2])
+    const slot = slotMap.get(idx)
+    return slot != null ? `SL L(${slot})` : `SL L${idx}`
+  }
   // Limit: SIS_STR-id-cycle-level-reprice
   const lvl = id.match(/^(SIS_STR|STR)-[a-f0-9]+-\d+-(\d+)-\d+$/)
   if (lvl) {

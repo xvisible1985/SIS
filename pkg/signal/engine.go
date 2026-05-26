@@ -316,17 +316,46 @@ func (e *Engine) ComputeStateForce(symbol, interval string, configs []Config) St
 
 // QueryTTLRemaining returns the minimum TTL remaining in seconds across all TTLAware
 // signals in the compute unit for the given (symbol, interval, configs) key.
-// Returns -1 if the unit doesn't exist, no TTL is configured, or the signal hasn't fired yet.
+// Returns -1 if no TTL is configured or the signal hasn't fired yet.
 func (e *Engine) QueryTTLRemaining(symbol, interval string, configs []Config) float64 {
 	hash := HashConfigs(symbol, interval, configs)
 	e.mu.RLock()
 	unit, exists := e.units[hash]
 	e.mu.RUnlock()
-	if !exists {
+
+	if exists {
+		unit.mu.Lock()
+		computed := !unit.lastComputedAt.IsZero()
+		unit.mu.Unlock()
+		if computed {
+			min := -1.0
+			for _, sig := range unit.signals {
+				ta, ok := sig.(TTLAware)
+				if !ok {
+					continue
+				}
+				rem := ta.TTLRemainingSec()
+				if rem >= 0 && (min < 0 || rem < min) {
+					min = rem
+				}
+			}
+			return min
+		}
+	}
+
+	// Unit not yet computed by the live engine — build temporary instances,
+	// run Compute (triggers historical lookback for firedAt), then read TTL.
+	snap := e.hub.SnapshotOrFetch(symbol, interval)
+	if len(snap) == 0 || len(configs) == 0 {
 		return -1
 	}
 	min := -1.0
-	for _, sig := range unit.signals {
+	for _, cfg := range configs {
+		sig, err := Build(cfg)
+		if err != nil {
+			continue
+		}
+		sig.Compute(snap)
 		ta, ok := sig.(TTLAware)
 		if !ok {
 			continue

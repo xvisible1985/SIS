@@ -16,7 +16,7 @@ export const STRAT_META: Record<BotStrategy, {
   border: string;
 }> = {
   grid:      { label: 'Grid',      icon: Grid3x3,    bg: 'linear-gradient(135deg, rgba(91,140,255,.25), rgba(123,91,255,.18))',  color: '#b8c8ff', border: 'rgba(91,140,255,.4)' },
-  dca:       { label: 'DCA',       icon: Layers,     bg: 'linear-gradient(135deg, rgba(65,210,139,.22), rgba(65,210,139,.10))',  color: '#5be0a0', border: 'rgba(65,210,139,.35)' },
+  matrix:    { label: 'Matrix',    icon: Layers,     bg: 'linear-gradient(135deg, rgba(65,210,139,.22), rgba(65,210,139,.10))',  color: '#5be0a0', border: 'rgba(65,210,139,.35)' },
   signal:    { label: 'Signal',    icon: Signal,     bg: 'linear-gradient(135deg, rgba(247,166,0,.22), rgba(247,166,0,.10))',    color: '#f7a600', border: 'rgba(247,166,0,.35)' },
   scalp:     { label: 'Scalper',   icon: Zap,        bg: 'linear-gradient(135deg, rgba(193,77,255,.22), rgba(193,77,255,.10))',  color: '#d8a4ff', border: 'rgba(193,77,255,.4)' },
   arbitrage: { label: 'Arbitrage', icon: RefreshCw,  bg: 'linear-gradient(135deg, rgba(91,224,160,.20), rgba(91,140,255,.14))',  color: '#7eecb4', border: 'rgba(91,224,160,.4)' },

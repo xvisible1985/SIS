@@ -10,6 +10,7 @@ type ScanHit = {
   already_open: boolean;
   dir_blocked?: boolean;
   signal_value?: number;
+  strength?: number;
   ttl_remaining_sec?: number; // -1 = no TTL; ≥0 = seconds left
 };
 
@@ -108,6 +109,16 @@ export function BotScanModal({ bot, onClose }: Props) {
   const maxStrat = bot.maxStrategies ?? 0;
   const limitReached = maxStrat > 0 && activeCount >= maxStrat;
 
+  // Actionable = not blocked, not already open, not yet triggered in this session.
+  // Priority = first N actionable hits the bot would open (N = available slots, or all if unlimited).
+  const actionableHits = data
+    ? data.results.filter(h => !h.dir_blocked && !h.already_open && !triggered.has(`${h.symbol}:${h.direction}`))
+    : [];
+  const availableSlots = maxStrat > 0 ? Math.max(0, maxStrat - activeCount) : actionableHits.length;
+  const priorityRank = new Map(
+    actionableHits.slice(0, availableSlots).map((h, i) => [`${h.symbol}:${h.direction}`, i + 1])
+  );
+
   const cfg = data?.preview;
 
   return (
@@ -192,6 +203,18 @@ export function BotScanModal({ bot, onClose }: Props) {
               Нет символов с активными сигналами
             </div>
           ) : (
+            <>
+            {priorityRank.size > 0 && (
+              <div className="shrink-0 px-3 py-1.5 flex items-center gap-1.5 border-b text-[10px]" style={{ borderColor: '#1e1e30', background: 'rgba(251,191,36,.04)' }}>
+                <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: 'rgba(251,191,36,.55)', flexShrink: 0 }} />
+                <span className="text-amber-400/80 font-semibold">
+                  {limitReached
+                    ? 'Лимит достигнут — новые стратегии не откроются'
+                    : `Приоритет на запуск: ${priorityRank.size} пар${maxStrat > 0 ? ` (слотов: ${availableSlots})` : ''}`
+                  }
+                </span>
+              </div>
+            )}
             <table className="w-full text-[11px] font-mono">
               <thead>
                 <tr className="text-[10px] text-slate-500 border-b" style={{ borderColor: '#272740' }}>
@@ -209,19 +232,35 @@ export function BotScanModal({ bot, onClose }: Props) {
                   const isDone = triggered.has(key);
                   const isConfirming = confirm?.symbol === hit.symbol && confirm?.direction === hit.direction;
                   const isBlocked = !!hit.dir_blocked;
+                  const rank = priorityRank.get(key);
+                  const isPriority = rank !== undefined;
                   return (
                     <tr
                       key={key}
                       className="border-b hover:bg-white/[.03] transition-colors"
                       style={{
                         borderColor: '#1e1e30',
-                        background: isConfirming ? 'rgba(91,58,237,.08)' : undefined,
+                        background: isConfirming
+                          ? 'rgba(91,58,237,.08)'
+                          : isPriority
+                            ? 'rgba(251,191,36,.03)'
+                            : undefined,
+                        boxShadow: isPriority ? 'inset 3px 0 0 rgba(251,191,36,.55)' : undefined,
                         opacity: isBlocked ? 0.45 : 1,
                       }}
                     >
                       <td className="px-3 py-2 text-slate-100 font-semibold">
-                        {hit.symbol.replace(/USDT$/i, '')}
-                        <span className="text-slate-600">USDT</span>
+                        <div className="flex items-center gap-1.5">
+                          {rank != null && (
+                            <span className="inline-flex h-[15px] min-w-[15px] items-center justify-center rounded-sm bg-amber-500/20 px-1 text-[9px] font-bold tabular-nums text-amber-400">
+                              {rank}
+                            </span>
+                          )}
+                          <span>
+                            {hit.symbol.replace(/USDT$/i, '')}
+                            <span className="text-slate-600">USDT</span>
+                          </span>
+                        </div>
                       </td>
                       <td className="px-3 py-2">
                         <span className={hit.signal_state === 'buy' ? 'text-emerald-400' : 'text-rose-400'}>
@@ -289,6 +328,7 @@ export function BotScanModal({ bot, onClose }: Props) {
                 })}
               </tbody>
             </table>
+            </>
           )
         )}
       </div>

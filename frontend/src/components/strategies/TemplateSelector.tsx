@@ -5,8 +5,8 @@ import type { StrategyTemplate, StrategyFormData } from '../../types'
 interface Props {
   formData: StrategyFormData
   onLoad: (config: Partial<StrategyFormData>) => void
-  strategyType: 'grid' | 'dca' | 'manual'
-  onStrategyTypeChange: (t: 'grid' | 'dca') => void
+  strategyType: 'grid' | 'matrix' | 'manual'
+  onStrategyTypeChange: (t: 'grid' | 'matrix') => void
 }
 
 export function TemplateSelector({ formData, onLoad, strategyType, onStrategyTypeChange }: Props) {
@@ -47,7 +47,7 @@ export function TemplateSelector({ formData, onLoad, strategyType, onStrategyTyp
     if (!saveName.trim()) return
     setSaving(true)
     try {
-      await createTemplate(saveName.trim(), formData)
+      await createTemplate(saveName.trim(), { ...formData, symbol: '' })
       const fresh = await listTemplates()
       setTemplates(fresh)
       setShowSaveRow(false)
@@ -59,7 +59,10 @@ export function TemplateSelector({ formData, onLoad, strategyType, onStrategyTyp
 
   const filteredTemplates = templates.filter(t => {
     const cfg = t.config as Partial<StrategyFormData>
-    return !cfg.strategy_type || cfg.strategy_type === strategyType
+    // Only show templates whose strategy_type matches current type.
+    // Exclude old templates without strategy_type — they may contain
+    // incompatible fields (e.g. grid steps inside a DCA strategy).
+    return cfg.strategy_type === strategyType
   })
 
   const selectedName = filteredTemplates.find(t => t.id === selected)?.name
@@ -69,7 +72,7 @@ export function TemplateSelector({ formData, onLoad, strategyType, onStrategyTyp
     <div className="flex items-center gap-2 px-4 py-2 bg-gray-900/60 border-b border-gray-700">
       {/* Strategy type switcher */}
       <div className="flex gap-1 shrink-0">
-        {(['grid', 'dca'] as const).map(t => (
+        {(['grid', 'matrix'] as const).map(t => (
           <button
             key={t}
             type="button"

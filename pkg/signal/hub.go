@@ -78,7 +78,7 @@ func NewKlineHub(ctx context.Context) *KlineHub {
 		ctx:         ctx,
 		buffers:     make(map[string][]Candle),
 		listeners:   make(map[string][]func([]Candle)),
-		prefetchSem: make(chan struct{}, 50),
+		prefetchSem: make(chan struct{}, 3),
 	}
 	return h
 }

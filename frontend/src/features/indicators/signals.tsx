@@ -292,18 +292,18 @@ export const SIGNALS: SignalDef<any>[] = [
     id: 'st-flip', abbr: 'STF', name: 'SuperTrend', cat: 'trend', state: 'buy' as const,
     desc: 'Направление SuperTrend — Buy выше линии, Sell ниже',
     about: 'SuperTrend на базе ATR. Цена выше верхней полосы → Buy, ниже нижней → Sell. Генерирует меньше сигналов чем EMA-кросс, но более надёжен в трендовых условиях. Множитель 3+ рекомендован для долгосрочных позиций.',
-    defaults: { atr: 10, mult: 3.0, dir: 'bull', ttl: 0, tf: '1h' },
+    defaults: { atr: 10, mult: 3.0, dir: 'лонг', ttl: 0, tf: '1h' },
     params: [
       { kind: 'number',    key: 'atr',  label: 'ATR период',  hint: 'Период для расчёта ATR. Стандарт: 10.' },
       { kind: 'number',    key: 'mult', label: 'Множитель',   hint: 'Коэффициент ATR. Меньше → чаще флипы, больше → надёжнее. Стандарт: 3.0.', step: 0.1, decimals: 1 },
-      { kind: 'segmented', key: 'dir',  label: 'Направл.',    hint: 'bull — только переворот в Buy. bear — только в Sell. оба — оба направления.', options: ['bull', 'bear', 'оба'] },
+      { kind: 'segmented', key: 'dir',  label: 'Направл.',    hint: 'лонг — только переворот в Buy. short — только в Sell. оба — оба направления.', options: ['лонг', 'short', 'оба'] },
       { kind: 'number',    key: 'ttl',  label: 'TTL (мин)',   hint: 'Время жизни сигнала в минутах. После истечения сигнал переходит в Neutral и не запускает новые стратегии. 0 — без ограничений.', step: 1, decimals: 0 },
     ],
     formula: p => <>{name(`SuperTrend(${p.atr},${p.mult})`)} {op(`↻ ${p.dir}`)}</>,
     compute: (p: StFlipP, c: Candle[]): SignalState => {
       const dir = stDir(c, p.atr, p.mult)
-      if (p.dir === 'bull') return dir === 'buy' ? 'buy' : 'neutral'
-      if (p.dir === 'bear') return dir === 'sell' ? 'sell' : 'neutral'
+      if (p.dir === 'bull' || p.dir === 'лонг') return dir === 'buy' ? 'buy' : 'neutral'
+      if (p.dir === 'bear' || p.dir === 'short') return dir === 'sell' ? 'sell' : 'neutral'
       return dir
     },
   },
