@@ -541,15 +541,23 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className={labelCls}>
-                    Плечо (×)
-                    {instrInfo && <span className="ml-1.5 text-[10px] text-gray-500">макс. ×{instrInfo.max_leverage}</span>}
+                    Плечо&nbsp;
+                    <span className="font-bold text-white">×{form.leverage}</span>
                     <Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500. Чем выше плечо — тем больше потенциальная прибыль и тем ближе ликвидация." />
                   </label>
-                  <NumericInput
+                  <input
+                    type="range"
+                    min={1}
+                    max={instrInfo?.max_leverage ?? 100}
+                    step={1}
                     value={form.leverage}
-                    onChange={v => patch({ leverage: Math.min(v, instrInfo?.max_leverage ?? 100) })}
-                    className={inputCls}
+                    onChange={e => patch({ leverage: parseInt(e.target.value) })}
+                    className="w-full h-1.5 mt-2 cursor-pointer accent-blue-500"
                   />
+                  <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
+                    <span>×1</span>
+                    <span>×{instrInfo?.max_leverage ?? 100}</span>
+                  </div>
                 </div>
                 <div>
                   <label className={labelCls}>
@@ -888,15 +896,24 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className={labelCls}>
-                    Плечо (×)
+                    Плечо&nbsp;
+                    <span className="font-bold text-white">×{form.leverage}</span>
                     {instrInfo && <span className="ml-1.5 text-[10px] text-gray-500">макс. ×{instrInfo.max_leverage}</span>}
                     <Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500." />
                   </label>
-                  <NumericInput
+                  <input
+                    type="range"
+                    min={1}
+                    max={instrInfo?.max_leverage ?? 100}
+                    step={1}
                     value={form.leverage}
-                    onChange={v => patch({ leverage: Math.min(v, instrInfo?.max_leverage ?? 100) })}
-                    className={inputCls}
+                    onChange={e => patch({ leverage: parseInt(e.target.value) })}
+                    className="w-full h-1.5 mt-2 cursor-pointer accent-blue-500"
                   />
+                  <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
+                    <span>×1</span>
+                    <span>×{instrInfo?.max_leverage ?? 100}</span>
+                  </div>
                 </div>
                 <div>
                   <label className={labelCls}>
