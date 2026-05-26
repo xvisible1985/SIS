@@ -352,6 +352,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       return slot != null ? `L(${slot})` : lbl
     }
 
+    const drawnTPKeys = new Set<string>()
     for (const ord of orders.filter(o => {
       if (o.symbol !== symbol) return false
       // Hide orders belonging to a different strategy (ghost orders from deleted strategies).
@@ -384,6 +385,11 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       const isLong = ord.side === 'Buy'
       const label = resolveLabel(parseOrderLabel(ord.orderLinkId, ord.side))
       const color = label.startsWith('TP') ? '#5b8cff' : label.startsWith('SL_L') ? '#facc15' : label.startsWith('SL') ? '#f59e0b' : (isLong ? '#34d399' : '#f87171')
+      // Deduplicate TP lines: if a duplicate TP order exists on exchange (backend race),
+      // only draw the first one so the chart doesn't show two identical TP lines.
+      const isTPOrd = label.startsWith('TP')
+      if (isTPOrd && drawnTPKeys.has(`${label}-${ord.side}`)) continue
+      if (isTPOrd) drawnTPKeys.add(`${label}-${ord.side}`)
       if (ord.triggerPrice && parseFloat(ord.triggerPrice) > 0) {
         const p = parseFloat(ord.triggerPrice)
         const usdt = (parseFloat(ord.qty) * p).toFixed(0)
@@ -460,9 +466,13 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       // Only current-cycle orders form the active set; all other cycles are excluded.
       const activeCycles = new Set<number>()
       for (const o of orders) {
+        // When in strategy view, only count orders from THIS strategy.
+        // Other strategies on the same symbol must not leak their cycle numbers here,
+        // or their cycle numbers would keep old executions visible after cycle close.
+        if (stratIdShort && !o.orderLinkId?.includes(stratIdShort)) continue
         const n = extractCycleNum(o.orderLinkId)
         if (n === null) continue
-        if (stratIdShort && currentCycleNum != null && o.orderLinkId?.includes(stratIdShort) && n !== currentCycleNum) continue
+        if (stratIdShort && currentCycleNum != null && n !== currentCycleNum) continue
         activeCycles.add(n)
       }
 
@@ -564,9 +574,12 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     }
     const activeCycles = new Set<number>()
     for (const o of orders) {
+      // Only count THIS strategy's orders — other strategies on the same symbol must not
+      // leak their cycle numbers and keep old execution markers visible after cycle close.
+      if (stratIdShort && !o.orderLinkId?.includes(stratIdShort)) continue
       const n = extractCycleNum(o.orderLinkId)
       if (n === null) continue
-      if (stratIdShort && effectiveCycleNum != null && o.orderLinkId?.includes(stratIdShort) && n !== effectiveCycleNum) continue
+      if (stratIdShort && effectiveCycleNum != null && n !== effectiveCycleNum) continue
       activeCycles.add(n)
     }
 

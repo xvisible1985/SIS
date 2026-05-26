@@ -1910,7 +1910,11 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
 			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category, OrderId: oldTPID,
 		}); err != nil && !isOrderGone(err) {
-			sr.warn(ctx, fmt.Sprintf("updateTP: отмена TP %s: %v", oldTPID, err))
+			// Cancel failed — restore old TP state so we don't place a duplicate.
+			// The next call to updateTP will retry the cancel + replace.
+			sr.tpOrderID = oldTPID
+			sr.runner.RegisterOrder(oldTPID, orderRef{strategyID: sr.strategy.ID, refType: "tp"})
+			return fmt.Errorf("updateTP: cancel old TP %s: %w", oldTPID, err)
 		}
 	}
 
