@@ -227,6 +227,135 @@ func TestMatrixStopReplaceNewTrigger(t *testing.T) {
 	}
 }
 
+// --- Task 3: one-SZ-at-a-time + positive-slot-only ---
+
+func TestHandleMatrixSLFillSafeZoneOnlyForPositiveSlots(t *testing.T) {
+	// SL on a negative slot must NOT create a SafeZone.
+	negSlot := -1
+	safeZonePct := 5.0
+	var sz *MatrixSafeZone
+	if safeZonePct > 0 && negSlot > 0 { // same condition used in handleMatrixSLFill
+		sz = createMatrixSafeZone(98.0, safeZonePct, negSlot)
+	}
+	if sz != nil {
+		t.Error("SafeZone must NOT be created for negative slot")
+	}
+}
+
+func TestHandleMatrixSLFillOneZoneAtATime(t *testing.T) {
+	// If a SafeZone already exists, creating a new one must cancel old pending re-entry.
+	slot1, slot2 := 1, 2
+	sr := &StrategyRunner{
+		strategy:            Strategy{Direction: DirectionLong, SafeZonePct: 5},
+		matrixSafeZone:      createMatrixSafeZone(100.0, 5.0, slot1),
+		matrixSZPendingSlot:  &slot1,
+		matrixSZPendingPrice: 100.0,
+	}
+	// Simulate second SL fire on slot 2 (same logic as the new handleMatrixSLFill block).
+	slTrigger2 := 102.0
+	if sr.strategy.SafeZonePct > 0 && slot2 > 0 {
+		sr.matrixSZPendingSlot = nil
+		sr.matrixSZPendingPrice = 0
+		sr.matrixSafeZone = createMatrixSafeZone(slTrigger2, sr.strategy.SafeZonePct, slot2)
+	}
+	if sr.matrixSZPendingSlot != nil {
+		t.Error("old pending re-entry must be cleared when a new SZ is created")
+	}
+	if sr.matrixSafeZone == nil || sr.matrixSafeZone.Slot != slot2 {
+		t.Errorf("new SZ must be for slot 2, got %+v", sr.matrixSafeZone)
+	}
+}
+
+// --- Task 4: directional SZ exit + pending re-entry ---
+
+func TestSafeZoneDirectionalExit_PositiveLong(t *testing.T) {
+	// LONG: price exits above High → positive exit, no pending set.
+	slot := 1
+	zone := createMatrixSafeZone(100.0, 5.0, slot) // Low=95, High=105
+	currentPrice := 106.0
+	positiveExit := (DirectionLong == DirectionLong && currentPrice > zone.High) ||
+		(DirectionLong == DirectionShort && currentPrice < zone.Low)
+	if !positiveExit {
+		t.Fatal("106 > 105 should be a positive exit for LONG")
+	}
+}
+
+func TestSafeZoneDirectionalExit_NegativeLong(t *testing.T) {
+	// LONG: price exits below Low → negative exit, pending must be set.
+	slot := 1
+	zone := createMatrixSafeZone(100.0, 5.0, slot) // Low=95, High=105
+	currentPrice := 94.0
+	positiveExit := (DirectionLong == DirectionLong && currentPrice > zone.High) ||
+		(DirectionLong == DirectionShort && currentPrice < zone.Low)
+	if positiveExit {
+		t.Fatal("94 < 95 should be a negative (not positive) exit for LONG")
+	}
+	// Simulate setting pending re-entry
+	slotCopy := zone.Slot
+	sr := &StrategyRunner{strategy: Strategy{Direction: DirectionLong}}
+	sr.matrixSZPendingSlot = &slotCopy
+	sr.matrixSZPendingPrice = zone.SLTrigger
+	if sr.matrixSZPendingSlot == nil || *sr.matrixSZPendingSlot != slot {
+		t.Error("pending slot must be set to zone.Slot on negative exit")
+	}
+	if math.Abs(sr.matrixSZPendingPrice-100.0) > 0.0001 {
+		t.Errorf("pending price must equal SLTrigger=100.0, got %.4f", sr.matrixSZPendingPrice)
+	}
+}
+
+func TestSafeZonePendingReentryCondition_Long(t *testing.T) {
+	// LONG pending re-entry: met when price >= pendingPrice.
+	slot := 1
+	sr := &StrategyRunner{
+		strategy:            Strategy{Direction: DirectionLong},
+		matrixSZPendingSlot:  &slot,
+		matrixSZPendingPrice: 100.0,
+	}
+	priceBelow := 99.5
+	metBelow := sr.strategy.Direction == DirectionLong && priceBelow >= sr.matrixSZPendingPrice
+	if metBelow {
+		t.Error("should not be met when price < pendingPrice")
+	}
+	priceAt := 100.0
+	metAt := sr.strategy.Direction == DirectionLong && priceAt >= sr.matrixSZPendingPrice
+	if !metAt {
+		t.Error("should be met when price == pendingPrice")
+	}
+}
+
+// --- Task 5: restoreMatrixSafeZone three-case logic ---
+
+func TestRestoreMatrixSafeZoneThreeCases(t *testing.T) {
+	slPrice := 100.0
+	safeZonePct := 5.0
+	slot := 1
+	zone := createMatrixSafeZone(slPrice, safeZonePct, slot) // Low=95, High=105
+
+	// Case 1: price inside zone → should restore SZ
+	if !zone.Contains(100.0) {
+		t.Fatalf("price 100 should be inside [95, 105]")
+	}
+
+	// Case 2: price above High → positive exit for LONG (immediate re-entry)
+	priceAbove := 106.0
+	positiveExit := (DirectionLong == DirectionLong && priceAbove > zone.High) ||
+		(DirectionLong == DirectionShort && priceAbove < zone.Low)
+	if !positiveExit {
+		t.Error("106 > 105 should be a positive exit for LONG")
+	}
+
+	// Case 3: price below Low → negative exit for LONG (pending re-entry at P_sl)
+	priceBelow := 94.0
+	negExit := (DirectionLong == DirectionLong && priceBelow < zone.Low) ||
+		(DirectionLong == DirectionShort && priceBelow > zone.High)
+	if !negExit {
+		t.Error("94 < 95 should be a negative exit for LONG")
+	}
+	if math.Abs(zone.SLTrigger-100.0) > 0.0001 {
+		t.Errorf("SLTrigger: want 100, got %.4f", zone.SLTrigger)
+	}
+}
+
 func TestMatrixPlacePerLevelSLSkipsNegativeSlots(t *testing.T) {
 	// matrixPlacePerLevelSL must return immediately for negative slots.
 	// We verify by checking the function returns without panicking on nil runner

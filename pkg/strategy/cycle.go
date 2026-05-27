@@ -2367,6 +2367,8 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 			sr.matrixMonitorStop = nil
 		}
 		sr.matrixSafeZone = nil
+		sr.matrixSZPendingSlot = nil
+		sr.matrixSZPendingPrice = 0
 	}
 	sr.cycle = nil
 	sr.levels = nil
@@ -3082,6 +3084,8 @@ func (sr *StrategyRunner) handleStopRequest(ctx context.Context) {
 			sr.matrixMonitorStop = nil
 		}
 		sr.matrixSafeZone = nil
+		sr.matrixSZPendingSlot = nil
+		sr.matrixSZPendingPrice = 0
 	}
 	sr.cancelPlacedLevels(ctx)
 

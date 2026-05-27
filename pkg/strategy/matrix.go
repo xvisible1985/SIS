@@ -264,7 +264,9 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 		return nil
 	}
 
-	sr.matrixSafeZone = nil // defensive reset for fresh cycle
+	sr.matrixSafeZone = nil    // defensive reset for fresh cycle
+	sr.matrixSZPendingSlot = nil
+	sr.matrixSZPendingPrice = 0
 
 	var maxCycle int
 	sr.runner.pool.QueryRow(ctx,
@@ -575,8 +577,12 @@ func (sr *StrategyRunner) loadMatrixCycle(ctx context.Context) error {
 	return nil
 }
 
-// restoreMatrixSafeZone checks the last sl_closed level in the current cycle
-// and rebuilds the safe zone if it is recent (< 1 hour) and price is still inside.
+// restoreMatrixSafeZone checks the most recent positive-slot sl_closed level in the current cycle
+// and rebuilds safe zone state after a service restart based on current price position:
+//   - price inside zone     → restore matrixSafeZone (price monitor detects exit normally)
+//   - price positive exit   → call matrixReplaceSlots immediately (SZ cleared before restart)
+//   - price negative exit   → set matrixSZPendingSlot/Price (wait for price to return to P_sl)
+//
 // Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) restoreMatrixSafeZone(ctx context.Context) {
 	sr.mu.Lock()
@@ -587,19 +593,17 @@ func (sr *StrategyRunner) restoreMatrixSafeZone(ctx context.Context) {
 	cycleID := sr.cycle.ID
 	sr.mu.Unlock()
 
+	// Only restore for positive slots — SafeZone is only relevant for managed hedge positions.
 	var slPrice float64
-	var closedAt time.Time
+	var slot int
 	err := sr.runner.pool.QueryRow(ctx,
-		`SELECT COALESCE(sl_price,0), COALESCE(filled_at, placed_at, NOW())
+		`SELECT COALESCE(sl_price,0), COALESCE(slot,0)
          FROM strategy_levels
-         WHERE cycle_id=$1 AND status='sl_closed' AND sl_price IS NOT NULL
+         WHERE cycle_id=$1 AND status='sl_closed' AND sl_price IS NOT NULL AND slot > 0
          ORDER BY filled_at DESC NULLS LAST LIMIT 1`,
 		cycleID,
-	).Scan(&slPrice, &closedAt)
-	if err != nil || slPrice == 0 {
-		return
-	}
-	if time.Since(closedAt) > time.Hour {
+	).Scan(&slPrice, &slot)
+	if err != nil || slPrice == 0 || slot == 0 {
 		return
 	}
 
@@ -610,13 +614,36 @@ func (sr *StrategyRunner) restoreMatrixSafeZone(ctx context.Context) {
 
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
-	if sr.cycle == nil {
+	// Re-check cycle under lock: a concurrent stop/restart could have changed sr.cycle.
+	if sr.cycle == nil || sr.cycle.ID != cycleID {
 		return
 	}
-	zone := createMatrixSafeZone(slPrice, sr.strategy.SafeZonePct, 0)
+
+	zone := createMatrixSafeZone(slPrice, sr.strategy.SafeZonePct, slot)
+
 	if zone.Contains(price) {
+		// Price is still inside the zone — restore so matrixPriceTick can detect exit.
 		sr.matrixSafeZone = zone
-		log.Printf("strategy %s: restored Safe Zone [%.4f, %.4f]", sr.strategy.ID, zone.Low, zone.High)
+		log.Printf("strategy %s: restored Safe Zone L%d [%.4f, %.4f]", sr.strategy.ID, slot, zone.Low, zone.High)
+		return
+	}
+
+	// Determine exit direction.
+	positiveExit := (sr.strategy.Direction == DirectionLong && price > zone.High) ||
+		(sr.strategy.Direction == DirectionShort && price < zone.Low)
+
+	if positiveExit {
+		// SZ cleared before restart with a positive exit — re-enter now.
+		log.Printf("strategy %s: SZ L%d exited positively before restart (price=%.4f) — re-entering",
+			sr.strategy.ID, slot, price)
+		sr.matrixReplaceSlots(ctx, price)
+	} else {
+		// Negative exit before restart — restore the pending re-entry condition.
+		log.Printf("strategy %s: SZ L%d exited negatively before restart — pending re-entry at %.4f",
+			sr.strategy.ID, slot, slPrice)
+		slotCopy := slot
+		sr.matrixSZPendingSlot = &slotCopy
+		sr.matrixSZPendingPrice = slPrice
 	}
 }
 
@@ -741,13 +768,45 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 	}
 	sr.lastMatrixPrice = currentPrice
 
-	// 1. Check Safe Zone exit
+	// 1. Check Safe Zone exit — direction-aware.
 	if sr.matrixSafeZone != nil && !sr.matrixSafeZone.Contains(currentPrice) {
-		sr.info(ctx, fmt.Sprintf("Safe Zone очищена: цена %.4f вышла из [%.4f, %.4f]",
-			currentPrice, sr.matrixSafeZone.Low, sr.matrixSafeZone.High))
+		zone := sr.matrixSafeZone
 		sr.matrixSafeZone = nil
-		// Trigger re-placement for sl_closed slots
-		sr.matrixReplaceSlots(ctx, currentPrice)
+
+		positiveExit := (sr.strategy.Direction == DirectionLong && currentPrice > zone.High) ||
+			(sr.strategy.Direction == DirectionShort && currentPrice < zone.Low)
+
+		if positiveExit {
+			// Price continued in-direction past the SZ top — re-enter immediately.
+			sr.info(ctx, fmt.Sprintf("Safe Zone L%d очищена (↑): %.4f > %.4f — немедленный перезаход",
+				zone.Slot, currentPrice, zone.High))
+			sr.matrixReplaceSlots(ctx, currentPrice)
+		} else {
+			// Price reversed through the SZ bottom — wait for it to return to P_sl.
+			sr.info(ctx, fmt.Sprintf("Safe Zone L%d очищена (↓): %.4f < %.4f — ждём возврата к P_sl %.4f",
+				zone.Slot, currentPrice, zone.Low, zone.SLTrigger))
+			slotCopy := zone.Slot
+			sr.matrixSZPendingSlot = &slotCopy
+			sr.matrixSZPendingPrice = zone.SLTrigger
+		}
+	}
+
+	// 1b. Pending re-entry after negative SZ exit — re-enter when price returns to P_sl.
+	if sr.matrixSZPendingSlot != nil {
+		var met bool
+		if sr.strategy.Direction == DirectionLong {
+			met = currentPrice >= sr.matrixSZPendingPrice
+		} else {
+			met = currentPrice <= sr.matrixSZPendingPrice
+		}
+		if met {
+			slot := *sr.matrixSZPendingSlot
+			sr.info(ctx, fmt.Sprintf("Safe Zone: цена %.4f вернулась к P_sl %.4f — перезаход L%d",
+				currentPrice, sr.matrixSZPendingPrice, slot))
+			sr.matrixSZPendingSlot = nil
+			sr.matrixSZPendingPrice = 0
+			sr.matrixReplaceSlots(ctx, currentPrice)
+		}
 	}
 
 	// 2. Trigger virtual levels whose target price has been crossed.
@@ -1457,11 +1516,18 @@ func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string
 	sr.warn(ctx, fmt.Sprintf("Matrix SL сработал %s @ %.4f",
 		slotLabel(closed.Slot), slTrigger))
 
-	// Create Safe Zone
-	if sr.strategy.SafeZonePct > 0 {
-		sr.matrixSafeZone = createMatrixSafeZone(slTrigger, sr.strategy.SafeZonePct, 0)
-		sr.info(ctx, fmt.Sprintf("Safe Zone создана: [%.4f, %.4f]",
-			sr.matrixSafeZone.Low, sr.matrixSafeZone.High))
+	// Create Safe Zone — only for positive slots (L1, L2…); negative slots are averaging positions.
+	if sr.strategy.SafeZonePct > 0 && closed.Slot != nil && *closed.Slot > 0 {
+		if sr.matrixSafeZone != nil {
+			sr.info(ctx, fmt.Sprintf("Safe Zone: заменяем старую [%.4f, %.4f] для L%d",
+				sr.matrixSafeZone.Low, sr.matrixSafeZone.High, sr.matrixSafeZone.Slot))
+		}
+		// Cancel any pending re-entry from the previous SZ (one SZ at a time).
+		sr.matrixSZPendingSlot = nil
+		sr.matrixSZPendingPrice = 0
+		sr.matrixSafeZone = createMatrixSafeZone(slTrigger, sr.strategy.SafeZonePct, *closed.Slot)
+		sr.info(ctx, fmt.Sprintf("Safe Zone создана для L%d: [%.4f, %.4f]",
+			*closed.Slot, sr.matrixSafeZone.Low, sr.matrixSafeZone.High))
 	}
 
 	// Recalculate global TP (will cancel it if no filled levels remain)
@@ -1575,8 +1641,10 @@ func (sr *StrategyRunner) handleMatrixTPFill(ctx context.Context, fillPrice, fil
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
 		`UPDATE strategy_cycles SET tp_order_id=NULL WHERE id=$1`, sr.cycle.ID)
 
-	// 4. Clear safe zone — TP close is a fresh entry, no safe zone needed.
+	// 4. Clear safe zone and any pending re-entry — TP close is a fresh entry.
 	sr.matrixSafeZone = nil
+	sr.matrixSZPendingSlot = nil
+	sr.matrixSZPendingPrice = 0
 
 	// 5. Suppress the position-zero WS event that follows TP fill.
 	// Also covers the tail case: handlePartialPositionChange sees closedBySelf=true
