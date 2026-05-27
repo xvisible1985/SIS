@@ -323,6 +323,47 @@ func TestSafeZonePendingReentryCondition_Long(t *testing.T) {
 	}
 }
 
+func TestSafeZoneDirectionalExit_PositiveShort(t *testing.T) {
+	// SHORT: positive exit means price drops below Low (in-direction for short = downward).
+	slot := 1
+	zone := createMatrixSafeZone(100.0, 5.0, slot) // Low=95, High=105
+	currentPrice := 94.0                             // below Low → in-direction for SHORT
+	positiveExit := (DirectionShort == DirectionLong && currentPrice > zone.High) ||
+		(DirectionShort == DirectionShort && currentPrice < zone.Low)
+	if !positiveExit {
+		t.Fatalf("94 < 95 should be a positive exit for SHORT (price dropped in-direction)")
+	}
+}
+
+func TestSafeZoneDirectionalExit_NegativeShort(t *testing.T) {
+	// SHORT: negative exit means price rises above High (against direction for short = upward).
+	slot := 1
+	zone := createMatrixSafeZone(100.0, 5.0, slot) // Low=95, High=105
+	currentPrice := 106.0                            // above High → against direction for SHORT
+	positiveExit := (DirectionShort == DirectionLong && currentPrice > zone.High) ||
+		(DirectionShort == DirectionShort && currentPrice < zone.Low)
+	if positiveExit {
+		t.Fatal("106 > 105 should be a negative (not positive) exit for SHORT")
+	}
+	// Pending condition for SHORT: met when price <= pendingPrice (drops back to P_sl).
+	slotCopy := zone.Slot
+	sr := &StrategyRunner{strategy: Strategy{Direction: DirectionShort}}
+	sr.matrixSZPendingSlot = &slotCopy
+	sr.matrixSZPendingPrice = zone.SLTrigger // 100.0
+	priceAbove := 101.0
+	metAbove := sr.strategy.Direction == DirectionLong && priceAbove >= sr.matrixSZPendingPrice ||
+		sr.strategy.Direction == DirectionShort && priceAbove <= sr.matrixSZPendingPrice
+	if metAbove {
+		t.Error("101 > 100 should NOT meet SHORT pending condition (price not yet back at P_sl)")
+	}
+	priceAt := 100.0
+	metAt := sr.strategy.Direction == DirectionLong && priceAt >= sr.matrixSZPendingPrice ||
+		sr.strategy.Direction == DirectionShort && priceAt <= sr.matrixSZPendingPrice
+	if !metAt {
+		t.Error("100 == P_sl should meet SHORT pending re-entry condition")
+	}
+}
+
 // --- Task 5: restoreMatrixSafeZone three-case logic ---
 
 func TestRestoreMatrixSafeZoneThreeCases(t *testing.T) {

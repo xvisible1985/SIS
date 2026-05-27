@@ -777,14 +777,14 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 			(sr.strategy.Direction == DirectionShort && currentPrice < zone.Low)
 
 		if positiveExit {
-			// Price continued in-direction past the SZ top — re-enter immediately.
-			sr.info(ctx, fmt.Sprintf("Safe Zone L%d очищена (↑): %.4f > %.4f — немедленный перезаход",
-				zone.Slot, currentPrice, zone.High))
+			// Price continued in-direction past the SZ boundary — re-enter immediately.
+			sr.info(ctx, fmt.Sprintf("Safe Zone L%d очищена (в направлении): price=%.4f SZ=[%.4f,%.4f] — немедленный перезаход",
+				zone.Slot, currentPrice, zone.Low, zone.High))
 			sr.matrixReplaceSlots(ctx, currentPrice)
 		} else {
-			// Price reversed through the SZ bottom — wait for it to return to P_sl.
-			sr.info(ctx, fmt.Sprintf("Safe Zone L%d очищена (↓): %.4f < %.4f — ждём возврата к P_sl %.4f",
-				zone.Slot, currentPrice, zone.Low, zone.SLTrigger))
+			// Price reversed through the opposite SZ boundary — wait for return to P_sl.
+			sr.info(ctx, fmt.Sprintf("Safe Zone L%d очищена (разворот): price=%.4f SZ=[%.4f,%.4f] — ждём возврата к P_sl %.4f",
+				zone.Slot, currentPrice, zone.Low, zone.High, zone.SLTrigger))
 			slotCopy := zone.Slot
 			sr.matrixSZPendingSlot = &slotCopy
 			sr.matrixSZPendingPrice = zone.SLTrigger
