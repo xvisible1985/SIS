@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 type botStrategySummary struct {
@@ -53,6 +54,10 @@ func (s *Server) BotSummary(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		strategies = append(strategies, st)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
 	}
 	if strategies == nil {
 		strategies = []botStrategySummary{}
@@ -108,6 +113,10 @@ func (s *Server) BotPauseAll(w http.ResponseWriter, r *http.Request) {
 			ids = append(ids, id)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 	go func() {
 		for _, id := range ids {
 			s.engine.Notify(context.Background(), id)
@@ -149,6 +158,10 @@ func (s *Server) BotResumeAll(w http.ResponseWriter, r *http.Request) {
 		if rows.Scan(&id) == nil {
 			ids = append(ids, id)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
 	}
 	go func() {
 		for _, id := range ids {
@@ -210,12 +223,22 @@ func (s *Server) BotMute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "chat_id required")
 		return
 	}
-	_, err := s.pool.Exec(r.Context(),
+	if req.Until != "" {
+		if _, err := time.Parse(time.RFC3339, req.Until); err != nil {
+			writeError(w, http.StatusBadRequest, "until must be RFC3339 timestamp")
+			return
+		}
+	}
+	tag, err := s.pool.Exec(r.Context(),
 		`UPDATE telegram_connections SET mute_until=$1 WHERE chat_id=$2`,
 		req.Until, req.ChatID,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "telegram account not linked")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
