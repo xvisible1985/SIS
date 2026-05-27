@@ -10,3 +10,8 @@ export async function register(email: string, password: string): Promise<AuthRes
   const res = await apiClient.post<AuthResponse>('/auth/register', { email, password })
   return res.data
 }
+
+export async function telegramCallback(token: string): Promise<AuthResponse> {
+  const res = await apiClient.post<AuthResponse>('/auth/telegram-callback', { token })
+  return res.data
+}

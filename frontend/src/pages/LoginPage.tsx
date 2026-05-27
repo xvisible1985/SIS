@@ -1,15 +1,32 @@
-import { useState, FormEvent } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
-import { login } from '../api/auth'
+import { useState, useEffect, FormEvent } from 'react'
+import { useNavigate, Link, useSearchParams } from 'react-router-dom'
+import { login, telegramCallback } from '../api/auth'
 import { useAuth } from '../hooks/useAuth'
 
 export function LoginPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { login: authLogin } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+
+  // Auto-login via Telegram magic link (?tg=TOKEN)
+  useEffect(() => {
+    const tgToken = searchParams.get('tg')
+    if (!tgToken) return
+    setLoading(true)
+    telegramCallback(tgToken)
+      .then(res => {
+        authLogin(res.token, res.user_id, res.email, res.is_admin ?? false)
+        navigate('/')
+      })
+      .catch(() => {
+        setError('Ссылка для входа недействительна или истекла.')
+        setLoading(false)
+      })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -25,6 +42,18 @@ export function LoginPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  // Show spinner while auto-logging in via TG
+  if (loading && searchParams.get('tg')) {
+    return (
+      <div className="min-h-screen flex items-center justify-center font-sans" style={{ background: '#080b12' }}>
+        <div className="text-center">
+          <div className="text-[15px] font-semibold text-white mb-2">Входим через Telegram…</div>
+          <div className="text-[12px] text-[#5b6479]">Пожалуйста, подождите</div>
+        </div>
+      </div>
+    )
   }
 
   return (
