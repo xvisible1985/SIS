@@ -30,6 +30,7 @@ func main() {
 	dsn := mustEnv("DATABASE_URL")
 	redisURL := mustEnv("REDIS_URL")
 	jwtSecret := mustEnv("JWT_SECRET")
+	botSecret := getEnv("TELEGRAM_BOT_SECRET", "")
 	encKey := mustEnv("ENCRYPTION_KEY")
 	listenAddr := getEnv("LISTEN_ADDR", ":8080")
 
@@ -75,7 +76,7 @@ func main() {
 	ns := bybitnews.NewScraper(pool)
 	go ns.Start(ctx)
 
-	s := NewServer(ctx, pool, rdb, jwtSecret, encKey, "", adminEmails, pm, ns)
+	s := NewServer(ctx, pool, rdb, jwtSecret, encKey, botSecret, adminEmails, pm, ns)
 	bootstrapAdmins(ctx, pool, adminEmails)
 
 	// Start strategy engine
@@ -93,6 +94,9 @@ func main() {
 
 	// Start bot automation engine
 	go s.RunBotEngine(ctx)
+
+	// Start Telegram notification polling
+	go s.startTgNotifier(ctx)
 
 	// Prime warmer with active strategy symbols so their kline history is fetched first.
 	if rows, err := pool.Query(ctx,
@@ -119,6 +123,18 @@ func main() {
 	// Auth routes — no JWT required
 	r.Post("/auth/register", s.Register)
 	r.Post("/auth/login", s.Login)
+	r.Post("/auth/telegram-callback", s.TelegramLoginCallback)
+
+	// Bot-to-gateway internal routes — authenticated via TELEGRAM_BOT_SECRET
+	r.Group(func(r chi.Router) {
+		r.Use(s.RequireBotSecret)
+		r.Post("/auth/telegram", s.TelegramLoginRequest)
+		r.Get("/bot/summary", s.BotSummary)
+		r.Post("/bot/pause-all", s.BotPauseAll)
+		r.Post("/bot/resume-all", s.BotResumeAll)
+		r.Post("/bot/strategy-status", s.BotStrategyStatus)
+		r.Post("/bot/mute", s.BotMute)
+	})
 
 	// Protected routes
 	r.Group(func(r chi.Router) {
