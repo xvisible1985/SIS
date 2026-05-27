@@ -52,6 +52,22 @@ services:
       timeout: 3s
       retries: 10
 
+  tg-bot:
+    build:
+      context: .
+      dockerfile: services/tg-bot/Dockerfile
+    restart: unless-stopped
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_BOT_SECRET: ${TELEGRAM_BOT_SECRET}
+      GATEWAY_URL: ${GATEWAY_URL:-http://api-gateway:8080}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      APP_URL: ${APP_URL:-https://app.novabot.io}
+      TELEGRAM_GROUP_ID: ${TELEGRAM_GROUP_ID:-}
+      WELCOME_ENABLED: ${WELCOME_ENABLED:-false}
+    depends_on:
+      - redis
+
 volumes:
   tsdb_data:
   redis_data:
