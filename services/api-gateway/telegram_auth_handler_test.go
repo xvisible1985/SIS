@@ -28,9 +28,12 @@ func TestTelegramLoginRequest_NewUser(t *testing.T) {
 	if resp["url"] == "" {
 		t.Error("expected url in response")
 	}
-	// Cleanup
-	s.pool.Exec(context.Background(),
-		`DELETE FROM users WHERE email=$1`, fmt.Sprintf("tg_%d@telegram.invalid", chatID))
+	t.Cleanup(func() {
+		s.pool.Exec(context.Background(),
+			`DELETE FROM users WHERE email=$1`, fmt.Sprintf("tg_%d@telegram.invalid", chatID))
+		s.pool.Exec(context.Background(),
+			`DELETE FROM telegram_auth_tokens WHERE chat_id=$1`, chatID)
+	})
 }
 
 func TestTelegramLoginCallback_ValidToken(t *testing.T) {
@@ -49,6 +52,11 @@ func TestTelegramLoginCallback_ValidToken(t *testing.T) {
 	s.pool.Exec(context.Background(),
 		`INSERT INTO telegram_auth_tokens (token, chat_id) VALUES ($1,$2)`, token, chatID)
 
+	t.Cleanup(func() {
+		s.pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, userID)
+		s.pool.Exec(context.Background(), `DELETE FROM telegram_auth_tokens WHERE chat_id=$1`, chatID)
+	})
+
 	body := fmt.Sprintf(`{"token":%q}`, token)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/auth/telegram-callback", bytes.NewBufferString(body))
@@ -62,8 +70,6 @@ func TestTelegramLoginCallback_ValidToken(t *testing.T) {
 	if resp["token"] == "" {
 		t.Error("expected JWT token in response")
 	}
-	// Cleanup
-	s.pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, userID)
 }
 
 func TestTelegramLoginCallback_InvalidToken(t *testing.T) {

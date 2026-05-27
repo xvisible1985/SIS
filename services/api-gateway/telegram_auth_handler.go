@@ -3,10 +3,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"sis/pkg/auth"
 )
 
@@ -31,7 +33,7 @@ func (s *Server) TelegramLoginRequest(w http.ResponseWriter, r *http.Request) {
 		`SELECT user_id FROM telegram_connections WHERE chat_id = $1`, req.ChatID,
 	).Scan(&userID)
 
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// 2. Auto-register: create new user
 		email := fmt.Sprintf("tg_%d@telegram.invalid", req.ChatID)
 		err = s.pool.QueryRow(ctx,
@@ -56,7 +58,11 @@ func (s *Server) TelegramLoginRequest(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
 	}
+	// userID is set either from lookup or auto-registration
 
 	// 3. Generate one-time auth token
 	token := newUUID()
@@ -104,14 +110,19 @@ func (s *Server) TelegramLoginCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve user
 	var userID, email string
+	var isBlocked bool
 	err = s.pool.QueryRow(ctx,
-		`SELECT u.id, u.email
+		`SELECT u.id, u.email, u.is_blocked
 		 FROM users u
 		 JOIN telegram_connections tc ON tc.user_id = u.id
 		 WHERE tc.chat_id = $1`, chatID,
-	).Scan(&userID, &email)
+	).Scan(&userID, &email, &isBlocked)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "user not found")
+		return
+	}
+	if isBlocked {
+		writeError(w, http.StatusForbidden, "account blocked")
 		return
 	}
 
