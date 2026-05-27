@@ -49,7 +49,14 @@ func (s *Server) startTgNotifier(ctx context.Context) {
 }
 
 func (s *Server) flushPendingTgNotifications(ctx context.Context) {
-	rows, err := s.pool.Query(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		log.Printf("tg_notifier: begin tx error: %v", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx, `
 		SELECT se.id, se.message, se.level, se.strategy_id,
 		       st.symbol, tc.chat_id,
 		       COALESCE(tns.on_trade, true)
@@ -70,7 +77,6 @@ func (s *Server) flushPendingTgNotifications(ctx context.Context) {
 		log.Printf("tg_notifier: query error: %v", err)
 		return
 	}
-	defer rows.Close()
 
 	type row struct {
 		eventID    string
@@ -90,7 +96,25 @@ func (s *Server) flushPendingTgNotifications(ctx context.Context) {
 		pending = append(pending, r)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		log.Printf("tg_notifier: rows error: %v", err)
+		return
+	}
 
+	for _, p := range pending {
+		// Mark notified first to avoid duplicate sends on crash
+		if _, err := tx.Exec(ctx,
+			`UPDATE strategy_events SET tg_notified=true WHERE id=$1`, p.eventID); err != nil {
+			log.Printf("tg_notifier: mark notified failed for %s: %v", p.eventID, err)
+			continue
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("tg_notifier: commit error: %v", err)
+		return
+	}
+
+	// Publish after commit so the DB state is final before notifying
 	for _, p := range pending {
 		icon := "⚠️"
 		if p.level == "error" {
@@ -103,7 +127,5 @@ func (s *Server) flushPendingTgNotifications(ctx context.Context) {
 			StrategyID:   p.strategyID,
 			ShowPauseBtn: p.level == "error",
 		})
-		s.pool.Exec(ctx,
-			`UPDATE strategy_events SET tg_notified=true WHERE id=$1`, p.eventID)
 	}
 }
