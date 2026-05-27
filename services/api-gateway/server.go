@@ -29,6 +29,7 @@ type Server struct {
 	signalEngine *signal.Engine
 	globalWarmer *signal.GlobalWarmer
 	adminEmails  map[string]bool
+	botSecret    string
 	coinIcons    *coinicons.Store
 	proxyManager *proxy.Manager
 	newsScraper  *bybitnews.Scraper
@@ -55,7 +56,7 @@ type Server struct {
 }
 
 // NewServer creates a Server.
-func NewServer(ctx context.Context, pool *pgxpool.Pool, rdb *redis.Client, jwtSecret, encKey string, adminEmails map[string]bool, pm *proxy.Manager, ns *bybitnews.Scraper) *Server {
+func NewServer(ctx context.Context, pool *pgxpool.Pool, rdb *redis.Client, jwtSecret, encKey, botSecret string, adminEmails map[string]bool, pm *proxy.Manager, ns *bybitnews.Scraper) *Server {
 	exec := signal.ExecFn(func(ctx context.Context, sql string, args ...any) error {
 		_, err := pool.Exec(ctx, sql, args...)
 		return err
@@ -67,6 +68,7 @@ func NewServer(ctx context.Context, pool *pgxpool.Pool, rdb *redis.Client, jwtSe
 		rdb:             rdb,
 		jwtSecret:       []byte(jwtSecret),
 		encKey:          encKey,
+		botSecret:       botSecret,
 		signalEngine:    se,
 		globalWarmer:    gw,
 		adminEmails:     adminEmails,

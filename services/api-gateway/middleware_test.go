@@ -69,3 +69,46 @@ func TestUserIDFromCtx_Empty(t *testing.T) {
 func withUserID(r *http.Request, userID string) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), ctxUserID, userID))
 }
+
+func TestRequireBotSecret_Missing(t *testing.T) {
+	s := &Server{botSecret: "mysecret"}
+	h := s.RequireBotSecret(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("got %d, want 401", rec.Code)
+	}
+}
+
+func TestRequireBotSecret_WrongSecret(t *testing.T) {
+	s := &Server{botSecret: "mysecret"}
+	h := s.RequireBotSecret(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Bearer wrong")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("got %d, want 401", rec.Code)
+	}
+}
+
+func TestRequireBotSecret_Valid(t *testing.T) {
+	s := &Server{botSecret: "mysecret"}
+	called := false
+	h := s.RequireBotSecret(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Bearer mysecret")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !called {
+		t.Errorf("got %d, called=%v, want 200/true", rec.Code, called)
+	}
+}

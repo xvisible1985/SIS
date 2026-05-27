@@ -38,6 +38,19 @@ func UserIDFromCtx(ctx context.Context) string {
 	return v
 }
 
+// RequireBotSecret validates that the request carries the shared bot secret.
+// Used to protect internal bot-to-gateway endpoints.
+func (s *Server) RequireBotSecret(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		header := r.Header.Get("Authorization")
+		if s.botSecret == "" || header != "Bearer "+s.botSecret {
+			writeError(w, http.StatusUnauthorized, "invalid bot secret")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // RequireAdmin checks that the authenticated user has role='admin' in the DB.
 // Must be used after RequireAuth.
 func (s *Server) RequireAdmin(next http.Handler) http.Handler {

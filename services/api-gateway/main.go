@@ -75,7 +75,7 @@ func main() {
 	ns := bybitnews.NewScraper(pool)
 	go ns.Start(ctx)
 
-	s := NewServer(ctx, pool, rdb, jwtSecret, encKey, adminEmails, pm, ns)
+	s := NewServer(ctx, pool, rdb, jwtSecret, encKey, "", adminEmails, pm, ns)
 	bootstrapAdmins(ctx, pool, adminEmails)
 
 	// Start strategy engine
