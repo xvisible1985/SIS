@@ -520,10 +520,28 @@ func (s *Server) SetStrategyStatus(w http.ResponseWriter, r *http.Request) {
 		"stopped":   "остановлена",
 	}[req.Status]
 	logMsg := fmt.Sprintf("Статус изменён пользователем: %s", statusLabel)
+	// capture for goroutine
+	stratID := id
+	newStatus := req.Status
 	go func() {
 		ctx := context.Background()
-		s.engine.Notify(ctx, id)
-		s.engine.LogUserAction(ctx, id, logMsg)
+		s.engine.Notify(ctx, stratID)
+		s.engine.LogUserAction(ctx, stratID, logMsg)
+		// Telegram notification for status change
+		var chatID int64
+		var symbol string
+		var muteUntil *time.Time
+		err := s.pool.QueryRow(ctx, `
+			SELECT tc.chat_id, st.symbol, tc.mute_until
+			FROM strategies st
+			JOIN telegram_connections tc ON tc.user_id = st.owner_id
+			WHERE st.id = $1`, stratID,
+		).Scan(&chatID, &symbol, &muteUntil)
+		if err == nil && (muteUntil == nil || muteUntil.Before(time.Now())) {
+			icons := map[string]string{"active": "🟢", "finishing": "🟡", "stopped": "⏸"}
+			text := fmt.Sprintf("%s *%s* — статус изменён: %s", icons[newStatus], symbol, statusLabel)
+			s.publishTgNotify(ctx, TgNotifyMsg{ChatID: chatID, Text: text})
+		}
 	}()
 }
 
