@@ -52,9 +52,10 @@ type StrategyRunner struct {
 	matrixSafeZone       *MatrixSafeZone
 	matrixMonitorStop    context.CancelFunc
 	matrixSLSeq          int     // increments on each per-level SL placement for unique linkIds
-	matrixSZPendingSlot  *int    // non-nil: waiting for price to reach matrixSZPendingPrice after negative SZ exit
-	matrixSZPendingPrice float64 // P_sl threshold — when current price crosses this, re-enter the pending slot
-	lastMatrixPrice      float64 // last mark price seen by matrixPriceTick; used to re-trigger virtual levels after a fill
+	matrixSZPendingSlot  *int      // non-nil: waiting for price to reach matrixSZPendingPrice after negative SZ exit
+	matrixSZPendingPrice float64  // P_sl threshold — when current price crosses this, re-enter the pending slot
+	matrixSZLogTime      time.Time // last time the SZ heartbeat log was emitted (throttle to 5 min)
+	lastMatrixPrice      float64  // last mark price seen by matrixPriceTick; used to re-trigger virtual levels after a fill
 
 	lastVirtualPrice float64 // last mark price seen by gridVirtualPriceTick; 0 = not yet seen
 

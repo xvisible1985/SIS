@@ -809,6 +809,57 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 		}
 	}
 
+	// 1c. Safe Zone proximity warning — log when price is within 0.5% of a boundary.
+	if sz := sr.matrixSafeZone; sz != nil {
+		distLow := math.Abs(currentPrice-sz.Low) / sz.Low * 100
+		distHigh := math.Abs(currentPrice-sz.High) / sz.High * 100
+		if distLow < 0.5 {
+			sr.info(ctx, fmt.Sprintf("[SZ ГРАНИЦА] price=%.4f вблизи нижней границы SZ %.4f (dist=%.3f%%) L%d [%.4f,%.4f] P_sl=%.4f",
+				currentPrice, sz.Low, distLow, sz.Slot, sz.Low, sz.High, sz.SLTrigger))
+		} else if distHigh < 0.5 {
+			sr.info(ctx, fmt.Sprintf("[SZ ГРАНИЦА] price=%.4f вблизи верхней границы SZ %.4f (dist=%.3f%%) L%d [%.4f,%.4f] P_sl=%.4f",
+				currentPrice, sz.High, distHigh, sz.Slot, sz.Low, sz.High, sz.SLTrigger))
+		}
+	}
+
+	// 1d. Safe Zone heartbeat — emit detailed state every 5 minutes.
+	{
+		now := time.Now()
+		if now.Sub(sr.matrixSZLogTime) >= 5*time.Minute {
+			if sr.matrixSafeZone != nil {
+				sz := sr.matrixSafeZone
+				width := sz.High - sz.Low
+				var posPct float64
+				if width > 0 {
+					posPct = (currentPrice - sz.Low) / width * 100
+				}
+				distLow := (currentPrice - sz.Low) / sz.Low * 100
+				distHigh := (sz.High - currentPrice) / sz.High * 100
+				age := now.Sub(sz.CreatedAt).Round(time.Second)
+				sr.info(ctx, fmt.Sprintf(
+					"[SZ] L%d активна | price=%.4f | zone=[%.4f,%.4f] | P_sl=%.4f | pos=%.1f%% | distLow=%.3f%% distHigh=%.3f%% | возраст=%s",
+					sz.Slot, currentPrice, sz.Low, sz.High, sz.SLTrigger, posPct, distLow, distHigh, age))
+				sr.matrixSZLogTime = now
+			} else if sr.matrixSZPendingSlot != nil {
+				target := sr.matrixSZPendingPrice
+				var gapPct float64
+				if target > 0 {
+					gapPct = (target - currentPrice) / target * 100
+				}
+				var dir string
+				if sr.strategy.Direction == DirectionLong {
+					dir = "↑ выше"
+				} else {
+					dir = "↓ ниже"
+				}
+				sr.info(ctx, fmt.Sprintf(
+					"[SZ PENDING] L%d ожидает перезахода | price=%.4f | P_sl=%.4f | gap=%.3f%% (%s цены)",
+					*sr.matrixSZPendingSlot, currentPrice, target, math.Abs(gapPct), dir))
+				sr.matrixSZLogTime = now
+			}
+		}
+	}
+
 	// 2. Trigger virtual levels whose target price has been crossed.
 	// Crossing condition is slot-based:
 	//   slot < 0 (below levels): fire when price drops to/past target
@@ -1001,6 +1052,9 @@ func (sr *StrategyRunner) matrixTriggerVirtualLevel(ctx context.Context, l *Grid
 // matrixReplaceSlots re-places levels for any slot that has no active (pending/placed/filled) row.
 // Called after safe zone clears. Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixReplaceSlots(ctx context.Context, currentPrice float64) {
+	sr.info(ctx, fmt.Sprintf("[SZ RE-ENTRY] matrixReplaceSlots: price=%.4f startPrice=%.4f — пересоздаём все слоты",
+		currentPrice, sr.cycle.StartPrice))
+
 	above := filterMatrixLevels(sr.strategy.MatrixLevels, "above")
 	below := filterMatrixLevels(sr.strategy.MatrixLevels, "below")
 	prices := calculateMatrixPrices(sr.cycle.StartPrice, above, below, sr.strategy.Direction)
@@ -1110,7 +1164,12 @@ func (sr *StrategyRunner) matrixReplaceSlots(ctx context.Context, currentPrice f
 		} else if err := sr.placeMatrixLevel(ctx, placed, currentPrice); err != nil {
 			sr.errlog(ctx, fmt.Sprintf("Matrix re-entry slot %d: %v", slot, err))
 		} else {
-			sr.info(ctx, fmt.Sprintf("Matrix re-entry slot %d @ %.4f (после Safe Zone)", slot, targetPrice))
+			orderType := "limit"
+			if placed.ExchangeOrderID == "" {
+				orderType = "virtual"
+			}
+			sr.info(ctx, fmt.Sprintf("[SZ RE-ENTRY] L%d: %s %s qty=%s @ %.4f (цена_рынка=%.4f)",
+				slot, side, orderType, qty, targetPrice, currentPrice))
 		}
 		nextLevelIdx++
 	}
