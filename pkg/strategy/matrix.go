@@ -876,6 +876,9 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 		if l.Status != LevelFilled || l.SLOrderID != "" || l.Slot == nil {
 			continue
 		}
+		if *l.Slot < 0 {
+			continue // negative slots don't use per-level SL
+		}
 		_, stopPct, _, _ := sr.matrixLevelConfig(*l.Slot)
 		if stopPct == nil {
 			continue
@@ -1152,6 +1155,10 @@ func (sr *StrategyRunner) handleMatrixLevelFill(ctx context.Context, levelID str
 // matrixPlacePerLevelSL places a reduce-only stop-market SL for one filled level.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixPlacePerLevelSL(ctx context.Context, l *GridLevel, fillPrice, stopPct float64) {
+	// Negative slots (L-1, L-2…) are averaging positions for managed hedge — no per-level SL.
+	if l.Slot != nil && *l.Slot < 0 {
+		return
+	}
 	if sr.strategy.MaxStopActive > 0 {
 		active := 0
 		for _, lv := range sr.levels {

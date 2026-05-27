@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"math"
 	"testing"
 )
@@ -224,4 +225,25 @@ func TestMatrixStopReplaceNewTrigger(t *testing.T) {
 	if math.Abs(trigger-99.5) > 0.0001 {
 		t.Errorf("Short replace trigger: want 99.5, got %.4f", trigger)
 	}
+}
+
+func TestMatrixPlacePerLevelSLSkipsNegativeSlots(t *testing.T) {
+	// matrixPlacePerLevelSL must return immediately for negative slots.
+	// We verify by checking the function returns without panicking on nil runner
+	// (if it reached the exchange call path, sr.runner would panic).
+	negSlot := -1
+	l := &GridLevel{
+		ID:          "level-neg-1",
+		Slot:        &negSlot,
+		Qty:         "1.0",
+		FilledPrice: 100.0,
+		Status:      LevelFilled,
+	}
+	sr := &StrategyRunner{
+		strategy: Strategy{Direction: DirectionLong, SafeZonePct: 5},
+		levels:   []GridLevel{*l},
+	}
+	// Should not panic; no exchange call is made (sr.runner is nil, would panic if called)
+	sr.matrixPlacePerLevelSL(context.Background(), l, 100.0, -2.0)
+	// If we reach here, the guard worked.
 }
