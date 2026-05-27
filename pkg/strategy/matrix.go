@@ -99,15 +99,42 @@ func (sr *StrategyRunner) matrixActiveQty() float64 {
 	return total
 }
 
-// matrixLatestActiveFill returns the last filled non-sl_closed level (by slice order).
+// matrixLatestActiveFill returns the "most extreme" DCA level among all LevelFilled entries.
+// For SHORT it is the level with the HIGHEST fill price (furthest against the short position).
+// For LONG  it is the level with the LOWEST  fill price (furthest against the long position).
+//
+// This is the level whose TP% and fill price govern the global TP placement.
+//
+// Why not slice order (old implementation):
+//   matrixReplaceSlots appends re-inserted levels to the END of sr.levels.  When a slot
+//   re-fills after a SafeZone cycle it becomes the last element of the slice, making the
+//   old LIFO scan return it as "latest" — even though another slot (e.g. L(-1)) is still
+//   filled at a more extreme price and has the TP% configured.  If the re-inserted slot
+//   has no TP% the old code silently cancels the standing TP.
+//
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixLatestActiveFill() (*GridLevel, bool) {
-	for i := len(sr.levels) - 1; i >= 0; i-- {
-		if sr.levels[i].Status == LevelFilled && sr.levels[i].FilledPrice > 0 {
-			return &sr.levels[i], true
+	var best *GridLevel
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Status != LevelFilled || l.FilledPrice <= 0 {
+			continue
+		}
+		if best == nil {
+			best = l
+			continue
+		}
+		if sr.strategy.Direction == DirectionShort {
+			if l.FilledPrice > best.FilledPrice {
+				best = l // higher price = more against a short = more extreme DCA
+			}
+		} else {
+			if l.FilledPrice < best.FilledPrice {
+				best = l // lower price = more against a long = more extreme DCA
+			}
 		}
 	}
-	return nil, false
+	return best, best != nil
 }
 
 // matrixLevelSide returns "Buy" for long direction, "Sell" for short.
@@ -586,7 +613,7 @@ func (sr *StrategyRunner) restoreMatrixSafeZone(ctx context.Context) {
 	if sr.cycle == nil {
 		return
 	}
-	zone := createMatrixSafeZone(slPrice, sr.strategy.SafeZonePct)
+	zone := createMatrixSafeZone(slPrice, sr.strategy.SafeZonePct, 0)
 	if zone.Contains(price) {
 		sr.matrixSafeZone = zone
 		log.Printf("strategy %s: restored Safe Zone [%.4f, %.4f]", sr.strategy.ID, zone.Low, zone.High)
@@ -938,7 +965,18 @@ func (sr *StrategyRunner) matrixReplaceSlots(ctx context.Context, currentPrice f
 	}
 
 	side := matrixLevelSide(sr.strategy.Direction)
-	levelIdx := len(sr.levels) + 1
+
+	// Use a monotonically increasing counter starting from max(existing levelIdx)+1.
+	// Do NOT recompute from len(sr.levels) inside the loop — each delete+insert keeps
+	// len stable, so naive recompute gives the same index for every replaced slot,
+	// causing "110072: OrderLinkedID duplicate" errors on the exchange.
+	nextLevelIdx := 0
+	for _, l := range sr.levels {
+		if l.LevelIdx > nextLevelIdx {
+			nextLevelIdx = l.LevelIdx
+		}
+	}
+	nextLevelIdx++ // first free index
 
 	for _, slot := range slots {
 		if activeSlots[slot] {
@@ -985,8 +1023,8 @@ func (sr *StrategyRunner) matrixReplaceSlots(ctx context.Context, currentPrice f
 			kept = append(kept, l)
 		}
 		sr.levels = kept
-		levelIdx = len(sr.levels) + 1
 
+		levelIdx := nextLevelIdx
 		s := slot
 		var levelID string
 		if err := sr.runner.pool.QueryRow(ctx,
@@ -1012,7 +1050,7 @@ func (sr *StrategyRunner) matrixReplaceSlots(ctx context.Context, currentPrice f
 		} else {
 			sr.info(ctx, fmt.Sprintf("Matrix re-entry slot %d @ %.4f (после Safe Zone)", slot, targetPrice))
 		}
-		levelIdx++
+		nextLevelIdx++
 	}
 }
 
@@ -1367,10 +1405,12 @@ func (sr *StrategyRunner) applyNewMatrixPrices(ctx context.Context, basePrice, c
 }
 
 // createMatrixSafeZone builds a safe zone centered on slTrigger with ±safeZonePct.
-func createMatrixSafeZone(slTrigger, safeZonePct float64) *MatrixSafeZone {
+func createMatrixSafeZone(slTrigger, safeZonePct float64, slot int) *MatrixSafeZone {
 	return &MatrixSafeZone{
 		Low:       slTrigger * (1 - safeZonePct/100),
 		High:      slTrigger * (1 + safeZonePct/100),
+		SLTrigger: slTrigger,
+		Slot:      slot,
 		CreatedAt: time.Now(),
 	}
 }
@@ -1412,7 +1452,7 @@ func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string
 
 	// Create Safe Zone
 	if sr.strategy.SafeZonePct > 0 {
-		sr.matrixSafeZone = createMatrixSafeZone(slTrigger, sr.strategy.SafeZonePct)
+		sr.matrixSafeZone = createMatrixSafeZone(slTrigger, sr.strategy.SafeZonePct, 0)
 		sr.info(ctx, fmt.Sprintf("Safe Zone создана: [%.4f, %.4f]",
 			sr.matrixSafeZone.Low, sr.matrixSafeZone.High))
 	}

@@ -49,10 +49,12 @@ type StrategyRunner struct {
 	currentSignalState      string // last observed signal state: "buy","sell","neutral","" (no filter)
 
 	// Matrix strategy runtime state
-	matrixSafeZone    *MatrixSafeZone
-	matrixMonitorStop context.CancelFunc
-	matrixSLSeq       int     // increments on each per-level SL placement for unique linkIds
-	lastMatrixPrice   float64 // last mark price seen by matrixPriceTick; used to re-trigger virtual levels after a fill
+	matrixSafeZone      *MatrixSafeZone
+	matrixMonitorStop   context.CancelFunc
+	matrixSLSeq         int     // increments on each per-level SL placement for unique linkIds
+	matrixSZPendingSlot *int    // non-nil: waiting for price to reach matrixSZPendingPrice after negative SZ exit
+	matrixSZPendingPrice float64 // P_sl threshold — when current price crosses this, re-enter the pending slot
+	lastMatrixPrice     float64 // last mark price seen by matrixPriceTick; used to re-trigger virtual levels after a fill
 
 	lastVirtualPrice float64 // last mark price seen by gridVirtualPriceTick; 0 = not yet seen
 
@@ -3551,24 +3553,71 @@ func (sr *StrategyRunner) handlePositionClose(ctx context.Context) {
 		return
 	}
 
+	// Matrix: the position-zero WS event can arrive before the per-level SL fill event
+	// (both come from the same WS stream but ordering is not guaranteed by Bybit).
+	// If any LevelFilled level still has an active per-level SL order registered,
+	// defer once — handleMatrixSLFill will arrive next and update the level status.
+	// On the retry (handlePositionCloseRetry) we proceed unconditionally so a genuine
+	// manual close is never silently swallowed.
+	if sr.strategy.StrategyType == "matrix" {
+		for _, l := range sr.levels {
+			if l.Status == LevelFilled && l.SLOrderID != "" {
+				sr.submit(func(ctx context.Context) { sr.handlePositionCloseRetry(ctx) })
+				return
+			}
+		}
+	}
+
 	sr.closeManualPosition(ctx)
 }
 
-// closeManualPosition logs the manual-close event, cancels remaining level orders,
-// closes the cycle, and stops the strategy. Must be called with sr.mu held.
-// It is called both from handlePositionClose and from handleTPSLCancelled (race path
-// where the TP cancel event arrives before the position-zero WS event).
+// handlePositionCloseRetry is queued by handlePositionClose when a matrix per-level SL
+// race is suspected. By the time it runs, handleMatrixSLFill has had a chance to update
+// level statuses. If position is now accounted for, return silently; otherwise close.
+func (sr *StrategyRunner) handlePositionCloseRetry(ctx context.Context) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+
+	if sr.cycle == nil {
+		return // already handled (closeCycle was called by handleMatrixSLFill path)
+	}
+
+	hasPosition := sr.tpOrderID != "" || sr.slOrderID != ""
+	for _, l := range sr.levels {
+		if l.Status == LevelFilled {
+			hasPosition = true
+			break
+		}
+	}
+	if !hasPosition {
+		return // SL fill processed correctly — no open position in our books
+	}
+
+	// Still has position after retry → treat as genuine manual close.
+	sr.closeManualPosition(ctx)
+}
+
+// closeManualPosition is called when a position is detected as closed externally
+// (not by our own TP/SL fill). The source parameter describes the trigger for the log.
+// Must be called with sr.mu held.
 func (sr *StrategyRunner) closeManualPosition(ctx context.Context) {
+	sr.closePositionExternal(ctx, "вручную")
+}
+
+// closePositionExternal closes the cycle and stops the strategy because the position
+// disappeared unexpectedly. source is appended to the log line, e.g. "вручную" or
+// "биржей при отмене TP". Must be called with sr.mu held.
+func (sr *StrategyRunner) closePositionExternal(ctx context.Context, source string) {
 	avg, posQty := sr.avgEntry()
-	sr.warn(ctx, fmt.Sprintf("Позиция закрыта вручную — цикл %d | avg=%.4f | qty=%.4f | PnL в разделе Closed P&L",
-		sr.cycle.CycleNum, avg, posQty))
+	sr.warn(ctx, fmt.Sprintf("Позиция закрыта %s — цикл %d | avg=%.4f | qty=%.4f | PnL в разделе Closed P&L",
+		source, sr.cycle.CycleNum, avg, posQty))
 
 	sr.cancelPlacedLevels(ctx)
 	cycleID := sr.cycle.ID
 	if _, err := sr.runner.pool.Exec(ctx,
 		`UPDATE strategy_levels SET status='cancelled' WHERE cycle_id=$1 AND status='filled'`, cycleID,
 	); err != nil {
-		sr.errlog(ctx, fmt.Sprintf("closeManualPosition: DB update filled→cancelled: %v", err))
+		sr.errlog(ctx, fmt.Sprintf("closePositionExternal: DB update filled→cancelled: %v", err))
 	}
 	for i := range sr.levels {
 		if sr.levels[i].Status == LevelFilled {
@@ -3580,7 +3629,7 @@ func (sr *StrategyRunner) closeManualPosition(ctx context.Context) {
 	if _, err := sr.runner.pool.Exec(ctx,
 		`UPDATE strategies SET status='stopped', updated_at=NOW() WHERE id=$1`, sr.strategy.ID,
 	); err != nil {
-		sr.errlog(ctx, fmt.Sprintf("closeManualPosition: DB update status→stopped: %v", err))
+		sr.errlog(ctx, fmt.Sprintf("closePositionExternal: DB update status→stopped: %v", err))
 	}
 }
 
@@ -4274,23 +4323,23 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 				// Race: TP cancel event arrived before position-0 event.
 				// Position is already gone — close the cycle now; the incoming
 				// position event will see cycle==nil and exit silently.
-				sr.closeManualPosition(ctx)
+				sr.closePositionExternal(ctx, "биржей (TP отменён, позиция уже закрыта)")
 				return
 			}
 			sr.errlog(ctx, fmt.Sprintf("Ошибка повторного выставления TP: %v", err))
 		} else {
-			sr.warn(ctx, "TP ордер был отменён вручную — выставляем повторно")
+			sr.warn(ctx, "TP ордер отменён биржей или вручную — выставляем повторно")
 		}
 	case "sl":
 		sr.slOrderID = ""
 		if err := sr.updateSL(ctx); err != nil {
 			if isPositionZero(err) {
-				sr.closeManualPosition(ctx)
+				sr.closePositionExternal(ctx, "биржей (SL отменён, позиция уже закрыта)")
 				return
 			}
 			sr.errlog(ctx, fmt.Sprintf("Ошибка повторного выставления SL: %v", err))
 		} else {
-			sr.warn(ctx, "SL ордер был отменён вручную — выставляем повторно")
+			sr.warn(ctx, "SL ордер отменён биржей или вручную — выставляем повторно")
 		}
 	}
 }

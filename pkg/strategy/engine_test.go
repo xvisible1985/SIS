@@ -11,19 +11,19 @@ func TestCalculateMatrixPrices(t *testing.T) {
 		{Direction: "above", PriceStepPct: 3.0},
 	}
 	below := []MatrixLevel{
-		{Direction: "below", PriceStepPct: 2.0},
-		{Direction: "below", PriceStepPct: 3.0},
+		{Direction: "below", PriceStepPct: -2.0},
+		{Direction: "below", PriceStepPct: -3.0},
 	}
-	prices := calculateMatrixPrices(100.0, above, below)
+	prices := calculateMatrixPrices(100.0, above, below, DirectionLong)
 	cases := []struct {
 		slot int
 		want float64
 	}{
 		{0, 100.0},
-		{-1, 98.0},
-		{-2, 95.06},
-		{1, 102.0},
-		{2, 105.06},
+		{-1, 98.0},    // 100 * (1 + 1*(-2)/100) = 98
+		{-2, 95.06},   // 98 * (1 + 1*(-3)/100) = 95.06
+		{1, 102.0},    // 100 * (1 + 1*2/100) = 102
+		{2, 105.06},   // 102 * (1 + 1*3/100) = 105.06
 	}
 	for _, c := range cases {
 		got, ok := prices[c.slot]
@@ -179,7 +179,7 @@ func TestMatrixPerLevelSLTrigger(t *testing.T) {
 
 func TestMatrixSafeZoneCreation(t *testing.T) {
 	// safe_zone_pct=5, sl_trigger=100 → Low=95, High=105
-	zone := createMatrixSafeZone(100.0, 5.0)
+	zone := createMatrixSafeZone(100.0, 5.0, 0)
 	if math.Abs(zone.Low-95.0) > 0.0001 {
 		t.Errorf("Low: want 95, got %.4f", zone.Low)
 	}

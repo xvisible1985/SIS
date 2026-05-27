@@ -125,6 +125,8 @@ type Cycle struct {
 
 type MatrixSafeZone struct {
 	Low, High float64
+	SLTrigger float64   // original SL trigger price = re-entry threshold on negative exit
+	Slot      int       // slot index whose per-level SL fired
 	CreatedAt time.Time
 }
 
