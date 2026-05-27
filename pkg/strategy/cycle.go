@@ -1,4 +1,4 @@
-﻿package strategy
+package strategy
 
 import (
 	"context"
@@ -19,42 +19,42 @@ import (
 
 // StrategyRunner holds the runtime state of one strategy.
 type StrategyRunner struct {
-	mu      sync.Mutex
-	startMu sync.Mutex // serializes loadOrStart and restartCycle to prevent duplicate placement
+	mu       sync.Mutex
+	startMu  sync.Mutex // serializes loadOrStart and restartCycle to prevent duplicate placement
 	strategy Strategy
 	runner   *AccountRunner
 
-	cycle        *Cycle
-	levels       []GridLevel
-	tpOrderID    string
-	slOrderID    string
-	tpPlaceSeq   int
-	slPlaceSeq   int
-	instr            trader.InstrumentInfo
-	instrFetchedAt   time.Time // time of last successful GetInstrumentInfo; zero = never
-	closedBySelf     bool      // set by handleTPFill/handleSLFill to suppress the WS position-close event
-	closedByReason   string    // human-readable reason why we closed/reduced (TP/SL/Matrix TP/…); cleared after use
-	unavailableCount int     // consecutive "instrument unavailable" errors; stops after 5
-	repriceGen       int     // increments on each reprice so re-placed levels get fresh linkIds
-	partialCloseQty      float64 // actual exchange position qty after manual partial close; 0 = unset
-	lastTPSLQty          float64 // qty that TP/SL were last placed for — skip re-place if unchanged
-	lastTPSLAvg          float64 // avg entry that TP/SL were last placed for
-	lastTPPrice          float64 // TP price at last placement — changes when tp_pct changes
-	lastSLPrice          float64 // SL trigger price at last placement
-	positionModeVerified    bool // true after ensurePositionMode succeeded for current HedgeMode value
-	lastVerifiedHedge       bool // HedgeMode value at the time positionModeVerified was set
-	gridChangedWhileStopped bool   // restartCycle called while stopped; apply on next loadOrStart
-	signalSubID             string // non-empty while waiting for signal before starting a new cycle
-	signalMonitorID         string // non-empty while continuously monitoring signal during active cycle
-	currentSignalState      string // last observed signal state: "buy","sell","neutral","" (no filter)
+	cycle                   *Cycle
+	levels                  []GridLevel
+	tpOrderID               string
+	slOrderID               string
+	tpPlaceSeq              int
+	slPlaceSeq              int
+	instr                   trader.InstrumentInfo
+	instrFetchedAt          time.Time // time of last successful GetInstrumentInfo; zero = never
+	closedBySelf            bool      // set by handleTPFill/handleSLFill to suppress the WS position-close event
+	closedByReason          string    // human-readable reason why we closed/reduced (TP/SL/Matrix TP/…); cleared after use
+	unavailableCount        int       // consecutive "instrument unavailable" errors; stops after 5
+	repriceGen              int       // increments on each reprice so re-placed levels get fresh linkIds
+	partialCloseQty         float64   // actual exchange position qty after manual partial close; 0 = unset
+	lastTPSLQty             float64   // qty that TP/SL were last placed for — skip re-place if unchanged
+	lastTPSLAvg             float64   // avg entry that TP/SL were last placed for
+	lastTPPrice             float64   // TP price at last placement — changes when tp_pct changes
+	lastSLPrice             float64   // SL trigger price at last placement
+	positionModeVerified    bool      // true after ensurePositionMode succeeded for current HedgeMode value
+	lastVerifiedHedge       bool      // HedgeMode value at the time positionModeVerified was set
+	gridChangedWhileStopped bool      // restartCycle called while stopped; apply on next loadOrStart
+	signalSubID             string    // non-empty while waiting for signal before starting a new cycle
+	signalMonitorID         string    // non-empty while continuously monitoring signal during active cycle
+	currentSignalState      string    // last observed signal state: "buy","sell","neutral","" (no filter)
 
 	// Matrix strategy runtime state
-	matrixSafeZone      *MatrixSafeZone
-	matrixMonitorStop   context.CancelFunc
-	matrixSLSeq         int     // increments on each per-level SL placement for unique linkIds
-	matrixSZPendingSlot *int    // non-nil: waiting for price to reach matrixSZPendingPrice after negative SZ exit
+	matrixSafeZone       *MatrixSafeZone
+	matrixMonitorStop    context.CancelFunc
+	matrixSLSeq          int     // increments on each per-level SL placement for unique linkIds
+	matrixSZPendingSlot  *int    // non-nil: waiting for price to reach matrixSZPendingPrice after negative SZ exit
 	matrixSZPendingPrice float64 // P_sl threshold — when current price crosses this, re-enter the pending slot
-	lastMatrixPrice     float64 // last mark price seen by matrixPriceTick; used to re-trigger virtual levels after a fill
+	lastMatrixPrice      float64 // last mark price seen by matrixPriceTick; used to re-trigger virtual levels after a fill
 
 	lastVirtualPrice float64 // last mark price seen by gridVirtualPriceTick; 0 = not yet seen
 
@@ -64,7 +64,7 @@ type StrategyRunner struct {
 
 	// Per-strategy worker goroutine — serializes all tasks and provides panic isolation.
 	taskCh       chan func(context.Context) // buffered task queue (capacity 64)
-	workerCancel context.CancelFunc        // cancels the worker when the strategy is removed
+	workerCancel context.CancelFunc         // cancels the worker when the strategy is removed
 
 	// Worker metrics — written and read atomically (no lock required).
 	workerRunning int32 // 1 while the worker is executing a task, 0 when idle
@@ -1377,10 +1377,10 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 					prevPrice = targetPrice
 				}
 				sizePct := step.SizePct
-			if sizePct == 0 && step.Lots > 0 {
-				sizePct = step.Lots * 100 // migrate legacy lots→size_pct
-			}
-			sizeUSDT := sizePct / 100 * sr.strategy.GridSizeUSDT
+				if sizePct == 0 && step.Lots > 0 {
+					sizePct = step.Lots * 100 // migrate legacy lots→size_pct
+				}
+				sizeUSDT := sizePct / 100 * sr.strategy.GridSizeUSDT
 				priceForQty := price
 				if targetPrice > 0 {
 					priceForQty = targetPrice
@@ -2193,9 +2193,9 @@ func (sr *StrategyRunner) handleTPFill(ctx context.Context, fillPrice, fillQty f
 	sr.logBotStrategy(ctx, fmt.Sprintf("Стратегия закрыта по TP: %s %s | цикл %d | PnL +%.2f USDT (+%.2f%%)",
 		sr.strategy.Symbol, string(sr.strategy.Direction), sr.cycle.CycleNum, pnl, pnlPct))
 	sr.writeTrade(ctx, "tp", avg, fillPrice, fillQty, pnl, pnlPct)
-	sr.closedBySelf = true   // suppress the position-close WS event that follows TP fill
+	sr.closedBySelf = true // suppress the position-close WS event that follows TP fill
 	sr.closedByReason = "TP"
-	sr.tpOrderID = ""      // already filled — closeCycle must not try to cancel it
+	sr.tpOrderID = "" // already filled — closeCycle must not try to cancel it
 	sr.cancelPlacedLevels(ctx)
 	sr.closeCycle(ctx, "tp") // cancels SL if present
 	sr.maybeRestart(ctx)
@@ -2231,9 +2231,9 @@ func (sr *StrategyRunner) handleSLFill(ctx context.Context, fillPrice, fillQty f
 	sr.logBotStrategy(ctx, fmt.Sprintf("Стратегия закрыта по SL: %s %s | цикл %d | PnL %.2f USDT (%.2f%%)",
 		sr.strategy.Symbol, string(sr.strategy.Direction), sr.cycle.CycleNum, pnl, pnlPct))
 	sr.writeTrade(ctx, "sl", avg, fillPrice, fillQty, pnl, pnlPct)
-	sr.closedBySelf = true   // suppress the position-close WS event that follows SL fill
+	sr.closedBySelf = true // suppress the position-close WS event that follows SL fill
 	sr.closedByReason = "SL"
-	sr.slOrderID = ""      // already filled — closeCycle must not try to cancel it
+	sr.slOrderID = "" // already filled — closeCycle must not try to cancel it
 	sr.cancelPlacedLevels(ctx)
 	sr.closeCycle(ctx, "sl") // cancels TP if present
 	sr.maybeRestart(ctx)
@@ -3480,10 +3480,10 @@ func (sr *StrategyRunner) repriceRemainingFromFills(ctx context.Context) {
 					target = prevPrice * (1 + step.PriceMovePct/100)
 				}
 				sizePct := step.SizePct
-			if sizePct == 0 && step.Lots > 0 {
-				sizePct = step.Lots * 100 // migrate legacy lots→size_pct
-			}
-			sizeUSDT := sizePct / 100 * sr.strategy.GridSizeUSDT
+				if sizePct == 0 && step.Lots > 0 {
+					sizePct = step.Lots * 100 // migrate legacy lots→size_pct
+				}
+				sizeUSDT := sizePct / 100 * sr.strategy.GridSizeUSDT
 				qty := trader.FormatQty(sizeUSDT/target, sr.instr.QtyStep, sr.instr.MinQty)
 				maxIdx++
 				var levelID string

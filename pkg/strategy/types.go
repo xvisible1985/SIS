@@ -56,7 +56,7 @@ type GridStep struct {
 }
 
 type MatrixLevel struct {
-	Direction      string   `json:"direction"`                  // "above" | "below"
+	Direction      string   `json:"direction"` // "above" | "below"
 	PriceStepPct   float64  `json:"price_step_pct"`
 	SizePct        float64  `json:"size_pct"`
 	StopPct        *float64 `json:"stop_pct,omitempty"`
@@ -125,8 +125,8 @@ type Cycle struct {
 
 type MatrixSafeZone struct {
 	Low, High float64
-	SLTrigger float64   // original SL trigger price = re-entry threshold on negative exit
-	Slot      int       // slot index whose per-level SL fired
+	SLTrigger float64 // original SL trigger price = re-entry threshold on negative exit
+	Slot      int     // slot index whose per-level SL fired
 	CreatedAt time.Time
 }
 
@@ -147,9 +147,9 @@ type GridLevel struct {
 	ExchangeLinkID  string
 	FilledPrice     float64
 	// Matrix-only fields (nil/zero for grid strategies)
-	SLOrderID   string
-	SLPrice     float64
-	SLReplaced  bool
-	Slot        *int // nil = grid; matrix slot index: -N…0…+N
+	SLOrderID    string
+	SLPrice      float64
+	SLReplaced   bool
+	Slot         *int // nil = grid; matrix slot index: -N…0…+N
 	ForceVirtual bool // set at runtime when exchange rejected placement (e.g. 110007)
 }
