@@ -29,13 +29,15 @@ func handleUpdate(ctx context.Context, bot *tgbotapi.BotAPI, gw *GatewayClient, 
 			if member.IsBot {
 				continue
 			}
-			username := member.UserName
-			if username == "" {
-				username = member.FirstName
+			var mention string
+			if member.UserName != "" {
+				mention = "@" + member.UserName
+			} else {
+				mention = member.FirstName
 			}
 			text := fmt.Sprintf(
-				"👋 Добро пожаловать, @%s!\n\n*Novabot* — платформа автоматической торговли на Bybit.\n\n🚀 Зарегистрироваться: %s/register\n🔐 Уже есть аккаунт? /login\n📊 Привязать Telegram: /start",
-				username, cfg.AppURL,
+				"👋 Добро пожаловать, %s!\n\n*Novabot* — платформа автоматической торговли на Bybit.\n\n🚀 Зарегистрироваться: %s/register\n🔐 Уже есть аккаунт? /login\n📊 Привязать Telegram: /start",
+				mention, cfg.AppURL,
 			)
 			m := tgbotapi.NewMessage(msg.Chat.ID, text)
 			m.ParseMode = "Markdown"
@@ -77,11 +79,15 @@ func handleUpdate(ctx context.Context, bot *tgbotapi.BotAPI, gw *GatewayClient, 
 
 // handleCallback handles inline keyboard button presses.
 func handleCallback(ctx context.Context, bot *tgbotapi.BotAPI, gw *GatewayClient, cb *tgbotapi.CallbackQuery) {
-	chatID := cb.Message.Chat.ID
-	data := cb.Data
-
 	// Acknowledge the callback immediately
 	bot.Request(tgbotapi.NewCallback(cb.ID, ""))
+
+	// cb.Message is nil for inline-mode callbacks
+	if cb.Message == nil {
+		return
+	}
+	chatID := cb.Message.Chat.ID
+	data := cb.Data
 
 	switch {
 	case data == "cmd_login":

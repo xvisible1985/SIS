@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/redis/go-redis/v9"
@@ -21,8 +22,23 @@ type TgNotifyMsg struct {
 }
 
 // startNotifier subscribes to Redis channel tg:notify and sends Telegram messages.
-// Runs until ctx is cancelled.
+// Runs until ctx is cancelled, automatically reconnecting on channel close.
 func startNotifier(ctx context.Context, bot *tgbotapi.BotAPI, rdb *redis.Client) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		notifierOnce(ctx, bot, rdb)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+			log.Printf("notifier: reconnecting to %s", tgNotifyChannel)
+		}
+	}
+}
+
+func notifierOnce(ctx context.Context, bot *tgbotapi.BotAPI, rdb *redis.Client) {
 	sub := rdb.Subscribe(ctx, tgNotifyChannel)
 	defer sub.Close()
 
@@ -35,6 +51,7 @@ func startNotifier(ctx context.Context, bot *tgbotapi.BotAPI, rdb *redis.Client)
 			return
 		case redisMsg, ok := <-ch:
 			if !ok {
+				log.Printf("notifier: channel closed, will reconnect")
 				return
 			}
 			var msg TgNotifyMsg

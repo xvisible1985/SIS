@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -16,7 +17,10 @@ import (
 func cmdStart(ctx context.Context, bot *tgbotapi.BotAPI, gw *GatewayClient, msg *tgbotapi.Message, appURL string) {
 	token := strings.TrimSpace(msg.CommandArguments())
 	chatID := msg.Chat.ID
-	username := msg.From.UserName
+	var username string
+	if msg.From != nil {
+		username = msg.From.UserName
+	}
 
 	if token != "" {
 		// Link existing account via the account/telegram-verify endpoint
@@ -48,7 +52,10 @@ func cmdStart(ctx context.Context, bot *tgbotapi.BotAPI, gw *GatewayClient, msg 
 // cmdLogin handles /login — sends a magic-link button.
 func cmdLogin(ctx context.Context, bot *tgbotapi.BotAPI, gw *GatewayClient, msg *tgbotapi.Message, appURL string) {
 	chatID := msg.Chat.ID
-	username := msg.From.UserName
+	var username string
+	if msg.From != nil {
+		username = msg.From.UserName
+	}
 
 	loginURL, err := gw.TelegramLoginRequest(ctx, chatID, username)
 	if err != nil {
@@ -223,7 +230,9 @@ func cmdMute(ctx context.Context, bot *tgbotapi.BotAPI, gw *GatewayClient, msg *
 func reply(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	m := tgbotapi.NewMessage(chatID, text)
 	m.ParseMode = "Markdown"
-	bot.Send(m)
+	if _, err := bot.Send(m); err != nil {
+		log.Printf("reply to %d failed: %v", chatID, err)
+	}
 }
 
 func replyNotLinked(bot *tgbotapi.BotAPI, chatID int64) {
