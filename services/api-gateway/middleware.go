@@ -43,7 +43,7 @@ func UserIDFromCtx(ctx context.Context) string {
 func (s *Server) RequireBotSecret(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header := r.Header.Get("Authorization")
-		if s.botSecret == "" || header != "Bearer "+s.botSecret {
+		if s.botSecret == "" || !strings.HasPrefix(header, "Bearer ") || strings.TrimPrefix(header, "Bearer ") != s.botSecret {
 			writeError(w, http.StatusUnauthorized, "invalid bot secret")
 			return
 		}

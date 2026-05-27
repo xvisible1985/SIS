@@ -112,3 +112,18 @@ func TestRequireBotSecret_Valid(t *testing.T) {
 		t.Errorf("got %d, called=%v, want 200/true", rec.Code, called)
 	}
 }
+
+func TestRequireBotSecret_Unconfigured(t *testing.T) {
+	// When botSecret is empty the middleware always denies
+	s := &Server{botSecret: ""}
+	h := s.RequireBotSecret(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("Authorization", "Bearer ")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("got %d, want 401", rec.Code)
+	}
+}
