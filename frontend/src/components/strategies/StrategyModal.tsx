@@ -240,7 +240,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
         const isShort = strategy?.direction === 'short'
         setFilledLevels(state.levels?.filter(l => {
           const slot = l.slot ?? 0
-          return l.status === 'filled' && (isShort ? slot > 0 : slot < 0)
+          return l.status === 'filled' && slot < 0
         }).length ?? 0)
         setEntryFilled(state.levels?.some(l => l.slot === 0 && l.status === 'filled') ?? false)
       })
@@ -740,11 +740,11 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                     className={inputCls} />
                 </div>
 
-                {/* ABOVE section — for short shows belowLevels (they land above entry), for long shows aboveLevels */}
+                {/* ABOVE section — always shows aboveLevels (positive slots L(N)), visually above L(0) for both long and short */}
                 {(() => {
-                  const topLevels = isShort ? belowLevels : aboveLevels
-                  const topDir: 'above' | 'below' = isShort ? 'below' : 'above'
-                  const topAdd = isShort ? addBelowLevel : addAboveLevel
+                  const topLevels = aboveLevels
+                  const topDir: 'above' | 'below' = 'above'
+                  const topAdd = addAboveLevel
                   const topLabel = isShort
                     ? <span>Выше точки входа <span className="normal-case text-gray-600 font-normal">(против направления)</span></span>
                     : <span>Выше точки входа <span className="normal-case text-gray-600 font-normal">(в сторону)</span></span>
@@ -817,11 +817,11 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                   </div>
                 </div>
 
-                {/* BELOW section — for short shows aboveLevels (they land below entry), for long shows belowLevels */}
+                {/* BELOW section — always shows belowLevels (negative slots L(-N)), visually below L(0) for both long and short */}
                 {(() => {
-                  const botLevels = isShort ? aboveLevels : belowLevels
-                  const botDir: 'above' | 'below' = isShort ? 'above' : 'below'
-                  const botAdd = isShort ? addAboveLevel : addBelowLevel
+                  const botLevels = belowLevels
+                  const botDir: 'above' | 'below' = 'below'
+                  const botAdd = addBelowLevel
                   const botLabel = isShort
                     ? <span>Ниже точки входа <span className="normal-case text-gray-600 font-normal">(в сторону)</span></span>
                     : <span>Ниже точки входа <span className="normal-case text-gray-600 font-normal">(против направления)</span></span>

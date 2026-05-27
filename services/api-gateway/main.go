@@ -88,6 +88,9 @@ func main() {
 	syncer := traderPkg.NewSyncer(pool, encKey, syncDays)
 	syncer.Start(ctx)
 
+	// Start max-leverage DB refresher (every 10 min, covers all active strategy symbols)
+	RunLeverageRefresher(ctx, pool)
+
 	// Start bot automation engine
 	go s.RunBotEngine(ctx)
 

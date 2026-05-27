@@ -86,6 +86,11 @@ export function TemplateSelector({ formData, onLoad, strategyType, onStrategyTyp
             {t === 'grid' ? 'Grid' : 'Matrix'}
           </button>
         ))}
+        {strategyType === 'manual' && (
+          <span className="rounded-lg border px-3 py-1 text-[11px] font-semibold border-[#5b8cff]/40 bg-[#5b8cff]/[.18] text-[#a0b8ff]">
+            Manual
+          </span>
+        )}
       </div>
 
       <div className="w-px h-4 bg-gray-700 shrink-0" />

@@ -755,12 +755,14 @@ export function TerminalPage() {
   const [selectedStrategy, setSelectedStrategy] = useState<Strategy | null>(null)
   const [strategyCycleNums, setStrategyCycleNums] = useState<Record<string, number>>({})
   const [strategyLevels, setStrategyLevels] = useState<StrategyLevel[]>([])
+  const [strategySafeZone, setStrategySafeZone] = useState<{ low: number; high: number } | null>(null)
 
   useEffect(() => {
-    if (!selectedStrategy?.id) { setStrategyLevels([]); return }
+    if (!selectedStrategy?.id) { setStrategyLevels([]); setStrategySafeZone(null); return }
     const id = selectedStrategy.id
     const fetch = () => getStrategyState(id).then(s => {
       setStrategyLevels(s.levels ?? [])
+      setStrategySafeZone(s.safe_zone ?? null)
       if (s.cycle_num) setStrategyCycleNums(prev => ({ ...prev, [id]: s.cycle_num }))
     }).catch(() => {})
     fetch()
@@ -976,7 +978,7 @@ export function TerminalPage() {
         <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden" style={{ height: '42vh' }}>
           {chartToolbar}
           <div className="flex-1 min-h-0">
-            <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} tickerPrices={tickerPrices} />
+            <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} />
           </div>
         </div>
         {/* Mobile tabs */}
@@ -1061,7 +1063,7 @@ export function TerminalPage() {
             </div>
           </div>
           <div className="flex-1 min-h-0">
-            <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} tickerPrices={tickerPrices} />
+            <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} />
           </div>
         </div>
 

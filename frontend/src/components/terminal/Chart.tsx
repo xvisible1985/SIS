@@ -27,6 +27,7 @@ interface Props {
   currentCycleNum?: number | null
   strategyLevels?: StrategyLevel[]
   tickerPrices?: Map<string, number>
+  safeZone?: { low: number; high: number } | null
 }
 
 function parseOrderLabel(linkId: string, side?: string): string {
@@ -86,7 +87,7 @@ function isOtherStrategyLinkId(linkId: string | undefined, stratIdShort: string 
   return /^(?:SIS_STR|STP|STR)-[a-f0-9]/.test(linkId) && !linkId.includes(stratIdShort)
 }
 
-export function Chart({ candles, candleSymbol, positions, orders, executions, symbol, lastPrice, onLoadMore, overlaySettings, strategyDir, stratIdShort, currentCycleNum, strategyLevels, tickerPrices }: Props) {
+export function Chart({ candles, candleSymbol, positions, orders, executions, symbol, lastPrice, onLoadMore, overlaySettings, strategyDir, stratIdShort, currentCycleNum, strategyLevels, tickerPrices, safeZone }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -95,6 +96,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
   const markersPluginRef = useRef<any>(null)
   const priceLines = useRef<any[]>([])
   const currentPriceLineRef = useRef<any>(null)
+  const safeZoneOverlayRef = useRef<HTMLDivElement>(null)
   const loadedSymbolRef = useRef<string | null>(null)
   const prevFirstTimeRef = useRef<number | null>(null)
   const tickerRef = useRef<Map<string, number> | undefined>(tickerPrices)
@@ -476,6 +478,13 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       // and partial-fill cases where both the execution and the remaining order would show.
       const hasActiveTP = orders.some(o => o.symbol === symbol && isTPLinkId(o.orderLinkId))
 
+      // Slots closed by their per-level SL — hide their fill lines so they don't "hang"
+      const slClosedSlots = new Set(
+        (strategyLevels ?? [])
+          .filter(l => l.status === 'sl_closed' && l.slot != null)
+          .map(l => l.slot as number)
+      )
+
       // Group executions before drawing: matrix entry levels (L(N)) are merged by slot
       // so multiple re-entries of the same slot appear as one price line.
       type ExecAgg = { totalQty: number; totalValue: number; side: string; isTP: boolean; label: string }
@@ -493,6 +502,11 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         const levelLabel = label || (isBuy ? 'Buy' : 'Sell')
         // Matrix slot entries (L(N) label): merge all re-entries of the same slot into one line
         const isMatrixSlot = /^L\(-?\d+\)$/.test(label)
+        // Skip fill lines for levels closed by their per-level SL
+        if (isMatrixSlot) {
+          const slotMatch = label.match(/^L\((-?\d+)\)$/)
+          if (slotMatch && slClosedSlots.has(parseInt(slotMatch[1]))) continue
+        }
         const groupKey = isMatrixSlot ? `${label}|${e.side}` : (e.orderLinkId || e.execId)
         const qty = parseFloat(e.qty || '0')
         const existing = execGroups.get(groupKey)
@@ -761,9 +775,57 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     }
   }, [positions, orders, executions, symbol, overlaySettings, effectiveDir])
 
+  // SafeZone overlay — semi-transparent rectangle between safe_zone.low and safe_zone.high
+  useEffect(() => {
+    const container = safeZoneOverlayRef.current
+    const series = seriesRef.current
+    if (!container) return
+    container.innerHTML = ''
+    if (!safeZone || !series) return
+
+    const rectEl = document.createElement('div')
+    rectEl.style.position = 'absolute'
+    rectEl.style.left = '0'
+    rectEl.style.right = '0'
+    rectEl.style.background = 'rgba(251, 191, 36, 0.07)'
+    rectEl.style.borderTop = '1px dashed rgba(251, 191, 36, 0.45)'
+    rectEl.style.borderBottom = '1px dashed rgba(251, 191, 36, 0.45)'
+    rectEl.style.pointerEvents = 'none'
+
+    const labelEl = document.createElement('div')
+    labelEl.style.position = 'absolute'
+    labelEl.style.right = '8px'
+    labelEl.style.top = '50%'
+    labelEl.style.transform = 'translateY(-50%)'
+    labelEl.style.color = 'rgba(251, 191, 36, 0.65)'
+    labelEl.style.fontSize = '10px'
+    labelEl.style.fontWeight = 'bold'
+    labelEl.style.letterSpacing = '0.04em'
+    labelEl.style.pointerEvents = 'none'
+    labelEl.textContent = '⚠ SafeZone'
+    rectEl.appendChild(labelEl)
+    container.appendChild(rectEl)
+
+    const update = () => {
+      const yTop = series.priceToCoordinate(safeZone.high)
+      const yBot = series.priceToCoordinate(safeZone.low)
+      if (yTop === null || yBot === null) { rectEl.style.display = 'none'; return }
+      const top = Math.min(yTop, yBot)
+      const height = Math.abs(yBot - yTop)
+      rectEl.style.display = 'block'
+      rectEl.style.top = `${top}px`
+      rectEl.style.height = `${Math.max(height, 4)}px`
+    }
+
+    update()
+    let rafId = requestAnimationFrame(function loop() { update(); rafId = requestAnimationFrame(loop) })
+    return () => { cancelAnimationFrame(rafId); container.innerHTML = '' }
+  }, [safeZone, afterSetData])
+
   return (
     <div className="relative w-full h-full">
       <div ref={containerRef} className="absolute inset-0" style={{ zIndex: 1 }} />
+      <div ref={safeZoneOverlayRef} className="absolute inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 8 }} />
       <div ref={overlayRef} className="absolute inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 10 }} />
       {timeBadge && (
         <div
