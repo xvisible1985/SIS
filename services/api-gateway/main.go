@@ -234,6 +234,9 @@ func main() {
 			// Trade history
 			r.Get("/trade-history", s.GetTradeHistory)
 
+			// Dashboard
+			r.Get("/dashboard", s.GetDashboard)
+
 		// Admin
 		r.Get("/admin/metrics", s.GetAdminMetrics)
 

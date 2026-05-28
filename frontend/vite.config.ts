@@ -27,6 +27,7 @@ export default defineConfig({
       '/indicator-types': { target: 'http://localhost:8080', changeOrigin: true },
       '/bots': { target: 'http://localhost:8080', changeOrigin: true },
       '/trade-history': { target: 'http://localhost:8080', changeOrigin: true },
+      '/dashboard': { target: 'http://localhost:8080', changeOrigin: true },
       '/instrument-info': { target: 'http://localhost:8080', changeOrigin: true },
       '/account': { target: 'http://localhost:8080', changeOrigin: true },
       '/coin-icon': { target: 'http://localhost:8080', changeOrigin: true },

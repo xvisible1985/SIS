@@ -38,7 +38,7 @@ export function MyBotsSection({ bots, onCreate, onExport, onToggle, onEdit, onDe
       {bots.length === 0 ? (
         <EmptyState onCreate={onCreate} />
       ) : (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-3.5">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(420px,1fr))] gap-3.5">
           {bots.map((b) => (
             <MyBotCard
               key={b.id}

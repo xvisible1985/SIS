@@ -61,9 +61,10 @@ const IcCopy   = (p: IcProps) => <Ic {...p}><rect x="8" y="3" width="12" height=
 const IcTrash  = (p: IcProps) => <Ic {...p}><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/></Ic>
 const IcBug    = (p: IcProps) => <Ic {...p}><path d="M8 2l1.5 1.5M16 2l-1.5 1.5M9 9h6M9 13h6M3 9l3 1M21 9l-3 1M3 17l3-1M21 17l-3-1"/><path d="M6.5 6.5A5.5 5.5 0 0 1 17.5 6.5V17a5.5 5.5 0 0 1-11 0V6.5z"/></Ic>
 const IcScope  = (p: IcProps) => <Ic {...p}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/><path d="M8 11h6M11 8v6"/></Ic>
+const IcMenu   = (p: IcProps) => <Ic {...p}><path d="M3 6h18M3 12h18M3 18h18"/></Ic>
 
-const IcChev   = (_: { open: boolean }) => (
-  <svg width={9} height={9} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.6}
+const IcChev   = (_: { open: boolean; s?: number }) => (
+  <svg width={_.s ?? 9} height={_.s ?? 9} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.6}
     strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block', opacity: 0.6 }}>
     <path d="M6 9l6 6 6-6"/>
   </svg>
@@ -86,21 +87,21 @@ type StratStatus = 'active' | 'finishing' | 'stopped'
 
 const STATUS_ITEMS = [
   {
-    id: 'active'    as StratStatus, label: 'Актив',   sub: 'live',
+    id: 'active'    as StratStatus, label: 'LIVE',   menuLabel: 'Активировать',
     dot:    { background: '#5be0a0', boxShadow: '0 0 6px #5be0a0' },
     dotCls: 'animate-pulse',
     btn:    { background: '#163327', border: '1px solid rgba(65,210,139,.40)', color: '#5be0a0' },
     tip:    'Полный автопилот. Стратегия сама выставляет ордера по сетке, двигает TP и SL по мере набора позиции, а после закрытия цикла сразу запускает следующий.',
   },
   {
-    id: 'finishing' as StratStatus, label: 'Заверш.', sub: 'done',
+    id: 'finishing' as StratStatus, label: 'DONE',   menuLabel: 'Завершить',
     dot:    { background: '#f7a600' },
     dotCls: '',
     btn:    { background: '#2e2208', border: '1px solid rgba(247,166,0,.40)', color: '#f7a600' },
     tip:    'Мягкое завершение. Текущий цикл доживает до конца — сетка продолжает добирать ордера, TP и SL работают. Как только позиция закрыта, новый цикл уже не запускается и стратегия переходит в Стоп.',
   },
   {
-    id: 'stopped'   as StratStatus, label: 'Стоп',    sub: 'paused',
+    id: 'stopped'   as StratStatus, label: 'PAUSED', menuLabel: 'Остановить',
     dot:    { background: '#9aa6c8' },
     dotCls: '',
     btn:    { background: '#1e2235', border: '1px solid rgba(255,255,255,.18)', color: '#cfd5e1' },
@@ -143,12 +144,12 @@ function StatusPicker({ value, acting, onChange, onInteract }: { value: StratSta
         type="button"
         disabled={acting}
         onClick={handleToggle}
-        className="h-7 inline-flex items-center gap-1.5 px-2.5 text-[10px] font-bold uppercase tracking-[.5px] rounded-[7px] cursor-pointer leading-none font-sans select-none disabled:opacity-40 transition-colors"
-        style={cur.btn}
+        className="inline-flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-[.5px] cursor-pointer leading-none font-sans select-none disabled:opacity-40 transition-opacity bg-transparent border-none p-0"
+        style={{ color: cur.btn.color }}
       >
         <span className={`w-[5px] h-[5px] rounded-full shrink-0 ${cur.dotCls}`} style={cur.dot} />
         {cur.label}
-        <IcChev open={open} />
+        <IcChev open={open} s={14} />
       </button>
       {open && createPortal(
         <div
@@ -170,8 +171,7 @@ function StatusPicker({ value, acting, onChange, onInteract }: { value: StratSta
                 className={`flex items-center gap-2 px-[9px] py-[8px] text-[12px] font-semibold text-[#cfd5e1] rounded-[6px] cursor-pointer w-full text-left transition-colors hover:bg-white/[.06] ${value === it.id ? 'bg-white/[.06] text-white' : ''}`}
               >
                 <span className={`w-[6px] h-[6px] rounded-full shrink-0 ${it.dotCls}`} style={it.dot} />
-                {it.label}
-                <span className="ml-auto text-[10px] text-[#5b6479] uppercase tracking-[.5px] font-mono">{it.sub}</span>
+                {it.menuLabel}
               </button>
               <div className="pointer-events-none absolute right-full top-1/2 -translate-y-1/2 mr-2 w-56 rounded-[9px] px-3 py-2.5 text-[11px] leading-relaxed shadow-2xl z-30 opacity-0 group-hover/tip:opacity-100 transition-opacity duration-150 whitespace-normal font-medium"
                 style={{ background: '#2d2500', border: '1px solid rgba(247,166,0,.35)', color: '#f5d97a' }}>
@@ -324,6 +324,10 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
   const [debugOpen, setDebugOpen] = useState(false)
   const [auditOpen, setAuditOpen] = useState(false)
   const [hovered, setHovered] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [menuPos, setMenuPos] = useState({ top: 0, right: 0 })
+  const menuBtnRef = useRef<HTMLButtonElement>(null)
+  const menuDropRef = useRef<HTMLDivElement>(null)
 
   const accountName = accounts.find(a => a.id === s.account_id)?.label ?? s.account_id.slice(0, 8)
   const isLong = s.direction === 'long'
@@ -533,6 +537,27 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
       : cs.state.start_price * (1 - s.sl_pct / 100)
   }
 
+  // ── hamburger menu ───────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!menuOpen) return
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node
+      if (!menuBtnRef.current?.contains(target) && !menuDropRef.current?.contains(target)) setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [menuOpen])
+
+  function handleMenuToggle(e: React.MouseEvent) {
+    e.stopPropagation()
+    onSelect?.(s)
+    if (!menuOpen && menuBtnRef.current) {
+      const r = menuBtnRef.current.getBoundingClientRect()
+      setMenuPos({ top: r.bottom + 4, right: window.innerWidth - r.right })
+    }
+    setMenuOpen(o => !o)
+  }
+
   function handleHeaderClick() {
     onSelect?.(s)
   }
@@ -651,54 +676,105 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
             )
           }
           <button
+            ref={menuBtnRef}
             type="button"
-            onClick={e => { e.stopPropagation(); setDebugOpen(o => !o) }}
-            className={`w-7 h-7 inline-flex items-center justify-center rounded-[7px] border transition-colors shrink-0 ${debugOpen ? 'bg-amber-400/[.15] border-amber-400/40 text-amber-400' : 'text-slate-500 bg-white/[.04] border-white/[.08] hover:bg-white/[.08]'}`}
-            title="Debug cycle window"
+            onClick={handleMenuToggle}
+            className={`w-7 h-7 inline-flex items-center justify-center rounded-[7px] border transition-colors shrink-0 ${menuOpen ? 'bg-white/[.10] border-white/[.20] text-white' : 'text-slate-400 bg-white/[.04] border-white/[.08] hover:bg-white/[.08]'}`}
+            title="Меню"
           >
-            <IcBug s={13} w={1.6} />
+            <IcMenu s={14} w={1.7} />
           </button>
-          <button
-            type="button"
-            onClick={e => { e.stopPropagation(); onSelect?.(s); onEdit(s, cs.state?.levels.filter(l => l.status === 'filled').length ?? 0) }}
-            className="w-7 h-7 inline-flex items-center justify-center text-slate-400 rounded-[7px] bg-white/[.04] border border-white/[.08] hover:bg-white/[.08] transition-colors shrink-0"
-          >
-            <IcGear s={14} w={1.7} />
-          </button>
+          {menuOpen && createPortal(
+            <div
+              ref={menuDropRef}
+              className="fixed z-[9999] min-w-[164px] rounded-[9px] p-1 flex flex-col gap-px"
+              style={{
+                top: menuPos.top,
+                right: menuPos.right,
+                background: '#181b28',
+                border: '1px solid rgba(255,255,255,.22)',
+                boxShadow: '0 8px 32px rgba(0,0,0,.85), 0 0 0 1px rgba(255,255,255,.06)',
+              }}
+            >
+              {([
+                {
+                  label: 'Настройки',
+                  icon: <IcGear s={13} w={1.6} />,
+                  action: () => { onSelect?.(s); onEdit(s, cs.state?.levels.filter(l => l.status === 'filled').length ?? 0); setMenuOpen(false) },
+                  active: false,
+                },
+                {
+                  label: 'Отладка',
+                  icon: <IcBug s={13} w={1.6} />,
+                  action: () => { setDebugOpen(o => !o); setMenuOpen(false) },
+                  active: debugOpen,
+                },
+                {
+                  label: 'Информация',
+                  icon: <IcScope s={13} w={1.6} />,
+                  action: () => { setAuditOpen(o => !o); setMenuOpen(false) },
+                  active: auditOpen,
+                },
+                {
+                  label: isOpen ? 'Свернуть' : 'Развернуть',
+                  icon: (
+                    <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}
+                      strokeLinecap="round" strokeLinejoin="round"
+                      style={{ transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}>
+                      <path d="M6 9l6 6 6-6"/>
+                    </svg>
+                  ),
+                  action: () => { onToggleOpen?.(); setMenuOpen(false) },
+                  active: false,
+                },
+              ] as Array<{ label: string; icon: React.ReactNode; action: () => void; active: boolean }>).map(item => (
+                <button
+                  key={item.label}
+                  type="button"
+                  onClick={item.action}
+                  className={`flex items-center gap-2.5 px-[9px] py-[8px] text-[12px] font-semibold rounded-[6px] cursor-pointer w-full text-left transition-colors hover:bg-white/[.06] ${item.active ? 'text-white bg-white/[.06]' : 'text-[#cfd5e1]'}`}
+                >
+                  <span className={item.active ? 'text-amber-400' : 'text-slate-500'}>{item.icon}</span>
+                  {item.label}
+                </button>
+              ))}
+            </div>,
+            document.body
+          )}
         </div>
 
         {/* row 2: metrics · chev */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="min-w-0 flex-1 flex items-center gap-3.5 flex-wrap">
-            <div className="relative group/ctip flex items-baseline gap-1.5">
+        <div className="flex items-center gap-2 overflow-hidden">
+          <div className="flex-1 flex items-center gap-3.5 overflow-hidden">
+            <div className="relative group/ctip flex items-baseline gap-1.5 shrink-0">
               <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">
-                {s.strategy_type === 'matrix' ? 'Матрица' : 'Grid'}
+                {s.strategy_type === 'matrix' ? 'Matrix' : 'Grid'}
               </span>
               <span className={`text-[13px] font-semibold ${s.active_levels > 0 ? 'text-slate-200' : 'text-slate-500'}`}>
                 {s.active_levels}/{s.grid_levels}
               </span>
               <CardTip text={s.strategy_type === 'matrix' ? 'Заполненных слотов матрицы / всего слотов в цикле' : 'Исполненных уровней сетки / всего уровней в текущем цикле'} />
             </div>
-            <div className="w-px h-2.5 bg-white/[.08]" />
-            <div className="relative group/ctip flex items-baseline gap-1.5">
+            <div className="w-px h-2.5 bg-white/[.08] shrink-0" />
+            <div className="relative group/ctip flex items-baseline gap-1.5 shrink-0">
               <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">Объём</span>
-              <span className={`text-[13px] font-semibold ${(stratPosition?.sizeUsdt ?? 0) > 0 ? 'text-slate-200' : 'text-slate-500'}`}>
+              <span className={`text-[13px] font-semibold whitespace-nowrap ${(stratPosition?.sizeUsdt ?? 0) > 0 ? 'text-slate-200' : 'text-slate-500'}`}>
                 {(stratPosition?.sizeUsdt ?? 0) > 0 ? `${(stratPosition!.sizeUsdt).toFixed(1)}$` : '0$'}
               </span>
               <CardTip text="Реальный объём открытой позиции с биржи (size × mark price)" />
             </div>
-            <div className="w-px h-2.5 bg-white/[.08]" />
-            <div className="relative group/ctip flex items-baseline gap-1.5">
+            <div className="w-px h-2.5 bg-white/[.08] shrink-0" />
+            <div className="relative group/ctip flex items-baseline gap-1.5 shrink-0">
               <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">Маржа</span>
-              <span className={`text-[13px] font-semibold ${stratPosition?.positionIM ? 'text-slate-200' : 'text-slate-500'}`}>
+              <span className={`text-[13px] font-semibold whitespace-nowrap ${stratPosition?.positionIM ? 'text-slate-200' : 'text-slate-500'}`}>
                 {stratPosition?.positionIM ? `${stratPosition.positionIM.toFixed(2)}$` : '—'}
               </span>
               <CardTip text="Начальная маржа позиции (из данных биржи)" />
             </div>
-            <div className="w-px h-2.5 bg-white/[.08]" />
-            <div className="relative group/ctip flex items-baseline gap-1.5">
+            <div className="w-px h-2.5 bg-white/[.08] shrink-0" />
+            <div className="relative group/ctip flex items-baseline gap-1.5 shrink-0">
               <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">P&L</span>
-              <span className={`text-[13px] font-semibold ${
+              <span className={`text-[13px] font-semibold whitespace-nowrap ${
                 pnlUsdt === null ? 'text-slate-500' : pnlUsdt > 0 ? 'text-emerald-300' : pnlUsdt < 0 ? 'text-rose-300' : 'text-slate-500'
               }`}>
                 {pnlUsdt === null
@@ -709,21 +785,6 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
               <CardTip text="Нереализованный P&L по открытой позиции относительно вложенного капитала" />
             </div>
           </div>
-          <div className="h-7 invisible w-16 shrink-0" aria-hidden="true" />
-          <button
-            type="button"
-            onClick={e => { e.stopPropagation(); setAuditOpen(o => !o) }}
-            className={`w-7 h-7 inline-flex items-center justify-center rounded-[7px] border transition-colors shrink-0 ${auditOpen ? 'bg-blue-400/[.15] border-blue-400/40 text-blue-400' : 'text-slate-500 bg-white/[.04] border-white/[.08] hover:bg-white/[.08]'}`}
-            title="Аудит цикла"
-          >
-            <IcScope s={13} w={1.6} />
-          </button>
-          <button type="button" onClick={e => { e.stopPropagation(); onToggleOpen?.() }} className="w-7 h-7 inline-flex items-center justify-center text-slate-400 rounded-[7px] bg-white/[.04] border border-white/[.08] hover:bg-white/[.08] transition-colors shrink-0">
-            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round"
-              className={`transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}>
-              <path d="M6 9l6 6 6-6" />
-            </svg>
-          </button>
         </div>
       </div>
 
