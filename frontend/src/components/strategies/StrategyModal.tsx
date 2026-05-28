@@ -735,24 +735,25 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                     </div>
                   </div>
                 </div>
-                <div>
-                  <label className={labelCls}>Safe-Zone от SL %<Tip text="После срабатывания стоп-лосса — зона вокруг цены SL, в которой новые ордера матрицы не выставляются. Защита от немедленного повторного входа." /></label>
-                  <input type="number" step="0.1" min={0} value={form.safe_zone_pct}
-                    onChange={e => patch({ safe_zone_pct: Number(e.target.value) })}
-                    className={inputCls} />
-                </div>
-
-                <div>
-                  <label className={labelCls}>
-                    🔒 Защищённое построение
-                    <Tip text="Следующий уровень матрицы выставляется только после того, как предыдущий прикрыт хотя бы одним стопом. Также блокирует возврат SL-уровня до подтверждения стопа на опорном уровне." />
-                  </label>
-                  <Toggle
-                    options={[{ label: 'Выкл', value: 'false' }, { label: '🔒 Вкл', value: 'true' }]}
-                    value={String(form.protected_build ?? false)}
-                    onChange={v => patch({ protected_build: v === 'true' })}
-                    optionColors={{ true: 'bg-amber-700 text-white' }}
-                  />
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={labelCls}>Safe-Zone от SL %<Tip text="После срабатывания стоп-лосса — зона вокруг цены SL, в которой новые ордера матрицы не выставляются. Защита от немедленного повторного входа." /></label>
+                    <input type="number" step="0.1" min={0} value={form.safe_zone_pct}
+                      onChange={e => patch({ safe_zone_pct: Number(e.target.value) })}
+                      className={inputCls} />
+                  </div>
+                  <div>
+                    <label className={labelCls}>
+                      🔒 Защищённое построение
+                      <Tip text="Следующий уровень матрицы выставляется только после того, как предыдущий прикрыт хотя бы одним стопом. Также блокирует возврат SL-уровня до подтверждения стопа на опорном уровне." />
+                    </label>
+                    <Toggle
+                      options={[{ label: 'Выкл', value: 'false' }, { label: '🔒 Вкл', value: 'true' }]}
+                      value={String(form.protected_build ?? false)}
+                      onChange={v => patch({ protected_build: v === 'true' })}
+                      optionColors={{ true: 'bg-amber-700 text-white' }}
+                    />
+                  </div>
                 </div>
 
                 {/* ABOVE section — always shows aboveLevels (positive slots L(N)), visually above L(0) for both long and short */}
