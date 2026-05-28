@@ -1378,10 +1378,6 @@ export function AccountsPage() {
         </div>
       ) : (
         <>
-          {accounts.length > 0 && (
-            <StatsStrip accounts={accounts} balances={balances} verifyData={verifyData} />
-          )}
-
           <div style={{
             display: 'grid', gridTemplateColumns: '420px minmax(0, 1fr)', gap: 24, alignItems: 'flex-start',
           }}>
@@ -1390,8 +1386,11 @@ export function AccountsPage() {
               <AddKeyPanel onSubmit={handleAddKey} />
             </div>
 
-            {/* right — list */}
+            {/* right — stats + list */}
             <div>
+              {accounts.length > 0 && (
+                <StatsStrip accounts={accounts} balances={balances} verifyData={verifyData} />
+              )}
               {accounts.length === 0 ? (
                 <EmptyState />
               ) : (
