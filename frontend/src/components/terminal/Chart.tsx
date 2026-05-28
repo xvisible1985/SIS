@@ -11,6 +11,7 @@ export interface ChartOverlaySettings {
   showStopLoss: boolean
   bothDirections: boolean
   showSafeZone: boolean
+  showSLMarkers: boolean
 }
 
 interface Props {
@@ -565,17 +566,31 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         .filter(l => l.status === 'filled')
         .map(l => l.level_idx)
     )
+    // MSL fills (per-level SL) have no cycle number embedded in the linkId.
+    // Filter them by checking if their slot appears as sl_closed in the CURRENT cycle's
+    // strategyLevels — if not, the fill belongs to an old cycle and must be hidden.
+    const slClosedSlots = new Set(
+      (strategyLevels ?? [])
+        .filter(l => l.status === 'sl_closed' && l.slot != null)
+        .map(l => l.slot as number)
+    )
     const dirFilter = overlaySettings && !overlaySettings.bothDirections && effectiveDir ? effectiveDir : null
     const relevant = (executions ?? []).filter(e => {
       if (e.symbol !== symbol || e.timeMs <= 0) return false
-      if (overlaySettings && !overlaySettings.showTakenOrders) return false
+      const lbl = parseOrderLabel(e.orderLinkId ?? '', e.side)
+      const isSLLevelFill = /^SL_L\(/.test(lbl)
+      // Per-level SL fills controlled by their own toggle; other fills by showTakenOrders
+      if (isSLLevelFill) {
+        if (overlaySettings && !overlaySettings.showSLMarkers) return false
+      } else {
+        if (overlaySettings && !overlaySettings.showTakenOrders) return false
+      }
       const isTP = isTPLinkId(e.orderLinkId)
       if (overlaySettings && isTP && !overlaySettings.showTakeProfit) return false
       if (dirFilter) {
-        const lbl = parseOrderLabel(e.orderLinkId ?? '', e.side)
         if (lbl.includes('_LONG')) return dirFilter === 'long'
         if (lbl.includes('_SHORT')) return dirFilter === 'short'
-        if (/^SL_L\(/.test(lbl)) return dirFilter === 'long' ? e.side === 'Sell' : e.side === 'Buy'
+        if (isSLLevelFill) return dirFilter === 'long' ? e.side === 'Sell' : e.side === 'Buy'
         return dirFilter === 'long' ? e.side === 'Buy' : e.side === 'Sell'
       }
       return true
@@ -631,20 +646,38 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
 
       if (isOtherStrategyLinkId(e.orderLinkId, stratIdShort)) continue
       const cycleNum = extractCycleNum(e.orderLinkId)
-      // In strategy view, skip executions with no cycle number (untracked / manual orders).
-      if (cycleNum === null && stratIdShort) continue
+      // Per-level SL orders (MSL linkId) have no embedded cycle number but ARE tracked orders.
+      const isMSLLinkId = (e.orderLinkId ?? '').includes('-msl-')
+      // In strategy view, skip executions with no cycle number (untracked / manual orders),
+      // but allow MSL fills through — they belong to the strategy even without a cycle num.
+      if (cycleNum === null && stratIdShort && !isMSLLinkId) continue
       if (cycleNum !== null && !activeCycles.has(cycleNum)) continue
       if (stratIdShort && currentCycleNum != null && e.orderLinkId?.includes(stratIdShort) && cycleNum !== null && cycleNum !== currentCycleNum) continue
+      // MSL fills: only show if the slot is sl_closed in the current cycle's levels.
+      // Without this guard, SL markers from old cycles leak through (they have no cycle num).
+      if (isMSLLinkId && strategyLevels && strategyLevels.length > 0) {
+        const mslParts = (e.orderLinkId ?? '').split('-')
+        const rawSlot = mslParts.length > 3 ? mslParts[3] : null
+        if (rawSlot !== null) {
+          const mslSlot = rawSlot.startsWith('n') ? -parseInt(rawSlot.slice(1)) : parseInt(rawSlot)
+          if (!isNaN(mslSlot) && !slClosedSlots.has(mslSlot)) continue
+        }
+      }
       if (isTPLinkId(e.orderLinkId) && hasActiveTP) continue
 
       const resolvedLabel = resolveMarkerLabel(parseOrderLabel(e.orderLinkId ?? '', e.side))
       const isMatrixSlot = /^L\(-?\d+\)$/.test(resolvedLabel)
+      const isSLLevel = /^SL_L\(/.test(resolvedLabel)
       // For matrix slot markers: only include fills from currently-filled levels.
-      if (isMatrixSlot) {
+      // SL_L fills are historical (sl_closed) — they bypass this filter intentionally.
+      if (isMatrixSlot && !isSLLevel) {
         const linkMatch = (e.orderLinkId ?? '').match(/^(?:SIS_STR|STR)-[a-f0-9]+-\d+-(\d+)/)
         const execLevelIdx = linkMatch ? parseInt(linkMatch[1]) : null
         if (execLevelIdx === null || !markerFilledIdxs.has(execLevelIdx)) continue
       }
+      // Matrix slot entries: merge all fills of the same slot into one marker.
+      // SL_L fills: group by orderLinkId so each SL event (seq) is its own marker —
+      // same slot can be SL'd multiple times across re-entries and must not be summed.
       const key = isMatrixSlot ? `${resolvedLabel}|${e.side}` : (e.orderLinkId || e.execId)
       if (!groupMap.has(key)) {
         groupMap.set(key, { execs: [], candleTime, label: resolvedLabel })
@@ -658,11 +691,16 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     for (const [, g] of groupMap) {
       const first = g.execs[0]
       const isTP = isTPLinkId(first.orderLinkId)
+      const isSLLevel = /^SL_L\(/.test(g.label)
       const isBuy = first.side === 'Buy'
-      const color = isTP ? '#5b8cff' : isBuy ? '#00DC82' : '#ef4444'
+      // Yellow for per-level SL fills, blue for TP, green/red for regular fills.
+      const color = isSLLevel ? '#facc15' : isTP ? '#5b8cff' : isBuy ? '#00DC82' : '#ef4444'
       const totalUsdt = g.execs.reduce((sum, e) => sum + e.price * parseFloat(e.qty || '0'), 0)
       // Strip _LONG / _SHORT suffix (direction is already visible from arrow/color).
-      const levelLabel = g.label.replace(/_(LONG|SHORT)$/, '')
+      // For SL_L(N), format as "SL L(N) 20$" (replace underscore with space).
+      const levelLabel = isSLLevel
+        ? g.label.replace('_', ' ')
+        : g.label.replace(/_(LONG|SHORT)$/, '')
       const markerText = levelLabel ? `${levelLabel} ${totalUsdt.toFixed(0)}$` : `${totalUsdt.toFixed(0)}$`
       markers.push({
         time: g.candleTime,
