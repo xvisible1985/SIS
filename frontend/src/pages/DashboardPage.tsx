@@ -129,6 +129,7 @@ function AreaChart({ data, width = 540, height = 170, color = '#b8c8ff', fullHei
 
 // ─── Chart: Daily PnL bars ────────────────────────────────────────────────────
 function DailyBarsChart({ items, xLabels }: { items: DailyPnL[]; xLabels: string[] }) {
+  const id = useMemo(() => 'db' + Math.random().toString(36).slice(2, 7), [])
   const vals = items.map(d => d.pnl)
   const W = 780, H = 200
   const pad = { t: 14, r: 10, b: 26, l: 48 }
@@ -137,6 +138,7 @@ function DailyBarsChart({ items, xLabels }: { items: DailyPnL[]; xLabels: string
   const barW = (w / Math.max(vals.length, 1)) * 0.7
   const gap = (w / Math.max(vals.length, 1)) * 0.3
   const zeroY = pad.t + h / 2
+  const clipId = id + 'c'
 
   if (vals.length === 0) {
     return (
@@ -147,6 +149,14 @@ function DailyBarsChart({ items, xLabels }: { items: DailyPnL[]; xLabels: string
   }
   return (
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" style={{ display: 'block' }}>
+      <defs>
+        <clipPath id={clipId}>
+          <rect x={pad.l} y="0" width={0} height={H}>
+            <animate attributeName="width" from={0} to={w} dur="1.1s"
+              calcMode="spline" keySplines="0.25 0.46 0.45 0.94" fill="freeze" />
+          </rect>
+        </clipPath>
+      </defs>
       <line x1={pad.l} x2={pad.l + w} y1={zeroY} y2={zeroY} stroke={T.borderHi} />
       {[max, max / 2, -max / 2, -max].map((v, i) => (
         <g key={i}>
@@ -156,20 +166,17 @@ function DailyBarsChart({ items, xLabels }: { items: DailyPnL[]; xLabels: string
           </text>
         </g>
       ))}
-      {vals.map((v, i) => {
-        const x = pad.l + i * (barW + gap) + gap / 2
-        const bh = Math.abs(v) / max * (h / 2)
-        const y = v >= 0 ? zeroY - bh : zeroY
-        const delay = (i * 0.012).toFixed(3)
-        return (
-          <rect key={i} x={x} y={zeroY} width={barW} height={0} fill={v >= 0 ? T.green : T.red} opacity={0.9} rx="1.5">
-            <animate attributeName="height" from={0} to={Math.max(bh, 1.5)}
-              dur="0.55s" begin={`${delay}s`} calcMode="spline" keySplines="0.25 0.46 0.45 0.94" fill="freeze" />
-            <animate attributeName="y" from={zeroY} to={y}
-              dur="0.55s" begin={`${delay}s`} calcMode="spline" keySplines="0.25 0.46 0.45 0.94" fill="freeze" />
-          </rect>
-        )
-      })}
+      <g clipPath={`url(#${clipId})`}>
+        {vals.map((v, i) => {
+          const x = pad.l + i * (barW + gap) + gap / 2
+          const bh = Math.abs(v) / max * (h / 2)
+          const y = v >= 0 ? zeroY - bh : zeroY
+          return (
+            <rect key={i} x={x} y={y} width={barW} height={Math.max(bh, 1.5)}
+              fill={v >= 0 ? T.green : T.red} opacity={0.9} rx="1.5" />
+          )
+        })}
+      </g>
       {xLabels.map((l, i) => (
         <text key={i} x={pad.l + (w * i) / Math.max(xLabels.length - 1, 1)} y={pad.t + h + 18}
           fill={T.faint} fontSize="10" fontFamily="'Inter',sans-serif" textAnchor="middle">{l}</text>
