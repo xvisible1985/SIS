@@ -1671,6 +1671,7 @@ func (sr *StrategyRunner) handleMatrixTPFill(ctx context.Context, fillPrice, fil
 
 	sr.info(ctx, fmt.Sprintf("✅ Matrix TP исполнен @ %.4f | qty=%.4f | PnL +%.2f USDT (+%.2f%%)",
 		fillPrice, fillQty, pnl, pnlPct))
+	sr.writeTrade(ctx, "tp", avg, fillPrice, fillQty, pnl, pnlPct)
 
 	// 1. Cancel all per-level SL orders — position closed by global TP.
 	sr.matrixCancelPerLevelSLs(ctx)

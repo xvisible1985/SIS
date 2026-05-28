@@ -651,7 +651,7 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 				(sr.strategy.Direction == DirectionShort && price <= tpPrice)
 			if passed {
 				sr.info(ctx, fmt.Sprintf("reconcile: цена %.4f прошла TP %.4f, закрываю позицию маркетом", price, tpPrice))
-				sr.closePositionAtMarket(ctx, "tp")
+				sr.closePositionAtMarket(ctx, "tp", tpPrice)
 				sr.mu.Unlock()
 				return true
 			}
@@ -684,7 +684,7 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 				(slSide == "Buy" && price >= slTrigger)
 			if passed {
 				sr.info(ctx, fmt.Sprintf("reconcile: цена %.4f прошла SL %.4f, закрываю позицию маркетом", price, slTrigger))
-				sr.closePositionAtMarket(ctx, "sl")
+				sr.closePositionAtMarket(ctx, "sl", slTrigger)
 				sr.mu.Unlock()
 				return true
 			}
@@ -1008,9 +1008,11 @@ func (sr *StrategyRunner) cancelAllStrategyOrders(ctx context.Context) {
 }
 
 // closePositionAtMarket places a market close order for the full position and closes the cycle.
+// approxExitPrice is used to record the trade in trade_history (mark price or trigger price);
+// pass 0 to skip the trade record.
 // Must be called with sr.mu held.
-func (sr *StrategyRunner) closePositionAtMarket(ctx context.Context, reason string) {
-	_, totalQty := sr.avgEntry()
+func (sr *StrategyRunner) closePositionAtMarket(ctx context.Context, reason string, approxExitPrice float64) {
+	avg, totalQty := sr.avgEntry()
 	if totalQty == 0 {
 		return
 	}
@@ -1031,6 +1033,15 @@ func (sr *StrategyRunner) closePositionAtMarket(ctx context.Context, reason stri
 	if err != nil {
 		sr.errlog(ctx, fmt.Sprintf("closePositionAtMarket: %v", err))
 		return
+	}
+	// Write trade record before closeCycle zeros sr.cycle.
+	if approxExitPrice > 0 && avg > 0 && (reason == "tp" || reason == "sl") {
+		pnl := (approxExitPrice - avg) * totalQty
+		if sr.strategy.Direction == DirectionShort {
+			pnl = (avg - approxExitPrice) * totalQty
+		}
+		pnlPct := pnl / (avg * totalQty) * 100
+		sr.writeTrade(ctx, reason, avg, approxExitPrice, totalQty, pnl, pnlPct)
 	}
 	sr.closedBySelf = true
 	sr.closedByReason = reason
@@ -2104,7 +2115,7 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 		// levels were filling. Close at market immediately (programmatic SL execution).
 		if strings.Contains(err.Error(), "110093") {
 			sr.warn(ctx, fmt.Sprintf("updateSL: 110093 — цена уже прошла SL %.4f, закрываю позицию маркетом", slTrigger))
-			sr.closePositionAtMarket(ctx, "sl")
+			sr.closePositionAtMarket(ctx, "sl", slTrigger)
 			return nil
 		}
 		return fmt.Errorf("place SL: %w", err)
@@ -4018,6 +4029,23 @@ func (sr *StrategyRunner) recoverDuplicateTP(ctx context.Context, linkID string)
 	}
 	if existing.OrderStatus == "Filled" {
 		sr.info(ctx, "TP (linkId дубль) уже исполнен — обрабатывается как TP fill")
+		avg, posQty := sr.avgEntry()
+		fillPrice, _ := strconv.ParseFloat(existing.AvgPrice, 64)
+		if fillPrice == 0 {
+			fillPrice, _ = strconv.ParseFloat(existing.Price, 64)
+		}
+		fillQty, _ := strconv.ParseFloat(existing.CumExecQty, 64)
+		if fillQty == 0 {
+			fillQty = posQty
+		}
+		if avg > 0 && fillPrice > 0 && fillQty > 0 {
+			pnl := (fillPrice - avg) * fillQty
+			if sr.strategy.Direction == DirectionShort {
+				pnl = (avg - fillPrice) * fillQty
+			}
+			pnlPct := pnl / (avg * fillQty) * 100
+			sr.writeTrade(ctx, "tp", avg, fillPrice, fillQty, pnl, pnlPct)
+		}
 		sr.tpOrderID = ""
 		sr.cancelPlacedLevels(ctx)
 		sr.closeCycle(ctx, "tp")
@@ -4108,6 +4136,23 @@ func (sr *StrategyRunner) recoverDuplicateSL(ctx context.Context, linkID string)
 	}
 	if existing.OrderStatus == "Filled" {
 		sr.info(ctx, "SL (linkId дубль) уже исполнен — обрабатывается как SL fill")
+		avg, posQty := sr.avgEntry()
+		fillPrice, _ := strconv.ParseFloat(existing.AvgPrice, 64)
+		if fillPrice == 0 {
+			fillPrice, _ = strconv.ParseFloat(existing.Price, 64)
+		}
+		fillQty, _ := strconv.ParseFloat(existing.CumExecQty, 64)
+		if fillQty == 0 {
+			fillQty = posQty
+		}
+		if avg > 0 && fillPrice > 0 && fillQty > 0 {
+			pnl := (fillPrice - avg) * fillQty
+			if sr.strategy.Direction == DirectionShort {
+				pnl = (avg - fillPrice) * fillQty
+			}
+			pnlPct := pnl / (avg * fillQty) * 100
+			sr.writeTrade(ctx, "sl", avg, fillPrice, fillQty, pnl, pnlPct)
+		}
 		sr.slOrderID = ""
 		sr.cancelPlacedLevels(ctx)
 		sr.closeCycle(ctx, "sl")
