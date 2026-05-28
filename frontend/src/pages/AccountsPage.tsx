@@ -299,6 +299,27 @@ function KeyCard({ acc, balance, verify, latency, expanded, testing, onToggle, o
               <IcClock s={11} c={T.faint} /> {createdStr}
             </span>
           </div>
+          {verify && (
+            <div style={{ marginTop: 7, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {([
+                { k: 'read',     Ic: IcEye,      label: 'Чтение',      on: perms.read,     warn: false },
+                { k: 'trade',    Ic: IcZap,      label: 'Торговля',    on: perms.trade,    warn: false },
+                { k: 'futures',  Ic: IcWallet,   label: 'Деривативы',  on: perms.futures,  warn: false },
+                { k: 'withdraw', Ic: IcDownload, label: 'Вывод',       on: perms.withdraw, warn: true  },
+              ] as const).map(({ k, Ic, label, on, warn }) => {
+                const color = on ? (warn ? T.red : T.green) : T.faint
+                return (
+                  <span key={k} style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 3,
+                    fontSize: 10, fontWeight: 600, color, opacity: on ? 1 : 0.5,
+                  }}>
+                    <Ic s={10} w={2.2} c={color} />
+                    {label}
+                  </span>
+                )
+              })}
+            </div>
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <div style={{ textAlign: 'right' }}>
@@ -505,47 +526,6 @@ function KeyCard({ acc, balance, verify, latency, expanded, testing, onToggle, o
   )
 }
 
-/* ─── Toggle ──────────────────────────────────────────────────────────────── */
-function Toggle({ on, onChange, color = T.blue }: { on: boolean; onChange: (v: boolean) => void; color?: string }) {
-  return (
-    <button onClick={() => onChange(!on)} style={{
-      width: 34, height: 20, padding: 0, border: 0, cursor: 'pointer',
-      background: on ? color : 'rgba(255,255,255,.10)',
-      borderRadius: 999, position: 'relative', transition: 'background .15s',
-    }}>
-      <span style={{
-        position: 'absolute', top: 2, left: on ? 16 : 2, width: 16, height: 16, borderRadius: '50%',
-        background: '#fff', transition: 'left .15s', boxShadow: '0 1px 3px rgba(0,0,0,.4)',
-      }} />
-    </button>
-  )
-}
-
-function PermRow({ Ic, title, desc, on, onChange, danger = false }: {
-  Ic: React.FC<IP>; title: string; desc: string; on: boolean; onChange: (v: boolean) => void; danger?: boolean
-}) {
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
-      background: 'rgba(255,255,255,.02)', border: `1px solid ${T.border}`, borderRadius: 10,
-    }}>
-      <div style={{
-        width: 28, height: 28, borderRadius: 7, flexShrink: 0,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: on ? (danger ? T.redSoft : 'rgba(91,140,255,.15)') : 'rgba(255,255,255,.04)',
-        border: `1px solid ${on ? (danger ? T.redBd : 'rgba(91,140,255,.25)') : T.border}`,
-        color: on ? (danger ? T.red : T.blue) : T.dim,
-      }}>
-        <Ic s={14} w={2} />
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, color: T.text, fontWeight: 600 }}>{title}</div>
-        <div style={{ fontSize: 11, color: T.dim, marginTop: 1 }}>{desc}</div>
-      </div>
-      <Toggle on={on} onChange={onChange} color={danger ? '#d04545' : T.blue} />
-    </div>
-  )
-}
 
 function Step({ n, title, hint, children }: { n: number; title: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -580,10 +560,8 @@ function AddKeyPanel({ onSubmit }: {
   const [secret, setSecret]         = useState('')
   const [showSecret, setShowSecret] = useState(false)
   const [ip, setIp]                 = useState('')
-  const [perms, setPerms]           = useState({ read: true, trade: true, futures: true, withdraw: false })
   const [testState, setTestState]   = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle')
   const [saving, setSaving]         = useState(false)
-  const [showGuide, setShowGuide]   = useState(false)
 
   const SUPPORTED = Object.entries(EXCHANGES).filter(([, e]) => e.supported)
   const filled = apiKey.length > 4 && secret.length > 4
@@ -612,25 +590,6 @@ function AddKeyPanel({ onSubmit }: {
 
   return (
     <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 14, overflow: 'hidden' }}>
-      {/* guide modal */}
-      <Modal open={showGuide} onClose={() => setShowGuide(false)}>
-        <div style={{ padding: '18px 20px 14px', borderBottom: `1px solid ${T.border}`, display: 'flex', alignItems: 'center', gap: 12 }}>
-          <ExBadge id={exchange} size={28} />
-          <div style={{ flex: 1 }}>
-            <div style={{ ...grotesk, fontSize: 15, fontWeight: 700, color: T.text }}>
-              Как создать ключ на {EXCHANGES[exchange]?.name ?? exchange}
-            </div>
-            <div style={{ fontSize: 11, color: T.dim, marginTop: 2 }}>~ 90 секунд · не передавайте секрет в чат</div>
-          </div>
-          <button onClick={() => setShowGuide(false)} style={{ background: 'transparent', border: 0, color: T.dim, cursor: 'pointer', padding: 6 }}>
-            <IcX s={16} />
-          </button>
-        </div>
-        <div style={{ padding: '16px 20px' }}>
-          <HowTo exchange={exchange} naked />
-        </div>
-      </Modal>
-
       {/* header */}
       <div style={{
         padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 10,
@@ -673,14 +632,6 @@ function AddKeyPanel({ onSubmit }: {
               )
             })}
           </div>
-          <button onClick={() => setShowGuide(true)} style={{
-            marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 4,
-            background: 'transparent', border: 0, padding: 0, cursor: 'pointer', fontFamily: 'inherit',
-            color: '#b8c8ff', fontSize: 11, fontWeight: 600,
-          }}>
-            Как создать ключ на {EXCHANGES[exchange]?.name ?? exchange}?
-            <IcExt s={10} c="#b8c8ff" />
-          </button>
         </Step>
 
         {/* Step 2 — label */}
@@ -726,18 +677,13 @@ function AddKeyPanel({ onSubmit }: {
           </div>
         </Step>
 
-        {/* Step 4 — permissions (educational) */}
-        <Step n={4} title="Права" hint="включите на бирже">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <PermRow Ic={IcEye}      title="Чтение"       desc="баланс, ордера, история"           on={perms.read}     onChange={v => setPerms(p => ({...p, read: v}))} />
-            <PermRow Ic={IcZap}      title="Торговля"      desc="спот / маржа · открытие ордеров"   on={perms.trade}    onChange={v => setPerms(p => ({...p, trade: v}))} />
-            <PermRow Ic={IcWallet}   title="Деривативы"    desc="фьючерсы, perp, опционы"           on={perms.futures}  onChange={v => setPerms(p => ({...p, futures: v}))} />
-            <PermRow Ic={IcDownload} title="Вывод средств" desc="нам не нужно — оставьте выключен" on={perms.withdraw} onChange={v => setPerms(p => ({...p, withdraw: v}))} danger />
-          </div>
-        </Step>
+        {/* Step 4 — guide */}
+        <div style={{ borderTop: `1px solid ${T.border}`, paddingTop: 14 }}>
+          <HowTo exchange={exchange} naked />
+        </div>
 
-        {/* Step 5 — IP */}
-        <Step n={5} title="IP-whitelist" hint="рекомендуем">
+        {/* Step 4 — IP */}
+        <Step n={4} title="IP-whitelist" hint="рекомендуем">
           <div style={{ position: 'relative' }}>
             <input
               value={ip} onChange={e => setIp(e.target.value)}
