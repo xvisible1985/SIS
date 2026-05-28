@@ -39,6 +39,10 @@ function fmtPct(n: number, d = 1): string {
 function fmtPrice(v: number): string {
   return v < 10 ? v.toFixed(4) : v < 1000 ? v.toFixed(2) : v.toLocaleString('en-US')
 }
+function fmtDay(iso: string): string {
+  const [y, m, d] = iso.split('-')
+  return `${d}.${m}.${y}`
+}
 
 // ─── Catmull-Rom → cubic Bezier ───────────────────────────────────────────────
 function smoothPath(pts: [number, number][]): string {
@@ -434,7 +438,7 @@ function HeroCard({ data, period, equity, equityChange }: {
           <Lbl>Кривая P&L</Lbl>
           {daily_pnl.length > 0 && (
             <span style={{ ...mono, fontSize: 11, color: T.dim }}>
-              {daily_pnl[0]?.day.slice(5)} → {daily_pnl[daily_pnl.length - 1]?.day.slice(5)}
+              {fmtDay(daily_pnl[0].day)} — {fmtDay(daily_pnl[daily_pnl.length - 1].day)}
             </span>
           )}
         </div>
@@ -554,8 +558,9 @@ function DailyStatsStrip({ data }: { data: DashboardData }) {
 }
 
 // ─── Cumulative PnL big chart ─────────────────────────────────────────────────
-function PnLCurveCard({ data }: { data: DashboardData }) {
+function PnLCurveCard({ data, period }: { data: DashboardData; period: Period }) {
   const { daily_pnl } = data
+  const pLabel = PERIODS.find(p => p.id === period)?.label ?? period
   const cumSeries = useMemo(() => { let acc = 0; return daily_pnl.map(d => { acc += d.pnl; return acc }) }, [daily_pnl])
 
   const xLabels = useMemo(() => {
@@ -593,7 +598,9 @@ function PnLCurveCard({ data }: { data: DashboardData }) {
           кумулятивный P&L
         </Pill>
         <div style={{ flex: 1 }} />
-        <span style={{ ...mono, fontSize: 11, color: T.dim }}>{daily_pnl.length} дней данных</span>
+        <span style={{ ...mono, fontSize: 11, color: T.dim }}>
+          за {pLabel}{daily_pnl.length > 0 ? ` · ${daily_pnl.length} дн. данных` : ''}
+        </span>
       </div>
       {cumSeries.length >= 2 ? (
         <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={280} preserveAspectRatio="none" style={{ display: 'block' }}>
@@ -1065,7 +1072,7 @@ export function DashboardPage() {
           </div>
           {/* Два ряда по три виджета — одна сетка с фиксированной высотой строки */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gridAutoRows: '360px', gap: 14, marginBottom: 18 }}>
-            <PnLCurveCard data={data} />
+            <PnLCurveCard data={data} period={period} />
             <DailyBarsCard data={data} />
             <DrawdownCard data={data} />
             <OpenPositionsCard positions={positions} accountLabel={accLabel} />
