@@ -571,9 +571,8 @@ const fieldInput: CSSProperties = {
 }
 
 /* ─── AddKeyPanel ─────────────────────────────────────────────────────────── */
-function AddKeyPanel({ onSubmit, onExchangeChange }: {
+function AddKeyPanel({ onSubmit }: {
   onSubmit: (data: { exchange: string; label: string; apiKey: string; secret: string; ip: string }) => Promise<void>
-  onExchangeChange: (ex: string) => void
 }) {
   const [exchange, setExchange]     = useState('bybit')
   const [label, setLabel]           = useState('')
@@ -584,13 +583,13 @@ function AddKeyPanel({ onSubmit, onExchangeChange }: {
   const [perms, setPerms]           = useState({ read: true, trade: true, futures: true, withdraw: false })
   const [testState, setTestState]   = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle')
   const [saving, setSaving]         = useState(false)
+  const [showGuide, setShowGuide]   = useState(false)
 
   const SUPPORTED = Object.entries(EXCHANGES).filter(([, e]) => e.supported)
   const filled = apiKey.length > 4 && secret.length > 4
 
   function handleExchange(id: string) {
     setExchange(id)
-    onExchangeChange(id)
     setTestState('idle')
   }
 
@@ -613,6 +612,25 @@ function AddKeyPanel({ onSubmit, onExchangeChange }: {
 
   return (
     <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 14, overflow: 'hidden' }}>
+      {/* guide modal */}
+      <Modal open={showGuide} onClose={() => setShowGuide(false)}>
+        <div style={{ padding: '18px 20px 14px', borderBottom: `1px solid ${T.border}`, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <ExBadge id={exchange} size={28} />
+          <div style={{ flex: 1 }}>
+            <div style={{ ...grotesk, fontSize: 15, fontWeight: 700, color: T.text }}>
+              Как создать ключ на {EXCHANGES[exchange]?.name ?? exchange}
+            </div>
+            <div style={{ fontSize: 11, color: T.dim, marginTop: 2 }}>~ 90 секунд · не передавайте секрет в чат</div>
+          </div>
+          <button onClick={() => setShowGuide(false)} style={{ background: 'transparent', border: 0, color: T.dim, cursor: 'pointer', padding: 6 }}>
+            <IcX s={16} />
+          </button>
+        </div>
+        <div style={{ padding: '16px 20px' }}>
+          <HowTo exchange={exchange} naked />
+        </div>
+      </Modal>
+
       {/* header */}
       <div style={{
         padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 10,
@@ -655,6 +673,14 @@ function AddKeyPanel({ onSubmit, onExchangeChange }: {
               )
             })}
           </div>
+          <button onClick={() => setShowGuide(true)} style={{
+            marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 4,
+            background: 'transparent', border: 0, padding: 0, cursor: 'pointer', fontFamily: 'inherit',
+            color: '#b8c8ff', fontSize: 11, fontWeight: 600,
+          }}>
+            Как создать ключ на {EXCHANGES[exchange]?.name ?? exchange}?
+            <IcExt s={10} c="#b8c8ff" />
+          </button>
         </Step>
 
         {/* Step 2 — label */}
@@ -759,7 +785,7 @@ function AddKeyPanel({ onSubmit, onExchangeChange }: {
 }
 
 /* ─── HowTo ───────────────────────────────────────────────────────────────── */
-function HowTo({ exchange }: { exchange: string }) {
+function HowTo({ exchange, naked = false }: { exchange: string; naked?: boolean }) {
   const ex = EXCHANGES[exchange] ?? EXCHANGES.bybit
   const steps = [
     { t: 'Зайдите в раздел API', d: `Профиль → API · ${ex.name}` },
@@ -769,20 +795,14 @@ function HowTo({ exchange }: { exchange: string }) {
     { t: 'Привяжите наши IP', d: '185.94.32.0/24 — повышает безопасность' },
     { t: 'Скопируйте key + secret сюда', d: 'Secret показывается только при создании' },
   ]
-  return (
-    <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 14, padding: '14px 16px' }}>
+  const inner = (
+    <>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
         <ExBadge id={exchange} size={22} />
         <div style={{ flex: 1 }}>
           <div style={{ ...grotesk, fontSize: 13, fontWeight: 700, color: T.text }}>Как создать ключ на {ex.name}</div>
           <div style={{ fontSize: 11, color: T.dim, marginTop: 1 }}>~ 90 секунд · не отправляйте секрет в чат</div>
         </div>
-        <a href="#" style={{
-          display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#b8c8ff', textDecoration: 'none',
-          padding: '4px 8px', background: 'rgba(91,140,255,.10)', border: '1px solid rgba(91,140,255,.20)', borderRadius: 6, fontWeight: 600,
-        }}>
-          гайд <IcExt s={10} />
-        </a>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
         {steps.map((s, i) => (
@@ -811,6 +831,12 @@ function HowTo({ exchange }: { exchange: string }) {
           не показываем секрет после сохранения.
         </div>
       </div>
+    </>
+  )
+  if (naked) return <>{inner}</>
+  return (
+    <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 14, padding: '14px 16px' }}>
+      {inner}
     </div>
   )
 }
@@ -1211,7 +1237,6 @@ export function AccountsPage() {
   const [testing, setTesting]       = useState<string | null>(null)
   const [modal, setModal]           = useState<null | { type: 'delete' | 'rotate'; acc: ExchangeAccount }>(null)
   const [toast, setToast]           = useState<ToastData | null>(null)
-  const [howToEx, setHowToEx]       = useState('bybit')
 
   const showToast = useCallback((t: ToastData) => { setToast(t) }, [])
 
@@ -1360,10 +1385,9 @@ export function AccountsPage() {
           <div style={{
             display: 'grid', gridTemplateColumns: '420px minmax(0, 1fr)', gap: 24, alignItems: 'flex-start',
           }}>
-            {/* left — add + guide */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14, position: 'sticky', top: 24 }}>
-              <AddKeyPanel onSubmit={handleAddKey} onExchangeChange={setHowToEx} />
-              <HowTo exchange={howToEx} />
+            {/* left — add */}
+            <div style={{ position: 'sticky', top: 24 }}>
+              <AddKeyPanel onSubmit={handleAddKey} />
             </div>
 
             {/* right — list */}
