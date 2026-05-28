@@ -478,22 +478,16 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       // and partial-fill cases where both the execution and the remaining order would show.
       const hasActiveTP = orders.some(o => o.symbol === symbol && isTPLinkId(o.orderLinkId))
 
-      // Slots closed by their per-level SL — hide their fill lines so they don't "hang".
-      // Use the *latest* status per slot (highest level_idx = most recently created) so that
-      // a re-entered slot (new pending/placed row with higher level_idx) is not incorrectly
-      // hidden just because an older sl_closed row for the same slot still exists in the DB.
-      const latestBySlot = new Map<number, { status: string; level_idx: number }>()
-      for (const l of (strategyLevels ?? [])) {
-        if (l.slot == null) continue
-        const cur = latestBySlot.get(l.slot)
-        if (!cur || l.level_idx > cur.level_idx) {
-          latestBySlot.set(l.slot, { status: l.status, level_idx: l.level_idx })
-        }
-      }
-      const slClosedSlots = new Set<number>(
-        [...latestBySlot.entries()]
-          .filter(([, v]) => v.status === 'sl_closed')
-          .map(([slot]) => slot)
+      // For matrix slot fills: only show fills whose level_idx is currently 'filled'.
+      // This prevents:
+      //   - old fill lines from SL'd levels showing alongside new placed/pending re-entries
+      //   - doubled volume (merged fills from original + re-entry of the same slot)
+      // Rule: execution from level_idx N is shown iff strategy_levels has a row with
+      //        level_idx=N and status='filled'.
+      const filledLevelIdxs = new Set(
+        (strategyLevels ?? [])
+          .filter(l => l.status === 'filled')
+          .map(l => l.level_idx)
       )
 
       // Group executions before drawing: matrix entry levels (L(N)) are merged by slot
@@ -511,12 +505,14 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         const isBuy = e.side === 'Buy'
         const label = resolveLabel(parseOrderLabel(e.orderLinkId ?? '', e.side))
         const levelLabel = label || (isBuy ? 'Buy' : 'Sell')
-        // Matrix slot entries (L(N) label): merge all re-entries of the same slot into one line
+        // Matrix slot entries (L(N) label): merge fills of the same slot into one line.
         const isMatrixSlot = /^L\(-?\d+\)$/.test(label)
-        // Skip fill lines for levels closed by their per-level SL
+        // For matrix slots: only include fills from levels that are currently 'filled'.
+        // Filters out: old fills from SL'd levels, doubled volume from re-entry merging.
         if (isMatrixSlot) {
-          const slotMatch = label.match(/^L\((-?\d+)\)$/)
-          if (slotMatch && slClosedSlots.has(parseInt(slotMatch[1]))) continue
+          const linkMatch = (e.orderLinkId ?? '').match(/^(?:SIS_STR|STR)-[a-f0-9]+-\d+-(\d+)/)
+          const execLevelIdx = linkMatch ? parseInt(linkMatch[1]) : null
+          if (execLevelIdx === null || !filledLevelIdxs.has(execLevelIdx)) continue
         }
         const groupKey = isMatrixSlot ? `${label}|${e.side}` : (e.orderLinkId || e.execId)
         const qty = parseFloat(e.qty || '0')
