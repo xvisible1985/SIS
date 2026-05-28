@@ -115,6 +115,7 @@ type strategyPayload struct {
 	MatrixLevels          json.RawMessage `json:"matrix_levels"`
 	SafeZonePct           float64         `json:"safe_zone_pct"`
 	MatrixEntryLevel      json.RawMessage `json:"matrix_entry_level"`
+	ProtectedBuild        bool            `json:"protected_build"`
 }
 
 func (p *strategyPayload) applyDefaults() {
@@ -166,6 +167,7 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 			s.signal_configs::text, (s.steps::text),
 			s.trailing_stop_enabled, s.trailing_activation_pct, s.trailing_callback_pct,
 			(s.matrix_levels::text), COALESCE(s.safe_zone_pct,0), (s.matrix_entry_level::text),
+			COALESCE(s.protected_build,false),
 			s.created_at, s.updated_at, s.manual_alert,
 			COALESCE((
 				SELECT SUM(sl.size_usdt)
@@ -234,6 +236,7 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 		MatrixLevels          json.RawMessage `json:"matrix_levels,omitempty"`
 		SafeZonePct           float64         `json:"safe_zone_pct"`
 		MatrixEntryLevel      json.RawMessage `json:"matrix_entry_level,omitempty"`
+		ProtectedBuild        bool            `json:"protected_build"`
 		CreatedAt             time.Time       `json:"created_at"`
 		UpdatedAt             time.Time       `json:"updated_at"`
 		ManualAlert           *string         `json:"manual_alert"`
@@ -256,7 +259,7 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 			&r.Leverage, &r.MarginType, &r.HedgeMode, &r.StrategyType, &r.EntryOrderType,
 			&scStr, &stepsStr,
 			&r.TrailingStopEnabled, &r.TrailingActivationPct, &r.TrailingCallbackPct,
-			&matrixStr, &r.SafeZonePct, &entryLevelStr,
+			&matrixStr, &r.SafeZonePct, &entryLevelStr, &r.ProtectedBuild,
 			&r.CreatedAt, &r.UpdatedAt, &r.ManualAlert,
 			&r.VolumeUSDT, &r.ActiveLevels, &r.LastPnl,
 			&r.BotID, &r.BotName,
@@ -320,12 +323,12 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		   leverage, margin_type, hedge_mode, strategy_type, entry_order_type,
 		   signal_configs, steps,
 		   trailing_stop_enabled, trailing_activation_pct, trailing_callback_pct,
-		   matrix_levels, safe_zone_pct, matrix_entry_level)
+		   matrix_levels, safe_zone_pct, matrix_entry_level, protected_build)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
 		        $16,$17,$18,$19,$20,
 		        $21::jsonb, ($22::text)::jsonb,
 		        $23,$24,$25,
-		        ($26::text)::jsonb, $27, ($28::text)::jsonb)
+		        ($26::text)::jsonb, $27, ($28::text)::jsonb, $29)
 		RETURNING id`,
 		userID, req.AccountID, req.Symbol, req.Category, req.Direction,
 		req.GridLevels, req.GridActive, req.MaxStopActive, req.GridStepPct, req.GridSizeUSDT,
@@ -333,7 +336,7 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		req.Leverage, req.MarginType, req.HedgeMode, req.StrategyType, req.EntryOrderType,
 		string(req.SignalConfigs), nullableJSONB(req.Steps),
 		req.TrailingStopEnabled, req.TrailingActivationPct, req.TrailingCallbackPct,
-		nullableJSONB(req.MatrixLevels), req.SafeZonePct, nullableJSONB(req.MatrixEntryLevel),
+		nullableJSONB(req.MatrixLevels), req.SafeZonePct, nullableJSONB(req.MatrixEntryLevel), req.ProtectedBuild,
 	).Scan(&id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -405,8 +408,9 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		  trailing_stop_enabled=$21, trailing_activation_pct=$22, trailing_callback_pct=$23,
 		  matrix_levels=($24::text)::jsonb,
 		  safe_zone_pct=$25, matrix_entry_level=($26::text)::jsonb,
+		  protected_build=$27,
 		  updated_at=NOW()
-		WHERE id=$27 AND owner_id=$28`,
+		WHERE id=$28 AND owner_id=$29`,
 		req.Symbol, req.Category, req.Direction,
 		req.GridLevels, req.GridActive, req.MaxStopActive, req.GridStepPct, req.GridSizeUSDT,
 		req.TPMode, req.TPPct, req.SLType, req.SLPct, req.SignalFilter,
@@ -415,6 +419,7 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		req.TrailingStopEnabled, req.TrailingActivationPct, req.TrailingCallbackPct,
 		nullableJSONB(req.MatrixLevels),
 		req.SafeZonePct, nullableJSONB(req.MatrixEntryLevel),
+		req.ProtectedBuild,
 		id, userID,
 	)
 	if err != nil {
@@ -678,12 +683,11 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 
-	// Verify ownership and read strategy_type/safe_zone_pct in one query.
+	// Verify ownership and read strategy_type in one query.
 	var strategyType string
-	var safeZonePct float64
 	if err := s.pool.QueryRow(r.Context(),
-		`SELECT strategy_type, COALESCE(safe_zone_pct,0) FROM strategies WHERE id=$1 AND owner_id=$2`, id, userID,
-	).Scan(&strategyType, &safeZonePct); err != nil {
+		`SELECT strategy_type FROM strategies WHERE id=$1 AND owner_id=$2`, id, userID,
+	).Scan(&strategyType); err != nil {
 		writeError(w, http.StatusNotFound, "strategy not found")
 		return
 	}
@@ -760,24 +764,17 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 		avgEntry = totalCost / totalCoins
 	}
 
-	// Compute safe zone from last sl_closed level (matrix only).
+	// Compute safe zone from the engine's in-memory state (matrix only).
+	// Reading from memory (not DB) ensures the zone disappears the moment the price
+	// exits it — DB sl_closed rows persist forever and would keep the zone visible.
 	type safeZoneInfo struct {
 		Low  float64 `json:"low"`
 		High float64 `json:"high"`
 	}
 	var safeZone *safeZoneInfo
-	if strategyType == "matrix" && safeZonePct > 0 && err == nil {
-		var lastSLPrice float64
-		s.pool.QueryRow(r.Context(), //nolint:errcheck
-			`SELECT COALESCE(sl_price,0) FROM strategy_levels
-			 WHERE cycle_id=$1 AND status='sl_closed' AND sl_price IS NOT NULL
-			 ORDER BY COALESCE(filled_at, placed_at) DESC NULLS LAST LIMIT 1`, cycleID,
-		).Scan(&lastSLPrice)
-		if lastSLPrice > 0 {
-			safeZone = &safeZoneInfo{
-				Low:  lastSLPrice * (1 - safeZonePct/100),
-				High: lastSLPrice * (1 + safeZonePct/100),
-			}
+	if strategyType == "matrix" {
+		if sz := s.engine.GetMatrixSafeZone(id); sz != nil {
+			safeZone = &safeZoneInfo{Low: sz.Low, High: sz.High}
 		}
 	}
 
