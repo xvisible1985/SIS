@@ -561,6 +561,7 @@ function AddKeyPanel({ onSubmit }: {
   const [showSecret, setShowSecret] = useState(false)
   const [ip, setIp]                 = useState('')
   const [testState, setTestState]   = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle')
+  const [testMsg, setTestMsg]       = useState<string | null>(null)
   const [saving, setSaving]         = useState(false)
 
   const SUPPORTED = Object.entries(EXCHANGES).filter(([, e]) => e.supported)
@@ -569,12 +570,32 @@ function AddKeyPanel({ onSubmit }: {
   function handleExchange(id: string) {
     setExchange(id)
     setTestState('idle')
+    setTestMsg(null)
   }
 
-  function runTest() {
+  async function runTest() {
     if (!filled) return
     setTestState('testing')
-    setTimeout(() => setTestState('ok'), 1500)
+    setTestMsg(null)
+    let tempId: string | null = null
+    try {
+      const acc = await createAccount({ exchange, label: '__verify__', api_key: apiKey, secret })
+      tempId = acc.id
+      const result = await verifyAccount(tempId)
+      if (result.ok) {
+        setTestState('ok')
+      } else {
+        setTestState('fail')
+        setTestMsg(result.message ?? 'Ошибка авторизации')
+      }
+    } catch {
+      setTestState('fail')
+      setTestMsg('Не удалось связаться с биржей')
+    } finally {
+      if (tempId) {
+        try { await deleteAccount(tempId) } catch { /* ignore */ }
+      }
+    }
   }
 
   async function handleSubmit() {
@@ -648,7 +669,7 @@ function AddKeyPanel({ onSubmit }: {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ fontSize: 11, color: T.dim, fontWeight: 600 }}>API key</div>
             <input
-              value={apiKey} onChange={e => { setApiKey(e.target.value); setTestState('idle') }}
+              value={apiKey} onChange={e => { setApiKey(e.target.value); setTestState('idle'); setTestMsg(null) }}
               placeholder="вставьте публичный ключ"
               style={{ ...fieldInput, ...mono, fontSize: 12 }}
             />
@@ -663,7 +684,7 @@ function AddKeyPanel({ onSubmit }: {
             <div style={{ position: 'relative' }}>
               <input
                 type={showSecret ? 'text' : 'password'}
-                value={secret} onChange={e => { setSecret(e.target.value); setTestState('idle') }}
+                value={secret} onChange={e => { setSecret(e.target.value); setTestState('idle'); setTestMsg(null) }}
                 placeholder="секрет"
                 style={{ ...fieldInput, ...mono, fontSize: 12, paddingRight: 38 }}
               />
@@ -701,18 +722,24 @@ function AddKeyPanel({ onSubmit }: {
 
         {/* test + save */}
         <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-          <button onClick={runTest} disabled={!filled || testState === 'testing'} style={{
-            flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 0',
-            background: filled ? (testState === 'ok' ? T.greenSoft : 'rgba(255,255,255,.04)') : 'rgba(255,255,255,.02)',
-            color: testState === 'ok' ? T.green : (filled ? T.body : T.faint),
-            border: `1px solid ${testState === 'ok' ? T.greenBd : T.border}`,
-            borderRadius: 8, fontSize: 12, fontWeight: 600,
-            cursor: filled ? 'pointer' : 'not-allowed', fontFamily: 'inherit',
-          }}>
-            {testState === 'idle'    && <><IcRefresh s={12} w={2.2} /> Проверить ключ</>}
-            {testState === 'testing' && <><span style={{ display: 'inline-flex', animation: 'spin 1s linear infinite' }}><IcRefresh s={12} w={2.2} /></span> Подключаемся…</>}
-            {testState === 'ok'      && <><IcCheck s={12} w={2} /> Подключение успешно</>}
-          </button>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <button onClick={runTest} disabled={!filled || testState === 'testing'} style={{
+              width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 0',
+              background: !filled ? 'rgba(255,255,255,.02)' : testState === 'ok' ? T.greenSoft : testState === 'fail' ? T.redSoft : 'rgba(255,255,255,.04)',
+              color: !filled ? T.faint : testState === 'ok' ? T.green : testState === 'fail' ? T.red : T.body,
+              border: `1px solid ${testState === 'ok' ? T.greenBd : testState === 'fail' ? T.redBd : T.border}`,
+              borderRadius: 8, fontSize: 12, fontWeight: 600,
+              cursor: filled && testState !== 'testing' ? 'pointer' : 'not-allowed', fontFamily: 'inherit',
+            }}>
+              {testState === 'idle'    && <><IcRefresh s={12} w={2.2} /> Проверить ключ</>}
+              {testState === 'testing' && <><span style={{ display: 'inline-flex', animation: 'spin 1s linear infinite' }}><IcRefresh s={12} w={2.2} /></span> Подключаемся…</>}
+              {testState === 'ok'      && <><IcCheck s={12} w={2} /> Подключение успешно</>}
+              {testState === 'fail'    && <><IcAlert s={12} w={2} /> Ключ не принят</>}
+            </button>
+            {testState === 'fail' && testMsg && (
+              <div style={{ fontSize: 11, color: T.red, paddingLeft: 2 }}>{testMsg}</div>
+            )}
+          </div>
           <button disabled={testState !== 'ok' || saving} onClick={handleSubmit} style={{
             flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 0',
             background: testState === 'ok' ? 'linear-gradient(180deg, #4a7dff 0%, #3a67e6 100%)' : 'rgba(255,255,255,.04)',
