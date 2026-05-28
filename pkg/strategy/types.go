@@ -111,6 +111,7 @@ type Strategy struct {
 	MatrixLevels          []MatrixLevel
 	SafeZonePct           float64
 	MatrixEntryLevel      *MatrixEntryLevel
+	ProtectedBuild        bool
 }
 
 type Cycle struct {

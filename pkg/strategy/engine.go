@@ -55,6 +55,7 @@ func (e *Engine) Start(ctx context.Context) {
 		        entry_order_type, COALESCE(steps::text,'[]'),
 		        COALESCE(signal_configs::text,'[]'),
 		        cycle_count, max_cycles, bot_id, COALESCE(matrix_levels::text,''), COALESCE(safe_zone_pct,0), COALESCE(matrix_entry_level::text,''),
+		        COALESCE(protected_build,false),
 		        COALESCE(strategy_type,'grid')
 		 FROM strategies WHERE status IN ('active','finishing')`)
 	if err != nil {
@@ -81,6 +82,7 @@ func (e *Engine) Notify(ctx context.Context, strategyID string) {
 		        entry_order_type, COALESCE(steps::text,'[]'),
 		        COALESCE(signal_configs::text,'[]'),
 		        cycle_count, max_cycles, bot_id, COALESCE(matrix_levels::text,''), COALESCE(safe_zone_pct,0), COALESCE(matrix_entry_level::text,''),
+		        COALESCE(protected_build,false),
 		        COALESCE(strategy_type,'grid')
 		 FROM strategies WHERE id=$1`, strategyID)
 	if err := scanStrategyRow(row, &s); err != nil {
@@ -294,6 +296,27 @@ func (e *Engine) GetSignalState(strategyID string) string {
 	return ""
 }
 
+// GetMatrixSafeZone returns the currently active SafeZone for a running matrix strategy,
+// or nil if no zone is active (cleared after exit or never created).
+// Reading sr.matrixSafeZone (not DB) ensures the zone disappears the moment the
+// price exits it, rather than persisting forever based on sl_closed rows.
+func (e *Engine) GetMatrixSafeZone(strategyID string) *MatrixSafeZone {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, runner := range e.runners {
+		runner.mu.RLock()
+		sr, ok := runner.strategies[strategyID]
+		runner.mu.RUnlock()
+		if ok {
+			sr.mu.Lock()
+			sz := sr.matrixSafeZone
+			sr.mu.Unlock()
+			return sz
+		}
+	}
+	return nil
+}
+
 // PushSignalOverride recomputes and directly sets currentSignalState for every
 // strategy that uses the named signal. Works even for stopped strategies and
 // strategies without an active signal-monitor subscription.
@@ -449,6 +472,7 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 		&s.Leverage, &s.MarginType,
 		&s.EntryOrderType, &stepsJSON, &signalConfigsJSON,
 		&s.CycleCount, &s.MaxCycles, &s.BotID, &matrixJSON, &s.SafeZonePct, &entryLevelJSON,
+		&s.ProtectedBuild,
 		&s.StrategyType,
 	)
 	if err != nil {
