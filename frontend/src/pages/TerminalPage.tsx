@@ -63,6 +63,7 @@ const DEFAULT_CHART_SETTINGS: ChartOverlaySettings = {
   showStopLoss: true,
   bothDirections: true,
   showSafeZone: true,
+  showSLMarkers: true,
 }
 
 function Toggle({ on }: { on: boolean }) {
@@ -105,6 +106,7 @@ function ChartSettingsPopup({
     { key: 'showTakeProfit',   label: 'ТейкПрофит' },
     { key: 'showStopLoss',     label: 'СтопЛосс' },
     { key: 'showSafeZone',     label: 'Safe Zone' },
+    { key: 'showSLMarkers',    label: 'Маркеры SL' },
   ]
 
   const anyOff = Object.values(settings).some(v => !v)
@@ -552,7 +554,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
   const [editTarget, setEditTarget] = useState<Strategy | undefined>()
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(() => localStorage.getItem('t_sel'))
-  const [expandedId, setExpandedId] = useState<string | null>(() => localStorage.getItem('t_exp'))
+  const [expandedId, setExpandedId] = useState<string | null>(null)
   const [signalStates, setSignalStates] = useState<Record<string, LiveSignal>>({})
 
   async function load() {
@@ -701,7 +703,6 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
                 const isExpanding = expandedId !== s.id
                 const newExp = isExpanding ? s.id : null
                 setExpandedId(newExp)
-                localStorage.setItem('t_exp', newExp ?? '')
                 if (isExpanding) {
                   setSelectedId(s.id)
                   localStorage.setItem('t_sel', s.id)
