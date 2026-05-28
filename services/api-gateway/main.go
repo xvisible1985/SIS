@@ -31,6 +31,7 @@ func main() {
 	redisURL := mustEnv("REDIS_URL")
 	jwtSecret := mustEnv("JWT_SECRET")
 	botSecret := getEnv("TELEGRAM_BOT_SECRET", "")
+	tronAddr := getEnv("TRON_RECEIVE_ADDRESS", "")
 	encKey := mustEnv("ENCRYPTION_KEY")
 	listenAddr := getEnv("LISTEN_ADDR", ":8080")
 
@@ -76,7 +77,7 @@ func main() {
 	ns := bybitnews.NewScraper(pool)
 	go ns.Start(ctx)
 
-	s := NewServer(ctx, pool, rdb, jwtSecret, encKey, botSecret, adminEmails, pm, ns)
+	s := NewServer(ctx, pool, rdb, jwtSecret, encKey, botSecret, tronAddr, adminEmails, pm, ns)
 	bootstrapAdmins(ctx, pool, adminEmails)
 
 	// Start strategy engine
@@ -97,6 +98,9 @@ func main() {
 
 	// Start Telegram notification polling
 	go s.startTgNotifier(ctx)
+
+	// Start TRON deposit watcher
+	go s.startTronWatcher(ctx)
 
 	// Prime warmer with active strategy symbols so their kline history is fetched first.
 	if rows, err := pool.Query(ctx,
@@ -168,6 +172,11 @@ func main() {
 		r.Get("/account/notifications", s.GetNotifications)
 		r.Patch("/account/notifications", s.UpdateNotifications)
 		r.Get("/account/referral", s.GetReferral)
+		// TRON payments
+		r.Post("/payments/tron/deposit", s.CreateTronDeposit)
+		r.Get("/payments/tron/deposit/{id}", s.GetTronDeposit)
+		r.Get("/payments/tron/deposits", s.ListTronDeposits)
+		r.Get("/account/novabot-balance", s.GetNovabotBalance)
 
 		// Exchange accounts
 		r.Get("/accounts", s.ListAccounts)
