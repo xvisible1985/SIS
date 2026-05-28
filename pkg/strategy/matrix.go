@@ -810,15 +810,18 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 	}
 
 	// 1c. Safe Zone proximity warning — log when price is within 0.5% of a boundary.
-	if sz := sr.matrixSafeZone; sz != nil {
+	// Throttled to once per minute to avoid flooding the event log.
+	if sz := sr.matrixSafeZone; sz != nil && time.Since(sr.matrixSZBoundaryLog) >= time.Minute {
 		distLow := math.Abs(currentPrice-sz.Low) / sz.Low * 100
 		distHigh := math.Abs(currentPrice-sz.High) / sz.High * 100
 		if distLow < 0.5 {
 			sr.info(ctx, fmt.Sprintf("[SZ ГРАНИЦА] price=%.4f вблизи нижней границы SZ %.4f (dist=%.3f%%) L%d [%.4f,%.4f] P_sl=%.4f",
 				currentPrice, sz.Low, distLow, sz.Slot, sz.Low, sz.High, sz.SLTrigger))
+			sr.matrixSZBoundaryLog = time.Now()
 		} else if distHigh < 0.5 {
 			sr.info(ctx, fmt.Sprintf("[SZ ГРАНИЦА] price=%.4f вблизи верхней границы SZ %.4f (dist=%.3f%%) L%d [%.4f,%.4f] P_sl=%.4f",
 				currentPrice, sz.High, distHigh, sz.Slot, sz.Low, sz.High, sz.SLTrigger))
+			sr.matrixSZBoundaryLog = time.Now()
 		}
 	}
 
@@ -1127,18 +1130,10 @@ func (sr *StrategyRunner) matrixReplaceSlots(ctx context.Context, currentPrice f
 		}
 		qty := trader.FormatQty(sizeUSDT/priceForQty, sr.instr.QtyStep, sr.instr.MinQty)
 
-		// Remove any sl_closed rows for this slot before inserting a fresh pending row.
-		// This keeps exactly one strategy_levels row per slot in the DB.
-		var kept []GridLevel
-		for _, l := range sr.levels {
-			if l.Slot != nil && *l.Slot == slot && l.Status == LevelSLClosed {
-				sr.runner.pool.Exec(ctx, //nolint:errcheck
-					`DELETE FROM strategy_levels WHERE id=$1`, l.ID)
-				continue
-			}
-			kept = append(kept, l)
-		}
-		sr.levels = kept
+		// Leave any sl_closed rows for this slot in place — they serve as a historical
+		// record and are needed by the frontend to resolve level_idx → slot for old fills.
+		// The activeSlots check above already skips sl_closed rows, so a new pending row
+		// will be inserted alongside the old sl_closed one without conflict.
 
 		levelIdx := nextLevelIdx
 		s := slot

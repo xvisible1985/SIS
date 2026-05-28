@@ -478,11 +478,22 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       // and partial-fill cases where both the execution and the remaining order would show.
       const hasActiveTP = orders.some(o => o.symbol === symbol && isTPLinkId(o.orderLinkId))
 
-      // Slots closed by their per-level SL — hide their fill lines so they don't "hang"
-      const slClosedSlots = new Set(
-        (strategyLevels ?? [])
-          .filter(l => l.status === 'sl_closed' && l.slot != null)
-          .map(l => l.slot as number)
+      // Slots closed by their per-level SL — hide their fill lines so they don't "hang".
+      // Use the *latest* status per slot (highest level_idx = most recently created) so that
+      // a re-entered slot (new pending/placed row with higher level_idx) is not incorrectly
+      // hidden just because an older sl_closed row for the same slot still exists in the DB.
+      const latestBySlot = new Map<number, { status: string; level_idx: number }>()
+      for (const l of (strategyLevels ?? [])) {
+        if (l.slot == null) continue
+        const cur = latestBySlot.get(l.slot)
+        if (!cur || l.level_idx > cur.level_idx) {
+          latestBySlot.set(l.slot, { status: l.status, level_idx: l.level_idx })
+        }
+      }
+      const slClosedSlots = new Set<number>(
+        [...latestBySlot.entries()]
+          .filter(([, v]) => v.status === 'sl_closed')
+          .map(([slot]) => slot)
       )
 
       // Group executions before drawing: matrix entry levels (L(N)) are merged by slot
