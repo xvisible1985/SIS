@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -264,9 +265,7 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 		return nil
 	}
 
-	sr.matrixSafeZone = nil    // defensive reset for fresh cycle
-	sr.matrixSZPendingSlot = nil
-	sr.matrixSZPendingPrice = 0
+	sr.matrixWaitingSlots = make(map[int]bool) // defensive reset for fresh cycle
 
 	var maxCycle int
 	sr.runner.pool.QueryRow(ctx,
@@ -438,11 +437,6 @@ func (sr *StrategyRunner) placeMatrixLevel(ctx context.Context, l *GridLevel, cu
 		return nil
 	}
 
-	// Safe zone suppression.
-	if sr.matrixSafeZone != nil && l.TargetPrice > 0 && sr.matrixSafeZone.Contains(l.TargetPrice) {
-		return nil
-	}
-
 	// Virtual levels are handled by the price monitor.
 	if sr.matrixIsVirtual(l) {
 		return nil
@@ -552,15 +546,17 @@ func (sr *StrategyRunner) placeMatrixLevel(ctx context.Context, l *GridLevel, cu
 
 // loadMatrixCycle loads an existing cycle when startMatrixCycle detects
 // active levels already in DB (the guard path). It calls loadActiveCycle
-// to read levels, restores the safe zone, and re-launches the price monitor.
+// to read levels, restores waiting-slot state, and re-launches the price monitor.
 // Service-restart resumption goes through loadOrStart → directly calls
-// restoreMatrixSafeZone + launchMatrixPriceMonitor.
+// restoreMatrixWaitingSlots + launchMatrixPriceMonitor.
 // Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) loadMatrixCycle(ctx context.Context) error {
 	if err := sr.loadActiveCycle(ctx); err != nil {
 		return err
 	}
-	sr.restoreMatrixSafeZone(ctx)
+	sr.mu.Lock()
+	sr.restoreMatrixWaitingSlots()
+	sr.mu.Unlock()
 	// Trigger virtual L0 immediately if it's still pending — the price-cross condition
 	// is already satisfied for the entry slot, and the price monitor won't fire it
 	// because currentPrice >= TargetPrice only holds at the moment of cycle start.
@@ -575,76 +571,6 @@ func (sr *StrategyRunner) loadMatrixCycle(ctx context.Context) error {
 	sr.mu.Unlock()
 	sr.launchMatrixPriceMonitor()
 	return nil
-}
-
-// restoreMatrixSafeZone checks the most recent positive-slot sl_closed level in the current cycle
-// and rebuilds safe zone state after a service restart based on current price position:
-//   - price inside zone     → restore matrixSafeZone (price monitor detects exit normally)
-//   - price positive exit   → call matrixReplaceSlots immediately (SZ cleared before restart)
-//   - price negative exit   → set matrixSZPendingSlot/Price (wait for price to return to P_sl)
-//
-// Must NOT be called with sr.mu held.
-func (sr *StrategyRunner) restoreMatrixSafeZone(ctx context.Context) {
-	sr.mu.Lock()
-	if sr.cycle == nil || sr.strategy.SafeZonePct <= 0 {
-		sr.mu.Unlock()
-		return
-	}
-	cycleID := sr.cycle.ID
-	sr.mu.Unlock()
-
-	// Only restore for positive slots — SafeZone is only relevant for managed hedge positions.
-	var slPrice float64
-	var slot int
-	err := sr.runner.pool.QueryRow(ctx,
-		`SELECT COALESCE(sl_price,0), COALESCE(slot,0)
-         FROM strategy_levels
-         WHERE cycle_id=$1 AND status='sl_closed' AND sl_price IS NOT NULL AND slot > 0
-         ORDER BY filled_at DESC NULLS LAST LIMIT 1`,
-		cycleID,
-	).Scan(&slPrice, &slot)
-	if err != nil || slPrice == 0 || slot == 0 {
-		return
-	}
-
-	price, err := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
-	if err != nil {
-		return
-	}
-
-	sr.mu.Lock()
-	defer sr.mu.Unlock()
-	// Re-check cycle under lock: a concurrent stop/restart could have changed sr.cycle.
-	if sr.cycle == nil || sr.cycle.ID != cycleID {
-		return
-	}
-
-	zone := createMatrixSafeZone(slPrice, sr.strategy.SafeZonePct, slot)
-
-	if zone.Contains(price) {
-		// Price is still inside the zone — restore so matrixPriceTick can detect exit.
-		sr.matrixSafeZone = zone
-		log.Printf("strategy %s: restored Safe Zone L%d [%.4f, %.4f]", sr.strategy.ID, slot, zone.Low, zone.High)
-		return
-	}
-
-	// Determine exit direction.
-	positiveExit := (sr.strategy.Direction == DirectionLong && price > zone.High) ||
-		(sr.strategy.Direction == DirectionShort && price < zone.Low)
-
-	if positiveExit {
-		// SZ cleared before restart with a positive exit — re-enter now.
-		log.Printf("strategy %s: SZ L%d exited positively before restart (price=%.4f) — re-entering",
-			sr.strategy.ID, slot, price)
-		sr.matrixReplaceSlots(ctx, price)
-	} else {
-		// Negative exit before restart — restore the pending re-entry condition.
-		log.Printf("strategy %s: SZ L%d exited negatively before restart — pending re-entry at %.4f",
-			sr.strategy.ID, slot, slPrice)
-		slotCopy := slot
-		sr.matrixSZPendingSlot = &slotCopy
-		sr.matrixSZPendingPrice = slPrice
-	}
 }
 
 // matrixStopCondThreshold computes the price level that must be crossed to
@@ -768,99 +694,9 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 	}
 	sr.lastMatrixPrice = currentPrice
 
-	// 1. Check Safe Zone exit — direction-aware.
-	if sr.matrixSafeZone != nil && !sr.matrixSafeZone.Contains(currentPrice) {
-		zone := sr.matrixSafeZone
-		sr.matrixSafeZone = nil
-
-		positiveExit := (sr.strategy.Direction == DirectionLong && currentPrice > zone.High) ||
-			(sr.strategy.Direction == DirectionShort && currentPrice < zone.Low)
-
-		if positiveExit {
-			// Price continued in-direction past the SZ boundary — re-enter immediately.
-			sr.info(ctx, fmt.Sprintf("Safe Zone L%d очищена (в направлении): price=%.4f SZ=[%.4f,%.4f] — немедленный перезаход",
-				zone.Slot, currentPrice, zone.Low, zone.High))
-			sr.matrixReplaceSlots(ctx, currentPrice)
-		} else {
-			// Price reversed through the opposite SZ boundary — wait for return to P_sl.
-			sr.info(ctx, fmt.Sprintf("Safe Zone L%d очищена (разворот): price=%.4f SZ=[%.4f,%.4f] — ждём возврата к P_sl %.4f",
-				zone.Slot, currentPrice, zone.Low, zone.High, zone.SLTrigger))
-			slotCopy := zone.Slot
-			sr.matrixSZPendingSlot = &slotCopy
-			sr.matrixSZPendingPrice = zone.SLTrigger
-		}
-	}
-
-	// 1b. Pending re-entry after negative SZ exit — re-enter when price returns to P_sl.
-	if sr.matrixSZPendingSlot != nil {
-		var met bool
-		if sr.strategy.Direction == DirectionLong {
-			met = currentPrice >= sr.matrixSZPendingPrice
-		} else {
-			met = currentPrice <= sr.matrixSZPendingPrice
-		}
-		if met {
-			slot := *sr.matrixSZPendingSlot
-			sr.info(ctx, fmt.Sprintf("Safe Zone: цена %.4f вернулась к P_sl %.4f — перезаход L%d",
-				currentPrice, sr.matrixSZPendingPrice, slot))
-			sr.matrixSZPendingSlot = nil
-			sr.matrixSZPendingPrice = 0
-			sr.matrixReplaceSlots(ctx, currentPrice)
-		}
-	}
-
-	// 1c. Safe Zone proximity warning — log when price is within 0.5% of a boundary.
-	// Throttled to once per minute to avoid flooding the event log.
-	if sz := sr.matrixSafeZone; sz != nil && time.Since(sr.matrixSZBoundaryLog) >= time.Minute {
-		distLow := math.Abs(currentPrice-sz.Low) / sz.Low * 100
-		distHigh := math.Abs(currentPrice-sz.High) / sz.High * 100
-		if distLow < 0.5 {
-			sr.info(ctx, fmt.Sprintf("[SZ ГРАНИЦА] price=%.4f вблизи нижней границы SZ %.4f (dist=%.3f%%) L%d [%.4f,%.4f] P_sl=%.4f",
-				currentPrice, sz.Low, distLow, sz.Slot, sz.Low, sz.High, sz.SLTrigger))
-			sr.matrixSZBoundaryLog = time.Now()
-		} else if distHigh < 0.5 {
-			sr.info(ctx, fmt.Sprintf("[SZ ГРАНИЦА] price=%.4f вблизи верхней границы SZ %.4f (dist=%.3f%%) L%d [%.4f,%.4f] P_sl=%.4f",
-				currentPrice, sz.High, distHigh, sz.Slot, sz.Low, sz.High, sz.SLTrigger))
-			sr.matrixSZBoundaryLog = time.Now()
-		}
-	}
-
-	// 1d. Safe Zone heartbeat — emit detailed state every 5 minutes.
-	{
-		now := time.Now()
-		if now.Sub(sr.matrixSZLogTime) >= 5*time.Minute {
-			if sr.matrixSafeZone != nil {
-				sz := sr.matrixSafeZone
-				width := sz.High - sz.Low
-				var posPct float64
-				if width > 0 {
-					posPct = (currentPrice - sz.Low) / width * 100
-				}
-				distLow := (currentPrice - sz.Low) / sz.Low * 100
-				distHigh := (sz.High - currentPrice) / sz.High * 100
-				age := now.Sub(sz.CreatedAt).Round(time.Second)
-				sr.info(ctx, fmt.Sprintf(
-					"[SZ] L%d активна | price=%.4f | zone=[%.4f,%.4f] | P_sl=%.4f | pos=%.1f%% | distLow=%.3f%% distHigh=%.3f%% | возраст=%s",
-					sz.Slot, currentPrice, sz.Low, sz.High, sz.SLTrigger, posPct, distLow, distHigh, age))
-				sr.matrixSZLogTime = now
-			} else if sr.matrixSZPendingSlot != nil {
-				target := sr.matrixSZPendingPrice
-				var gapPct float64
-				if target > 0 {
-					gapPct = (target - currentPrice) / target * 100
-				}
-				var dir string
-				if sr.strategy.Direction == DirectionLong {
-					dir = "↑ выше"
-				} else {
-					dir = "↓ ниже"
-				}
-				sr.info(ctx, fmt.Sprintf(
-					"[SZ PENDING] L%d ожидает перезахода | price=%.4f | P_sl=%.4f | gap=%.3f%% (%s цены)",
-					*sr.matrixSZPendingSlot, currentPrice, target, math.Abs(gapPct), dir))
-				sr.matrixSZLogTime = now
-			}
-		}
+	// 1. Check waiting slots for re-entry
+	if len(sr.matrixWaitingSlots) > 0 {
+		sr.matrixCheckWaitingReentry(ctx, currentPrice)
 	}
 
 	// 2. Trigger virtual levels whose target price has been crossed.
@@ -892,6 +728,13 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 			crossed = currentPrice >= l.TargetPrice
 		}
 		if crossed {
+			// ProtectedBuild: don't trigger next virtual level until previous slot has stop confirmed
+			if sr.strategy.ProtectedBuild && l.Slot != nil && *l.Slot > 0 {
+				prevSlot := *l.Slot - 1
+				if prevSlot > 0 && !sr.matrixSlotCovered(prevSlot) {
+					continue // previous slot not yet covered by a stop
+				}
+			}
 			sr.matrixTriggerVirtualLevel(ctx, l)
 		}
 	}
@@ -1524,17 +1367,6 @@ func (sr *StrategyRunner) applyNewMatrixPrices(ctx context.Context, basePrice, c
 	}
 }
 
-// createMatrixSafeZone builds a safe zone centered on slTrigger with ±safeZonePct.
-func createMatrixSafeZone(slTrigger, safeZonePct float64, slot int) *MatrixSafeZone {
-	return &MatrixSafeZone{
-		Low:       slTrigger * (1 - safeZonePct/100),
-		High:      slTrigger * (1 + safeZonePct/100),
-		SLTrigger: slTrigger,
-		Slot:      slot,
-		CreatedAt: time.Now(),
-	}
-}
-
 // handleMatrixSLFill is called when a per-level SL fires (refType="matrix_sl").
 // Must NOT be called with sr.mu held (submitted to worker via sr.submit).
 func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string, filledPrice float64) {
@@ -1570,18 +1402,13 @@ func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string
 	sr.warn(ctx, fmt.Sprintf("Matrix SL сработал %s @ %.4f",
 		slotLabel(closed.Slot), slTrigger))
 
-	// Create Safe Zone — only for positive slots (L1, L2…); negative slots are averaging positions.
-	if sr.strategy.SafeZonePct > 0 && closed.Slot != nil && *closed.Slot > 0 {
-		if sr.matrixSafeZone != nil {
-			sr.info(ctx, fmt.Sprintf("Safe Zone: заменяем старую [%.4f, %.4f] для L%d",
-				sr.matrixSafeZone.Low, sr.matrixSafeZone.High, sr.matrixSafeZone.Slot))
+	// Mark slot as waiting for re-entry — only for positive slots (L1, L2…)
+	if closed.Slot != nil && *closed.Slot > 0 {
+		if sr.matrixWaitingSlots == nil {
+			sr.matrixWaitingSlots = make(map[int]bool)
 		}
-		// Cancel any pending re-entry from the previous SZ (one SZ at a time).
-		sr.matrixSZPendingSlot = nil
-		sr.matrixSZPendingPrice = 0
-		sr.matrixSafeZone = createMatrixSafeZone(slTrigger, sr.strategy.SafeZonePct, *closed.Slot)
-		sr.info(ctx, fmt.Sprintf("Safe Zone создана для L%d: [%.4f, %.4f]",
-			*closed.Slot, sr.matrixSafeZone.Low, sr.matrixSafeZone.High))
+		sr.matrixWaitingSlots[*closed.Slot] = true
+		sr.info(ctx, fmt.Sprintf("Matrix L%d ожидает перезахода (SL @ %.4f)", *closed.Slot, slTrigger))
 	}
 
 	// Recalculate global TP (will cancel it if no filled levels remain)
@@ -1696,10 +1523,8 @@ func (sr *StrategyRunner) handleMatrixTPFill(ctx context.Context, fillPrice, fil
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
 		`UPDATE strategy_cycles SET tp_order_id=NULL WHERE id=$1`, sr.cycle.ID)
 
-	// 4. Clear safe zone and any pending re-entry — TP close is a fresh entry.
-	sr.matrixSafeZone = nil
-	sr.matrixSZPendingSlot = nil
-	sr.matrixSZPendingPrice = 0
+	// 4. Clear waiting slots — TP close is a fresh entry.
+	sr.matrixWaitingSlots = make(map[int]bool)
 
 	// 5. Suppress the position-zero WS event that follows TP fill.
 	// Also covers the tail case: handlePartialPositionChange sees closedBySelf=true
@@ -1738,4 +1563,257 @@ func (sr *StrategyRunner) handleMatrixTPFill(ctx context.Context, fillPrice, fil
 	sr.lastMatrixPrice = fillPrice
 
 	sr.info(ctx, "Matrix TP: сетка сброшена и переставлена")
+}
+
+// matrixSlotCovered returns true if the filled level for the given slot has an active stop order.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixSlotCovered(slot int) bool {
+	for _, l := range sr.levels {
+		if l.Slot != nil && *l.Slot == slot && l.Status == LevelFilled {
+			return l.SLOrderID != ""
+		}
+	}
+	return false
+}
+
+// matrixFindDeepestActiveRef finds the active (filled/placed/pending) level with the highest
+// slot number greater than waitingSlot. Returns nil if no such level exists.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixFindDeepestActiveRef(waitingSlot int) *GridLevel {
+	var best *GridLevel
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Slot == nil || *l.Slot <= waitingSlot {
+			continue
+		}
+		switch l.Status {
+		case LevelFilled, LevelPlaced, LevelPending:
+		default:
+			continue
+		}
+		if best == nil || *l.Slot > *best.Slot {
+			best = l
+		}
+	}
+	return best
+}
+
+// matrixReentryConditionMet returns true when current price has crossed past ref's fill price
+// in the favorable direction (price < ref.FilledPrice for SHORT, > for LONG).
+func (sr *StrategyRunner) matrixReentryConditionMet(ref *GridLevel, currentPrice float64) bool {
+	if ref.FilledPrice <= 0 {
+		return false
+	}
+	if sr.strategy.Direction == DirectionShort {
+		return currentPrice < ref.FilledPrice
+	}
+	return currentPrice > ref.FilledPrice
+}
+
+// matrixCheckWaitingReentry iterates all waiting slots and re-enters those whose
+// re-entry condition is now met. Called from matrixPriceTick.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixCheckWaitingReentry(ctx context.Context, currentPrice float64) {
+	// Sort waiting slots descending — deepest (highest slot number) first
+	slots := make([]int, 0, len(sr.matrixWaitingSlots))
+	for s := range sr.matrixWaitingSlots {
+		slots = append(slots, s)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(slots)))
+
+	for _, slot := range slots {
+		ref := sr.matrixFindDeepestActiveRef(slot)
+
+		if ref == nil {
+			// No deeper active level — re-enter at configured price (rebuild from scratch)
+			sr.matrixReenterAtConfigPrice(ctx, slot, currentPrice)
+			continue
+		}
+
+		// Wait for price to pass below (SHORT) or above (LONG) the reference's fill price
+		if !sr.matrixReentryConditionMet(ref, currentPrice) {
+			continue
+		}
+
+		// ProtectedBuild: reference must have a stop confirmed
+		if sr.strategy.ProtectedBuild && !sr.matrixSlotCovered(*ref.Slot) {
+			continue
+		}
+
+		sr.matrixReenterRelativeToRef(ctx, slot, ref, currentPrice)
+	}
+}
+
+// matrixReenterRelativeToRef places a new pending level for waitingSlot at a price
+// one step below (SHORT) or above (LONG) the reference level's fill price.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixReenterRelativeToRef(ctx context.Context, waitingSlot int, ref *GridLevel, currentPrice float64) {
+	above := filterMatrixLevels(sr.strategy.MatrixLevels, "above")
+	below := filterMatrixLevels(sr.strategy.MatrixLevels, "below")
+
+	var stepPct, sizeUSDT float64
+	if waitingSlot > 0 {
+		idx := waitingSlot - 1
+		if idx >= len(above) {
+			return
+		}
+		stepPct = above[idx].PriceStepPct
+		sizeUSDT = above[idx].SizePct / 100 * sr.strategy.GridSizeUSDT
+	} else {
+		idx := -waitingSlot - 1
+		if idx >= len(below) {
+			return
+		}
+		stepPct = below[idx].PriceStepPct
+		sizeUSDT = below[idx].SizePct / 100 * sr.strategy.GridSizeUSDT
+	}
+
+	if stepPct == 0 || sizeUSDT == 0 {
+		return
+	}
+
+	// stepMul inverts direction for SHORT (positive slots land below entry for SHORT)
+	stepMul := 1.0
+	if sr.strategy.Direction == DirectionShort {
+		stepMul = -1.0
+	}
+	newTargetPrice := ref.FilledPrice * (1 + stepMul*math.Abs(stepPct)/100)
+	if newTargetPrice <= 0 {
+		return
+	}
+
+	qty := trader.FormatQty(sizeUSDT/newTargetPrice, sr.instr.QtyStep, sr.instr.MinQty)
+	side := matrixLevelSide(sr.strategy.Direction)
+
+	nextLevelIdx := 0
+	for _, l := range sr.levels {
+		if l.LevelIdx > nextLevelIdx {
+			nextLevelIdx = l.LevelIdx
+		}
+	}
+	nextLevelIdx++
+
+	slotCopy := waitingSlot
+	var levelID string
+	if err := sr.runner.pool.QueryRow(ctx,
+		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+		sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, newTargetPrice, sizeUSDT, qty, slotCopy,
+	).Scan(&levelID); err != nil {
+		log.Printf("strategy %s: matrixReenterRelativeToRef slot=%d: %v", sr.strategy.ID, waitingSlot, err)
+		return
+	}
+
+	newLevel := GridLevel{
+		ID: levelID, LevelIdx: nextLevelIdx, Side: side,
+		TargetPrice: newTargetPrice, SizeUSDT: sizeUSDT, Qty: qty,
+		Status: LevelPending, Slot: &slotCopy,
+	}
+	sr.levels = append(sr.levels, newLevel)
+	placed := &sr.levels[len(sr.levels)-1]
+
+	delete(sr.matrixWaitingSlots, waitingSlot)
+
+	if err := sr.placeMatrixLevel(ctx, placed, currentPrice); err != nil {
+		sr.errlog(ctx, fmt.Sprintf("Matrix re-entry L%d relative to ref L%d: %v", waitingSlot, *ref.Slot, err))
+	} else {
+		sr.info(ctx, fmt.Sprintf("[RE-ENTRY] L%d @ %.4f (ref L%d @ %.4f)", waitingSlot, newTargetPrice, *ref.Slot, ref.FilledPrice))
+	}
+}
+
+// matrixReenterAtConfigPrice re-enters a waiting slot at its original configured price
+// (relative to cycle.StartPrice). Used when no deeper active reference exists.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixReenterAtConfigPrice(ctx context.Context, waitingSlot int, currentPrice float64) {
+	above := filterMatrixLevels(sr.strategy.MatrixLevels, "above")
+	below := filterMatrixLevels(sr.strategy.MatrixLevels, "below")
+	prices := calculateMatrixPrices(sr.cycle.StartPrice, above, below, sr.strategy.Direction)
+
+	targetPrice, ok := prices[waitingSlot]
+	if !ok {
+		return
+	}
+
+	var sizeUSDT float64
+	if waitingSlot > 0 {
+		idx := waitingSlot - 1
+		if idx >= len(above) {
+			return
+		}
+		sizeUSDT = above[idx].SizePct / 100 * sr.strategy.GridSizeUSDT
+	} else {
+		idx := -waitingSlot - 1
+		if idx >= len(below) {
+			return
+		}
+		sizeUSDT = below[idx].SizePct / 100 * sr.strategy.GridSizeUSDT
+	}
+
+	if sizeUSDT == 0 || targetPrice == 0 {
+		return
+	}
+
+	qty := trader.FormatQty(sizeUSDT/targetPrice, sr.instr.QtyStep, sr.instr.MinQty)
+	side := matrixLevelSide(sr.strategy.Direction)
+
+	nextLevelIdx := 0
+	for _, l := range sr.levels {
+		if l.LevelIdx > nextLevelIdx {
+			nextLevelIdx = l.LevelIdx
+		}
+	}
+	nextLevelIdx++
+
+	slotCopy := waitingSlot
+	var levelID string
+	if err := sr.runner.pool.QueryRow(ctx,
+		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+		sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, targetPrice, sizeUSDT, qty, slotCopy,
+	).Scan(&levelID); err != nil {
+		log.Printf("strategy %s: matrixReenterAtConfigPrice slot=%d: %v", sr.strategy.ID, waitingSlot, err)
+		return
+	}
+
+	newLevel := GridLevel{
+		ID: levelID, LevelIdx: nextLevelIdx, Side: side,
+		TargetPrice: targetPrice, SizeUSDT: sizeUSDT, Qty: qty,
+		Status: LevelPending, Slot: &slotCopy,
+	}
+	sr.levels = append(sr.levels, newLevel)
+	placed := &sr.levels[len(sr.levels)-1]
+
+	delete(sr.matrixWaitingSlots, waitingSlot)
+
+	if err := sr.placeMatrixLevel(ctx, placed, currentPrice); err != nil {
+		sr.errlog(ctx, fmt.Sprintf("Matrix re-entry L%d at config price: %v", waitingSlot, err))
+	} else {
+		sr.info(ctx, fmt.Sprintf("[RE-ENTRY] L%d @ %.4f (config price, no deeper ref)", waitingSlot, targetPrice))
+	}
+}
+
+// restoreMatrixWaitingSlots derives waiting-slot state from sr.levels after a service restart.
+// A slot is "waiting" if it has an sl_closed level but no active (pending/placed/filled) level.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) restoreMatrixWaitingSlots() {
+	activeSlots := map[int]bool{}
+	slClosedSlots := map[int]bool{}
+	for _, l := range sr.levels {
+		if l.Slot == nil || *l.Slot <= 0 {
+			continue
+		}
+		switch l.Status {
+		case LevelPending, LevelPlaced, LevelFilled:
+			activeSlots[*l.Slot] = true
+		case LevelSLClosed:
+			slClosedSlots[*l.Slot] = true
+		}
+	}
+	sr.matrixWaitingSlots = make(map[int]bool)
+	for slot := range slClosedSlots {
+		if !activeSlots[slot] {
+			sr.matrixWaitingSlots[slot] = true
+			log.Printf("strategy %s: restored waiting slot L%d", sr.strategy.ID, slot)
+		}
+	}
 }

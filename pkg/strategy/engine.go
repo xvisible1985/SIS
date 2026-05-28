@@ -296,24 +296,9 @@ func (e *Engine) GetSignalState(strategyID string) string {
 	return ""
 }
 
-// GetMatrixSafeZone returns the currently active SafeZone for a running matrix strategy,
-// or nil if no zone is active (cleared after exit or never created).
-// Reading sr.matrixSafeZone (not DB) ensures the zone disappears the moment the
-// price exits it, rather than persisting forever based on sl_closed rows.
+// GetMatrixSafeZone is kept for API compatibility but always returns nil.
+// SafeZone has been replaced by the depth-ordered waiting-slot re-entry system.
 func (e *Engine) GetMatrixSafeZone(strategyID string) *MatrixSafeZone {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	for _, runner := range e.runners {
-		runner.mu.RLock()
-		sr, ok := runner.strategies[strategyID]
-		runner.mu.RUnlock()
-		if ok {
-			sr.mu.Lock()
-			sz := sr.matrixSafeZone
-			sr.mu.Unlock()
-			return sz
-		}
-	}
 	return nil
 }
 

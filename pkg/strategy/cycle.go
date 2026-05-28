@@ -201,11 +201,13 @@ func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 }
 
 // resumeMatrixCycle handles matrix-specific cycle resume after a successful loadActiveCycle.
-// Restores the safe zone, triggers any pending virtual entry, re-places cancelled DCA levels,
+// Restores waiting-slot state, triggers any pending virtual entry, re-places cancelled DCA levels,
 // and launches the price monitor.
 // Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) resumeMatrixCycle(ctx context.Context) {
-	sr.restoreMatrixSafeZone(ctx)
+	sr.mu.Lock()
+	sr.restoreMatrixWaitingSlots()
+	sr.mu.Unlock()
 
 	resumePrice, _ := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
 
@@ -2375,9 +2377,7 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 			sr.matrixMonitorStop()
 			sr.matrixMonitorStop = nil
 		}
-		sr.matrixSafeZone = nil
-		sr.matrixSZPendingSlot = nil
-		sr.matrixSZPendingPrice = 0
+		sr.matrixWaitingSlots = make(map[int]bool)
 	}
 	sr.cycle = nil
 	sr.levels = nil
@@ -3092,9 +3092,7 @@ func (sr *StrategyRunner) handleStopRequest(ctx context.Context) {
 			sr.matrixMonitorStop()
 			sr.matrixMonitorStop = nil
 		}
-		sr.matrixSafeZone = nil
-		sr.matrixSZPendingSlot = nil
-		sr.matrixSZPendingPrice = 0
+		sr.matrixWaitingSlots = make(map[int]bool)
 	}
 	sr.cancelPlacedLevels(ctx)
 
