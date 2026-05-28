@@ -557,6 +557,13 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       const slot = markerSlotMap.get(parseInt(m[1]))
       return slot != null ? `L(${slot})` : lbl
     }
+    // For matrix slot markers: only show fills whose level_idx is currently 'filled'.
+    // Prevents old fills from SL'd/re-entered levels from doubling the displayed volume.
+    const markerFilledIdxs = new Set(
+      (strategyLevels ?? [])
+        .filter(l => l.status === 'filled')
+        .map(l => l.level_idx)
+    )
     const dirFilter = overlaySettings && !overlaySettings.bothDirections && effectiveDir ? effectiveDir : null
     const relevant = (executions ?? []).filter(e => {
       if (e.symbol !== symbol || e.timeMs <= 0) return false
@@ -631,6 +638,12 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
 
       const resolvedLabel = resolveMarkerLabel(parseOrderLabel(e.orderLinkId ?? '', e.side))
       const isMatrixSlot = /^L\(-?\d+\)$/.test(resolvedLabel)
+      // For matrix slot markers: only include fills from currently-filled levels.
+      if (isMatrixSlot) {
+        const linkMatch = (e.orderLinkId ?? '').match(/^(?:SIS_STR|STR)-[a-f0-9]+-\d+-(\d+)/)
+        const execLevelIdx = linkMatch ? parseInt(linkMatch[1]) : null
+        if (execLevelIdx === null || !markerFilledIdxs.has(execLevelIdx)) continue
+      }
       const key = isMatrixSlot ? `${resolvedLabel}|${e.side}` : (e.orderLinkId || e.execId)
       if (!groupMap.has(key)) {
         groupMap.set(key, { execs: [], candleTime, label: resolvedLabel })
