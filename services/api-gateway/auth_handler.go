@@ -52,7 +52,7 @@ func (s *Server) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := auth.GenerateToken(userID, string(s.jwtSecret), 24*time.Hour)
+	token, err := auth.GenerateToken(userID, string(s.jwtSecret), 7*24*time.Hour)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -94,7 +94,7 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := auth.GenerateToken(userID, string(s.jwtSecret), 24*time.Hour)
+	token, err := auth.GenerateToken(userID, string(s.jwtSecret), 7*24*time.Hour)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
