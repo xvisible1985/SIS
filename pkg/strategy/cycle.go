@@ -49,14 +49,10 @@ type StrategyRunner struct {
 	currentSignalState      string    // last observed signal state: "buy","sell","neutral","" (no filter)
 
 	// Matrix strategy runtime state
-	matrixSafeZone       *MatrixSafeZone
-	matrixMonitorStop    context.CancelFunc
-	matrixSLSeq          int     // increments on each per-level SL placement for unique linkIds
-	matrixSZPendingSlot  *int      // non-nil: waiting for price to reach matrixSZPendingPrice after negative SZ exit
-	matrixSZPendingPrice float64  // P_sl threshold — when current price crosses this, re-enter the pending slot
-	matrixSZLogTime      time.Time // last time the SZ heartbeat log was emitted (throttle to 5 min)
-	matrixSZBoundaryLog  time.Time // last time the SZ boundary warning was emitted (throttle to 1 min)
-	lastMatrixPrice      float64  // last mark price seen by matrixPriceTick; used to re-trigger virtual levels after a fill
+	matrixMonitorStop   context.CancelFunc
+	matrixSLSeq         int          // increments on each per-level SL placement for unique linkIds
+	matrixWaitingSlots  map[int]bool // positive slot → true when SL'd and waiting to re-enter
+	lastMatrixPrice     float64      // last mark price seen by matrixPriceTick; used to re-trigger virtual levels after a fill
 
 	lastVirtualPrice float64 // last mark price seen by gridVirtualPriceTick; 0 = not yet seen
 
