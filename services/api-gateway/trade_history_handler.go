@@ -67,6 +67,26 @@ func (s *Server) GetTradeHistory(w http.ResponseWriter, r *http.Request) {
 		offset = v
 	}
 
+	// Sort — whitelist to prevent SQL injection
+	validCols := map[string]string{
+		"symbol":      "th.symbol",
+		"direction":   "th.direction",
+		"result":      "th.result",
+		"bot_name":    "b.name",
+		"volume_usdt": "th.volume_usdt",
+		"pnl":         "th.pnl",
+		"closed_at":   "th.closed_at",
+		"duration":    "(th.closed_at - th.opened_at)",
+	}
+	sortColExpr := "th.closed_at"
+	if expr, ok := validCols[q.Get("sort_by")]; ok {
+		sortColExpr = expr
+	}
+	sortDir := "DESC"
+	if q.Get("sort_dir") == "asc" {
+		sortDir = "ASC"
+	}
+
 	var fromTime, toTime *time.Time
 	if fromStr != "" {
 		if t, err := time.Parse(time.RFC3339, fromStr); err == nil {
@@ -146,7 +166,7 @@ func (s *Server) GetTradeHistory(w http.ResponseWriter, r *http.Request) {
 		FROM trade_history th
 		LEFT JOIN bots b ON b.id = th.bot_id
 		` + where + `
-		ORDER BY th.closed_at DESC
+		ORDER BY ` + sortColExpr + ` ` + sortDir + `, th.id ` + sortDir + `
 		LIMIT ` + strconv.Itoa(limit) + ` OFFSET ` + strconv.Itoa(offset)
 	rows, err := s.pool.Query(r.Context(), rowsSQL, args...)
 	if err != nil {

@@ -39,9 +39,6 @@ function fmtDuration(openIso: string, closeIso: string): string {
   return `${h}ч ${m}м`
 }
 
-function durationMs(t: TradeHistoryRow): number {
-  return new Date(t.closed_at).getTime() - new Date(t.opened_at).getTime()
-}
 
 function toLocalDateStr(d: Date): string {
   const y = d.getFullYear()
@@ -353,7 +350,7 @@ export function TradeHistoryPage() {
 
   const load = useCallback(async (off: number, silent = false) => {
     if (!silent) setLoading(true)
-    const params: TradeHistoryParams = { limit: LIMIT, offset: off }
+    const params: TradeHistoryParams = { limit: LIMIT, offset: off, sort_by: sortCol, sort_dir: sortDir }
     if (filterItem.startsWith('bot:'))      params.bot_id      = filterItem.slice(4)
     if (filterItem.startsWith('strategy:')) params.strategy_id = filterItem.slice(9)
     if (filterResult) params.result = filterResult
@@ -370,7 +367,7 @@ export function TradeHistoryPage() {
     } finally {
       if (!silent) setLoading(false)
     }
-  }, [filterItem, filterResult, dateFrom, dateTo])
+  }, [filterItem, filterResult, dateFrom, dateTo, sortCol, sortDir])
 
   useEffect(() => { load(0) }, [load])
 
@@ -382,25 +379,8 @@ export function TradeHistoryPage() {
   function handleSort(col: SortCol) {
     if (col === sortCol) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
     else { setSortCol(col); setSortDir('desc') }
+    // offset reset happens via useEffect on load deps change
   }
-
-  const sortedTrades = [...trades].sort((a, b) => {
-    let av: number | string = 0
-    let bv: number | string = 0
-    switch (sortCol) {
-      case 'symbol':     av = a.symbol;      bv = b.symbol;      break
-      case 'direction':  av = a.direction;   bv = b.direction;   break
-      case 'result':     av = a.result;      bv = b.result;      break
-      case 'bot_name':   av = a.bot_name ?? ''; bv = b.bot_name ?? ''; break
-      case 'volume_usdt': av = a.volume_usdt ?? 0; bv = b.volume_usdt ?? 0; break
-      case 'pnl':        av = a.pnl ?? 0;   bv = b.pnl ?? 0;   break
-      case 'closed_at':  av = a.closed_at;  bv = b.closed_at;  break
-      case 'duration':   av = durationMs(a); bv = durationMs(b); break
-    }
-    if (av < bv) return sortDir === 'asc' ? -1 : 1
-    if (av > bv) return sortDir === 'asc' ?  1 : -1
-    return 0
-  })
 
   const hasFilter = !!(filterItem || filterResult || dateFrom || dateTo)
 
@@ -502,7 +482,7 @@ export function TradeHistoryPage() {
                 </tr>
               </thead>
               <tbody>
-                {sortedTrades.map(t => <TradeRow key={t.id} t={t} />)}
+                {trades.map((t: TradeHistoryRow) => <TradeRow key={t.id} t={t} />)}
               </tbody>
             </table>
           </div>

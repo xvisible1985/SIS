@@ -48,6 +48,8 @@ export interface TradeHistoryParams {
   to?: string
   limit?: number
   offset?: number
+  sort_by?: string
+  sort_dir?: 'asc' | 'desc'
 }
 
 export async function getTradeHistory(params: TradeHistoryParams = {}): Promise<TradeHistoryResponse> {
@@ -57,8 +59,10 @@ export async function getTradeHistory(params: TradeHistoryParams = {}): Promise<
   if (params.result)      q.set('result',      params.result)
   if (params.from)        q.set('from',        params.from)
   if (params.to)          q.set('to',          params.to)
-  if (params.limit  != null) q.set('limit',  String(params.limit))
-  if (params.offset != null) q.set('offset', String(params.offset))
+  if (params.limit    != null) q.set('limit',    String(params.limit))
+  if (params.offset   != null) q.set('offset',   String(params.offset))
+  if (params.sort_by)          q.set('sort_by',  params.sort_by)
+  if (params.sort_dir)         q.set('sort_dir', params.sort_dir)
   const res = await apiClient.get<TradeHistoryResponse>(`/trade-history?${q}`)
   return res.data
 }
