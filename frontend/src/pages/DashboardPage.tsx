@@ -368,7 +368,7 @@ function PeriodTabs({ value, onChange }: { value: Period; onChange: (p: Period) 
 function HeroCard({ data, period, equity, equityChange }: {
   data: DashboardData; period: Period; equity: number | null; equityChange: { usd: number; pct: number } | null
 }) {
-  const { stats, daily_pnl } = data
+  const { stats, daily_pnl, recent_trades } = data
   const pLabel = PERIODS.find(p => p.id === period)?.label ?? period
 
   const cumSeries = useMemo(() => {
@@ -376,6 +376,16 @@ function HeroCard({ data, period, equity, equityChange }: {
     const base = Math.max(stats.total_pnl * 0.1, 0)
     return daily_pnl.map(d => { acc += d.pnl; return base + acc })
   }, [daily_pnl, stats.total_pnl])
+
+  // Reward:Risk — avg winner / avg loser (from recent_trades sample)
+  const rr = useMemo(() => {
+    const wins = recent_trades.filter(t => (t.pnl ?? 0) > 0)
+    const losses = recent_trades.filter(t => (t.pnl ?? 0) < 0)
+    if (wins.length === 0 || losses.length === 0) return null
+    const avgW = wins.reduce((s, t) => s + (t.pnl ?? 0), 0) / wins.length
+    const avgL = Math.abs(losses.reduce((s, t) => s + (t.pnl ?? 0), 0) / losses.length)
+    return avgL > 0 ? avgW / avgL : null
+  }, [recent_trades])
 
   return (
     <div style={{
@@ -440,72 +450,98 @@ function HeroCard({ data, period, equity, equityChange }: {
           <StatBox label="Сделок" value={String(stats.total)} />
           <StatBox label="Побед" value={`${stats.wins} / ${stats.losses}`} />
           <StatBox label="Ср. P&L" value={fmt$(stats.avg_pnl)} good={stats.avg_pnl > 0} bad={stats.avg_pnl < 0} />
-          <StatBox label="Убытков" value={String(stats.losses)} bad={stats.losses > 0} />
+          <StatBox label="R:R" value={rr != null ? rr.toFixed(2) : '—'} good={rr != null && rr >= 1.5} warn={rr != null && rr >= 1 && rr < 1.5} bad={rr != null && rr < 1} />
         </div>
       </div>
     </div>
   )
 }
 
-// ─── KPI Strip ────────────────────────────────────────────────────────────────
-function KpiStrip({ data, period }: { data: DashboardData; period: Period }) {
-  const { stats, daily_pnl } = data
-  const pLabel = PERIODS.find(p => p.id === period)?.label ?? period
-  const pnlSpark = daily_pnl.map(d => d.pnl)
-  const pf = stats.profit_factor
-  const wr = stats.win_rate
+// ─── Daily Stats Strip ────────────────────────────────────────────────────────
+function DailyStatsStrip({ data }: { data: DashboardData }) {
+  const { daily_pnl } = data
 
-  const items = [
+  const s = useMemo(() => {
+    if (daily_pnl.length === 0) return null
+    const best  = daily_pnl.reduce((a, b) => b.pnl > a.pnl ? b : a)
+    const worst = daily_pnl.reduce((a, b) => b.pnl < a.pnl ? b : a)
+    const avg   = daily_pnl.reduce((sum, d) => sum + d.pnl, 0) / daily_pnl.length
+    const posCount = daily_pnl.filter(d => d.pnl > 0).length
+    const posPct   = (posCount / daily_pnl.length) * 100
+    // Current streak (backwards from last day)
+    let streak = 0, streakUp: boolean | null = null
+    for (let i = daily_pnl.length - 1; i >= 0; i--) {
+      const up = daily_pnl[i].pnl >= 0
+      if (streakUp === null) { streakUp = up; streak = 1 }
+      else if (up === streakUp) streak++
+      else break
+    }
+    // Max consecutive green days
+    let maxWin = 0, cur = 0
+    for (const d of daily_pnl) {
+      if (d.pnl >= 0) { cur++; if (cur > maxWin) maxWin = cur } else cur = 0
+    }
+    return { best, worst, avg, posCount, posPct, streak, streakUp, maxWin }
+  }, [daily_pnl])
+
+  const items = !s ? [] : [
     {
-      label: `P&L за ${pLabel}`, value: fmt$(stats.total_pnl),
-      accent: stats.total_pnl >= 0 ? T.green : T.red,
-      sub: <Delta val={stats.total_pnl} size="sm" />,
-      spark: pnlSpark.length > 3 ? pnlSpark : null,
-      sparkColor: stats.total_pnl >= 0 ? T.green : T.red,
+      label: 'Лучший день',
+      value: fmt$(s.best.pnl),
+      accent: T.green,
+      sub: s.best.day.slice(5),
     },
     {
-      label: 'Win Rate', value: `${wr.toFixed(1)}%`,
-      accent: wr >= 60 ? T.green : wr >= 45 ? T.orange : T.red,
-      sub: <span style={{ fontSize: 11, color: T.dim }}>{stats.wins} побед · {stats.losses} убытков</span>,
+      label: 'Худший день',
+      value: fmt$(s.worst.pnl),
+      accent: T.red,
+      sub: s.worst.day.slice(5),
     },
     {
-      label: 'Profit Factor', value: pf >= 999 ? '∞' : pf.toFixed(2),
-      accent: pf >= 1.5 ? T.green : pf >= 1 ? T.orange : T.red,
-      sub: <span style={{ fontSize: 11, color: T.dim }}>всего {stats.total} сделок</span>,
+      label: 'Ср. P&L в день',
+      value: fmt$(s.avg),
+      accent: s.avg >= 0 ? T.green : T.red,
+      sub: `за ${daily_pnl.length} дн.`,
     },
     {
-      label: 'Ср. P&L / сделку', value: fmt$(stats.avg_pnl),
-      accent: stats.avg_pnl >= 0 ? T.green : T.red,
-      sub: <span style={{ fontSize: 11, color: T.dim }}>среднее за период</span>,
+      label: 'Зелёных дней',
+      value: `${s.posPct.toFixed(0)}%`,
+      accent: s.posPct >= 60 ? T.green : s.posPct >= 45 ? T.orange : T.red,
+      sub: `${s.posCount} из ${daily_pnl.length}`,
     },
     {
-      label: 'Лучшая сделка', value: fmt$(stats.best_trade), accent: T.green,
-      sub: <span style={{ fontSize: 11, color: T.dim }}>максимальный P&L</span>,
+      label: 'Текущий стрик',
+      value: s.streak > 0 && s.streakUp !== null ? `${s.streakUp ? '+' : '−'}${s.streak} дн.` : '—',
+      accent: s.streakUp === true ? T.green : s.streakUp === false ? T.red : T.dim,
+      sub: s.streakUp === true ? 'подряд зелёных' : 'подряд красных',
     },
     {
-      label: 'Худшая сделка', value: fmt$(stats.worst_trade), accent: T.red,
-      sub: <span style={{ fontSize: 11, color: T.dim }}>минимальный P&L</span>,
+      label: 'Макс. стрик',
+      value: s.maxWin > 0 ? `${s.maxWin} дн.` : '—',
+      accent: T.blue,
+      sub: 'лучшая серия побед',
     },
   ]
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 12 }}>
-      {items.map((it, i) => (
-        <Card key={i} pad="14px 16px">
-          <Lbl>{it.label}</Lbl>
-          <div style={{ ...grotesk, fontSize: 22, fontWeight: 700, color: it.accent, letterSpacing: '-0.4px', marginTop: 8, lineHeight: 1.1 }}>
-            {it.value}
-          </div>
-          <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            {it.sub}
-            {it.spark && (
-              <div style={{ width: 60, height: 20, opacity: .9 }}>
-                <Sparkline data={it.spark} width={60} height={20} color={it.sparkColor ?? T.green} strokeW={1.4} />
-              </div>
-            )}
-          </div>
-        </Card>
-      ))}
+      {daily_pnl.length === 0
+        ? Array.from({ length: 6 }).map((_, i) => (
+          <Card key={i} pad="14px 16px">
+            <Lbl>—</Lbl>
+            <div style={{ ...grotesk, fontSize: 22, fontWeight: 700, color: T.dim, marginTop: 8 }}>—</div>
+          </Card>
+        ))
+        : items.map((it, i) => (
+          <Card key={i} pad="14px 16px">
+            <Lbl>{it.label}</Lbl>
+            <div style={{ ...grotesk, fontSize: 22, fontWeight: 700, color: it.accent, letterSpacing: '-0.4px', marginTop: 8, lineHeight: 1.1 }}>
+              {it.value}
+            </div>
+            <div style={{ marginTop: 6, fontSize: 11, color: T.dim }}>{it.sub}</div>
+          </Card>
+        ))
+      }
     </div>
   )
 }
@@ -1015,7 +1051,7 @@ export function DashboardPage() {
             {/* Left: HeroCard + KpiStrip stacked */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               <HeroCard data={data} period={period} equity={equity} equityChange={equityChange} />
-              <KpiStrip data={data} period={period} />
+              <DailyStatsStrip data={data} />
             </div>
             {/* Right: Recent Trades spanning full height */}
             <RecentTradesCard data={data} />
