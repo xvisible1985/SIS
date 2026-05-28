@@ -816,20 +816,19 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     rectEl.style.pointerEvents = 'none'
     container.appendChild(rectEl)
 
-    // Fixed label in upper-left corner of the chart area
+    // Label in the upper-right corner of the zone rectangle itself
     const labelEl = document.createElement('div')
     labelEl.style.position = 'absolute'
-    labelEl.style.top = '10px'
-    labelEl.style.left = '10px'
-    labelEl.style.color = 'rgba(251, 191, 36, 0.90)'
-    labelEl.style.fontSize = '18px'
-    labelEl.style.fontWeight = '700'
-    labelEl.style.letterSpacing = '0.06em'
+    labelEl.style.top = '4px'
+    labelEl.style.right = '8px'
+    labelEl.style.color = 'rgba(251, 191, 36, 0.85)'
+    labelEl.style.fontSize = '13px'
+    labelEl.style.fontWeight = '600'
+    labelEl.style.letterSpacing = '0.05em'
     labelEl.style.pointerEvents = 'none'
-    labelEl.style.textShadow = '0 2px 8px rgba(0,0,0,0.7)'
-    labelEl.style.lineHeight = '1'
-    labelEl.textContent = '⚠ SAFE ZONE'
-    container.appendChild(labelEl)
+    labelEl.style.textShadow = '0 1px 4px rgba(0,0,0,0.6)'
+    labelEl.textContent = '⚠ SafeZone'
+    rectEl.appendChild(labelEl)
 
     const update = () => {
       const yTop = series.priceToCoordinate(safeZone.high)
