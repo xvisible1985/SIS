@@ -820,7 +820,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     const labelEl = document.createElement('div')
     labelEl.style.position = 'absolute'
     labelEl.style.top = '4px'
-    labelEl.style.right = '8px'
+    labelEl.style.left = '8px'
     labelEl.style.color = 'rgba(251, 191, 36, 0.85)'
     labelEl.style.fontSize = '13px'
     labelEl.style.fontWeight = '600'
