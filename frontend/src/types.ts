@@ -272,6 +272,7 @@ export interface Strategy {
   steps: GridStep[] | null
   matrix_levels?: MatrixLevel[] | null
   safe_zone_pct?: number | null
+  protected_build?: boolean | null
   matrix_entry_level?: MatrixEntryLevel | null
   trailing_stop_enabled: boolean
   trailing_activation_pct: number | null
@@ -379,6 +380,7 @@ export interface StrategyFormData {
   trailing_callback_pct: number
   matrix_levels: MatrixLevel[]
   safe_zone_pct: number
+  protected_build: boolean
   matrix_entry_level: MatrixEntryLevel
 }
 
