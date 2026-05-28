@@ -49,6 +49,7 @@ function defaultForm(): StrategyFormData {
     trailing_callback_pct: 0.5,
     matrix_levels: DEFAULT_MATRIX_LEVELS,
     safe_zone_pct: 1.5,
+    protected_build: false,
     matrix_entry_level: DEFAULT_MATRIX_ENTRY,
   }
 }
@@ -90,6 +91,7 @@ function strategyToForm(s: Strategy): StrategyFormData {
       use_signal: (l as any).use_signal ?? false,
     })),
     safe_zone_pct: s.safe_zone_pct ?? 1.5,
+    protected_build: s.protected_build ?? false,
     matrix_entry_level: s.matrix_entry_level ?? DEFAULT_MATRIX_ENTRY,
   }
 }
@@ -738,6 +740,19 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                   <input type="number" step="0.1" min={0} value={form.safe_zone_pct}
                     onChange={e => patch({ safe_zone_pct: Number(e.target.value) })}
                     className={inputCls} />
+                </div>
+
+                <div>
+                  <label className={labelCls}>
+                    🔒 Защищённое построение
+                    <Tip text="Следующий уровень матрицы выставляется только после того, как предыдущий прикрыт хотя бы одним стопом. Также блокирует возврат SL-уровня до подтверждения стопа на опорном уровне." />
+                  </label>
+                  <Toggle
+                    options={[{ label: 'Выкл', value: 'false' }, { label: '🔒 Вкл', value: 'true' }]}
+                    value={String(form.protected_build ?? false)}
+                    onChange={v => patch({ protected_build: v === 'true' })}
+                    optionColors={{ true: 'bg-amber-700 text-white' }}
+                  />
                 </div>
 
                 {/* ABOVE section — always shows aboveLevels (positive slots L(N)), visually above L(0) for both long and short */}

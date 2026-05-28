@@ -119,6 +119,7 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
         trailing_callback_pct: 0.5,
         matrix_levels: [],
         safe_zone_pct: 1.5,
+        protected_build: false,
         matrix_entry_level: { size_pct: 100, stop_pct: null, stop_cond_pct: null, stop_replace_pct: null, tp_pct: 1.5 },
       })
       listStrategies().then(setStrategies).catch(() => {})
