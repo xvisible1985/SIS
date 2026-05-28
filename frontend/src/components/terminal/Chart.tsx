@@ -10,6 +10,7 @@ export interface ChartOverlaySettings {
   showTakeProfit: boolean
   showStopLoss: boolean
   bothDirections: boolean
+  showSafeZone: boolean
 }
 
 interface Props {
@@ -795,14 +796,16 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     }
   }, [positions, orders, executions, symbol, overlaySettings, effectiveDir])
 
-  // SafeZone overlay — semi-transparent rectangle between safe_zone.low and safe_zone.high
+  // SafeZone overlay — semi-transparent rectangle + upper-left corner label
   useEffect(() => {
     const container = safeZoneOverlayRef.current
     const series = seriesRef.current
     if (!container) return
     container.innerHTML = ''
-    if (!safeZone || !series) return
+    const visible = overlaySettings?.showSafeZone !== false
+    if (!safeZone || !series || !visible) return
 
+    // Zone rectangle
     const rectEl = document.createElement('div')
     rectEl.style.position = 'absolute'
     rectEl.style.left = '0'
@@ -811,20 +814,22 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     rectEl.style.borderTop = '1px dashed rgba(251, 191, 36, 0.45)'
     rectEl.style.borderBottom = '1px dashed rgba(251, 191, 36, 0.45)'
     rectEl.style.pointerEvents = 'none'
+    container.appendChild(rectEl)
 
+    // Fixed label in upper-left corner of the chart area
     const labelEl = document.createElement('div')
     labelEl.style.position = 'absolute'
-    labelEl.style.right = '8px'
-    labelEl.style.top = '50%'
-    labelEl.style.transform = 'translateY(-50%)'
-    labelEl.style.color = 'rgba(251, 191, 36, 0.65)'
-    labelEl.style.fontSize = '10px'
-    labelEl.style.fontWeight = 'bold'
-    labelEl.style.letterSpacing = '0.04em'
+    labelEl.style.top = '10px'
+    labelEl.style.left = '10px'
+    labelEl.style.color = 'rgba(251, 191, 36, 0.90)'
+    labelEl.style.fontSize = '18px'
+    labelEl.style.fontWeight = '700'
+    labelEl.style.letterSpacing = '0.06em'
     labelEl.style.pointerEvents = 'none'
-    labelEl.textContent = '⚠ SafeZone'
-    rectEl.appendChild(labelEl)
-    container.appendChild(rectEl)
+    labelEl.style.textShadow = '0 2px 8px rgba(0,0,0,0.7)'
+    labelEl.style.lineHeight = '1'
+    labelEl.textContent = '⚠ SAFE ZONE'
+    container.appendChild(labelEl)
 
     const update = () => {
       const yTop = series.priceToCoordinate(safeZone.high)
@@ -840,7 +845,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     update()
     let rafId = requestAnimationFrame(function loop() { update(); rafId = requestAnimationFrame(loop) })
     return () => { cancelAnimationFrame(rafId); container.innerHTML = '' }
-  }, [safeZone, afterSetData])
+  }, [safeZone, afterSetData, overlaySettings])
 
   return (
     <div className="relative w-full h-full">

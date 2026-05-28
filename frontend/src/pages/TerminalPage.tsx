@@ -62,6 +62,7 @@ const DEFAULT_CHART_SETTINGS: ChartOverlaySettings = {
   showTakeProfit: true,
   showStopLoss: true,
   bothDirections: true,
+  showSafeZone: true,
 }
 
 function Toggle({ on }: { on: boolean }) {
@@ -103,6 +104,7 @@ function ChartSettingsPopup({
     { key: 'showTakenOrders',  label: 'Взятые ордера' },
     { key: 'showTakeProfit',   label: 'ТейкПрофит' },
     { key: 'showStopLoss',     label: 'СтопЛосс' },
+    { key: 'showSafeZone',     label: 'Safe Zone' },
   ]
 
   const anyOff = Object.values(settings).some(v => !v)
@@ -777,6 +779,8 @@ export function TerminalPage() {
   const containerRef = useRef<HTMLDivElement>(null)
   const rightTabRef = useRef(rightTab)
   useEffect(() => { rightTabRef.current = rightTab }, [rightTab])
+  // Ref to the tab-content wrapper — scrollWidth reflects actual content width dynamically
+  const rightPanelContentRef = useRef<HTMLDivElement>(null)
 
   const [colSplit, setColSplit] = useState(() => {
     const tab = (localStorage.getItem('t_right') as RightTab) ?? 'manual'
@@ -792,7 +796,16 @@ export function TerminalPage() {
 
     function onMove(ev: MouseEvent) {
       if (type === 'col') {
-        const pct = Math.max(30, Math.min(82, ((ev.clientX - rect.left) / rect.width) * 100))
+        // Dynamically compute the minimum right-panel width from actual rendered content.
+        // scrollWidth of the tab-content wrapper reflects the true content width even
+        // when the panel is already squeezed (overflow-y:auto forces overflow-x:auto).
+        const isContentTab = rightTabRef.current === 'bots' || rightTabRef.current === 'strategies'
+        const contentScrollW = rightPanelContentRef.current?.scrollWidth ?? 0
+        const minRightPx = isContentTab ? Math.max(360, contentScrollW + 4) : 0
+        const maxPct = minRightPx > 0
+          ? Math.min(82, ((rect.width - minRightPx) / rect.width) * 100)
+          : 82
+        const pct = Math.max(30, Math.min(maxPct, ((ev.clientX - rect.left) / rect.width) * 100))
         setColSplit(pct)
         const key = rightTabRef.current === 'strategies' ? 't_col_strategies' : rightTabRef.current === 'bots' ? 't_col_bots' : 't_col'
         localStorage.setItem(key, String(pct))
@@ -1135,7 +1148,7 @@ export function TerminalPage() {
         </div>
 
         {/* Tab content */}
-        <div className="flex-1 overflow-y-auto flex flex-col">
+        <div ref={rightPanelContentRef} className="flex-1 overflow-y-auto flex flex-col">
           {rightTab === 'manual' && (
             <>
               {accountId ? (
