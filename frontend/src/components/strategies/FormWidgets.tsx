@@ -31,14 +31,16 @@ export function useAllowedSignalIds(): { ids: Set<string> | null; loading: boole
 
 // ─── Toggle ─────────────────────────────────────────────────────────────────
 
-export function Toggle({ options, value, onChange, optionColors }: {
+export function Toggle({ options, value, onChange, optionColors, className, btnClassName }: {
   options: { label: string; value: string }[]
   value: string
   onChange: (v: string) => void
   optionColors?: Record<string, string>
+  className?: string
+  btnClassName?: string
 }) {
   return (
-    <div className="flex gap-1">
+    <div className={`flex gap-1 ${className ?? ''}`}>
       {options.map(o => (
         <button
           key={o.value}
@@ -47,7 +49,7 @@ export function Toggle({ options, value, onChange, optionColors }: {
             value === o.value
               ? (optionColors?.[o.value] ?? 'bg-blue-700 text-white')
               : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-          }`}
+          } ${btnClassName ?? ''}`}
         >
           {o.label}
         </button>

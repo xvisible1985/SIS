@@ -752,6 +752,8 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                       value={String(form.protected_build ?? false)}
                       onChange={v => patch({ protected_build: v === 'true' })}
                       optionColors={{ true: 'bg-amber-700 text-white' }}
+                      className="h-[34px]"
+                      btnClassName="h-full"
                     />
                   </div>
                 </div>
