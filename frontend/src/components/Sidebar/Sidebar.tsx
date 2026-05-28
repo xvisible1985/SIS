@@ -15,6 +15,8 @@ import {
   Shield,
   Bot,
   History,
+  Wallet,
+  CreditCard,
 } from 'lucide-react';
 import { NovaMark } from './NovaMark';
 import { Sparkline } from './Sparkline';
@@ -27,6 +29,8 @@ const NAV = [
   { to: '/signals',   label: 'Сигналы',   icon: BarChart2 },
   { to: '/bots',           label: 'Боты',           icon: Bot },
   { to: '/trade-history',  label: 'История сделок', icon: History },
+  { to: '/balances',       label: 'Балансы',        icon: Wallet },
+  { to: '/payments',       label: 'Пополнение',     icon: CreditCard },
   { to: '/webhooks',  label: 'Webhooks',  icon: Webhook,  badge: 'count' as const, key: 'webhooks' },
   { to: '/admin',     label: 'Админка',   icon: Shield },
 ];
