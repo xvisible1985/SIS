@@ -448,38 +448,122 @@ function KeyCard({ acc, balance, verify, latency, expanded, testing, onToggle, o
             )}
 
             {tab === 'audit' && (
-              <div className="fadein" style={{
-                marginTop: 10, background: 'rgba(0,0,0,.25)', border: `1px solid ${T.border}`, borderRadius: 8,
-                padding: '4px 0',
-              }}>
-                {[
-                  { t: 'сегодня · 09:12', Ic: IcRefresh, c: T.body,  msg: 'Автоматическая проверка прав — без изменений', actor: 'system' },
-                  { t: createdStr + ' · 10:18', Ic: IcKey,  c: T.green, msg: 'Ключ подключён к платформе', actor: 'Вы' },
-                ].map((e, i, arr) => {
-                  const Ic = e.Ic
-                  return (
-                    <div key={i} style={{
-                      display: 'flex', gap: 12, padding: '10px 12px',
-                      borderBottom: i < arr.length - 1 ? `1px dashed ${T.border}` : 'none',
+              <div className="fadein" style={{ marginTop: 10 }}>
+                {!verify ? (
+                  <div style={{
+                    padding: '24px 16px', textAlign: 'center',
+                    background: 'rgba(0,0,0,.2)', border: `1px dashed ${T.border}`, borderRadius: 8,
+                    color: T.dim, fontSize: 12,
+                  }}>
+                    Запустите «Тест подключения» — права загрузятся автоматически
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {/* permission rows */}
+                    {([
+                      { k: 'read',     Ic: IcEye,      title: 'Чтение',        desc: 'Баланс, ордера, история сделок',  on: perms.read,     warn: false },
+                      { k: 'trade',    Ic: IcZap,      title: 'Торговля',       desc: 'Спот, маржа — открытие ордеров', on: perms.trade,    warn: false },
+                      { k: 'futures',  Ic: IcWallet,   title: 'Деривативы',     desc: 'Фьючерсы, perp, опционы',        on: perms.futures,  warn: false },
+                      { k: 'withdraw', Ic: IcDownload, title: 'Вывод средств',  desc: 'Перевод на внешний адрес',       on: perms.withdraw, warn: true  },
+                    ] as const).map(({ k, Ic, title, desc, on, warn }) => {
+                      const color = on ? (warn ? T.red : T.green) : T.dim
+                      const bg    = on ? (warn ? T.redSoft : 'rgba(65,210,139,.06)') : 'rgba(255,255,255,.02)'
+                      const bd    = on ? (warn ? T.redBd  : T.greenBd)               : T.border
+                      return (
+                        <div key={k} style={{
+                          display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
+                          background: bg, border: `1px solid ${bd}`, borderRadius: 10,
+                        }}>
+                          <div style={{
+                            width: 28, height: 28, borderRadius: 7, flexShrink: 0,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            background: on ? (warn ? T.redSoft : 'rgba(65,210,139,.12)') : 'rgba(255,255,255,.04)',
+                            border: `1px solid ${bd}`, color,
+                          }}>
+                            <Ic s={14} w={2} />
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 12, fontWeight: 600, color: on ? T.text : T.dim }}>{title}</div>
+                            <div style={{ fontSize: 11, color: T.dim, marginTop: 1 }}>{desc}</div>
+                          </div>
+                          <div style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 4,
+                            padding: '3px 9px', borderRadius: 999,
+                            background: on ? (warn ? T.redSoft : 'rgba(65,210,139,.12)') : 'rgba(255,255,255,.04)',
+                            border: `1px solid ${bd}`,
+                            fontSize: 10, fontWeight: 700, color, flexShrink: 0,
+                          }}>
+                            {on
+                              ? <IcCheckMini s={10} w={2.6} c={color} />
+                              : <IcX s={9} w={2.2} c={T.dim} />}
+                            {on ? 'Есть' : 'Нет'}
+                          </div>
+                        </div>
+                      )
+                    })}
+
+                    {/* IP whitelist */}
+                    <div style={{
+                      padding: '10px 12px',
+                      background: ip ? 'rgba(65,210,139,.04)' : 'rgba(247,166,0,.06)',
+                      border: `1px solid ${ip ? T.greenBd : T.orangeBd}`, borderRadius: 10,
                     }}>
-                      <div style={{
-                        width: 24, height: 24, borderRadius: 6, flexShrink: 0,
-                        background: 'rgba(255,255,255,.04)', border: `1px solid ${T.border}`,
-                        display: 'flex', alignItems: 'center', justifyContent: 'center', color: e.c,
-                      }}>
-                        <Ic s={12} w={2} />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <IcGlobe s={14} c={ip ? T.green : T.orange} w={2} />
+                        <span style={{ fontSize: 12, fontWeight: 600, color: ip ? T.text : T.orange }}>IP-whitelist</span>
+                        <span style={{
+                          marginLeft: 'auto', fontSize: 10, fontWeight: 700,
+                          color: ip ? T.green : T.orange,
+                        }}>{ip ? 'настроен' : 'не настроен'}</span>
                       </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 12, color: T.body, fontWeight: 500 }}>{e.msg}</div>
-                        <div style={{ fontSize: 11, color: T.dim, marginTop: 2, display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span style={{ ...mono }}>{e.t}</span>
-                          <span>·</span>
-                          <span>{e.actor}</span>
+                      {ip
+                        ? <div style={{ marginTop: 5, ...mono, fontSize: 11, color: T.body }}>{ip}</div>
+                        : <div style={{ marginTop: 4, fontSize: 11, color: T.dim, lineHeight: 1.5 }}>
+                            Рекомендуем добавить 185.94.32.0/24 — снижает риск несанкционированного использования
+                          </div>
+                      }
+                    </div>
+
+                    {/* raw permissions from exchange */}
+                    {verify.permissions && Object.keys(verify.permissions).length > 0 && (
+                      <div style={{
+                        padding: '10px 12px',
+                        background: 'rgba(0,0,0,.2)', border: `1px solid ${T.border}`, borderRadius: 10,
+                      }}>
+                        <div style={{ fontSize: 10, color: T.dim, textTransform: 'uppercase', letterSpacing: 1.2, fontWeight: 600, marginBottom: 8 }}>
+                          Права биржи
+                        </div>
+                        {Object.entries(verify.permissions).map(([group, rights]) => (
+                          <div key={group} style={{ display: 'flex', gap: 6, marginBottom: 5, flexWrap: 'wrap', alignItems: 'center' }}>
+                            <span style={{ ...mono, fontSize: 10, color: T.dim, minWidth: 110, flexShrink: 0 }}>{group}</span>
+                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                              {rights.map(r => (
+                                <span key={r} style={{
+                                  fontSize: 10, padding: '2px 6px',
+                                  background: 'rgba(255,255,255,.04)', border: `1px solid ${T.border}`,
+                                  borderRadius: 4, color: T.body, ...mono,
+                                }}>{r}</span>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* withdraw warning */}
+                    {perms.withdraw && (
+                      <div style={{
+                        padding: '10px 12px', display: 'flex', gap: 8, alignItems: 'flex-start',
+                        background: T.redSoft, border: `1px solid ${T.redBd}`, borderRadius: 10,
+                      }}>
+                        <IcAlert s={14} c={T.red} w={2} />
+                        <div style={{ fontSize: 11, color: T.red, lineHeight: 1.5 }}>
+                          <b>Право на вывод включено.</b> Пересоздайте ключ без него — снизит риск при компрометации.
                         </div>
                       </div>
-                    </div>
-                  )
-                })}
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
