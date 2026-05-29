@@ -23,6 +23,7 @@ export function StrategiesPage() {
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Strategy | undefined>()
   const [editFilledCount, setEditFilledCount] = useState(0)
@@ -32,12 +33,14 @@ export function StrategiesPage() {
 
   const load = useCallback(async () => {
     setLoading(true)
+    setLoadError(null)
     try {
       const [strats, accs] = await Promise.all([listStrategies(), listAccounts()])
       setStrategies(strats)
       setAccounts(accs)
-    } catch {
+    } catch (e: unknown) {
       setStrategies([])
+      setLoadError(e instanceof Error ? e.message : 'Ошибка загрузки стратегий')
     } finally {
       setLoading(false)
     }
@@ -131,7 +134,18 @@ export function StrategiesPage() {
       </div>
 
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow overflow-hidden">
-        {loading && strategies.length === 0 ? (
+        {loadError ? (
+          <div className="p-6 m-4 rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 text-sm flex items-start gap-3">
+            <span className="text-base shrink-0">⚠️</span>
+            <div className="flex-1">
+              <div className="font-semibold mb-1">Ошибка загрузки стратегий</div>
+              <div className="font-mono text-xs opacity-80">{loadError}</div>
+              <button onClick={load} className="mt-2 text-xs font-semibold px-3 py-1 rounded-md bg-red-500/20 border border-red-500/30 hover:bg-red-500/30 cursor-pointer">
+                Повторить
+              </button>
+            </div>
+          </div>
+        ) : loading && strategies.length === 0 ? (
           <div className="p-10 text-center text-gray-400">Загрузка…</div>
         ) : strategies.length === 0 ? (
           <div className="p-10 text-center text-gray-400">
