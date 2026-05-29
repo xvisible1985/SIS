@@ -165,8 +165,8 @@ func (s *Server) checkTronDeposits(ctx context.Context) {
 
 		// Записываем транзакцию в историю
 		if _, err := dbTx.Exec(ctx,
-			`INSERT INTO novabot_transactions (user_id, amount, kind, note)
-			 VALUES ($1, $2, 'deposit', $3)`,
+			`INSERT INTO novabot_transactions (user_id, amount, bucket, note)
+			 VALUES ($1, $2, 'real', $3)`,
 			userID, creditAmount, "USDT TRC20 "+tx.TransactionID[:16]+"...",
 		); err != nil {
 			// Не критично — транзакция истории не обязательна
