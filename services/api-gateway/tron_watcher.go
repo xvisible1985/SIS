@@ -87,6 +87,15 @@ func (s *Server) checkTronDeposits(ctx context.Context) {
 			continue
 		}
 
+		// Пропускаем транзакции старше 2 часов — они не могут быть нашими депозитами
+		// (депозит живёт 30 минут, плюс запас на задержку блокчейна)
+		if tx.BlockTimestamp > 0 {
+			txTime := time.UnixMilli(tx.BlockTimestamp)
+			if time.Since(txTime) > 2*time.Hour {
+				continue
+			}
+		}
+
 		// Пропускаем уже обработанные транзакции
 		var exists bool
 		s.pool.QueryRow(ctx,
