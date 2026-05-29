@@ -77,11 +77,13 @@ function ActiveInvoice({
   const { copied, copy } = useCopy()
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [status, setStatus] = useState(deposit.status)
+  const [pollError, setPollError] = useState<string | null>(null)
 
   useEffect(() => {
     pollRef.current = setInterval(async () => {
       try {
         const updated = await getTronDeposit(deposit.id)
+        setPollError(null)
         setStatus(updated.status)
         if (updated.status === 'confirmed') {
           clearInterval(pollRef.current!)
@@ -90,7 +92,9 @@ function ActiveInvoice({
         if (updated.status === 'expired') {
           clearInterval(pollRef.current!)
         }
-      } catch {}
+      } catch (e: unknown) {
+        setPollError(e instanceof Error ? e.message : 'Ошибка соединения с сервером')
+      }
     }, 10_000)
     return () => clearInterval(pollRef.current!)
   }, [deposit.id])
@@ -198,6 +202,18 @@ function ActiveInvoice({
             </div>
           </div>
         </div>
+
+        {/* ошибка polling */}
+        {pollError && (
+          <div style={{
+            padding: '10px 14px', borderRadius: 10,
+            background: T.redSoft, border: `1px solid ${T.redBd}`,
+            fontSize: 12, color: T.red, display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            <span style={{ flexShrink: 0 }}>⚠️</span>
+            <span>{pollError}</span>
+          </div>
+        )}
 
         {/* статус */}
         {status === 'confirmed' && (
@@ -374,18 +390,56 @@ function DepositHistory({ deposits }: { deposits: TronDeposit[] }) {
   )
 }
 
+/* ── баннер ошибки ───────────────────────────────────────────── */
+function ErrorBanner({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  return (
+    <div style={{
+      padding: '14px 16px', borderRadius: 12,
+      background: T.redSoft, border: `1px solid ${T.redBd}`,
+      display: 'flex', alignItems: 'flex-start', gap: 10,
+    }}>
+      <span style={{ fontSize: 16, flexShrink: 0 }}>⚠️</span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: T.red, marginBottom: onRetry ? 6 : 0 }}>
+          {message}
+        </div>
+        {onRetry && (
+          <button onClick={onRetry} style={{
+            fontSize: 11, fontWeight: 600, color: T.red,
+            background: 'rgba(248,113,113,.15)', border: `1px solid ${T.redBd}`,
+            borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
+          }}>
+            Повторить
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 /* ── главная страница ────────────────────────────────────────── */
 export function PaymentsPage() {
   const [activeDeposit, setActiveDeposit] = useState<TronDeposit | null>(null)
   const [history, setHistory] = useState<TronDeposit[]>([])
+  const [pageError, setPageError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    listTronDeposits().then(list => {
-      const pending = list.find(d => d.status === 'pending')
-      if (pending) setActiveDeposit(pending)
-      setHistory(list)
-    }).catch(() => {})
-  }, [])
+  function loadDeposits() {
+    setPageError(null)
+    setLoading(true)
+    listTronDeposits()
+      .then(list => {
+        const pending = list.find(d => d.status === 'pending')
+        if (pending) setActiveDeposit(pending)
+        setHistory(list)
+      })
+      .catch((e: unknown) => {
+        setPageError(e instanceof Error ? e.message : 'Не удалось загрузить данные. Проверьте соединение.')
+      })
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => { loadDeposits() }, [])
 
   function handleCreated(dep: TronDeposit) {
     setActiveDeposit(dep)
@@ -410,14 +464,25 @@ export function PaymentsPage() {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* ошибка загрузки */}
+        {pageError && <ErrorBanner message={pageError} onRetry={loadDeposits} />}
+
+        {/* лоадер */}
+        {loading && !pageError && (
+          <div style={{ padding: '32px 0', textAlign: 'center', fontSize: 13, color: T.dim }}>
+            Загрузка…
+          </div>
+        )}
+
         {/* активный инвойс или форма создания */}
-        {activeDeposit && activeDeposit.status === 'pending'
-          ? <ActiveInvoice deposit={activeDeposit} onConfirmed={handleConfirmed} />
-          : <CreateDepositForm onCreated={handleCreated} />
-        }
+        {!loading && !pageError && (
+          activeDeposit && activeDeposit.status === 'pending'
+            ? <ActiveInvoice deposit={activeDeposit} onConfirmed={handleConfirmed} />
+            : <CreateDepositForm onCreated={handleCreated} />
+        )}
 
         {/* история */}
-        <DepositHistory deposits={history.filter(d => d.status !== 'pending')} />
+        {!loading && <DepositHistory deposits={history.filter(d => d.status !== 'pending')} />}
       </div>
     </div>
   )
