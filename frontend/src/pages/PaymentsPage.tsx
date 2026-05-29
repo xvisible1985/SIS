@@ -99,7 +99,6 @@ function ActiveInvoice({
     return () => clearInterval(pollRef.current!)
   }, [deposit.id])
 
-  const addrShort = deposit.address.slice(0, 8) + '...' + deposit.address.slice(-6)
   const timerColor = expired ? T.red : display < '05:00' ? T.orange : T.green
 
   return (
@@ -429,6 +428,10 @@ export function PaymentsPage() {
     setLoading(true)
     listTronDeposits()
       .then(list => {
+        if (!Array.isArray(list)) {
+          setPageError('Сервер вернул неожиданный ответ. Перезапустите бэкенд и обновите страницу.')
+          return
+        }
         const pending = list.find(d => d.status === 'pending')
         if (pending) setActiveDeposit(pending)
         setHistory(list)
