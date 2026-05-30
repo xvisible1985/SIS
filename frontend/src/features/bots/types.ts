@@ -14,7 +14,10 @@ export type TriggerPnl = {
 
 export type Trigger = TriggerSignal | TriggerPnl;
 
+export type BotKind = 'signal' | 'parser' | 'hedge';
+
 export type StrategyConfig = {
+  bot_kind?: BotKind;
   symbol?: string;
   category?: string;
   direction?: 'long' | 'short' | 'both';
