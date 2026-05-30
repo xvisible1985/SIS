@@ -114,11 +114,7 @@ export function BotsPage() {
 
   const handleFormSubmit = async (data: CreateBotInput) => {
     if (formMode === 'create') {
-      const input: CreateBotInput = {
-        ...data,
-        strategyConfig: { ...data.strategyConfig, bot_kind: selectedKind },
-      };
-      await action({ type: 'create', data: input });
+      await action({ type: 'create', data });
     } else if (formMode === 'edit' && editBot) {
       await action({ type: 'update', botId: editBot.id, data });
     }
@@ -173,6 +169,7 @@ export function BotsPage() {
       {formMode !== null && (
         <BotForm
           bot={editBot ?? undefined}
+          initialKind={selectedKind}
           onSubmit={handleFormSubmit}
           onClose={handleFormClose}
         />

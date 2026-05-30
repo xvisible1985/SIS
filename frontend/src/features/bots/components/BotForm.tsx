@@ -5,12 +5,13 @@ import { Toggle, Tip, SignalPickerField } from '../../../components/strategies/F
 import { apiClient } from '../../../api/client';
 import { getAllSymbols, matchesPattern } from '../../../components/common/CoinMultiPicker';
 import { getInstrumentConstraints, type InstrumentConstraints } from '../../../api/strategies';
-import type { Bot as BotType, CreateBotInput, StrategyConfig } from '../types';
+import type { Bot as BotType, BotKind, CreateBotInput, StrategyConfig } from '../types';
 import type { SignalConfig } from '../../../types';
 import { useSelectedAccount } from '../../../contexts/AccountContext';
 
 type Props = {
   bot?: BotType;
+  initialKind?: BotKind;
   onSubmit: (data: CreateBotInput) => Promise<void> | void;
   onClose: () => void;
   mode?: 'user' | 'admin';
@@ -23,9 +24,10 @@ type ScanItem = { symbol: string; state: 'buy' | 'sell' };
 
 // ─── Default config ───────────────────────────────────────────────────────────
 
-function defaultConfig(bot?: BotType): StrategyConfig {
+function defaultConfig(bot?: BotType, kind?: BotKind): StrategyConfig {
   const s = bot?.strategyConfig ?? {};
   return {
+    bot_kind:              s.bot_kind              ?? kind ?? 'signal',
     symbol:                s.symbol                ?? 'BTCUSDT',
     category:              s.category              ?? 'linear',
     direction:             s.direction             ?? 'long',
@@ -80,7 +82,7 @@ function compressImage(file: File, maxPx = 300, quality = 0.82): Promise<string>
 
 // ─── BotForm ─────────────────────────────────────────────────────────────────
 
-export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
+export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: Props) {
   const [outerTab, setOuterTab]   = useState<OuterTab>('basic');
   const [stratTab, setStratTab]   = useState<StrategySubTab>('entry');
 
@@ -91,7 +93,7 @@ export function BotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
   const [avatarUrl,   setAvatarUrl]   = useState<string>(bot?.avatarUrl ?? '');
   const [whitelist,       setWhitelist]       = useState<string[]>(bot?.symbolWhitelist ?? []);
   const [blacklist,       setBlacklist]       = useState<string[]>(bot?.symbolBlacklist ?? []);
-  const [config,          setConfig]          = useState<StrategyConfig>(defaultConfig(bot));
+  const [config,          setConfig]          = useState<StrategyConfig>(defaultConfig(bot, initialKind));
   const [maxStrategies,      setMaxStrategies]      = useState<number>(bot?.maxStrategies ?? 0);
   const [maxLongStrategies,  setMaxLongStrategies]  = useState<number>(bot?.maxLongStrategies ?? 0);
   const [maxShortStrategies, setMaxShortStrategies] = useState<number>(bot?.maxShortStrategies ?? 0);
