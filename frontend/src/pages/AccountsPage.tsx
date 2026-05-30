@@ -365,12 +365,10 @@ function KeyCard({ acc, balance, verify, latency, expanded, testing, onToggle, o
             <span style={{ fontSize: 10, color: T.dim, textTransform: 'uppercase', letterSpacing: 1.2, fontWeight: 600 }}>Права</span>
             {verify ? (
               <>
-                <PermChip k="read"     on={perms.read} />
-                <PermChip k="trade"    on={perms.trade} />
                 <PermChip k="futures"  on={perms.futures} />
                 <PermChip k="withdraw" on={perms.withdraw} />
                 <span style={{ marginLeft: 'auto', fontSize: 11, color: T.dim }}>
-                  <span style={{ color: T.green, fontWeight: 600 }}>✓</span> вывод отключён — мы намеренно не запрашиваем это право
+                  <span style={{ color: T.green, fontWeight: 600 }}>✓</span> read & trade отключены — мы намеренно не запрашиваем эти права
                 </span>
               </>
             ) : (
