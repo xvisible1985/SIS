@@ -106,6 +106,12 @@ export function BotsPage() {
     setFormMode('edit');
   };
 
+  const handleFormClose = () => {
+    setFormMode(null);
+    setEditBot(null);
+    setSelectedKind('signal');
+  };
+
   const handleFormSubmit = async (data: CreateBotInput) => {
     if (formMode === 'create') {
       const input: CreateBotInput = {
@@ -168,7 +174,7 @@ export function BotsPage() {
         <BotForm
           bot={editBot ?? undefined}
           onSubmit={handleFormSubmit}
-          onClose={() => { setFormMode(null); setEditBot(null); }}
+          onClose={handleFormClose}
         />
       )}
 
