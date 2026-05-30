@@ -18,7 +18,7 @@ describe('botKindMeta', () => {
   })
 
   it('getBotKindMeta возвращает signal для неизвестного kind', () => {
-    expect(getBotKindMeta('trend' as BotKind)).toBe(BOT_KIND_META['signal'])
+    expect(getBotKindMeta('trend')).toBe(BOT_KIND_META['signal'])
     expect(getBotKindMeta(undefined)).toBe(BOT_KIND_META['signal'])
   })
 })

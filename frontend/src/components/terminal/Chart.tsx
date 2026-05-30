@@ -42,8 +42,21 @@ function parseOrderLabel(linkId: string, side?: string): string {
     const display = raw.startsWith('n') ? `-${raw.slice(1)}` : raw
     return `SL_L(${display})`
   }
-  if (/^(SIS_STR|STP)-[a-f0-9]+-tp(-\d+)+$/.test(linkId))
-    return side === 'Sell' ? 'TP_LONG' : side === 'Buy' ? 'TP_SHORT' : 'TP'
+  // TP orders: optional slot suffix "l{N}" or "ln{N}" (negative slot) directly after "tp".
+  // Old format: SIS_STR-{id}-tp-{cycle}-{seq}
+  // New format: SIS_STR-{id}-tpl{slotStr}-{cycle}-{seq}
+  const tpMatch = linkId.match(/^(?:SIS_STR|STP)-[a-f0-9]+-tp(l[n\d]+)?(-\d+)+$/)
+  if (tpMatch) {
+    const slotRaw = tpMatch[1]  // e.g. "l2", "ln1", or undefined
+    let slotLabel = ''
+    if (slotRaw) {
+      const enc = slotRaw.slice(1)  // remove leading "l"
+      const num = enc.startsWith('n') ? -parseInt(enc.slice(1)) : parseInt(enc)
+      if (!isNaN(num)) slotLabel = ` L(${num})`
+    }
+    const dir = side === 'Sell' ? 'TP_LONG' : side === 'Buy' ? 'TP_SHORT' : 'TP'
+    return `${dir}${slotLabel}`
+  }
   if (/^(SIS_STR|STP)-[a-f0-9]+-sl(-\d+)+$/.test(linkId))
     return side === 'Sell' ? 'SL_LONG' : side === 'Buy' ? 'SL_SHORT' : 'SL'
   // Grid virtual: -{repriceGen}-v  Matrix virtual: -v{repriceGen}
@@ -52,14 +65,14 @@ function parseOrderLabel(linkId: string, side?: string): string {
 }
 
 function isTPLinkId(linkId?: string): boolean {
-  return !!linkId && /^(SIS_STR|STP)-[a-f0-9]+-tp(-\d+)+$/.test(linkId)
+  return !!linkId && /^(SIS_STR|STP)-[a-f0-9]+-tp(l[n\d]+)?(-\d+)+$/.test(linkId)
 }
 
 // Extracts cycle number from SIS order link IDs. Returns null for unknown formats.
 function extractCycleNum(linkId?: string): number | null {
   if (!linkId) return null
-  // SIS_STR-{id}-tp-{cycle}[-{seq}] or SIS_STR-{id}-sl-{cycle}[-{seq}]
-  let m = linkId.match(/^(?:SIS_STR|STP)-[a-f0-9]+-(?:tp|sl)-(\d+)/)
+  // SIS_STR-{id}-tp[l{slot}]-{cycle}[-{seq}] or SIS_STR-{id}-sl-{cycle}[-{seq}]
+  let m = linkId.match(/^(?:SIS_STR|STP)-[a-f0-9]+-(?:tp(?:l[n\d]+)?|sl)-(\d+)/)
   if (m) return parseInt(m[1])
   // Grid virtual: -{repriceGen}-v  Matrix virtual: -v{repriceGen}
   m = linkId.match(/^(?:SIS_STR|STR)-[a-f0-9]+-(\d+)-\d+(?:-(?:v\d+|\d+(?:-v)?))?$/)
@@ -527,10 +540,12 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         }
       }
       for (const [, g] of execGroups) {
+        // TP fills are displayed as candle markers (arrows) — no price line needed.
+        if (g.isTP) continue
         const avgPrice = g.totalQty > 0 ? g.totalValue / g.totalQty : 0
         if (avgPrice <= 0) continue
         const isBuy = g.side === 'Buy'
-        const color = g.isTP ? '#5b8cff' : isBuy ? '#059669' : '#dc2626'
+        const color = isBuy ? '#059669' : '#dc2626'
         const pct = currentPrice > 0 ? ` ${pctFromPrice(avgPrice, currentPrice)}` : ''
         priceLines.current.push(series.createPriceLine({
           price: avgPrice,
@@ -698,9 +713,18 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       const totalUsdt = g.execs.reduce((sum, e) => sum + e.price * parseFloat(e.qty || '0'), 0)
       // Strip _LONG / _SHORT suffix (direction is already visible from arrow/color).
       // For SL_L(N), format as "SL L(N) 20$" (replace underscore with space).
-      const levelLabel = isSLLevel
-        ? g.label.replace('_', ' ')
-        : g.label.replace(/_(LONG|SHORT)$/, '')
+      // TP label: "TP_SHORT L(2)" → "TP L(2)" (strip direction, keep slot).
+      // SL label: "SL_L(2)" → "SL L(2)".
+      // Other: strip _LONG/_SHORT suffix.
+      let levelLabel: string
+      if (isTP) {
+        // "TP_SHORT L(2)" → keep "TP L(2)", strip direction part
+        levelLabel = g.label.replace(/^TP_(LONG|SHORT)/, 'TP')
+      } else if (isSLLevel) {
+        levelLabel = g.label.replace('_', ' ')
+      } else {
+        levelLabel = g.label.replace(/_(LONG|SHORT)$/, '')
+      }
       const markerText = levelLabel ? `${levelLabel} ${totalUsdt.toFixed(0)}$` : `${totalUsdt.toFixed(0)}$`
       markers.push({
         time: g.candleTime,

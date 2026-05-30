@@ -19,6 +19,7 @@ import { BotsPage } from './pages/BotsPage'
 import { TradeHistoryPage } from './pages/TradeHistoryPage'
 import { BalancesPage } from './pages/BalancesPage'
 import { PaymentsPage } from './pages/PaymentsPage'
+import { HelpPage } from './pages/HelpPage'
 
 export default function App() {
   return (
@@ -50,6 +51,7 @@ export default function App() {
                     <Route path="account" element={<AccountPage />} />
                     <Route path="balances" element={<BalancesPage />} />
                     <Route path="payments" element={<PaymentsPage />} />
+                    <Route path="help" element={<HelpPage />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
                 </Layout>

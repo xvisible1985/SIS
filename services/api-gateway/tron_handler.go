@@ -55,14 +55,14 @@ func (s *Server) CreateTronDeposit(w http.ResponseWriter, r *http.Request) {
 		cents := float64(rand.Intn(90)+1) / 100.0
 		candidate := math.Round((req.Amount+cents)*1e6) / 1e6
 
-		// INSERT only if no pending deposit with the same amount_exact exists.
+		// INSERT with ON CONFLICT DO NOTHING on the partial unique index
+		// (tron_deposits_pending_amount_uniq: UNIQUE amount_exact WHERE status='pending').
+		// This gives DB-level guarantee against duplicate pending amounts even under
+		// concurrent requests — WHERE NOT EXISTS alone is not safe under race conditions.
 		err := s.pool.QueryRow(ctx,
 			`INSERT INTO tron_deposits (user_id, amount_usdt, amount_exact)
-			 SELECT $1, $2, $3
-			 WHERE NOT EXISTS (
-			     SELECT 1 FROM tron_deposits
-			     WHERE amount_exact = $3 AND status = 'pending' AND expires_at > NOW()
-			 )
+			 VALUES ($1, $2, $3)
+			 ON CONFLICT (amount_exact) WHERE status = 'pending' DO NOTHING
 			 RETURNING id, amount_exact`,
 			userID, req.Amount, candidate,
 		).Scan(&depositID, &amountExact)

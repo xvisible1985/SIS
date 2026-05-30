@@ -115,7 +115,9 @@ type strategyPayload struct {
 	MatrixLevels          json.RawMessage `json:"matrix_levels"`
 	SafeZonePct           float64         `json:"safe_zone_pct"`
 	MatrixEntryLevel      json.RawMessage `json:"matrix_entry_level"`
-	ProtectedBuild        bool            `json:"protected_build"`
+	ProtectedBuild          bool            `json:"protected_build"`
+	MatrixRebuildOnSL       bool            `json:"matrix_rebuild_on_sl"`
+	MatrixRebuildFromEntry  bool            `json:"matrix_rebuild_from_entry"`
 }
 
 func (p *strategyPayload) applyDefaults() {
@@ -167,7 +169,8 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 			s.signal_configs::text, (s.steps::text),
 			s.trailing_stop_enabled, s.trailing_activation_pct, s.trailing_callback_pct,
 			(s.matrix_levels::text), COALESCE(s.safe_zone_pct,0), (s.matrix_entry_level::text),
-			COALESCE(s.protected_build,false),
+			COALESCE(s.protected_build,false), COALESCE(s.matrix_rebuild_on_sl,false),
+			COALESCE(s.matrix_rebuild_from_entry,false),
 			s.created_at, s.updated_at, s.manual_alert,
 			COALESCE((
 				SELECT SUM(sl.size_usdt)
@@ -236,8 +239,10 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 		MatrixLevels          json.RawMessage `json:"matrix_levels,omitempty"`
 		SafeZonePct           float64         `json:"safe_zone_pct"`
 		MatrixEntryLevel      json.RawMessage `json:"matrix_entry_level,omitempty"`
-		ProtectedBuild        bool            `json:"protected_build"`
-		CreatedAt             time.Time       `json:"created_at"`
+		ProtectedBuild          bool            `json:"protected_build"`
+		MatrixRebuildOnSL       bool            `json:"matrix_rebuild_on_sl"`
+		MatrixRebuildFromEntry  bool            `json:"matrix_rebuild_from_entry"`
+		CreatedAt               time.Time       `json:"created_at"`
 		UpdatedAt             time.Time       `json:"updated_at"`
 		ManualAlert           *string         `json:"manual_alert"`
 		VolumeUSDT            float64         `json:"volume_usdt"`
@@ -259,7 +264,8 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 			&r.Leverage, &r.MarginType, &r.HedgeMode, &r.StrategyType, &r.EntryOrderType,
 			&scStr, &stepsStr,
 			&r.TrailingStopEnabled, &r.TrailingActivationPct, &r.TrailingCallbackPct,
-			&matrixStr, &r.SafeZonePct, &entryLevelStr, &r.ProtectedBuild,
+			&matrixStr, &r.SafeZonePct, &entryLevelStr, &r.ProtectedBuild, &r.MatrixRebuildOnSL,
+			&r.MatrixRebuildFromEntry,
 			&r.CreatedAt, &r.UpdatedAt, &r.ManualAlert,
 			&r.VolumeUSDT, &r.ActiveLevels, &r.LastPnl,
 			&r.BotID, &r.BotName,
@@ -323,12 +329,13 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		   leverage, margin_type, hedge_mode, strategy_type, entry_order_type,
 		   signal_configs, steps,
 		   trailing_stop_enabled, trailing_activation_pct, trailing_callback_pct,
-		   matrix_levels, safe_zone_pct, matrix_entry_level, protected_build)
+		   matrix_levels, safe_zone_pct, matrix_entry_level, protected_build, matrix_rebuild_on_sl,
+		   matrix_rebuild_from_entry)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
 		        $16,$17,$18,$19,$20,
 		        $21::jsonb, ($22::text)::jsonb,
 		        $23,$24,$25,
-		        ($26::text)::jsonb, $27, ($28::text)::jsonb, $29)
+		        ($26::text)::jsonb, $27, ($28::text)::jsonb, $29, $30, $31)
 		RETURNING id`,
 		userID, req.AccountID, req.Symbol, req.Category, req.Direction,
 		req.GridLevels, req.GridActive, req.MaxStopActive, req.GridStepPct, req.GridSizeUSDT,
@@ -336,7 +343,8 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		req.Leverage, req.MarginType, req.HedgeMode, req.StrategyType, req.EntryOrderType,
 		string(req.SignalConfigs), nullableJSONB(req.Steps),
 		req.TrailingStopEnabled, req.TrailingActivationPct, req.TrailingCallbackPct,
-		nullableJSONB(req.MatrixLevels), req.SafeZonePct, nullableJSONB(req.MatrixEntryLevel), req.ProtectedBuild,
+		nullableJSONB(req.MatrixLevels), req.SafeZonePct, nullableJSONB(req.MatrixEntryLevel),
+		req.ProtectedBuild, req.MatrixRebuildOnSL, req.MatrixRebuildFromEntry,
 	).Scan(&id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -408,9 +416,10 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		  trailing_stop_enabled=$21, trailing_activation_pct=$22, trailing_callback_pct=$23,
 		  matrix_levels=($24::text)::jsonb,
 		  safe_zone_pct=$25, matrix_entry_level=($26::text)::jsonb,
-		  protected_build=$27,
+		  protected_build=$27, matrix_rebuild_on_sl=$28,
+		  matrix_rebuild_from_entry=$29,
 		  updated_at=NOW()
-		WHERE id=$28 AND owner_id=$29`,
+		WHERE id=$30 AND owner_id=$31`,
 		req.Symbol, req.Category, req.Direction,
 		req.GridLevels, req.GridActive, req.MaxStopActive, req.GridStepPct, req.GridSizeUSDT,
 		req.TPMode, req.TPPct, req.SLType, req.SLPct, req.SignalFilter,
@@ -419,7 +428,7 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		req.TrailingStopEnabled, req.TrailingActivationPct, req.TrailingCallbackPct,
 		nullableJSONB(req.MatrixLevels),
 		req.SafeZonePct, nullableJSONB(req.MatrixEntryLevel),
-		req.ProtectedBuild,
+		req.ProtectedBuild, req.MatrixRebuildOnSL, req.MatrixRebuildFromEntry,
 		id, userID,
 	)
 	if err != nil {

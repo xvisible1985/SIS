@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { getCycleAudit, restartCycle } from '../../api/strategies'
+import { getCycleAudit, restartCycle, getStrategyState } from '../../api/strategies'
 import type { CycleAuditData, CycleAuditLevel } from '../../types'
 
 interface Props {
@@ -86,6 +86,7 @@ function SlStatusCell({ l }: { l: CycleAuditLevel }) {
 
 export function CycleAuditModal({ strategyId, strategySymbol, onClose }: Props) {
   const [data, setData] = useState<CycleAuditData | null>(null)
+  const [safeZone, setSafeZone] = useState<{ low: number; high: number } | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
@@ -100,9 +101,13 @@ export function CycleAuditModal({ strategyId, strategySymbol, onClose }: Props) 
     const currentId = ++requestIdRef.current
     setSpinning(true)
     try {
-      const d = await getCycleAudit(strategyId)
+      const [d, st] = await Promise.all([
+        getCycleAudit(strategyId),
+        getStrategyState(strategyId).catch(() => null),
+      ])
       if (currentId !== requestIdRef.current) return
       setData(d)
+      setSafeZone(st?.safe_zone ?? null)
       setLastUpdated(new Date())
       setError(null)
     } catch (e: any) {
@@ -233,6 +238,11 @@ export function CycleAuditModal({ strategyId, strategySymbol, onClose }: Props) 
               {isMatrix && (
                 <span className="px-3 py-1.5 rounded-[8px] border border-violet-500/30 bg-violet-500/10 text-[12px] font-semibold text-violet-300">
                   Матрица
+                </span>
+              )}
+              {isMatrix && safeZone && (
+                <span className="px-3 py-1.5 rounded-[8px] border border-amber-500/30 bg-amber-500/[.08] text-[12px] font-mono text-amber-300">
+                  ⚠ Safe Zone: {safeZone.low.toFixed(4)} — {safeZone.high.toFixed(4)}
                 </span>
               )}
             </div>

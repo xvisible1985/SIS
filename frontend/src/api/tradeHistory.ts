@@ -10,13 +10,16 @@ export interface TradeHistoryRow {
   category: string
   direction: 'long' | 'short'
   cycle_num: number
-  result: 'tp' | 'sl'
+  result: 'tp' | 'sl' | 'manual' | string
   avg_entry: number | null
   exit_price: number | null
   qty: number | null
   volume_usdt: number | null
   pnl: number | null
   pnl_pct: number | null
+  fees: number
+  funding: number
+  net_pnl: number
   opened_at: string
   closed_at: string
 }
@@ -27,9 +30,12 @@ export interface TradeHistoryStats {
   losses: number
   win_rate: number
   total_pnl: number
+  total_net_pnl: number
   avg_pnl: number
   best_trade: number | null
   worst_trade: number | null
+  total_fees: number
+  total_funding: number
 }
 
 export interface TradeHistoryResponse {
@@ -43,7 +49,7 @@ export interface TradeHistoryResponse {
 export interface TradeHistoryParams {
   bot_id?: string
   strategy_id?: string
-  result?: 'tp' | 'sl' | ''
+  result?: 'tp' | 'sl' | 'manual' | ''
   from?: string
   to?: string
   limit?: number

@@ -1,9 +1,10 @@
 import { useEffect } from 'react'
 import { TrendingUp, Search, Shield } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { BOT_KINDS, BOT_KIND_META } from '../botKindMeta'
 import type { BotKind } from '../types'
 
-const KIND_ICONS: Record<BotKind, React.ComponentType<{ size?: number; strokeWidth?: number }>> = {
+const KIND_ICONS: Record<BotKind, LucideIcon> = {
   signal: TrendingUp,
   parser: Search,
   hedge:  Shield,

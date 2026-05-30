@@ -27,6 +27,7 @@ export interface VerifyResult {
   permissions?: Record<string, string[]>
   ips?: string[]
   expires_at?: number
+  proxy_host?: string   // прокси, через который прошёл последний запрос к бирже
 }
 
 export async function verifyAccount(id: string): Promise<VerifyResult> {

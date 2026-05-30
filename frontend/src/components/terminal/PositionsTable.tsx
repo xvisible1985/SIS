@@ -121,6 +121,8 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
         safe_zone_pct: 1.5,
         protected_build: false,
         matrix_entry_level: { size_pct: 100, stop_pct: null, stop_cond_pct: null, stop_replace_pct: null, tp_pct: 1.5 },
+        matrix_rebuild_on_sl: false,
+        matrix_rebuild_from_entry: false,
       })
       listStrategies().then(setStrategies).catch(() => {})
       window.dispatchEvent(new CustomEvent('strategy-created'))

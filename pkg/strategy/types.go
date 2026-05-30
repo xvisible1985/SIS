@@ -112,6 +112,8 @@ type Strategy struct {
 	SafeZonePct           float64
 	MatrixEntryLevel      *MatrixEntryLevel
 	ProtectedBuild        bool
+	RebuildOnSL           bool // Перестройка сетки от SZ: после SL немедленно переставить уровни от нижней границы SZ
+	RebuildFromEntry      bool // Якорь на точку входа: все уровни строятся от цены заполнения L(0); SL L(0) тоже ждёт SZ и перезаходит
 }
 
 type Cycle struct {

@@ -90,7 +90,8 @@ export function PnlTable({ accountId }: Props) {
               <tbody>
                 {list.map((item, i) => {
                   const pnl = parseFloat(item.closedPnl)
-                  const isLong = item.side === 'Buy'
+                  // side = closing order side: Buy means a Short position was closed, Sell = Long was closed
+                  const isLong = item.side === 'Sell'
                   const fee = calcFee(item)
                   return (
                     <tr key={i} className="border-b border-gray-200 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-800/40">

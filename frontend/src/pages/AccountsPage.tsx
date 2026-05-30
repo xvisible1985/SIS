@@ -74,7 +74,7 @@ const MarkHtx     = () => <Mk><path d="M5 19V8"/><path d="M11 19v-8"/><path d="M
 
 const EXCHANGES: Record<string, { name: string; color: string; Mark: React.FC; supported?: boolean }> = {
   bybit:   { name: 'Bybit',   color: '#f7a600', Mark: MarkBybit,   supported: true },
-  binance: { name: 'Binance', color: '#f0b90b', Mark: MarkBinance, supported: true },
+  binance: { name: 'Binance', color: '#f0b90b', Mark: MarkBinance },
   okx:     { name: 'OKX',     color: '#e8edf5', Mark: MarkOkx },
   bingx:   { name: 'BingX',   color: '#5b8cff', Mark: MarkBingx },
   bitget:  { name: 'Bitget',  color: '#00d4d4', Mark: MarkBitget },
@@ -250,8 +250,6 @@ function KeyCard({ acc, balance, verify, latency, expanded, testing, onToggle, o
   const ip = verify?.ips?.join(', ') ?? null
 
   const perms = {
-    read:     verify ? !verify.read_only || true : true,
-    trade:    verify ? !verify.read_only : true,
     futures:  verify ? !!verify.permissions?.ContractTrade?.length || !!verify.permissions?.Derivatives?.length : false,
     withdraw: verify ? !!verify.permissions?.Wallet?.some(v => v.toLowerCase().includes('withdraw')) : false,
   }
@@ -302,10 +300,15 @@ function KeyCard({ acc, balance, verify, latency, expanded, testing, onToggle, o
           {verify && (
             <div style={{ marginTop: 7, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               {([
-                { k: 'read',     Ic: IcEye,      label: 'Чтение',      on: perms.read,     warn: false },
-                { k: 'trade',    Ic: IcZap,      label: 'Торговля',    on: perms.trade,    warn: false },
-                { k: 'futures',  Ic: IcWallet,   label: 'Деривативы',  on: perms.futures,  warn: false },
-                { k: 'withdraw', Ic: IcDownload, label: 'Вывод',       on: perms.withdraw, warn: true  },
+                {
+                  k: 'access',
+                  Ic: verify.read_only ? IcEye : IcZap,
+                  label: verify.read_only ? 'Только чтение' : 'Чтение и запись',
+                  on: true,
+                  warn: !!verify.read_only,
+                },
+                { k: 'futures',  Ic: IcWallet,   label: 'Деривативы', on: perms.futures,  warn: false },
+                { k: 'withdraw', Ic: IcDownload, label: 'Вывод',      on: perms.withdraw, warn: true  },
               ] as const).map(({ k, Ic, label, on, warn }) => {
                 const color = on ? (warn ? T.red : T.green) : T.faint
                 return (
@@ -387,6 +390,7 @@ function KeyCard({ acc, balance, verify, latency, expanded, testing, onToggle, o
             <Detail label="Истекает"          value={expiresStr} accent={isExp ? T.orange : T.body} />
             <Detail label="Латентность"  mono  value={latency != null ? `${latency} ms` : '—'} accent={latency && latency > 300 ? T.orange : T.body} />
             <Detail label="IP whitelist" mono  value={ip ?? (verify ? 'не настроен' : '—')} accent={ip ? T.body : (verify ? T.orange : T.dim)} />
+            <Detail label="Прокси"       mono  value={verify?.proxy_host || 'прямое соединение'} accent={verify?.proxy_host ? T.body : T.dim} />
           </div>
 
           {/* error block */}
@@ -461,10 +465,18 @@ function KeyCard({ acc, balance, verify, latency, expanded, testing, onToggle, o
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {/* permission rows */}
                     {([
-                      { k: 'read',     Ic: IcEye,      title: 'Чтение',        desc: 'Баланс, ордера, история сделок',  on: perms.read,     warn: false },
-                      { k: 'trade',    Ic: IcZap,      title: 'Торговля',       desc: 'Спот, маржа — открытие ордеров', on: perms.trade,    warn: false },
-                      { k: 'futures',  Ic: IcWallet,   title: 'Деривативы',     desc: 'Фьючерсы, perp, опционы',        on: perms.futures,  warn: false },
-                      { k: 'withdraw', Ic: IcDownload, title: 'Вывод средств',  desc: 'Перевод на внешний адрес',       on: perms.withdraw, warn: true  },
+                      {
+                        k: 'access',
+                        Ic: verify.read_only ? IcEye : IcZap,
+                        title: verify.read_only ? 'Только чтение' : 'Чтение и запись',
+                        desc:  verify.read_only
+                          ? 'Открытие ордеров недоступно — торговля невозможна'
+                          : 'Баланс, ордера, история и открытие позиций',
+                        on:   true,
+                        warn: !!verify.read_only,
+                      },
+                      { k: 'futures',  Ic: IcWallet,   title: 'Деривативы',    desc: 'Фьючерсы, perp, опционы',   on: perms.futures,  warn: false },
+                      { k: 'withdraw', Ic: IcDownload, title: 'Вывод средств', desc: 'Перевод на внешний адрес',   on: perms.withdraw, warn: true  },
                     ] as const).map(({ k, Ic, title, desc, on, warn }) => {
                       const color = on ? (warn ? T.red : T.green) : T.dim
                       const bg    = on ? (warn ? T.redSoft : 'rgba(65,210,139,.06)') : 'rgba(255,255,255,.02)'
@@ -629,9 +641,9 @@ function Step({ n, title, hint, children }: { n: number; title: string; hint?: s
 }
 
 const fieldInput: CSSProperties = {
-  width: '100%', background: 'rgba(0,0,0,.3)', color: T.text,
+  width: '100%', background: '#0e1320', color: T.text,
   border: `1px solid ${T.border}`, borderRadius: 8, padding: '9px 12px',
-  fontSize: 13, fontFamily: 'inherit', outline: 'none',
+  fontSize: 13, fontFamily: 'inherit', outline: 'none', colorScheme: 'dark',
 }
 
 /* ─── AddKeyPanel ─────────────────────────────────────────────────────────── */
@@ -647,6 +659,7 @@ function AddKeyPanel({ onSubmit }: {
   const [testState, setTestState]   = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle')
   const [testMsg, setTestMsg]       = useState<string | null>(null)
   const [saving, setSaving]         = useState(false)
+  const [howToOpen, setHowToOpen]   = useState(false)
 
   const SUPPORTED = Object.entries(EXCHANGES).filter(([, e]) => e.supported)
   const filled = apiKey.length > 4 && secret.length > 4
@@ -782,11 +795,6 @@ function AddKeyPanel({ onSubmit }: {
           </div>
         </Step>
 
-        {/* Step 4 — guide */}
-        <div style={{ borderTop: `1px solid ${T.border}`, paddingTop: 14 }}>
-          <HowTo exchange={exchange} naked />
-        </div>
-
         {/* Step 4 — IP */}
         <Step n={4} title="IP-whitelist" hint="рекомендуем">
           <div style={{ position: 'relative' }}>
@@ -835,6 +843,29 @@ function AddKeyPanel({ onSubmit }: {
           }}>
             {saving ? 'Сохранение…' : 'Сохранить ключ'}
           </button>
+        </div>
+
+        {/* collapsible guide */}
+        <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 4 }}>
+          <button onClick={() => setHowToOpen(v => !v)} style={{
+            width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: '12px 0',
+            background: 'transparent', border: 0, cursor: 'pointer', color: T.dim,
+            fontFamily: 'inherit', fontSize: 12, fontWeight: 600, textAlign: 'left',
+          }}>
+            <IcInfo s={14} c={T.dim} />
+            <span style={{ flex: 1 }}>Как создать ключ на бирже?</span>
+            <span style={{
+              display: 'inline-flex', transition: 'transform .15s',
+              transform: howToOpen ? 'rotate(180deg)' : 'none', color: T.faint,
+            }}>
+              <IcChev s={14} />
+            </span>
+          </button>
+          {howToOpen && (
+            <div className="fadein" style={{ paddingBottom: 4 }}>
+              <HowTo exchange={exchange} naked />
+            </div>
+          )}
         </div>
       </div>
     </div>

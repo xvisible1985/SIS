@@ -20,8 +20,11 @@ type Manager struct {
 	proxies []*Proxy
 	rrIdx   atomic.Uint64
 
-	transportOnce sync.Once
+	transportOnce   sync.Once
 	sharedTransport *BalancedTransport
+
+	lastPickMu   sync.RWMutex
+	lastPickHost string // "host:port" последнего выбранного прокси
 }
 
 // NewManager creates a Manager and starts background health checks.
@@ -143,7 +146,21 @@ func (m *Manager) Pick() *Proxy {
 		}
 	}
 
+	if best != nil {
+		host := fmt.Sprintf("%s:%d", best.URL.Hostname(), portFromURL(best.URL))
+		m.lastPickMu.Lock()
+		m.lastPickHost = host
+		m.lastPickMu.Unlock()
+	}
 	return best
+}
+
+// LastPickedHost returns the "host:port" of the last proxy selected by Pick.
+// Returns empty string if no proxy was ever picked or no proxies are configured.
+func (m *Manager) LastPickedHost() string {
+	m.lastPickMu.RLock()
+	defer m.lastPickMu.RUnlock()
+	return m.lastPickHost
 }
 
 // Snapshots returns a copy of all proxies with current metrics.

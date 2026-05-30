@@ -14,18 +14,24 @@ function fmt(n: number | null | undefined, decimals = 2): string {
   return n.toFixed(decimals)
 }
 
-function pnlClass(n: number | null | undefined): string {
-  if (n == null) return ''
-  return n >= 0 ? 'text-green-400' : 'text-red-400'
+/** Форматирование до значимых цифр: достаточно знаков, чтобы не показывать нули */
+function fmtSig(n: number | null | undefined): string {
+  if (n == null) return '—'
+  if (n === 0) return '0.00'
+  const abs = Math.abs(n)
+  const dec = abs >= 1 ? 2 : abs >= 0.01 ? 4 : abs >= 0.001 ? 5 : 6
+  return n.toFixed(dec)
 }
+
 
 function fmtDateTime(iso: string): string {
   const d = new Date(iso)
   const day   = d.getDate().toString().padStart(2, '0')
   const month = (d.getMonth() + 1).toString().padStart(2, '0')
+  const year  = d.getFullYear()
   const hh    = d.getHours().toString().padStart(2, '0')
   const mm    = d.getMinutes().toString().padStart(2, '0')
-  return `${day}.${month} ${hh}:${mm}`
+  return `${day}.${month}.${year} ${hh}:${mm}`
 }
 
 function fmtDuration(openIso: string, closeIso: string): string {
@@ -242,22 +248,100 @@ function DateRangePicker({ from, to, preset, onChange }: DateRangePickerProps) {
 // ── StatsCards ────────────────────────────────────────────────────────────────
 
 function StatsCards({ stats }: { stats: TradeHistoryStats }) {
+  const grossTotal = stats.total_pnl
+  const netTotal   = stats.total_net_pnl
+  const winPct    = stats.total > 0 ? (stats.wins / stats.total) * 100 : 0
+
+  const card = 'shrink-0 bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl px-4 py-3 flex flex-col gap-1.5 min-w-[148px]'
+  const lbl  = 'text-[12px] font-semibold uppercase tracking-[.6px] text-gray-400 dark:text-gray-400 whitespace-nowrap mb-0.5'
+  const row  = 'flex items-baseline justify-between gap-3'
+
   return (
-    <div className="flex gap-3 mb-5 overflow-x-auto">
-      {[
-        { label: 'Всего сделок', value: String(stats.total) },
-        { label: 'Win Rate', value: `${fmt(stats.win_rate, 1)}%`, sub: `${stats.wins}W / ${stats.losses}L` },
-        { label: 'Суммарный PnL', value: `${stats.total_pnl >= 0 ? '+' : ''}${fmt(stats.total_pnl)} $`, color: pnlClass(stats.total_pnl) },
-        { label: 'Средний PnL',   value: `${stats.avg_pnl >= 0 ? '+' : ''}${fmt(stats.avg_pnl)} $`,   color: pnlClass(stats.avg_pnl)   },
-        { label: 'Лучшая сделка', value: stats.best_trade  != null ? `+${fmt(stats.best_trade)} $`  : '—', color: 'text-green-400' },
-        { label: 'Худшая сделка', value: stats.worst_trade != null ? `${fmt(stats.worst_trade)} $` : '—', color: 'text-red-400'   },
-      ].map(c => (
-        <div key={c.label} className="shrink-0 bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl px-4 py-3">
-          <div className="text-xs text-gray-500 dark:text-gray-400 mb-1 whitespace-nowrap">{c.label}</div>
-          <div className={`text-base font-semibold whitespace-nowrap ${c.color ?? ''}`}>{c.value}</div>
-          {c.sub && <div className="text-xs text-gray-500 mt-0.5">{c.sub}</div>}
+    <div className="flex gap-3 mb-5 overflow-x-auto pb-1">
+
+      {/* ── Сделки ── */}
+      <div className={card}>
+        <div className={lbl}>Сделки</div>
+        <div className="text-2xl font-bold text-gray-100 leading-none">{stats.total}</div>
+        <div className="flex gap-2 text-xs font-semibold">
+          <span className="text-green-500">↑ {stats.wins}</span>
+          <span className="text-gray-600 dark:text-gray-600">/</span>
+          <span className="text-red-500">↓ {stats.losses}</span>
         </div>
-      ))}
+      </div>
+
+      {/* ── Win Rate ── */}
+      <div className={card} style={{ minWidth: 160 }}>
+        <div className={lbl}>Win Rate</div>
+        <div className={`text-2xl font-bold leading-none ${winPct >= 50 ? 'text-green-500' : 'text-red-500'}`}>
+          {fmt(stats.win_rate, 1)}%
+        </div>
+        {/* progress bar */}
+        <div className="h-1.5 rounded-full bg-gray-800 overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all ${winPct >= 50 ? 'bg-green-500' : 'bg-red-500'}`}
+            style={{ width: `${Math.min(100, winPct)}%` }}
+          />
+        </div>
+        <div className="text-[10px] text-gray-500">{stats.wins}W / {stats.losses}L</div>
+      </div>
+
+      {/* ── PnL gross + net ── */}
+      <div className={card} style={{ minWidth: 180 }}>
+        <div className={lbl}>PnL</div>
+        <div className={`${row}`}>
+          <span className="text-[10px] text-gray-500 w-14 shrink-0">Gross</span>
+          <span className="inline-flex items-center gap-1 text-sm font-bold font-mono text-gray-200">
+            {grossTotal >= 0 ? '+' : ''}{fmtSig(grossTotal)}$
+            <span className={grossTotal >= 0 ? 'text-green-500' : 'text-red-500'}>{grossTotal >= 0 ? '↑' : '↓'}</span>
+          </span>
+        </div>
+        <div className="h-px bg-gray-800" />
+        <div className={`${row}`}>
+          <span className="text-[10px] text-gray-500 w-14 shrink-0">Чистый</span>
+          <span className="inline-flex items-center gap-1 text-base font-bold font-mono text-gray-200">
+            {netTotal >= 0 ? '+' : ''}{fmtSig(netTotal)}$
+            <span className={netTotal >= 0 ? 'text-green-500' : 'text-red-500'}>{netTotal >= 0 ? '↑' : '↓'}</span>
+          </span>
+        </div>
+      </div>
+
+      {/* ── Лучшая / Худшая ── */}
+      <div className={card} style={{ minWidth: 164 }}>
+        <div className={lbl}>Экстремумы</div>
+        <div className={`${row}`}>
+          <span className="text-[10px] text-gray-500 w-14 shrink-0">Лучшая</span>
+          <span className="text-sm font-bold font-mono text-green-500">
+            {stats.best_trade != null ? `+${fmtSig(stats.best_trade)}$` : '—'}
+          </span>
+        </div>
+        <div className="h-px bg-gray-800" />
+        <div className={`${row}`}>
+          <span className="text-[10px] text-gray-500 w-14 shrink-0">Худшая</span>
+          <span className="text-sm font-bold font-mono text-red-500">
+            {stats.worst_trade != null ? `${fmtSig(stats.worst_trade)}$` : '—'}
+          </span>
+        </div>
+      </div>
+
+      {/* ── Комиссии / Фандинг ── */}
+      <div className={card} style={{ minWidth: 164 }}>
+        <div className={lbl}>Издержки</div>
+        <div className={`${row}`}>
+          <span className="text-[10px] text-gray-500 w-20 shrink-0">Комиссии</span>
+          <span className="text-sm font-bold font-mono text-orange-400">
+            -{fmtSig(stats.total_fees)}$
+          </span>
+        </div>
+        <div className="h-px bg-gray-800" />
+        <div className={`${row}`}>
+          <span className="text-[10px] text-gray-500 w-20 shrink-0">Фандинг</span>
+          <span className={`text-sm font-bold font-mono ${stats.total_funding <= 0 ? 'text-green-500' : 'text-orange-400'}`}>
+            {stats.total_funding <= 0 ? '+' : '-'}{fmtSig(Math.abs(stats.total_funding))}$
+          </span>
+        </div>
+      </div>
+
     </div>
   )
 }
@@ -265,7 +349,7 @@ function StatsCards({ stats }: { stats: TradeHistoryStats }) {
 // ── Sortable table ────────────────────────────────────────────────────────────
 
 type SortDir = 'asc' | 'desc'
-type SortCol = 'symbol' | 'direction' | 'result' | 'bot_name' | 'volume_usdt' | 'pnl' | 'closed_at' | 'duration'
+type SortCol = 'symbol' | 'direction' | 'result' | 'bot_name' | 'volume_usdt' | 'pnl' | 'pnl_gross' | 'fees' | 'funding' | 'closed_at' | 'duration'
 
 function SortIcon({ col, sortCol, sortDir }: { col: string; sortCol: string; sortDir: SortDir }) {
   if (col !== sortCol) return <span className="ml-0.5 opacity-25">↕</span>
@@ -274,37 +358,77 @@ function SortIcon({ col, sortCol, sortDir }: { col: string; sortCol: string; sor
 
 // ── TradeRow ──────────────────────────────────────────────────────────────────
 
+function ExitBadge({ result }: { result: string }) {
+  const label = result === 'tp' ? 'TP' : result === 'sl' ? 'SL' : 'Ручной'
+  return (
+    <span className="px-1.5 py-0.5 rounded font-medium bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+      {label}
+    </span>
+  )
+}
+
 function TradeRow({ t }: { t: TradeHistoryRow }) {
-  const isTP = t.result === 'tp'
   return (
     <tr className="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30">
       <td className="py-2.5 px-3 text-sm font-medium">{t.symbol}</td>
       <td className="py-2.5 px-3 text-xs">
-        <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
-          t.direction === 'long'
-            ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-            : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-        }`}>
+        <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${t.direction === 'long' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
           {t.direction === 'long' ? 'LONG' : 'SHORT'}
         </span>
       </td>
       <td className="py-2.5 px-3 text-xs">
-        <span className={`px-1.5 py-0.5 rounded font-medium ${
-          isTP
-            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-            : 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
-        }`}>
-          {isTP ? 'TP' : 'SL'}
-        </span>
+        <ExitBadge result={t.result} />
       </td>
       <td className="py-2.5 px-3 text-xs text-gray-500">{t.bot_name ?? '—'}</td>
       <td className="py-2.5 px-3 text-xs text-right">{fmt(t.volume_usdt, 1)}$</td>
-      <td className={`py-2.5 px-3 text-sm text-right font-medium ${pnlClass(t.pnl)}`}>
-        {t.pnl != null ? `${t.pnl >= 0 ? '+' : ''}${fmt(t.pnl)}$` : '—'}
-        {t.pnl_pct != null && (
-          <span className="text-xs ml-1 opacity-70">({t.pnl_pct >= 0 ? '+' : ''}{fmt(t.pnl_pct, 1)}%)</span>
+
+      {/* Net PnL */}
+      <td className="py-2.5 px-3 text-xs text-right font-medium font-mono text-gray-300 dark:text-gray-300">
+        {t.net_pnl == null ? (
+          <span className="text-gray-500 dark:text-gray-600 text-xs">—</span>
+        ) : (
+          <span className="inline-flex items-center gap-0.5 justify-end">
+            {`${t.net_pnl >= 0 ? '+' : ''}${fmtSig(t.net_pnl)}$`}
+            {t.volume_usdt != null && t.volume_usdt > 0 && (
+              <span className="text-xs opacity-50">
+                ({t.net_pnl >= 0 ? '+' : ''}{fmt(t.net_pnl / t.volume_usdt * 100, 1)}%)
+              </span>
+            )}
+            <span className={t.net_pnl >= 0 ? 'text-green-500' : 'text-red-500'}>
+              {t.net_pnl >= 0 ? '↑' : '↓'}
+            </span>
+          </span>
         )}
       </td>
+
+      {/* Gross PnL */}
+      <td className="py-2.5 px-3 text-xs text-right font-mono text-gray-300 dark:text-gray-300">
+        {t.pnl == null
+          ? <span className="text-gray-600 dark:text-gray-600">—</span>
+          : (
+            <span className="inline-flex items-center gap-0.5 justify-end">
+              {`${t.pnl >= 0 ? '+' : ''}${fmtSig(t.pnl)}$`}
+              <span className={t.pnl >= 0 ? 'text-green-500' : 'text-red-500'}>
+                {t.pnl >= 0 ? '↑' : '↓'}
+              </span>
+            </span>
+          )
+        }
+      </td>
+
+      {/* Комиссия */}
+      <td className="py-2.5 px-3 text-xs text-right font-mono text-gray-400 dark:text-gray-500">
+        {t.fees !== 0 ? `-${fmtSig(t.fees)}$` : <span className="text-gray-600 dark:text-gray-600">—</span>}
+      </td>
+
+      {/* Фандинг */}
+      <td className="py-2.5 px-3 text-xs text-right font-mono text-gray-400 dark:text-gray-500">
+        {t.funding !== 0
+          ? `${t.funding <= 0 ? '+' : '-'}${fmtSig(Math.abs(t.funding))}$`
+          : <span className="text-gray-600 dark:text-gray-600">—</span>
+        }
+      </td>
+
       <td className="py-2.5 px-3 text-xs text-gray-400 text-right whitespace-nowrap">{fmtDateTime(t.closed_at)}</td>
       <td className="py-2.5 px-3 text-xs text-gray-400 text-right">{fmtDuration(t.opened_at, t.closed_at)}</td>
     </tr>
@@ -324,7 +448,7 @@ export function TradeHistoryPage() {
   const [loading, setLoading] = useState(false)
 
   const [filterItem,   setFilterItem]   = useState('')
-  const [filterResult, setFilterResult] = useState<'' | 'tp' | 'sl'>('')
+  const [filterResult, setFilterResult] = useState<'' | 'tp' | 'sl' | 'manual'>('')
   const [dateFrom,     setDateFrom]     = useState('')
   const [dateTo,       setDateTo]       = useState('')
   const [datePreset,   setDatePreset]   = useState<Preset>('all')
@@ -385,14 +509,17 @@ export function TradeHistoryPage() {
   const hasFilter = !!(filterItem || filterResult || dateFrom || dateTo)
 
   const COLS: [SortCol, string, string][] = [
-    ['symbol',     'Символ',      'left'],
-    ['direction',  'Направление', 'left'],
-    ['result',     'Результат',   'left'],
-    ['bot_name',   'Стратегия',   'left'],
-    ['volume_usdt','Объём',       'right'],
-    ['pnl',        'PnL',         'right'],
-    ['closed_at',  'Закрыта',     'right'],
-    ['duration',   'Длительность','right'],
+    ['symbol',     'Символ',          'left'],
+    ['direction',  'Направление',     'left'],
+    ['result',     'Выход',           'left'],
+    ['bot_name',   'Бот',             'left'],
+    ['volume_usdt','Объём',           'right'],
+    ['pnl',        'PnL (чистый)',   'right'],
+    ['pnl_gross',  'PnL (gross)',    'right'],
+    ['fees',       'Комиссия',      'right'],
+    ['funding',    'Фандинг',        'right'],
+    ['closed_at',  'Закрыта',         'right'],
+    ['duration',   'Длительность',    'right'],
   ]
 
   return (
@@ -428,12 +555,13 @@ export function TradeHistoryPage() {
 
         <select
           value={filterResult}
-          onChange={e => setFilterResult(e.target.value as '' | 'tp' | 'sl')}
+          onChange={e => setFilterResult(e.target.value as '' | 'tp' | 'sl' | 'manual')}
           className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200"
         >
-          <option value="">TP + SL</option>
+          <option value="">Все выходы</option>
           <option value="tp">Только TP</option>
           <option value="sl">Только SL</option>
+          <option value="manual">Только ручные</option>
         </select>
 
         <DateRangePicker

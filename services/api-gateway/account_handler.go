@@ -357,3 +357,71 @@ func (s *Server) GetReferral(w http.ResponseWriter, r *http.Request) {
 		"signups":       signups,
 	})
 }
+
+// GetNovabotBalance returns the user's NovaBot platform balance breakdown and transaction history.
+// GET /account/novabot-balance
+func (s *Server) GetNovabotBalance(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+
+	// Total balance from users table
+	var total float64
+	if err := s.pool.QueryRow(r.Context(),
+		`SELECT novabot_balance FROM users WHERE id=$1`, userID,
+	).Scan(&total); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// Virtual balance = sum of positive virtual transactions
+	var virtual float64
+	s.pool.QueryRow(r.Context(), //nolint:errcheck
+		`SELECT COALESCE(SUM(amount),0) FROM novabot_transactions
+		 WHERE user_id=$1 AND bucket='virtual' AND amount > 0`, userID,
+	).Scan(&virtual)
+
+	real := total - virtual
+	if real < 0 {
+		real = 0
+	}
+
+	// Transaction history
+	type txRow struct {
+		ID        string    `json:"id"`
+		Amount    float64   `json:"amount"`
+		Bucket    string    `json:"bucket"`
+		Note      string    `json:"note"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	rows, err := s.pool.Query(r.Context(),
+		`SELECT id, amount, bucket, note, created_at
+		 FROM novabot_transactions
+		 WHERE user_id=$1
+		 ORDER BY created_at DESC
+		 LIMIT 50`, userID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer rows.Close()
+
+	history := make([]txRow, 0)
+	for rows.Next() {
+		var tx txRow
+		if err := rows.Scan(&tx.ID, &tx.Amount, &tx.Bucket, &tx.Note, &tx.CreatedAt); err != nil {
+			continue
+		}
+		history = append(history, tx)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":   total,
+		"real":    real,
+		"virtual": virtual,
+		"history": history,
+	})
+}

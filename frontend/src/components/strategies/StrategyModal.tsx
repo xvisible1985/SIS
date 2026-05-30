@@ -50,6 +50,8 @@ function defaultForm(): StrategyFormData {
     matrix_levels: DEFAULT_MATRIX_LEVELS,
     safe_zone_pct: 1.5,
     protected_build: false,
+    matrix_rebuild_on_sl: false,
+    matrix_rebuild_from_entry: false,
     matrix_entry_level: DEFAULT_MATRIX_ENTRY,
   }
 }
@@ -92,6 +94,8 @@ function strategyToForm(s: Strategy): StrategyFormData {
     })),
     safe_zone_pct: s.safe_zone_pct ?? 1.5,
     protected_build: s.protected_build ?? false,
+    matrix_rebuild_on_sl: s.matrix_rebuild_on_sl ?? false,
+    matrix_rebuild_from_entry: s.matrix_rebuild_from_entry ?? false,
     matrix_entry_level: s.matrix_entry_level ?? DEFAULT_MATRIX_ENTRY,
   }
 }
@@ -752,6 +756,34 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                       value={String(form.protected_build ?? false)}
                       onChange={v => patch({ protected_build: v === 'true' })}
                       optionColors={{ true: 'bg-amber-700 text-white' }}
+                      className="h-[34px]"
+                      btnClassName="h-full"
+                    />
+                  </div>
+                  <div>
+                    <label className={labelCls}>
+                      ⟳ Перестройка сетки от SZ
+                      <Tip text="После срабатывания SL немедленно переставляет все незаполненные уровни от нижней границы SafeZone, не дожидаясь заполнения соседних уровней. Если SafeZone = 0, anchor = цена SL." />
+                    </label>
+                    <Toggle
+                      options={[{ label: 'Выкл', value: 'false' }, { label: '⟳ Вкл', value: 'true' }]}
+                      value={String(form.matrix_rebuild_on_sl ?? false)}
+                      onChange={v => patch({ matrix_rebuild_on_sl: v === 'true' })}
+                      optionColors={{ true: 'bg-blue-700 text-white' }}
+                      className="h-[34px]"
+                      btnClassName="h-full"
+                    />
+                  </div>
+                  <div>
+                    <label className={labelCls}>
+                      ⚓ Якорь на точку входа
+                      <Tip text="Все уровни строятся от цены заполнения L(0). После SL L(0) тоже ждёт SafeZone и перезаходит маркетом; остальные уровни восстанавливаются от новой цены входа." />
+                    </label>
+                    <Toggle
+                      options={[{ label: 'Выкл', value: 'false' }, { label: '⚓ Вкл', value: 'true' }]}
+                      value={String(form.matrix_rebuild_from_entry ?? false)}
+                      onChange={v => patch({ matrix_rebuild_from_entry: v === 'true' })}
+                      optionColors={{ true: 'bg-violet-700 text-white' }}
                       className="h-[34px]"
                       btnClassName="h-full"
                     />

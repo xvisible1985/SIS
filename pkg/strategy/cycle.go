@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"sis/pkg/signal"
 	"sis/pkg/trader"
 )
@@ -50,11 +51,19 @@ type StrategyRunner struct {
 
 	// Matrix strategy runtime state
 	matrixMonitorStop   context.CancelFunc
-	matrixSLSeq         int          // increments on each per-level SL placement for unique linkIds
-	matrixWaitingSlots  map[int]bool // positive slot → true when SL'd and waiting to re-enter
-	lastMatrixPrice     float64      // last mark price seen by matrixPriceTick; used to re-trigger virtual levels after a fill
+	matrixSLSeq         int             // increments on each per-level SL placement for unique linkIds
+	matrixWaitingSlots  map[int]float64 // positive slot → SL trigger price when SL'd and waiting to re-enter
+	matrixLastSLSlot    int             // slot number of the most recently SL'd level (for SZ display)
+	lastMatrixPrice     float64         // last mark price seen by matrixPriceTick; used to re-trigger virtual levels after a fill
 
 	lastVirtualPrice float64 // last mark price seen by gridVirtualPriceTick; 0 = not yet seen
+
+	// tpCancelStreak counts consecutive external TP cancellations (Bybit-side cancels) without
+	// a successful TP fill in between. A high streak indicates either:
+	//   a) a race: WS cancel arrives before Bybit's reduce-only budget is freed (REST lag), or
+	//   b) position is zero (TP fill WS event was dropped) and every new TP is immediately cancelled.
+	// Reset to 0 on TP fill or cycle close.
+	tpCancelStreak int
 
 	// pendingDelete is set (under sr.mu) before the delete goroutine fires so that
 	// a concurrent Notify cannot submit a loadOrStart and restart the strategy.
@@ -214,22 +223,43 @@ func (sr *StrategyRunner) resumeMatrixCycle(ctx context.Context) {
 	sr.mu.Lock()
 
 	if resumePrice > 0 {
-		// Step 1: Reset ALL cancelled levels back to pending.
+		// Step 1: Reset cancelled levels back to pending, but only those whose slot
+		// has no newer active (pending/placed/filled) row. When a mid-rebuild server
+		// restart occurs, both the old pre-rebuild levels (cancelled) and the new
+		// post-rebuild levels (pending/placed) exist in DB for the same slot. Without
+		// this guard, resetting ALL cancelled levels would resurrect the old stale
+		// levels alongside the newly placed ones, causing two pending rows for the
+		// same slot at different prices.
+		//
 		// cancelPlacedLevels sets DB status='cancelled' for BOTH 'placed' AND 'pending'
-		// rows.  After loadActiveCycle reloads from DB, all unexecuted levels are
-		// 'cancelled' in-memory too — including virtual levels that were never placed
-		// on the exchange.  matrixPriceTick and the virtual-trigger loop below both
-		// check l.Status == LevelPending, so they would silently skip 'cancelled'
-		// levels.  Resetting here makes them eligible again.
+		// rows. After loadActiveCycle reloads from DB, all unexecuted levels are
+		// 'cancelled' in-memory — including virtual levels that were never placed on
+		// the exchange. matrixPriceTick and the virtual-trigger loop below both check
+		// l.Status == LevelPending, so they would silently skip 'cancelled' levels.
+		// Resetting here makes them eligible again, guarded by slot deduplication.
+		activeSlots := map[int]bool{}
+		for _, l := range sr.levels {
+			if l.Slot == nil {
+				continue
+			}
+			switch l.Status {
+			case LevelPending, LevelPlaced, LevelFilled:
+				activeSlots[*l.Slot] = true
+			}
+		}
 		for i := range sr.levels {
 			l := &sr.levels[i]
-			if l.Status == LevelCancelled && l.Slot != nil {
-				l.Status = LevelPending
-				l.ExchangeOrderID = ""
-				l.ExchangeLinkID = ""
-				sr.runner.pool.Exec(ctx, //nolint:errcheck
-					`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL WHERE id=$1`, l.ID)
+			if l.Status != LevelCancelled || l.Slot == nil {
+				continue
 			}
+			if activeSlots[*l.Slot] {
+				continue // newer active row exists for this slot — keep cancelled
+			}
+			l.Status = LevelPending
+			l.ExchangeOrderID = ""
+			l.ExchangeLinkID = ""
+			sr.runner.pool.Exec(ctx, //nolint:errcheck
+				`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL WHERE id=$1`, l.ID)
 		}
 
 		// Step 2: If settings changed while stopped, recalculate prices/quantities.
@@ -1158,13 +1188,19 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 				}
 			}
 		}
-		// Register per-level matrix SL orders on service restart
+		// Register per-level matrix SL orders on service restart.
+		// sl_closed levels already had their SL order fire — clear the ID in memory
+		// so the active-stop counter in matrixPlacePerLevelSL doesn't count dead orders.
 		if l.SLOrderID != "" {
-			sr.runner.RegisterOrder(l.SLOrderID, orderRef{
-				strategyID: sr.strategy.ID,
-				levelID:    l.ID,
-				refType:    "matrix_sl",
-			})
+			if l.Status == LevelSLClosed {
+				l.SLOrderID = "" // order no longer exists on exchange
+			} else {
+				sr.runner.RegisterOrder(l.SLOrderID, orderRef{
+					strategyID: sr.strategy.ID,
+					levelID:    l.ID,
+					refType:    "matrix_sl",
+				})
+			}
 		}
 	}
 	if sr.tpOrderID != "" {
@@ -2143,16 +2179,32 @@ func (sr *StrategyRunner) logBotTrade(ctx context.Context, msg string) {
 // Must be called with sr.mu held (reads sr.strategy and sr.cycle).
 func (sr *StrategyRunner) writeTrade(ctx context.Context, result string, avgEntry, exitPrice, qty, pnl, pnlPct float64) {
 	volumeUSDT := avgEntry * qty
+
+	// Query exchange fees and funding payments accumulated during this cycle.
+	// We sum trader_executions for account+symbol within the cycle's time window.
+	// Note: if trader_executions syncer is slightly behind, some tail fees may be 0.
+	var fees, funding float64
+	sr.runner.pool.QueryRow(ctx, //nolint:errcheck
+		`SELECT
+		   COALESCE(SUM(exec_fee) FILTER (WHERE exec_type = 'Trade'),   0),
+		   COALESCE(SUM(exec_fee) FILTER (WHERE exec_type = 'Funding'), 0)
+		 FROM trader_executions
+		 WHERE account_id = $1 AND symbol = $2 AND exec_time BETWEEN $3 AND NOW()`,
+		sr.strategy.AccountID, sr.strategy.Symbol, sr.cycle.StartedAt,
+	).Scan(&fees, &funding) //nolint:errcheck
+
+	netPnl := pnl - fees - funding
+
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
 		`INSERT INTO trade_history
 		  (strategy_id, bot_id, account_id, owner_id, symbol, category, direction,
 		   cycle_num, result, avg_entry, exit_price, qty, volume_usdt, pnl, pnl_pct,
-		   opened_at, closed_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())`,
+		   fees, funding, net_pnl, opened_at, closed_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())`,
 		sr.strategy.ID, sr.strategy.BotID, sr.strategy.AccountID, sr.strategy.OwnerID,
 		sr.strategy.Symbol, sr.strategy.Category, string(sr.strategy.Direction),
 		sr.cycle.CycleNum, result, avgEntry, exitPrice, qty, volumeUSDT, pnl, pnlPct,
-		sr.cycle.StartedAt,
+		fees, funding, netPnl, sr.cycle.StartedAt,
 	)
 }
 
@@ -2207,6 +2259,7 @@ func (sr *StrategyRunner) handleTPFill(ctx context.Context, fillPrice, fillQty f
 	sr.closedBySelf = true // suppress the position-close WS event that follows TP fill
 	sr.closedByReason = "TP"
 	sr.tpOrderID = "" // already filled — closeCycle must not try to cancel it
+	sr.tpCancelStreak = 0
 	sr.cancelPlacedLevels(ctx)
 	sr.closeCycle(ctx, "tp") // cancels SL if present
 	sr.maybeRestart(ctx)
@@ -2377,13 +2430,14 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 			sr.matrixMonitorStop()
 			sr.matrixMonitorStop = nil
 		}
-		sr.matrixWaitingSlots = make(map[int]bool)
+		sr.matrixWaitingSlots = make(map[int]float64)
 	}
 	sr.cycle = nil
 	sr.levels = nil
 	sr.partialCloseQty = 0
 	sr.lastTPSLQty = 0
 	sr.lastTPSLAvg = 0
+	sr.tpCancelStreak = 0
 	// Stop continuous signal monitor — the next cycle will start its own.
 	if sr.signalMonitorID != "" {
 		if sr.runner.signalEngine != nil {
@@ -3092,7 +3146,7 @@ func (sr *StrategyRunner) handleStopRequest(ctx context.Context) {
 			sr.matrixMonitorStop()
 			sr.matrixMonitorStop = nil
 		}
-		sr.matrixWaitingSlots = make(map[int]bool)
+		sr.matrixWaitingSlots = make(map[int]float64)
 	}
 	sr.cancelPlacedLevels(ctx)
 
@@ -3620,8 +3674,32 @@ func (sr *StrategyRunner) closeManualPosition(ctx context.Context) {
 // "биржей при отмене TP". Must be called with sr.mu held.
 func (sr *StrategyRunner) closePositionExternal(ctx context.Context, source string) {
 	avg, posQty := sr.avgEntry()
-	sr.warn(ctx, fmt.Sprintf("Позиция закрыта %s — цикл %d | avg=%.4f | qty=%.4f | PnL в разделе Closed P&L",
+	sr.warn(ctx, fmt.Sprintf("Позиция закрыта %s — цикл %d | avg=%.4f | qty=%.4f | определяем результат...",
 		source, sr.cycle.CycleNum, avg, posQty))
+
+	// Capture immutable data before releasing the lock (goroutine runs outside mu).
+	pool := sr.runner.pool
+	stratID8 := sr.strategy.ID[:8]
+	snap := externalCloseSnap{
+		strategyID:     sr.strategy.ID,
+		stratID8:       stratID8,
+		botID:          sr.strategy.BotID,
+		ownerID:        sr.strategy.OwnerID,
+		accountID:      sr.strategy.AccountID,
+		symbol:         sr.strategy.Symbol,
+		category:       sr.strategy.Category,
+		direction:      string(sr.strategy.Direction),
+		cycleNum:       sr.cycle.CycleNum,
+		cycleID:        sr.cycle.ID,
+		cycleStartedAt: sr.cycle.StartedAt,
+		avgEntry:       avg,
+		posQty:         posQty,
+	}
+
+	// NOTE: writeTrade is intentionally deferred to resolveExternalClose below.
+	// We wait for trader_executions to sync so we can:
+	//   a) detect whether it was our strategy's TP/SL order that filled (not a manual close)
+	//   b) use actual exit price and P&L instead of dummy avg/0 values.
 
 	sr.cancelPlacedLevels(ctx)
 	cycleID := sr.cycle.ID
@@ -3642,6 +3720,195 @@ func (sr *StrategyRunner) closePositionExternal(ctx context.Context, source stri
 	); err != nil {
 		sr.errlog(ctx, fmt.Sprintf("closePositionExternal: DB update status→stopped: %v", err))
 	}
+
+	if posQty > 0 {
+		go resolveExternalClose(pool, snap)
+	}
+}
+
+// externalCloseSnap holds all data from sr needed by resolveExternalClose (runs outside mu).
+type externalCloseSnap struct {
+	strategyID     string
+	stratID8       string
+	botID          *string
+	ownerID        string
+	accountID      string
+	symbol         string
+	category       string
+	direction      string // "long" | "short"
+	cycleNum       int
+	cycleID        string
+	cycleStartedAt time.Time
+	avgEntry       float64
+	posQty         float64
+}
+
+// resolveExternalClose runs in a goroutine after closePositionExternal.
+// Retries with increasing delays until closing executions appear in trader_executions,
+// then determines whether this was our TP/SL or a genuine manual close and writes
+// the correct trade_history record.
+// Retry schedule: 4s → 6s → 10s → 15s (max ~35s total).
+func resolveExternalClose(pool *pgxpool.Pool, snap externalCloseSnap) {
+	ctx := context.Background()
+
+	tpPrefix := fmt.Sprintf("SIS_STR-%s-tp-%d-", snap.stratID8, snap.cycleNum)
+	slPrefix := fmt.Sprintf("SIS_STR-%s-sl-%d-", snap.stratID8, snap.cycleNum)
+	openPrefix := fmt.Sprintf("SIS_STR-%s-%d-", snap.stratID8, snap.cycleNum)
+	closingSide := "Sell"
+	if snap.direction == "short" {
+		closingSide = "Buy"
+	}
+
+	type execRow struct {
+		linkID string
+		val    float64
+		qty    float64
+	}
+
+	// queryTPSL returns fills for our TP or SL orders.
+	queryTPSL := func() (rows []execRow, firstLink string) {
+		r, err := pool.Query(ctx, `
+			SELECT COALESCE(order_link_id, ''),
+			       COALESCE(exec_value, 0),
+			       COALESCE(qty, 0)
+			FROM trader_executions
+			WHERE account_id = $1 AND symbol = $2
+			  AND exec_type = 'Trade'
+			  AND exec_time >= $3
+			  AND (order_link_id LIKE $4 OR order_link_id LIKE $5)
+			ORDER BY exec_time`,
+			snap.accountID, snap.symbol, snap.cycleStartedAt, tpPrefix+"%", slPrefix+"%")
+		if err != nil {
+			return
+		}
+		defer r.Close()
+		for r.Next() {
+			var row execRow
+			if r.Scan(&row.linkID, &row.val, &row.qty) == nil && row.qty > 0 {
+				rows = append(rows, row)
+				if firstLink == "" {
+					firstLink = row.linkID
+				}
+			}
+		}
+		return
+	}
+
+	// queryAnyClose returns total value and qty of closing (non-strategy) executions.
+	queryAnyClose := func() (val, qty float64) {
+		pool.QueryRow(ctx, `
+			SELECT COALESCE(SUM(exec_value), 0), COALESCE(SUM(qty), 0)
+			FROM trader_executions
+			WHERE account_id = $1 AND symbol = $2
+			  AND exec_type = 'Trade' AND side = $3
+			  AND exec_time >= $4
+			  AND (order_link_id IS NULL OR order_link_id NOT LIKE $5)`,
+			snap.accountID, snap.symbol, closingSide, snap.cycleStartedAt, openPrefix+"%",
+		).Scan(&val, &qty) //nolint:errcheck
+		return
+	}
+
+	// Retry loop: wait, then check. Stop as soon as any execution is found,
+	// or after the last attempt (write best-effort fallback).
+	retryDelays := []time.Duration{4, 6, 10, 15}
+	result := "manual"
+	exitPrice := snap.avgEntry
+	exitQty := snap.posQty
+	var firstLinkID string
+	found := false
+
+	for attempt, delay := range retryDelays {
+		time.Sleep(delay * time.Second)
+
+		// Check our TP/SL orders first.
+		tpslRows, link := queryTPSL()
+		if len(tpslRows) > 0 {
+			var totalVal, totalQty float64
+			for _, r := range tpslRows {
+				totalVal += r.val
+				totalQty += r.qty
+			}
+			exitPrice = totalVal / totalQty
+			exitQty = totalQty
+			firstLinkID = link
+			if strings.HasPrefix(link, tpPrefix) {
+				result = "tp"
+			} else {
+				result = "sl"
+			}
+			found = true
+			break
+		}
+
+		// Check any closing execution (manual close with real price).
+		anyVal, anyQty := queryAnyClose()
+		if anyQty > 0 {
+			exitPrice = anyVal / anyQty
+			exitQty = anyQty
+			found = true
+			break
+		}
+
+		isLast := attempt == len(retryDelays)-1
+		if !isLast {
+			log.Printf("strategy %s: цикл %d — executions ещё не синхронизированы (попытка %d/%d), повтор...",
+				snap.stratID8, snap.cycleNum, attempt+1, len(retryDelays))
+		} else {
+			log.Printf("strategy %s: цикл %d — executions не найдены за %ds, пишем с avg как fallback",
+				snap.stratID8, snap.cycleNum, int((4+6+10+15)))
+		}
+	}
+
+	// Calculate P&L.
+	pnl, pnlPct := 0.0, 0.0
+	if exitPrice > 0 && snap.avgEntry > 0 && exitQty > 0 {
+		if snap.direction == "long" {
+			pnl = (exitPrice - snap.avgEntry) * exitQty
+		} else {
+			pnl = (snap.avgEntry - exitPrice) * exitQty
+		}
+		if denom := snap.avgEntry * exitQty; denom > 0 {
+			pnlPct = pnl / denom * 100
+		}
+	}
+
+	// Fees and funding for the full cycle window.
+	var fees, funding float64
+	pool.QueryRow(ctx, `
+		SELECT
+		  COALESCE(SUM(exec_fee) FILTER (WHERE exec_type = 'Trade'),   0),
+		  COALESCE(SUM(exec_fee) FILTER (WHERE exec_type = 'Funding'), 0)
+		FROM trader_executions
+		WHERE account_id = $1 AND symbol = $2 AND exec_time BETWEEN $3 AND NOW()`,
+		snap.accountID, snap.symbol, snap.cycleStartedAt,
+	).Scan(&fees, &funding) //nolint:errcheck
+	netPnl := pnl - fees - funding
+
+	// Write trade_history.
+	pool.Exec(ctx, `
+		INSERT INTO trade_history
+		  (strategy_id, bot_id, account_id, owner_id, symbol, category, direction,
+		   cycle_num, result, avg_entry, exit_price, qty, volume_usdt, pnl, pnl_pct,
+		   fees, funding, net_pnl, opened_at, closed_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())`, //nolint:errcheck
+		snap.strategyID, snap.botID, snap.accountID, snap.ownerID,
+		snap.symbol, snap.category, snap.direction,
+		snap.cycleNum, result,
+		snap.avgEntry, exitPrice, exitQty, snap.avgEntry*exitQty,
+		pnl, pnlPct, fees, funding, netPnl, snap.cycleStartedAt)
+
+	// If it was our TP/SL, correct the cycle result in DB.
+	if result == "tp" || result == "sl" {
+		pool.Exec(ctx, //nolint:errcheck
+			`UPDATE strategy_cycles SET result=$1 WHERE id=$2`, result, snap.cycleID)
+		log.Printf("strategy %s: цикл %d — определён как %s (linkId=%s) | exit=%.4f | PnL=%.2f USDT",
+			snap.stratID8, snap.cycleNum, result, firstLinkID, exitPrice, pnl)
+	} else if found {
+		log.Printf("strategy %s: цикл %d — закрыт вручную | exit=%.4f | PnL=%.2f USDT",
+			snap.stratID8, snap.cycleNum, exitPrice, pnl)
+	}
+	// If !found, the retry-loop already logged the fallback message.
+	_ = found
 }
 
 // positionIdxForOpen returns the Bybit positionIdx for an opening order.
@@ -4094,6 +4361,13 @@ func (sr *StrategyRunner) retryTPAfterCancelStale(ctx context.Context, tpSide, t
 		sr.info(ctx, fmt.Sprintf("TP (110017): отменено %d стейл-ордеров, повторная попытка", cancelled))
 	}
 
+	// Bybit's WS cancel events for close-side orders can arrive before the exchange's
+	// internal reduce-only budget tracking is updated. Placing a new TP immediately after
+	// cancelling stale orders can result in an instant cancel loop:
+	//   cancel(stale) → place(new TP) → Bybit cancels again (budget not freed yet)
+	// A short pause lets Bybit's matching engine process the cancellations first.
+	time.Sleep(400 * time.Millisecond)
+
 	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:      sr.strategy.Symbol,
 		Category:    sr.strategy.Category,
@@ -4363,11 +4637,26 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 	switch refType {
 	case "tp":
 		sr.tpOrderID = "" // already unregistered by OnOrderEvent
+		sr.tpCancelStreak++
+		// Circuit breaker: Bybit cancelling our TP repeatedly without a fill means either
+		// (a) a reduce-only race — WS cancel arrives before Bybit frees the budget, so the
+		//     replacement is immediately cancelled too; or
+		// (b) the position is actually zero (TP fill event was dropped from a full queue).
+		// After 5 consecutive cancels we stop retrying and log for manual inspection.
+		// The tpCancelStreak resets on any successful TP fill or cycle close.
+		if sr.tpCancelStreak >= 5 {
+			sr.errlog(ctx, fmt.Sprintf(
+				"TP отменён Bybit %d раз подряд без исполнения — прекращаем попытки. "+
+					"Проверьте позицию и TP вручную или дождитесь сверки при переподключении WS.",
+				sr.tpCancelStreak))
+			return
+		}
 		if err := sr.updateTPByType(ctx); err != nil {
 			if isPositionZero(err) {
 				// Race: TP cancel event arrived before position-0 event.
 				// Position is already gone — close the cycle now; the incoming
 				// position event will see cycle==nil and exit silently.
+				sr.tpCancelStreak = 0
 				sr.closePositionExternal(ctx, "биржей (TP отменён, позиция уже закрыта)")
 				return
 			}

@@ -13,6 +13,7 @@
     "axios": "^1.7.9",
     "lightweight-charts": "^5.2.0",
     "lucide-react": "^1.14.0",
+    "qrcode.react": "^4.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.27.0",

@@ -1,0 +1,57 @@
+<h2>Как выглядит flow создания бота?</h2>
+<p class="subtitle">После клика «Создать бота» пользователь проходит через несколько шагов. Какой вариант лучше?</p>
+
+<div class="options">
+
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Пикер → Единая форма</h3>
+      <p>Шаг 1: модалка выбора типа (уже есть). Шаг 2: открывается та же <code>BotForm</code>, но с пред-выбранным типом и соответствующими дефолтами. Тип можно сменить внутри формы.</p>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;font-size:11px;color:#94a3b8">
+        <span style="background:rgba(99,102,241,0.2);border:1px solid rgba(99,102,241,0.4);border-radius:6px;padding:3px 10px">Выбор типа</span>
+        <span>→</span>
+        <span style="background:rgba(99,102,241,0.2);border:1px solid rgba(99,102,241,0.4);border-radius:6px;padding:3px 10px">Общая форма (адаптирована)</span>
+      </div>
+      <div class="pros-cons" style="margin-top:10px">
+        <div class="pros"><ul><li>Минимум новых компонентов</li><li>Быстро</li></ul></div>
+        <div class="cons"><ul><li>Форма «пытается» охватить всё</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Пикер → Специализированная форма</h3>
+      <p>Шаг 1: модалка выбора типа. Шаг 2: открывается своя форма под каждый тип — TrendBotForm, ParserBotForm, HedgeBotForm. Каждая показывает только нужные поля.</p>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;font-size:11px;color:#94a3b8">
+        <span style="background:rgba(99,102,241,0.2);border:1px solid rgba(99,102,241,0.4);border-radius:6px;padding:3px 10px">Выбор типа</span>
+        <span>→</span>
+        <span style="background:rgba(16,185,129,0.2);border:1px solid rgba(16,185,129,0.4);border-radius:6px;padding:3px 10px">TrendForm / ParserForm / HedgeForm</span>
+      </div>
+      <div class="pros-cons" style="margin-top:10px">
+        <div class="pros"><ul><li>Чистый UX, нет лишних полей</li><li>Легко добавлять типы</li></ul></div>
+        <div class="cons"><ul><li>Дублирование общих полей (name, symbol…)</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Всё в одном окне (таб-пикер + форма)</h3>
+      <p>Одна большая модалка: слева или сверху — табы с типами (иконки), справа — форма меняется при переключении. Выбор типа и заполнение — в одном месте.</p>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;font-size:11px;color:#94a3b8">
+        <span style="background:rgba(245,158,11,0.2);border:1px solid rgba(245,158,11,0.4);border-radius:6px;padding:3px 10px">Тип-таб | Форма</span>
+        <span>→</span>
+        <span style="background:rgba(245,158,11,0.2);border:1px solid rgba(245,158,11,0.4);border-radius:6px;padding:3px 10px">Создать</span>
+      </div>
+      <div class="pros-cons" style="margin-top:10px">
+        <div class="pros"><ul><li>Один шаг вместо двух</li><li>Легко сравнить типы</li></ul></div>
+        <div class="cons"><ul><li>Сложнее в реализации</li><li>Окно большое</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+</div>

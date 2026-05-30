@@ -16,7 +16,7 @@ import {
   Bot,
   History,
   Wallet,
-  CreditCard,
+  BookOpen,
 } from 'lucide-react';
 import { NovaMark } from './NovaMark';
 import { Sparkline } from './Sparkline';
@@ -30,9 +30,9 @@ const NAV = [
   { to: '/bots',           label: 'Боты',           icon: Bot },
   { to: '/trade-history',  label: 'История сделок', icon: History },
   { to: '/balances',       label: 'Балансы',        icon: Wallet },
-  { to: '/payments',       label: 'Пополнение',     icon: CreditCard },
-  { to: '/webhooks',  label: 'Webhooks',  icon: Webhook,  badge: 'count' as const, key: 'webhooks' },
+{ to: '/webhooks',  label: 'Webhooks',  icon: Webhook,  badge: 'count' as const, key: 'webhooks' },
   { to: '/admin',     label: 'Админка',   icon: Shield },
+  { to: '/help',      label: 'Справка',   icon: BookOpen },
 ];
 
 const EXCHANGE_BG: Record<string, string> = {
@@ -86,13 +86,17 @@ export function Sidebar({
   return (
     <aside className="flex h-full w-[256px] flex-col gap-3.5 bg-[#0c1018] p-[18px_14px] font-sans text-slate-200">
       {/* brand */}
-      <div className="flex items-center gap-2.5 px-1.5 py-0.5">
-        <NovaMark size={28} />
-        <div className="text-[19px] font-bold leading-none tracking-tight text-slate-50">
-          NovaBot
+      <div className="flex items-end gap-2.5 px-1.5 py-0.5">
+        <div className="rounded-[12px] border border-white/[.12] bg-white/[.04] p-[4px]">
+          <NovaMark size={42} />
         </div>
-        <div className="ml-auto rounded-md border border-white/[.06] bg-white/[.04] px-[7px] py-[3px] font-mono text-[10px] font-medium tracking-wide text-slate-400">
-          {version}
+        <div className="ml-auto mb-3.5 flex items-baseline gap-1.5">
+          <div className="text-[19px] font-bold leading-none tracking-tight text-slate-50">
+            NovaBot
+          </div>
+          <div className="font-mono text-[13px] font-medium tracking-wide text-slate-500">
+            v0.85
+          </div>
         </div>
       </div>
 

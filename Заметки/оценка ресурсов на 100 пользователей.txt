@@ -1,0 +1,64 @@
+Оценка ресурсов SIS для 100 пользователей
+Параметры нагрузки:
+
+100 пользователей × 2 бота = 200 активных ботов
+100 пользователей × 10 стратегий = 1000 активных стратегий
+Память (RAM)
+Компонент	Оценка	Причина
+api-gateway	~250–350 MB	1000 StrategyRunner в памяти (~150-200 KB каждый), WebSocket для 100 user (~50 MB), 200 bot worker goroutine + буферы каналов
+ingester	~80–120 MB	WebSocket потоки от Binance/Bybit, буферы свечей, Redis pub/sub
+signal-engine	~50–100 MB (idle) / до 500 MB (во время backtest)	Базово легкий, но backtest/optimize загружают весь датасет свечей в RAM
+webhook	~30 MB	Лёгкий consumer Redis Stream
+PostgreSQL (TimescaleDB)	2–3 GB	shared_buffers ~1.5 GB, work_mem для запросов стратегий, active connections от всех сервисов
+Redis	~200–400 MB	GlobalWarmer snapshots сигналов, job queues, pub/sub каналы свечей
+ОС + оверхед	~500 MB	
+Итого	3–4.5 GB	
+Рекомендуемая RAM: 6–8 GB (с запасом на пиковые backtest/optimize jobs)
+
+Процессор (CPU)
+Ключевые события, создающие нагрузку:
+
+Событие	Частота	CPU нагрузка
+Закрытие свечи (ingester → Redis → стратегии)	Каждую минуту	Пик: все 1000 стратегий проверяют условия одновременно
+Bot engine цикл	каждые 30 секунд, 20 горутин параллельно	Средняя нагрузка
+Trade history sync	каждые 5 минут	Лёгкая, per-account goroutine
+Backtest job	По запросу	Тяжёлая: полный перебор свечей + индикаторы
+Optimize (grid search)	По запросу	Очень тяжёлая: декартово произведение параметров
+Сервис	Норм. нагрузка	Пиковая
+api-gateway	0.5–1 vCPU	2–3 vCPU (на закрытии свечи)
+ingester	0.3–0.5 vCPU	0.7 vCPU
+signal-engine	0.1 vCPU	2–4 vCPU (optimize jobs)
+webhook	0.1 vCPU	0.2 vCPU
+PostgreSQL	0.5–1 vCPU	2 vCPU
+Redis	0.2 vCPU	0.3 vCPU
+Итого	~2 vCPU	~8 vCPU
+Рекомендуемое CPU: 6–8 vCPU
+
+Дисковое хранилище
+Данные	Объём	Примечание
+Свечи (candles)	~1–3 GB/год	TimescaleDB сжимает данные старше 7 дней, очень эффективно
+Результаты backtest/optimize	~500 MB	JSONB в PostgreSQL
+Стратегии, циклы, ивенты	~200 MB	
+Логи webhook	~100 MB/мес	
+Итого	~20–50 GB SSD	Обязательно SSD — TimescaleDB требует быстрый I/O
+Итоговая рекомендация сервера
+Минимум (тесно, без запаса)
+
+RAM:  6 GB
+CPU:  4 vCPU
+SSD:  40 GB
+Комфортно (рекомендуется)
+
+RAM:  8 GB
+CPU:  6–8 vCPU
+SSD:  60–80 GB SSD (NVMe)
+С запасом роста (до 500 пользователей)
+
+RAM:  16 GB
+CPU:  8–12 vCPU
+SSD:  150 GB NVMe
+Ключевые узкие места (bottlenecks)
+PostgreSQL — главный ограничивающий фактор. Пул соединений: у каждого сервиса MaxConns=40, итого до 160 соединений — нужен мощный сервер.
+Пик на закрытии свечи — все 1000 стратегий обрабатываются одновременно. CPU может спайковать на 1–2 секунды каждую минуту.
+signal-engine (backtest/optimize) — лучше вынести на отдельный сервер или добавить ограничение очереди, т.к. один тяжёлый optimize job может занять всё CPU.
+Память для стратегий — 1000 активных StrategyRunner держатся в heap api-gateway постоянно.

@@ -37,8 +37,16 @@ func (s *Store) Get(ctx context.Context, base string) ([]byte, string, error) {
 		`SELECT data, content_type, fetched_at FROM coin_icons WHERE symbol=$1`, base,
 	).Scan(&data, &ct, &fetchedAt)
 
-	if err == nil && time.Since(fetchedAt) < time.Hour {
-		return data, ct, nil
+	if err == nil {
+		// Non-empty icon cached within the last hour — serve from cache.
+		if len(data) > 0 && time.Since(fetchedAt) < time.Hour {
+			return data, ct, nil
+		}
+		// Empty (not-found) icon — only skip CDN retry for 5 minutes to allow
+		// icons that recently became available (or CDN was temporarily down) to be fetched.
+		if len(data) == 0 && time.Since(fetchedAt) < 5*time.Minute {
+			return nil, "image/png", nil
+		}
 	}
 
 	// Not cached or stale — fetch now.

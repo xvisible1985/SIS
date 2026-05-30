@@ -56,6 +56,8 @@ func (e *Engine) Start(ctx context.Context) {
 		        COALESCE(signal_configs::text,'[]'),
 		        cycle_count, max_cycles, bot_id, COALESCE(matrix_levels::text,''), COALESCE(safe_zone_pct,0), COALESCE(matrix_entry_level::text,''),
 		        COALESCE(protected_build,false),
+		        COALESCE(matrix_rebuild_on_sl,false),
+		        COALESCE(matrix_rebuild_from_entry,false),
 		        COALESCE(strategy_type,'grid')
 		 FROM strategies WHERE status IN ('active','finishing')`)
 	if err != nil {
@@ -83,6 +85,8 @@ func (e *Engine) Notify(ctx context.Context, strategyID string) {
 		        COALESCE(signal_configs::text,'[]'),
 		        cycle_count, max_cycles, bot_id, COALESCE(matrix_levels::text,''), COALESCE(safe_zone_pct,0), COALESCE(matrix_entry_level::text,''),
 		        COALESCE(protected_build,false),
+		        COALESCE(matrix_rebuild_on_sl,false),
+		        COALESCE(matrix_rebuild_from_entry,false),
 		        COALESCE(strategy_type,'grid')
 		 FROM strategies WHERE id=$1`, strategyID)
 	if err := scanStrategyRow(row, &s); err != nil {
@@ -296,9 +300,60 @@ func (e *Engine) GetSignalState(strategyID string) string {
 	return ""
 }
 
-// GetMatrixSafeZone is kept for API compatibility but always returns nil.
-// SafeZone has been replaced by the depth-ordered waiting-slot re-entry system.
+// GetMatrixSafeZone returns the current SafeZone for a matrix strategy.
+// By design at most one slot can be in the waiting-for-reentry state at a time,
+// so we take the first slot with a valid SL trigger price. Returns nil if no slot
+// is waiting or safe_zone_pct is zero.
 func (e *Engine) GetMatrixSafeZone(strategyID string) *MatrixSafeZone {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, runner := range e.runners {
+		runner.mu.RLock()
+		sr, ok := runner.strategies[strategyID]
+		runner.mu.RUnlock()
+		if !ok {
+			continue
+		}
+		sr.mu.Lock()
+		szPct := sr.strategy.SafeZonePct
+		dir := sr.strategy.Direction
+		slots := sr.matrixWaitingSlots
+		lastSlot := sr.matrixLastSLSlot
+		sr.mu.Unlock()
+
+		if szPct <= 0 || len(slots) == 0 {
+			return nil
+		}
+		// When multiple slots are waiting, show the SZ for the most recently stopped one.
+		// matrixLastSLSlot is updated every time a new SL fires, so it's always current.
+		// Fall back to the minimum slot number when lastSlot isn't in the map — the minimum
+		// slot is the most recently stopped level (it is nearest to entry and fires last).
+		// Deterministic fallback avoids the flickering caused by random Go map iteration.
+		slTrigger, ok := slots[lastSlot]
+		if !ok || slTrigger <= 0 {
+			// deterministic fallback: pick the minimum slot with a valid trigger
+			minSlot := -1
+			for s, t := range slots {
+				if t > 0 && (minSlot == -1 || s < minSlot) {
+					minSlot = s
+					slTrigger = t
+					ok = true
+				}
+			}
+		}
+		if !ok {
+			return nil
+		}
+		var low, high float64
+		if dir == DirectionLong {
+			low = slTrigger
+			high = slTrigger * (1 + szPct/100)
+		} else {
+			low = slTrigger * (1 - szPct/100)
+			high = slTrigger
+		}
+		return &MatrixSafeZone{Low: low, High: high}
+	}
 	return nil
 }
 
@@ -458,6 +513,8 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 		&s.EntryOrderType, &stepsJSON, &signalConfigsJSON,
 		&s.CycleCount, &s.MaxCycles, &s.BotID, &matrixJSON, &s.SafeZonePct, &entryLevelJSON,
 		&s.ProtectedBuild,
+		&s.RebuildOnSL,
+		&s.RebuildFromEntry,
 		&s.StrategyType,
 	)
 	if err != nil {

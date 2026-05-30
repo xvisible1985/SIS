@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, type CSSProperties } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { getNovabotBalance, type NovabotBalance, type NovabotTransaction } from '../api/account'
+import { DepositModal } from '../components/DepositModal'
 
 /* ─── tokens ─────────────────────────────────────────────────────────────── */
 const C = {
@@ -61,7 +61,12 @@ function Ring({ realPct }: { realPct: number }) {
 }
 
 /* ─── Hero card ──────────────────────────────────────────────────────────── */
-function Hero({ data, view }: { data: NovabotBalance; view: 'bar' | 'ring' }) {
+function Hero({ data, view, onTopUp, onWithdraw }: {
+  data: NovabotBalance
+  view: 'bar' | 'ring'
+  onTopUp: () => void
+  onWithdraw: () => void
+}) {
   const realPct = data.total > 0 ? (data.real / data.total) * 100 : 0
   const virtPct = 100 - realPct
 
@@ -99,12 +104,32 @@ function Hero({ data, view }: { data: NovabotBalance; view: 'bar' | 'ring' }) {
       <div style={{ position: 'absolute', top: -110, right: -70, width: 240, height: 240, borderRadius: '50%', background: 'radial-gradient(circle, rgba(91,140,255,.28), transparent 62%)', filter: 'blur(46px)', pointerEvents: 'none' }}/>
       <div style={{ position: 'absolute', bottom: -120, left: -70, width: 220, height: 220, borderRadius: '50%', background: 'radial-gradient(circle, rgba(65,210,139,.20), transparent 62%)', filter: 'blur(46px)', pointerEvents: 'none' }}/>
 
-      {/* label */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 9, position: 'relative', zIndex: 1 }}>
-        <div style={{ width: 26, height: 26, borderRadius: 7, background: 'rgba(255,255,255,.06)', border: '1px solid rgba(255,255,255,.10)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.sub }}>
-          <IcLayers s={15} w={1.9}/>
+      {/* label row + chips */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, position: 'relative', zIndex: 1 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+          <div style={{ width: 26, height: 26, borderRadius: 7, background: 'rgba(255,255,255,.06)', border: '1px solid rgba(255,255,255,.10)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.sub }}>
+            <IcLayers s={15} w={1.9}/>
+          </div>
+          <span style={{ fontSize: 10.5, color: C.sub, textTransform: 'uppercase', letterSpacing: 1.4, fontWeight: 700 }}>Общий баланс</span>
         </div>
-        <span style={{ fontSize: 10.5, color: C.sub, textTransform: 'uppercase', letterSpacing: 1.4, fontWeight: 700 }}>Общий баланс</span>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {[
+            { label: 'Реальный',    val: data.real,    color: C.green,    dot: C.green,    bg: C.greenBg, bd: C.greenBd },
+            { label: 'Виртуальный', val: data.virtual, color: C.blue,     dot: C.blueDeep, bg: C.blueBg,  bd: C.blueBd  },
+          ].map(({ label, val, color, dot, bg, bd }) => (
+            <span key={label} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              padding: '4px 10px', borderRadius: 99,
+              background: bg, border: `1px solid ${bd}`,
+              fontSize: 11, fontWeight: 600, color,
+            }}>
+              <span style={{ width: 7, height: 7, borderRadius: 3, background: dot, flexShrink: 0 }}/>
+              {label}
+              <span style={{ ...mono, fontSize: 11, fontWeight: 700 }}>{fmt(val)}</span>
+              <span style={{ color: C.faint, fontSize: 10 }}>USDT</span>
+            </span>
+          ))}
+        </div>
       </div>
 
       {/* total value */}
@@ -131,6 +156,20 @@ function Hero({ data, view }: { data: NovabotBalance; view: 'bar' | 'ring' }) {
             {Legend}
           </div>
         )}
+      </div>
+
+      {/* actions */}
+      <div style={{ position: 'relative', zIndex: 1, display: 'flex', gap: 10 }}>
+        <button onClick={onTopUp} style={{
+          ...btnBase,
+          background: C.greenGrad, color: '#04130c',
+          boxShadow: 'inset 0 1px 0 rgba(255,255,255,.28), 0 6px 14px -8px rgba(65,210,139,.7)',
+        }}>
+          <IcPlus s={14} w={2.6}/> Пополнить
+        </button>
+        <button onClick={onWithdraw} style={{ ...btnBase, ...btnGhost }}>
+          <IcMinus s={14} w={2.6}/> Вывести
+        </button>
       </div>
     </div>
   )
@@ -320,11 +359,11 @@ function History({ history }: { history: NovabotTransaction[] }) {
 
 /* ─── Page ───────────────────────────────────────────────────────────────── */
 export function BalancesPage() {
-  const navigate = useNavigate()
   const [data, setData] = useState<NovabotBalance | null>(null)
   const [loading, setLoading] = useState(true)
   const [view, setView] = useState<'bar' | 'ring'>('bar')
   const [withdrawOpen, setWithdrawOpen] = useState(false)
+  const [depositOpen, setDepositOpen] = useState(false)
 
   useEffect(() => {
     getNovabotBalance()
@@ -337,7 +376,8 @@ export function BalancesPage() {
   const d = data ?? empty
 
   return (
-    <div style={{ color: '#dde3ef', fontFamily: "'Inter', system-ui, sans-serif", maxWidth: 600 }}>
+    <div style={{ color: '#dde3ef', fontFamily: "'Inter', system-ui, sans-serif", maxWidth: 680, margin: '0 auto' }}>
+      <DepositModal open={depositOpen} onClose={() => setDepositOpen(false)} />
       {/* Модалка вывода */}
       {withdrawOpen && (
         <div onClick={() => setWithdrawOpen(false)} style={{
@@ -393,13 +433,7 @@ export function BalancesPage() {
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <Hero data={d} view={view}/>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-            <BalanceCard data={d} kind="real" onTopUp={() => navigate('/payments')} onWithdraw={() => setWithdrawOpen(true)}/>
-            <BalanceCard data={d} kind="virtual"/>
-          </div>
-
+          <Hero data={d} view={view} onTopUp={() => setDepositOpen(true)} onWithdraw={() => setWithdrawOpen(true)}/>
           <History history={d.history}/>
         </div>
       )}

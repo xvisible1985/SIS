@@ -5,6 +5,7 @@ import { listAccounts, getAccountBalance, getAccountPositions } from '../api/acc
 import { getProfile } from '../api/account'
 import { Sidebar } from './Sidebar'
 import { MobileNav } from './MobileNav'
+import { DepositModal } from './DepositModal'
 import { useSelectedAccount } from '../contexts/AccountContext'
 import type { ExchangeAccount } from '../types'
 import { useState, useEffect, type ReactNode } from 'react'
@@ -21,6 +22,7 @@ export function Layout({ children }: { children: ReactNode }) {
   const [pnl24h, setPnl24h] = useState({ percent: 0, usd: 0 })
   const [has24hData, setHas24hData] = useState(false)
   const [novabotBalance, setNovabotBalance] = useState(0)
+  const [depositOpen, setDepositOpen] = useState(false)
 
   function loadAccounts() {
     listAccounts().then(accs => {
@@ -114,12 +116,13 @@ export function Layout({ children }: { children: ReactNode }) {
           noActiveAccounts={accounts.length === 0}
           counters={{ accounts: accounts.length }}
           onSelectAccount={(id) => setSelectedAccountId(id)}
-          onTopUp={() => navigate('/billing')}
+          onTopUp={() => setDepositOpen(true)}
           onOpenSettings={() => navigate('/account')}
           onLogout={handleLogout}
         />
       </div>
       <MobileNav onLogout={handleLogout} onOpenSettings={() => navigate('/account')} />
+      <DepositModal open={depositOpen} onClose={() => setDepositOpen(false)} />
       <main className={`flex-1 overflow-auto pb-16 dark:text-gray-100 md:pb-0 ${pathname === '/terminal' || pathname === '/signal-chart' ? '' : 'p-4 md:p-6'}`}>
         {children}
       </main>

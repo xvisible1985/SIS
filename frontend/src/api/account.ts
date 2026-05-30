@@ -68,3 +68,23 @@ export async function getReferral(): Promise<ReferralInfo> {
   const res = await apiClient.get<ReferralInfo>('/account/referral')
   return res.data
 }
+
+export interface NovabotTransaction {
+  id: string
+  amount: number
+  bucket: 'real' | 'virtual'
+  note: string
+  created_at: string
+}
+
+export interface NovabotBalance {
+  total: number
+  real: number
+  virtual: number
+  history: NovabotTransaction[]
+}
+
+export async function getNovabotBalance(): Promise<NovabotBalance> {
+  const res = await apiClient.get<NovabotBalance>('/account/novabot-balance')
+  return res.data
+}

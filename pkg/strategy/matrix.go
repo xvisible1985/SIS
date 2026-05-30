@@ -265,7 +265,7 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 		return nil
 	}
 
-	sr.matrixWaitingSlots = make(map[int]bool) // defensive reset for fresh cycle
+	sr.matrixWaitingSlots = make(map[int]float64) // defensive reset for fresh cycle
 
 	var maxCycle int
 	sr.runner.pool.QueryRow(ctx,
@@ -1265,7 +1265,21 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	}
 
 	sr.tpPlaceSeq++
-	linkID := fmt.Sprintf("SIS_STR-%s-tp-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, sr.tpPlaceSeq)
+	// Embed the initiating slot into the linkId so the frontend can display
+	// "TP L(N)" in the execution marker. Uses same encoding as matrixSlotLinkStr:
+	// positive slots → plain digits, negative slots → "n{abs}".
+	slotSuffix := ""
+	if latest.Slot != nil {
+		s := *latest.Slot
+		var enc string
+		if s < 0 {
+			enc = fmt.Sprintf("n%d", -s)
+		} else {
+			enc = fmt.Sprintf("%d", s)
+		}
+		slotSuffix = "l" + enc // e.g. "l2" or "ln1" → link looks like "…-tpl2-…"
+	}
+	linkID := fmt.Sprintf("SIS_STR-%s-tp%s-%d-%d", sr.strategy.ID[:8], slotSuffix, sr.cycle.CycleNum, sr.tpPlaceSeq)
 	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:      sr.strategy.Symbol,
 		Category:    sr.strategy.Category,
@@ -1402,13 +1416,65 @@ func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string
 	sr.warn(ctx, fmt.Sprintf("Matrix SL сработал %s @ %.4f",
 		slotLabel(closed.Slot), slTrigger))
 
-	// Mark slot as waiting for re-entry — only for positive slots (L1, L2…)
-	if closed.Slot != nil && *closed.Slot > 0 {
-		if sr.matrixWaitingSlots == nil {
-			sr.matrixWaitingSlots = make(map[int]bool)
+	// Mark slot as waiting for re-entry.
+	// RebuildFromEntry: L(0) SL also triggers waiting — it re-enters at market after SZ clears.
+	if closed.Slot != nil {
+		slot := *closed.Slot
+		if slot == 0 && sr.strategy.RebuildFromEntry {
+			// L(0) SL fired — anchor point lost. Cancel all pending/placed positive slots
+			// (DCA levels); they will be rebuilt anchored to the new L(0) fill price once
+			// price exits the Safe Zone and L(0) re-enters at market.
+			sr.matrixLastSLSlot = 0
+			for i := range sr.levels {
+				l := &sr.levels[i]
+				if l.Slot == nil || *l.Slot <= 0 {
+					continue
+				}
+				if l.Status != LevelPending && l.Status != LevelPlaced {
+					continue
+				}
+				if l.ExchangeOrderID != "" {
+					cancelErr := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+						Symbol:   sr.strategy.Symbol,
+						Category: sr.strategy.Category,
+						OrderId:  l.ExchangeOrderID,
+					})
+					if cancelErr != nil && isOrderGone(cancelErr) {
+						// Regular cancel found nothing — retry as conditional (StopMarket) order.
+						sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{ //nolint:errcheck
+							Symbol:      sr.strategy.Symbol,
+							Category:    sr.strategy.Category,
+							OrderId:     l.ExchangeOrderID,
+							OrderFilter: "StopOrder",
+						})
+					}
+					sr.runner.UnregisterOrder(l.ExchangeOrderID)
+				}
+				l.Status = LevelCancelled
+				l.ExchangeOrderID = ""
+				l.ExchangeLinkID = ""
+				sr.runner.pool.Exec(ctx, //nolint:errcheck
+					`UPDATE strategy_levels SET status='cancelled', exchange_order_id=NULL, exchange_link_id=NULL WHERE id=$1`, l.ID)
+			}
+			if sr.matrixWaitingSlots == nil {
+				sr.matrixWaitingSlots = make(map[int]float64)
+			}
+			sr.matrixWaitingSlots[0] = slTrigger
+			sr.info(ctx, fmt.Sprintf("Matrix L(0) SL @ %.4f — ожидаем SZ для перезахода в точку входа", slTrigger))
+		} else if slot > 0 {
+			sr.matrixLastSLSlot = slot // track most-recently-stopped slot for SZ display
+			if sr.strategy.RebuildOnSL {
+				// New behaviour: immediately rebuild the grid from the SZ lower boundary.
+				sr.matrixRebuildFromSZLow(ctx, slot, slTrigger)
+			} else {
+				// Legacy behaviour: add to waiting map, re-enter when price exits SZ.
+				if sr.matrixWaitingSlots == nil {
+					sr.matrixWaitingSlots = make(map[int]float64)
+				}
+				sr.matrixWaitingSlots[slot] = slTrigger
+				sr.info(ctx, fmt.Sprintf("Matrix L%d ожидает перезахода (SL @ %.4f)", slot, slTrigger))
+			}
 		}
-		sr.matrixWaitingSlots[*closed.Slot] = true
-		sr.info(ctx, fmt.Sprintf("Matrix L%d ожидает перезахода (SL @ %.4f)", *closed.Slot, slTrigger))
 	}
 
 	// Recalculate global TP (will cancel it if no filled levels remain)
@@ -1515,7 +1581,7 @@ func (sr *StrategyRunner) handleMatrixTPFill(ctx context.Context, fillPrice, fil
 		l.FilledPrice = 0
 		sr.runner.pool.Exec(ctx, //nolint:errcheck
 			`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL,
-			 filled_price=NULL WHERE id=$1`, l.ID)
+			 filled_price=NULL, filled_at=NULL WHERE id=$1`, l.ID)
 	}
 
 	// 3. Clear global TP reference.
@@ -1524,7 +1590,7 @@ func (sr *StrategyRunner) handleMatrixTPFill(ctx context.Context, fillPrice, fil
 		`UPDATE strategy_cycles SET tp_order_id=NULL WHERE id=$1`, sr.cycle.ID)
 
 	// 4. Clear waiting slots — TP close is a fresh entry.
-	sr.matrixWaitingSlots = make(map[int]bool)
+	sr.matrixWaitingSlots = make(map[int]float64)
 
 	// 5. Suppress the position-zero WS event that follows TP fill.
 	// Also covers the tail case: handlePartialPositionChange sees closedBySelf=true
@@ -1576,8 +1642,10 @@ func (sr *StrategyRunner) matrixSlotCovered(slot int) bool {
 	return false
 }
 
-// matrixFindDeepestActiveRef finds the active (filled/placed/pending) level with the highest
-// slot number greater than waitingSlot. Returns nil if no such level exists.
+// matrixFindDeepestActiveRef finds the active (filled/placed/pending) level with the
+// NEAREST slot number greater than waitingSlot. Using the nearest neighbour (not the
+// highest) ensures that each waiting slot chains to the level directly above it, so
+// two waiting slots with the same stepPct don't both land on the same target price.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixFindDeepestActiveRef(waitingSlot int) *GridLevel {
 	var best *GridLevel
@@ -1591,7 +1659,7 @@ func (sr *StrategyRunner) matrixFindDeepestActiveRef(waitingSlot int) *GridLevel
 		default:
 			continue
 		}
-		if best == nil || *l.Slot > *best.Slot {
+		if best == nil || *l.Slot < *best.Slot { // nearest (minimum) slot > waitingSlot
 			best = l
 		}
 	}
@@ -1614,14 +1682,56 @@ func (sr *StrategyRunner) matrixReentryConditionMet(ref *GridLevel, currentPrice
 // re-entry condition is now met. Called from matrixPriceTick.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixCheckWaitingReentry(ctx context.Context, currentPrice float64) {
-	// Sort waiting slots descending — deepest (highest slot number) first
+	// Build slot list. For RebuildFromEntry, process slot 0 first (ascending) so L(0)
+	// re-enters before positive slots try to anchor to its fill price.
+	// For the default path keep the historical descending order (deepest first).
 	slots := make([]int, 0, len(sr.matrixWaitingSlots))
 	for s := range sr.matrixWaitingSlots {
 		slots = append(slots, s)
 	}
-	sort.Sort(sort.Reverse(sort.IntSlice(slots)))
+	if sr.strategy.RebuildFromEntry {
+		sort.Ints(slots) // ascending: slot 0 first, then 1, 2, …
+	} else {
+		sort.Sort(sort.Reverse(sort.IntSlice(slots))) // descending: deepest first
+	}
 
 	for _, slot := range slots {
+		// SafeZone: block re-entry until current price has recovered safe_zone_pct
+		// above (LONG) or below (SHORT) the SL trigger that closed this slot.
+		// This prevents immediate re-entry and repeated SL hits in volatile conditions.
+		if sr.strategy.SafeZonePct > 0 {
+			if slTrigger := sr.matrixWaitingSlots[slot]; slTrigger > 0 {
+				var safePrice float64
+				if sr.strategy.Direction == DirectionLong {
+					safePrice = slTrigger * (1 + sr.strategy.SafeZonePct/100)
+					if currentPrice < safePrice {
+						continue
+					}
+				} else {
+					safePrice = slTrigger * (1 - sr.strategy.SafeZonePct/100)
+					if currentPrice > safePrice {
+						continue
+					}
+				}
+			}
+		}
+
+		// RebuildFromEntry: slot 0 re-enters at market; positive slots anchor to L(0).
+		if sr.strategy.RebuildFromEntry {
+			if slot == 0 {
+				sr.matrixReenterL0AtMarket(ctx, currentPrice)
+				continue
+			}
+			// Positive slot: wait for L(0) to fill first, then re-enter at L(0) anchor.
+			l0 := sr.matrixFindFilledL0()
+			if l0 == nil {
+				continue // L(0) not yet filled — will retry on next price tick after L(0) fills
+			}
+			sr.matrixReenterFromL0(ctx, slot, l0.FilledPrice, currentPrice)
+			continue
+		}
+
+		// Default path (RebuildFromEntry=false)
 		ref := sr.matrixFindDeepestActiveRef(slot)
 
 		if ref == nil {
@@ -1792,28 +1902,442 @@ func (sr *StrategyRunner) matrixReenterAtConfigPrice(ctx context.Context, waitin
 	}
 }
 
-// restoreMatrixWaitingSlots derives waiting-slot state from sr.levels after a service restart.
-// A slot is "waiting" if it has an sl_closed level but no active (pending/placed/filled) level.
+// matrixFindFilledL0 returns the most recently inserted filled L(0) level, or nil if none.
+// "Most recently inserted" = highest LevelIdx among all filled slot-0 rows, since new
+// re-entry rows are appended with monotonically increasing LevelIdx.
 // Must be called with sr.mu held.
-func (sr *StrategyRunner) restoreMatrixWaitingSlots() {
-	activeSlots := map[int]bool{}
-	slClosedSlots := map[int]bool{}
+func (sr *StrategyRunner) matrixFindFilledL0() *GridLevel {
+	var best *GridLevel
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Slot == nil || *l.Slot != 0 || l.Status != LevelFilled {
+			continue
+		}
+		if best == nil || l.LevelIdx > best.LevelIdx {
+			best = l
+		}
+	}
+	return best
+}
+
+// matrixReenterL0AtMarket re-enters the L(0) slot at market after the Safe Zone clears.
+// Used by RebuildFromEntry mode. Inserts a new strategy_levels row, places a market order,
+// and removes slot 0 from matrixWaitingSlots.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixReenterL0AtMarket(ctx context.Context, currentPrice float64) {
+	var sizeUSDT float64
+	if sr.strategy.MatrixEntryLevel != nil {
+		sizeUSDT = sr.strategy.MatrixEntryLevel.SizePct / 100 * sr.strategy.GridSizeUSDT
+	}
+	if sizeUSDT == 0 {
+		sr.warn(ctx, "matrixReenterL0AtMarket: size_usdt=0, пропускаем")
+		return
+	}
+	priceForQty := currentPrice
+	if priceForQty <= 0 {
+		return
+	}
+	qty := trader.FormatQty(sizeUSDT/priceForQty, sr.instr.QtyStep, sr.instr.MinQty)
+	if qty == "" || qty == "0" {
+		sr.warn(ctx, "matrixReenterL0AtMarket: qty=0, пропускаем")
+		return
+	}
+
+	nextLevelIdx := 0
+	for _, l := range sr.levels {
+		if l.LevelIdx > nextLevelIdx {
+			nextLevelIdx = l.LevelIdx
+		}
+	}
+	nextLevelIdx++
+
+	side := matrixLevelSide(sr.strategy.Direction)
+	slotZero := 0
+	var levelID string
+	if err := sr.runner.pool.QueryRow(ctx,
+		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+		sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, 0.0, sizeUSDT, qty, slotZero,
+	).Scan(&levelID); err != nil {
+		log.Printf("strategy %s: matrixReenterL0AtMarket insert: %v", sr.strategy.ID, err)
+		return
+	}
+
+	newLevel := GridLevel{
+		ID:       levelID,
+		LevelIdx: nextLevelIdx,
+		Side:     side,
+		SizeUSDT: sizeUSDT,
+		Qty:      qty,
+		Status:   LevelPending,
+		Slot:     &slotZero,
+	}
+	sr.levels = append(sr.levels, newLevel)
+	placed := &sr.levels[len(sr.levels)-1]
+
+	// Remove from waiting before placement so a concurrent price tick doesn't double-trigger.
+	delete(sr.matrixWaitingSlots, 0)
+
+	sr.matrixTriggerVirtualLevel(ctx, placed)
+	sr.info(ctx, fmt.Sprintf("[REBUILD-FROM-ENTRY] L(0) перезаход @ market (SZ пройдена)"))
+}
+
+// matrixReenterFromL0 re-enters a waiting slot anchored to L(0)'s fill price.
+// targetPrice = calculateMatrixPrices(l0FillPrice, ...)[slot].
+// Used by RebuildFromEntry mode once L(0) is filled.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixReenterFromL0(ctx context.Context, waitingSlot int, l0FillPrice, currentPrice float64) {
+	above := filterMatrixLevels(sr.strategy.MatrixLevels, "above")
+	below := filterMatrixLevels(sr.strategy.MatrixLevels, "below")
+	prices := calculateMatrixPrices(l0FillPrice, above, below, sr.strategy.Direction)
+
+	targetPrice, ok := prices[waitingSlot]
+	if !ok || targetPrice <= 0 {
+		return
+	}
+
+	var sizeUSDT float64
+	if waitingSlot > 0 {
+		idx := waitingSlot - 1
+		if idx >= len(above) {
+			return
+		}
+		sizeUSDT = above[idx].SizePct / 100 * sr.strategy.GridSizeUSDT
+	} else {
+		idx := -waitingSlot - 1
+		if idx >= len(below) {
+			return
+		}
+		sizeUSDT = below[idx].SizePct / 100 * sr.strategy.GridSizeUSDT
+	}
+	if sizeUSDT == 0 {
+		return
+	}
+
+	qty := trader.FormatQty(sizeUSDT/targetPrice, sr.instr.QtyStep, sr.instr.MinQty)
+	if qty == "" || qty == "0" {
+		return
+	}
+	side := matrixLevelSide(sr.strategy.Direction)
+
+	nextLevelIdx := 0
+	for _, l := range sr.levels {
+		if l.LevelIdx > nextLevelIdx {
+			nextLevelIdx = l.LevelIdx
+		}
+	}
+	nextLevelIdx++
+
+	slotCopy := waitingSlot
+	var levelID string
+	if err := sr.runner.pool.QueryRow(ctx,
+		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+		sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, targetPrice, sizeUSDT, qty, slotCopy,
+	).Scan(&levelID); err != nil {
+		log.Printf("strategy %s: matrixReenterFromL0 slot=%d: %v", sr.strategy.ID, waitingSlot, err)
+		return
+	}
+
+	newLevel := GridLevel{
+		ID: levelID, LevelIdx: nextLevelIdx, Side: side,
+		TargetPrice: targetPrice, SizeUSDT: sizeUSDT, Qty: qty,
+		Status: LevelPending, Slot: &slotCopy,
+	}
+	sr.levels = append(sr.levels, newLevel)
+	placed := &sr.levels[len(sr.levels)-1]
+
+	delete(sr.matrixWaitingSlots, waitingSlot)
+
+	if sr.matrixIsVirtual(placed) {
+		// Virtual level: price monitor will trigger when price crosses target.
+		sr.info(ctx, fmt.Sprintf("[REBUILD-FROM-ENTRY] L(%d) @ %.4f virtual (L(0)=%.4f)", waitingSlot, targetPrice, l0FillPrice))
+	} else if err := sr.placeMatrixLevel(ctx, placed, currentPrice); err != nil {
+		sr.errlog(ctx, fmt.Sprintf("[REBUILD-FROM-ENTRY] L(%d) @ %.4f: %v", waitingSlot, targetPrice, err))
+	} else {
+		sr.info(ctx, fmt.Sprintf("[REBUILD-FROM-ENTRY] L(%d) @ %.4f (L(0)=%.4f)", waitingSlot, targetPrice, l0FillPrice))
+	}
+}
+
+// matrixRebuildFromSZBoundary immediately rebuilds all unfilled grid levels at or below
+// stoppedSlot, anchoring the new grid at the SafeZone boundary nearest to safe re-entry:
+//   - SHORT: lower boundary = slTrigger × (1 − safe_zone_pct%)
+//   - LONG:  upper boundary = slTrigger × (1 + safe_zone_pct%)
+// If safe_zone_pct == 0, anchor = slTrigger itself.
+//
+// Algorithm:
+//  1. Compute anchor from SZ boundary.
+//  2. Cancel all PENDING/PLACED levels with slot ≥ stoppedSlot on the exchange and in DB.
+//  3. Place new level for stoppedSlot @ anchor, then cascade each deeper slot one
+//     price_step_pct below (SHORT) / above (LONG) the previous placed price.
+//  4. FILLED levels are skipped — their position is preserved.
+//
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixRebuildFromSZLow(ctx context.Context, stoppedSlot int, slTrigger float64) {
+	// 1. Compute anchor
+	var anchor float64
+	if sr.strategy.SafeZonePct > 0 {
+		if sr.strategy.Direction == DirectionShort {
+			anchor = slTrigger * (1 - sr.strategy.SafeZonePct/100)
+		} else {
+			anchor = slTrigger * (1 + sr.strategy.SafeZonePct/100)
+		}
+	} else {
+		anchor = slTrigger
+	}
+
+	above := filterMatrixLevels(sr.strategy.MatrixLevels, "above")
+
+	// 2. Determine which slots to rebuild.
+	//    • stoppedSlot itself
+	//    • deeper slots (slot > stoppedSlot) that are pending/placed
+	//    • shallower slots (slot < stoppedSlot) that are sl_closed with no active level
+	//      — these were stopped in a prior SL event and must be rebuilt together with the
+	//      current one so the full sub-grid is anchored at the SZ boundary.
+	type slotCfg struct {
+		stepPct  float64
+		sizeUSDT float64
+	}
+	rebuildCfg := make(map[int]slotCfg) // slot → config
+
+	// Helper: which slots currently have an active level (pending/placed/filled)?
+	activeSlotSet := map[int]bool{}
 	for _, l := range sr.levels {
 		if l.Slot == nil || *l.Slot <= 0 {
 			continue
 		}
-		switch l.Status {
-		case LevelPending, LevelPlaced, LevelFilled:
-			activeSlots[*l.Slot] = true
-		case LevelSLClosed:
-			slClosedSlots[*l.Slot] = true
+		if l.Status == LevelPending || l.Status == LevelPlaced || l.Status == LevelFilled {
+			activeSlotSet[*l.Slot] = true
 		}
 	}
-	sr.matrixWaitingSlots = make(map[int]bool)
-	for slot := range slClosedSlots {
+
+	// Config for the stopped slot.
+	if idx := stoppedSlot - 1; idx >= 0 && idx < len(above) {
+		rebuildCfg[stoppedSlot] = slotCfg{
+			stepPct:  above[idx].PriceStepPct,
+			sizeUSDT: above[idx].SizePct / 100 * sr.strategy.GridSizeUSDT,
+		}
+	}
+
+	// Previously stopped slots (sl_closed, no active level) shallower than stoppedSlot.
+	// These must be included so the whole stopped sub-grid is rebuilt together.
+	for _, l := range sr.levels {
+		if l.Slot == nil || *l.Slot <= 0 || *l.Slot >= stoppedSlot {
+			continue
+		}
+		if l.Status != LevelSLClosed {
+			continue
+		}
+		if activeSlotSet[*l.Slot] {
+			continue // a fresh pending level already exists for this slot
+		}
+		idx := *l.Slot - 1
+		if idx >= 0 && idx < len(above) {
+			rebuildCfg[*l.Slot] = slotCfg{
+				stepPct:  above[idx].PriceStepPct,
+				sizeUSDT: above[idx].SizePct / 100 * sr.strategy.GridSizeUSDT,
+			}
+		}
+	}
+
+	// Cancel deeper pending/placed levels and collect their configs.
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Slot == nil || *l.Slot <= stoppedSlot || *l.Slot <= 0 {
+			continue
+		}
+		if l.Status != LevelPending && l.Status != LevelPlaced {
+			continue
+		}
+		idx := *l.Slot - 1
+		if idx >= 0 && idx < len(above) {
+			rebuildCfg[*l.Slot] = slotCfg{
+				stepPct:  above[idx].PriceStepPct,
+				sizeUSDT: above[idx].SizePct / 100 * sr.strategy.GridSizeUSDT,
+			}
+		}
+		// Cancel on exchange (ignore "order not found" — may have raced with a fill).
+		// DCA levels may be regular Limit orders OR conditional StopMarket orders,
+		// depending on whether the target was above or below the mark price at placement
+		// time. For SHORT strategies, targets below entry become StopMarket orders and
+		// require OrderFilter="StopOrder" to cancel. Try the plain cancel first; on
+		// "order not found" retry as a conditional order so neither type is silently skipped.
+		if l.ExchangeOrderID != "" {
+			cancelErr := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+				Symbol:   sr.strategy.Symbol,
+				Category: sr.strategy.Category,
+				OrderId:  l.ExchangeOrderID,
+			})
+			if cancelErr != nil && isOrderGone(cancelErr) {
+				// Regular cancel found nothing — retry as a conditional (StopMarket) order.
+				if err2 := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+					Symbol:      sr.strategy.Symbol,
+					Category:    sr.strategy.Category,
+					OrderId:     l.ExchangeOrderID,
+					OrderFilter: "StopOrder",
+				}); err2 != nil && !isOrderGone(err2) {
+					sr.warn(ctx, fmt.Sprintf("matrixRebuildFromSZLow: cancel L%d (stop): %v", *l.Slot, err2))
+				}
+			} else if cancelErr != nil {
+				sr.warn(ctx, fmt.Sprintf("matrixRebuildFromSZLow: cancel L%d: %v", *l.Slot, cancelErr))
+			}
+		}
+		// Mark cancelled in memory and DB (do NOT unregister — WS fill may still arrive).
+		l.Status = LevelCancelled
+		l.ExchangeOrderID = ""
+		l.ExchangeLinkID = ""
+		sr.runner.pool.Exec(ctx, //nolint:errcheck
+			`UPDATE strategy_levels SET status='cancelled', exchange_order_id=NULL, exchange_link_id=NULL WHERE id=$1`, l.ID)
+	}
+
+	if len(rebuildCfg) == 0 {
+		sr.warn(ctx, fmt.Sprintf("matrixRebuildFromSZLow: нет конфига для L%d, пропускаем", stoppedSlot))
+		return
+	}
+
+	// 3. Sort slots ascending (stoppedSlot first, then deeper).
+	slots := make([]int, 0, len(rebuildCfg))
+	for s := range rebuildCfg {
+		slots = append(slots, s)
+	}
+	sort.Ints(slots)
+
+	stepMul := 1.0
+	if sr.strategy.Direction == DirectionShort {
+		stepMul = -1.0
+	}
+
+	currentPrice := sr.lastMatrixPrice
+	side := matrixLevelSide(sr.strategy.Direction)
+
+	nextLevelIdx := 0
+	for _, l := range sr.levels {
+		if l.LevelIdx > nextLevelIdx {
+			nextLevelIdx = l.LevelIdx
+		}
+	}
+
+	prevPrice := anchor
+	placed := 0
+	firstPlaced := true // tracks whether this is the first non-skipped slot (anchor)
+
+	for _, slot := range slots {
+		cfg := rebuildCfg[slot]
+
+		// Skip slots that already have a FILLED level — position is real, don't touch.
+		filledExists := false
+		for _, l := range sr.levels {
+			if l.Slot != nil && *l.Slot == slot && l.Status == LevelFilled {
+				filledExists = true
+				break
+			}
+		}
+		if filledExists {
+			continue
+		}
+
+		// The first non-skipped slot (smallest slot number in sorted list) is placed at
+		// the anchor. Subsequent slots cascade from there. This ensures that when multiple
+		// previously-stopped slots are rebuilt together, L1 (smallest) always lands at the
+		// SZ boundary regardless of which slot triggered the current rebuild.
+		var targetPrice float64
+		if firstPlaced {
+			targetPrice = anchor
+			firstPlaced = false
+		} else {
+			targetPrice = prevPrice * (1 + stepMul*math.Abs(cfg.stepPct)/100)
+		}
+		if targetPrice <= 0 {
+			continue
+		}
+
+		qty := trader.FormatQty(cfg.sizeUSDT/targetPrice, sr.instr.QtyStep, sr.instr.MinQty)
+		if qty == "" || qty == "0" {
+			sr.warn(ctx, fmt.Sprintf("matrixRebuildFromSZLow: L%d qty=0 пропускаем", slot))
+			continue
+		}
+
+		nextLevelIdx++
+		slotCopy := slot
+		var levelID string
+		if err := sr.runner.pool.QueryRow(ctx,
+			`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+			sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, targetPrice, cfg.sizeUSDT, qty, slotCopy,
+		).Scan(&levelID); err != nil {
+			sr.errlog(ctx, fmt.Sprintf("matrixRebuildFromSZLow: insert L%d: %v", slot, err))
+			continue
+		}
+
+		newLevel := GridLevel{
+			ID: levelID, LevelIdx: nextLevelIdx, Side: side,
+			TargetPrice: targetPrice, SizeUSDT: cfg.sizeUSDT, Qty: qty,
+			Status: LevelPending, Slot: &slotCopy,
+		}
+		sr.levels = append(sr.levels, newLevel)
+		newPtr := &sr.levels[len(sr.levels)-1]
+
+		if err := sr.placeMatrixLevel(ctx, newPtr, currentPrice); err != nil {
+			sr.errlog(ctx, fmt.Sprintf("[SZ-REBUILD] L%d @ %.4f: %v", slot, targetPrice, err))
+		} else {
+			sr.info(ctx, fmt.Sprintf("[SZ-REBUILD] L%d @ %.4f", slot, targetPrice))
+			placed++
+		}
+
+		prevPrice = targetPrice
+	}
+
+	// Clear waiting-slot entries for every slot that was just rebuilt so that stale
+	// entries from a previous RebuildOnSL=false run (or a restored state) do not
+	// cause SZ to flicker or display a stale boundary.
+	for _, slot := range slots {
+		delete(sr.matrixWaitingSlots, slot)
+	}
+
+	sr.info(ctx, fmt.Sprintf("Перестройка сетки от SZ завершена: anchor=%.4f, размещено=%d", anchor, placed))
+}
+
+// restoreMatrixWaitingSlots derives waiting-slot state from sr.levels after a service restart.
+// A slot is "waiting" if it has an sl_closed level but no active (pending/placed/filled) level.
+// Levels are loaded ORDER BY level_idx ASC, so iterating in order means the last sl_closed entry
+// for a given slot wins (most recent SL trigger price).
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) restoreMatrixWaitingSlots() {
+	activeSlots := map[int]bool{}
+	slClosedSlots := map[int]float64{} // slot → SL trigger price (from sl_price column)
+	for _, l := range sr.levels {
+		if l.Slot == nil {
+			continue
+		}
+		slot := *l.Slot
+		// Positive slots always tracked; slot 0 only when RebuildFromEntry is enabled.
+		if slot < 0 || (slot == 0 && !sr.strategy.RebuildFromEntry) {
+			continue
+		}
+		switch l.Status {
+		case LevelPending, LevelPlaced, LevelFilled:
+			activeSlots[slot] = true
+		case LevelSLClosed:
+			// sl_price is persisted when the SL order is placed and not cleared on fill,
+			// so l.SLPrice is non-zero for any level closed by a proper SL order.
+			slClosedSlots[slot] = l.SLPrice
+		}
+	}
+	sr.matrixWaitingSlots = make(map[int]float64)
+	for slot, slPrice := range slClosedSlots {
 		if !activeSlots[slot] {
-			sr.matrixWaitingSlots[slot] = true
-			log.Printf("strategy %s: restored waiting slot L%d", sr.strategy.ID, slot)
+			sr.matrixWaitingSlots[slot] = slPrice
+			log.Printf("strategy %s: restored waiting slot L(%d) (SL trigger %.4f)", sr.strategy.ID, slot, slPrice)
+		}
+	}
+	// Restore matrixLastSLSlot to the minimum waiting slot.
+	// For a typical SHORT/LONG grid, the lowest slot number is the one that was stopped most
+	// recently (it is closest to the entry price and fires last as price moves against the trade).
+	// Using the minimum gives deterministic SZ display after a service restart.
+	sr.matrixLastSLSlot = 0
+	for slot := range sr.matrixWaitingSlots {
+		if sr.matrixLastSLSlot == 0 || slot < sr.matrixLastSLSlot {
+			sr.matrixLastSLSlot = slot
 		}
 	}
 }

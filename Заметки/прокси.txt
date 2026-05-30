@@ -1,0 +1,9 @@
+Сбер клауд мой
+91.224.86.8:3128
+user_proxy
+Qg9jh7PqTZ9n6bGK
+
+Сбер клауд Илья
+89.232.177.34:3128
+proxy_user
+nhlhncQs2bTNaqjE

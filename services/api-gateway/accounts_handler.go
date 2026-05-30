@@ -142,12 +142,17 @@ func (s *Server) VerifyAccount(w http.ResponseWriter, r *http.Request) {
 			`UPDATE exchange_accounts SET expires_at=$1 WHERE id=$2 AND owner_id=$3`,
 			expiresAt, id, userID)
 	}
+	var proxyHost string
+	if s.proxyManager != nil {
+		proxyHost = s.proxyManager.LastPickedHost()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":          true,
 		"read_only":   parsed.ReadOnly == 1,
 		"permissions": parsed.Permissions,
 		"ips":         parsed.IPs,
 		"expires_at":  parsed.ExpiredTime,
+		"proxy_host":  proxyHost,
 	})
 }
 

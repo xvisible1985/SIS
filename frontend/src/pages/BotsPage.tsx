@@ -79,7 +79,7 @@ export function BotsPage() {
   const [editBot, setEditBot] = useState<Bot | null>(null);
   const [deployBot, setDeployBot] = useState<Bot | null>(null);
   const [kindPickerOpen, setKindPickerOpen] = useState(false);
-  const [selectedKind, setSelectedKind] = useState<BotKind>('signal' as BotKind);
+  const [selectedKind, setSelectedKind] = useState<BotKind>('signal');
 
   if (loading) {
     return (

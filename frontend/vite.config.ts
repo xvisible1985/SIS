@@ -4,11 +4,6 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  test: {
-    environment: 'jsdom',
-    globals: true,
-    setupFiles: ['./src/setupTests.ts'],
-  },
   server: {
     port: 4000,
     strictPort: true,
@@ -31,6 +26,7 @@ export default defineConfig({
       '/instrument-info': { target: 'http://localhost:8080', changeOrigin: true },
       '/account': { target: 'http://localhost:8080', changeOrigin: true },
       '/coin-icon': { target: 'http://localhost:8080', changeOrigin: true },
+      '/payments': { target: 'http://localhost:8080', changeOrigin: true },
       '/ws': { target: 'ws://localhost:8080', ws: true, changeOrigin: true },
     },
   },

@@ -1,4 +1,7 @@
+import type { BotKind } from './types';
+
 export type BotStrategy = 'grid' | 'matrix' | 'signal' | 'scalp' | 'arbitrage' | 'copy' | 'trend' | 'hold';
+export type { BotKind };
 export type RiskLevel  = 'low' | 'medium' | 'high';
 export type TradeMode  = 'spot' | 'futures';
 export type RunStatus  = 'running' | 'paused' | 'stopped';
@@ -47,6 +50,7 @@ export type FeaturedBot = {
 /** Бот пользователя — запущенный экземпляр */
 export type MyBot = {
   id: string;
+  botKind?: BotKind;
   /** ID шаблона из библиотеки или null для кастомных */
   tplId: string | null;
   name: string;

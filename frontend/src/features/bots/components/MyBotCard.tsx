@@ -180,6 +180,3 @@ function Stat({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-
-// Re-export meta for external use
-export { BOT_KIND_META }
