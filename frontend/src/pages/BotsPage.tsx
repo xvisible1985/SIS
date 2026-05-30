@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { BotsPage as BotsPageUI } from '../features/bots/BotsPage';
 import { BotForm } from '../features/bots/components/BotForm';
+import { BotTypePickerModal } from '../features/bots/components/BotTypePickerModal';
 import { DeployModal } from '../features/bots/components/DeployModal';
 import { useBots } from '../features/bots/api';
 import { useBotSignalCounts } from '../hooks/useBotSignalCounts';
 import type { BotSignalCount } from '../hooks/useBotSignalCounts';
-import type { Bot, CreateBotInput } from '../features/bots/types';
+import type { Bot, BotKind, CreateBotInput } from '../features/bots/types';
 import type { MyBot, FeaturedBot, BotStrategy, RiskLevel, TradeMode } from '../features/bots/ui-types';
 
 function toMyBot(b: Bot, sc: BotSignalCount | undefined): MyBot {
@@ -21,15 +22,16 @@ function toMyBot(b: Bot, sc: BotSignalCount | undefined): MyBot {
     description:      b.description ?? '',
     avatarUrl:        b.avatarUrl,
     strategy: (b.strategyConfig.direction === 'long'
-      ? 'trend'
+      ? 'signal'
       : b.strategyConfig.direction === 'short'
-        ? 'trend'
+        ? 'signal'
         : 'grid') as BotStrategy,
     status:           b.status === 'active' ? 'running' : b.status === 'stopped' ? 'stopped' : 'paused',
     pair:             b.strategyConfig.symbol ?? 'BTC/USDT',
     exchange:         'bybit',
     capital:          b.strategyConfig.grid_size_usdt ?? 0,
     started:          new Date(b.createdAt),
+    botKind:           b.strategyConfig.bot_kind,
     lev:              1,
     mode:             'futures' as TradeMode,
     symbolsTotal,
@@ -76,6 +78,8 @@ export function BotsPage() {
   const [formMode, setFormMode] = useState<'create' | 'edit' | null>(null);
   const [editBot, setEditBot] = useState<Bot | null>(null);
   const [deployBot, setDeployBot] = useState<Bot | null>(null);
+  const [kindPickerOpen, setKindPickerOpen] = useState(false);
+  const [selectedKind, setSelectedKind] = useState<BotKind>('signal' as BotKind);
 
   if (loading) {
     return (
@@ -87,6 +91,12 @@ export function BotsPage() {
 
   const handleCreate = () => {
     setEditBot(null);
+    setKindPickerOpen(true);
+  };
+
+  const handleKindSelect = (kind: BotKind) => {
+    setSelectedKind(kind);
+    setKindPickerOpen(false);
     setFormMode('create');
   };
 
@@ -98,7 +108,11 @@ export function BotsPage() {
 
   const handleFormSubmit = async (data: CreateBotInput) => {
     if (formMode === 'create') {
-      await action({ type: 'create', data });
+      const input: CreateBotInput = {
+        ...data,
+        strategyConfig: { ...data.strategyConfig, bot_kind: selectedKind },
+      };
+      await action({ type: 'create', data: input });
     } else if (formMode === 'edit' && editBot) {
       await action({ type: 'update', botId: editBot.id, data });
     }
@@ -142,6 +156,13 @@ export function BotsPage() {
         onConfigureTpl={handleLaunchTpl}
         onCloneTpl={(tplId) => action({ type: 'fork', botId: tplId })}
       />
+
+      {kindPickerOpen && (
+        <BotTypePickerModal
+          onSelect={handleKindSelect}
+          onClose={() => setKindPickerOpen(false)}
+        />
+      )}
 
       {formMode !== null && (
         <BotForm

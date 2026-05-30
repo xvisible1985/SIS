@@ -26,10 +26,17 @@ import { useBotSignalCounts } from '../hooks/useBotSignalCounts'
 import { useBotEventsWs, type BotEventCategory } from '../hooks/useBotEventsWs'
 import { BotForm } from '../features/bots/components/BotForm'
 import { BotScanModal } from '../features/bots/components/BotScanModal'
-import { STRAT_META } from '../features/bots/strategyMeta'
-import type { Bot } from '../features/bots/types'
-import type { BotStrategy } from '../features/bots/ui-types'
+import { getBotKindMeta } from '../features/bots/botKindMeta'
+import { TrendingUp, Search, Shield } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+import type { Bot, BotKind } from '../features/bots/types'
 import type { Strategy, ExchangeAccount, ActiveOrder, Position, ChartExecution, StrategyLevel } from '../types'
+
+const KIND_ICONS: Record<BotKind, LucideIcon> = {
+  signal: TrendingUp,
+  parser: Search,
+  hedge:  Shield,
+}
 
 let _cachedSymbol = localStorage.getItem('t_symbol') ?? 'BTCUSDT'
 let _cachedTf = localStorage.getItem('t_tf') ?? '60'
@@ -255,10 +262,8 @@ function BotTerminalCard({ bot, sc, onSymbolChange, onStop, onStart, onEdit, onA
   const [logOpen, setLogOpen] = useState(false)
   const running = bot.status === 'active'
 
-  const stratKey = (bot.strategyConfig.direction === 'long' || bot.strategyConfig.direction === 'short'
-    ? 'trend' : 'grid') as BotStrategy
-  const m = STRAT_META[stratKey]
-  const Icon = m.icon
+  const km   = getBotKindMeta(bot.strategyConfig.bot_kind)
+  const Icon = KIND_ICONS[bot.strategyConfig.bot_kind ?? 'signal']
 
   const sym = bot.strategyConfig.symbol
     ?? (bot.symbolWhitelist.length === 1 && !bot.symbolWhitelist[0].includes('*')
@@ -269,12 +274,17 @@ function BotTerminalCard({ bot, sc, onSymbolChange, onStop, onStart, onEdit, onA
   const symbolsSignal = sc ? String(sc.signalCount) : '—'
 
   return (
-    <div className={
-      'rounded-[14px] border p-3.5 transition-colors ' +
-      (running
-        ? 'border-[#5b8cff]/25 bg-[linear-gradient(180deg,rgba(91,140,255,.05)_0%,rgba(123,91,255,.03)_100%)] shadow-[0_12px_28px_-16px_rgba(91,140,255,.35)]'
-        : 'border-white/[.06] bg-white/[.02]')
-    }>
+    <div
+      className="rounded-[14px] border p-3.5 transition-colors"
+      style={running ? {
+        borderColor: km.border,
+        background:  km.bgHeader,
+        boxShadow:   `0 12px 28px -16px ${km.border}`,
+      } : {
+        borderColor: 'rgba(255,255,255,0.06)',
+        background:  'rgba(255,255,255,0.02)',
+      }}
+    >
 
       {/* head */}
       <div className="mb-3 flex items-start gap-2.5">
@@ -293,7 +303,7 @@ function BotTerminalCard({ bot, sc, onSymbolChange, onStop, onStart, onEdit, onA
           )}
           <div
             className={'h-9 w-9 overflow-hidden rounded-[9px] border flex items-center justify-center ' + (running ? '' : 'opacity-50')}
-            style={{ background: m.bg, borderColor: m.border, color: m.color }}
+            style={{ background: km.iconBg, borderColor: km.border, color: km.color }}
           >
             {bot.avatarUrl
               ? <img src={bot.avatarUrl} alt="" className="h-full w-full object-cover" />
@@ -316,18 +326,17 @@ function BotTerminalCard({ bot, sc, onSymbolChange, onStop, onStart, onEdit, onA
           {bot.description ? (
             <div className="mt-0.5 truncate text-[11px] text-slate-500">{bot.description}</div>
           ) : (
-            <div className="mt-0.5 flex items-center gap-1.5 font-mono text-[11px] text-slate-600">
+            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-600">
               {sym ? (
                 <button type="button" onClick={() => onSymbolChange(sym)}
-                  className="font-semibold text-slate-500 hover:text-blue-300 transition-colors">
+                  className="font-mono font-semibold text-slate-500 hover:text-blue-300 transition-colors">
                   {sym}
                 </button>
               ) : (
-                <span className="font-semibold text-slate-500">multi</span>
+                <span className="font-mono font-semibold text-slate-500">multi</span>
               )}
-              <span>·</span><span>bybit</span>
-              <span>·</span><span>×{bot.strategyConfig.leverage ?? 1}</span>
-              <span>·</span><span>{bot.strategyConfig.margin_type ?? 'isolated'}</span>
+              <span>·</span>
+              <span style={{ color: km.color }}>{km.label}</span>
             </div>
           )}
         </div>
@@ -557,6 +566,10 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [signalStates, setSignalStates] = useState<Record<string, LiveSignal>>({})
 
+  // Ref для быстрого доступа к текущему списку из WS-обработчика (без closure-захвата)
+  const strategiesRef = useRef<Strategy[]>([])
+  useEffect(() => { strategiesRef.current = strategies }, [strategies])
+
   async function load() {
     setLoading(true)
     try {
@@ -569,6 +582,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
       setLoading(false)
     }
   }
+
 
   useEffect(() => { load() }, [])
 
@@ -605,6 +619,15 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
           const updates: { id: string; status: string; active_levels: number; volume_usdt: number; signal_state?: string; signal_values?: Record<string, number>; manual_alert?: string; cycle_num?: number }[] = JSON.parse(evt.data as string)
           if (updates.length > 0) {
             const deletedIds = new Set(updates.filter(u => u.status === 'deleted').map(u => u.id))
+
+            // Новые стратегии — ID есть в апдейте, но нет в текущем списке
+            const existingIds = new Set(strategiesRef.current.map(s => s.id))
+            const hasNew = updates.some(u => u.status !== 'deleted' && !existingIds.has(u.id))
+            if (hasNew) {
+              // Тихий рефетч — без setLoading, список придёт с полными полями
+              void listStrategies().then(strats => setStrategies(strats)).catch(() => {})
+            }
+
             setStrategies(prev => {
               let next = prev.filter(s => !deletedIds.has(s.id))
               next = next.map(s => {
@@ -680,7 +703,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
           </span>
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+      <div className="flex-1 overflow-y-auto p-2 space-y-1.5 strategies-scroll">
         {loading && visibleStrategies.length === 0 && <div className="p-8 text-center text-sm text-gray-400">Загрузка…</div>}
         {!loading && visibleStrategies.length === 0 && (
           <div className="p-8 text-center text-sm text-gray-400">Нет стратегий</div>
