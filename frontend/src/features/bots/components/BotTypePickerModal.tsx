@@ -49,19 +49,70 @@ export function BotTypePickerModal({ onSelect, onClose }: Props) {
         {/* карточки */}
         <div className="grid grid-cols-3 gap-3.5">
           {BOT_KINDS.map((kind) => {
-            const m    = BOT_KIND_META[kind]
-            const Icon = KIND_ICONS[kind]
+            const m        = BOT_KIND_META[kind]
+            const Icon     = KIND_ICONS[kind]
+            const disabled = m.disabled === true
 
+            if (disabled) {
+              return (
+                <div
+                  key={kind}
+                  className="relative flex flex-col overflow-hidden rounded-[14px] border text-left"
+                  style={{
+                    borderColor: 'rgba(255,255,255,0.07)',
+                    background:  'rgba(255,255,255,0.015)',
+                    opacity:     0.42,
+                    cursor:      'not-allowed',
+                  }}
+                >
+                  {/* бейдж «Скоро» */}
+                  <div
+                    className="absolute right-3 top-3 rounded-[5px] border px-1.5 py-px text-[9px] font-bold uppercase tracking-wide"
+                    style={{ borderColor: m.border, color: m.color, background: m.iconBg }}
+                  >
+                    Скоро
+                  </div>
+
+                  {/* шапка */}
+                  <div className="px-4 pt-4 pb-3" style={{ background: m.bgHeader }}>
+                    <div
+                      className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border"
+                      style={{ background: m.iconBg, borderColor: m.border, color: m.color }}
+                    >
+                      <Icon size={18} strokeWidth={2} />
+                    </div>
+                    <div className="font-display text-[17px] font-bold tracking-tight text-slate-500">
+                      {m.label}
+                    </div>
+                    <div className="mt-0.5 text-[12px] font-medium text-slate-600">
+                      {m.tagline}
+                    </div>
+                  </div>
+
+                  {/* описание */}
+                  <div className="px-4 py-3">
+                    <p className="text-[12px] leading-relaxed text-slate-600">{m.desc}</p>
+                  </div>
+
+                  {/* кнопка-заглушка */}
+                  <div
+                    className="mx-4 mb-4 flex items-center justify-center rounded-lg border py-1.5 text-[11px] font-semibold text-slate-600"
+                    style={{ borderColor: 'rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.03)' }}
+                  >
+                    В разработке
+                  </div>
+                </div>
+              )
+            }
+
+            // активная карточка
             return (
               <button
                 key={kind}
                 type="button"
                 onClick={() => onSelect(kind)}
                 className="group relative flex flex-col overflow-hidden rounded-[14px] border text-left transition-all duration-150"
-                style={{
-                  borderColor: m.border,
-                  background:  'rgba(255,255,255,0.02)',
-                }}
+                style={{ borderColor: m.border, background: 'rgba(255,255,255,0.02)' }}
                 onMouseEnter={(e) => {
                   ;(e.currentTarget as HTMLElement).style.background = m.bg
                   ;(e.currentTarget as HTMLElement).style.boxShadow = `0 8px 28px -8px ${m.border}`
@@ -71,52 +122,31 @@ export function BotTypePickerModal({ onSelect, onClose }: Props) {
                   ;(e.currentTarget as HTMLElement).style.boxShadow = 'none'
                 }}
               >
-                {/* цветная шапка */}
-                <div
-                  className="px-4 pt-4 pb-3"
-                  style={{ background: m.bgHeader }}
-                >
-                  {/* иконка */}
+                <div className="px-4 pt-4 pb-3" style={{ background: m.bgHeader }}>
                   <div
                     className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border"
-                    style={{
-                      background:  m.iconBg,
-                      borderColor: m.border,
-                      color:       m.color,
-                    }}
+                    style={{ background: m.iconBg, borderColor: m.border, color: m.color }}
                   >
                     <Icon size={18} strokeWidth={2} />
                   </div>
-
-                  {/* название */}
                   <div
                     className="font-display text-[17px] font-bold tracking-tight"
                     style={{ color: m.color }}
                   >
                     {m.label}
                   </div>
-
-                  {/* тэглайн */}
                   <div className="mt-0.5 text-[12px] font-medium text-slate-400">
                     {m.tagline}
                   </div>
                 </div>
 
-                {/* описание */}
                 <div className="px-4 py-3">
-                  <p className="text-[12px] leading-relaxed text-slate-400">
-                    {m.desc}
-                  </p>
+                  <p className="text-[12px] leading-relaxed text-slate-400">{m.desc}</p>
                 </div>
 
-                {/* кнопка-подсказка */}
                 <div
                   className="mx-4 mb-4 flex items-center justify-center rounded-lg border py-1.5 text-[11px] font-semibold transition-colors"
-                  style={{
-                    borderColor: m.border,
-                    color:       m.color,
-                    background:  m.iconBg,
-                  }}
+                  style={{ borderColor: m.border, color: m.color, background: m.iconBg }}
                 >
                   Выбрать {m.label} →
                 </div>
