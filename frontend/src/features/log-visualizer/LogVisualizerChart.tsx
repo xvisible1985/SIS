@@ -88,21 +88,38 @@ export function LogVisualizerChart({ candles, events }: Props) {
   // Update event markers when list changes
   useEffect(() => {
     if (!markersRef.current) return
-    const markers = events.map(ev => ({
-      time: Math.floor(ev.tsMs / 1000) as import('lightweight-charts').Time,
-      position: ev.kind === 'level'
-        ? (ev.level?.side === 'Buy' ? 'belowBar' : 'aboveBar')
-        : 'inBar' as 'aboveBar' | 'belowBar' | 'inBar',
-      color: ev.kind === 'level'
-        ? (ev.level?.side === 'Buy' ? '#34d399' : '#f87171')
-        : ev.log?.level === 'error' ? '#f87171'
-          : ev.log?.level === 'warn' ? '#fbbf24' : '#94a3b8',
-      shape: ev.kind === 'level'
-        ? (ev.level?.side === 'Buy' ? 'arrowUp' : 'arrowDown')
-        : 'circle' as 'arrowUp' | 'arrowDown' | 'circle',
-      text: ev.kind === 'level' ? `L${ev.level?.levelIdx}` : undefined,
-      size: 1,
-    }))
+    const markers = events.map(ev => {
+      type MarkerPos   = 'aboveBar' | 'belowBar' | 'inBar'
+      type MarkerShape = 'arrowUp' | 'arrowDown' | 'circle'
+
+      let position: MarkerPos
+      let shape: MarkerShape
+      let color: string
+      let text: string | undefined
+
+      if (ev.kind === 'level' && ev.level) {
+        const isBuy = ev.level.side === 'Buy'
+        position = isBuy ? 'belowBar' : 'aboveBar'
+        shape    = isBuy ? 'arrowUp'  : 'arrowDown'
+        color    = isBuy ? '#34d399'  : '#f87171'
+        text     = `L${ev.level.levelIdx}`
+      } else {
+        position = 'inBar'
+        shape    = 'circle'
+        color    = ev.log?.level === 'error' ? '#f87171'
+                 : ev.log?.level === 'warn'  ? '#fbbf24' : '#94a3b8'
+        text     = undefined
+      }
+
+      return {
+        time: Math.floor(ev.tsMs / 1000) as import('lightweight-charts').Time,
+        position,
+        color,
+        shape,
+        text,
+        size: 1,
+      }
+    })
     markersRef.current.setMarkers(markers)
   }, [events])
 
