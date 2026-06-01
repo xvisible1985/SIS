@@ -126,7 +126,9 @@ export function LogVisualizerChart({ candles, events, layerSettings }: Props) {
     markersRef.current.setMarkers(markers)
   }, [events, layerSettings])
 
-  // Rebuild price lines when events change or showPriceLines is toggled
+  // Rebuild price lines when events change or showPriceLines is toggled.
+  // Only depends on layerSettings.showPriceLines (not the full object) because
+  // price lines are only controlled by that flag — other layer settings don't affect them.
   useEffect(() => {
     const series = seriesRef.current
     if (!series) return
