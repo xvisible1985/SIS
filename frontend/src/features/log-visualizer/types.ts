@@ -47,13 +47,14 @@ export interface MergedEvent {
   kind:   'log' | 'level'
   log?:   LVEvent
   level?: LVLevel
-  label:  string   // display text, e.g. "▲ L3 0.4225 · 0.001234" or "TP placed"
+  label:  string   // display text, e.g. "▲ L3 0.4225 · 47 USDT" or "TP placed"
 }
 
 export interface LayerSettings {
   showOrderMarkers: boolean   // arrowUp/arrowDown markers for level events
   showLogMarkers:   boolean   // circle markers for log events
   showPriceLines:   boolean   // horizontal dashed price lines at each filled level
+  // showInfo/showWarn/showError are only applied when showLogMarkers is true
   showInfo:         boolean   // show log events with level 'info'
   showWarn:         boolean   // show log events with level 'warn'
   showError:        boolean   // show log events with level 'error'
