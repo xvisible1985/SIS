@@ -6,8 +6,8 @@ import { LogVisualizerEventsList } from './LogVisualizerEventsList'
 import { LogVisualizerControls }   from './LogVisualizerControls'
 import { lvGetAccounts, lvGetStrategies, lvGetEvents, lvGetLevels, lvGetKlines } from './api'
 import { makeMergedEventLabel } from './utils'
-import type { LVAccount, LVStrategy, LVCandle, MergedEvent, Interval } from './types'
-import { INTERVALS } from './types'
+import type { LVAccount, LVStrategy, LVCandle, MergedEvent, Interval, LayerSettings } from './types'
+import { INTERVALS, DEFAULT_LAYER_SETTINGS } from './types'
 
 // Speed: candles per second = speed * CANDLES_PER_SEC_BASE
 const CANDLES_PER_SEC_BASE = 20
@@ -25,6 +25,7 @@ export function LogVisualizerTab() {
   const [interval,   setIntervalVal] = useState<Interval>('1m')
   const [speed,      setSpeed]      = useState(8)
   const [isMax,      setIsMax]      = useState(false)
+  const [layerSettings, setLayerSettings] = useState<LayerSettings>(DEFAULT_LAYER_SETTINGS)
 
   // ── Loaded data ───────────────────────────────────────────────────────
   const [candles,   setCandles]   = useState<LVCandle[]>([])
@@ -266,7 +267,7 @@ export function LogVisualizerTab() {
       {/* Main area: chart + sidebar */}
       <div className="flex-1 flex overflow-hidden min-h-0">
         <div className="flex-1 min-w-0">
-          <LogVisualizerChart candles={visibleCandles} events={visibleEvents} />
+          <LogVisualizerChart candles={visibleCandles} events={visibleEvents} layerSettings={layerSettings} />
         </div>
         <div className="w-[220px] flex-shrink-0">
           <LogVisualizerEventsList

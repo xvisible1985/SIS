@@ -3,21 +3,24 @@
 import { useEffect, useRef } from 'react'
 import {
   createChart, CandlestickSeries, createSeriesMarkers,
-  ColorType, type IChartApi, type ISeriesApi,
+  ColorType, type IChartApi, type ISeriesApi, type IPriceLine,
 } from 'lightweight-charts'
-import type { LVCandle, MergedEvent } from './types'
+import type { LVCandle, MergedEvent, LayerSettings } from './types'
+import { filterEvents } from './utils'
 
 interface Props {
-  candles: LVCandle[]      // slice of visible candles (grows during animation)
-  events:  MergedEvent[]   // events up to current moment (for markers)
+  candles:       LVCandle[]
+  events:        MergedEvent[]
+  layerSettings: LayerSettings
 }
 
-export function LogVisualizerChart({ candles, events }: Props) {
-  const containerRef   = useRef<HTMLDivElement>(null)
-  const chartRef       = useRef<IChartApi | null>(null)
-  const seriesRef      = useRef<ISeriesApi<'Candlestick'> | null>(null)
+export function LogVisualizerChart({ candles, events, layerSettings }: Props) {
+  const containerRef  = useRef<HTMLDivElement>(null)
+  const chartRef      = useRef<IChartApi | null>(null)
+  const seriesRef     = useRef<ISeriesApi<'Candlestick'> | null>(null)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const markersRef     = useRef<any>(null)
+  const markersRef    = useRef<any>(null)
+  const priceLinesRef = useRef<IPriceLine[]>([])
 
   // Initialize chart once on mount
   useEffect(() => {
@@ -67,9 +70,10 @@ export function LogVisualizerChart({ candles, events }: Props) {
     return () => {
       ro.disconnect()
       chart.remove()
-      chartRef.current  = null
-      seriesRef.current = null
-      markersRef.current = null
+      chartRef.current      = null
+      seriesRef.current     = null
+      markersRef.current    = null
+      priceLinesRef.current = []
     }
   }, [])
 
@@ -83,10 +87,11 @@ export function LogVisualizerChart({ candles, events }: Props) {
     seriesRef.current.setData(data)
   }, [candles])
 
-  // Update event markers when list changes
+  // Update event markers when list or layer settings change
   useEffect(() => {
     if (!markersRef.current) return
-    const markers = events.map(ev => {
+    const visible = filterEvents(events, layerSettings)
+    const markers = visible.map(ev => {
       type MarkerPos   = 'aboveBar' | 'belowBar' | 'inBar'
       type MarkerShape = 'arrowUp' | 'arrowDown' | 'circle'
 
@@ -119,7 +124,32 @@ export function LogVisualizerChart({ candles, events }: Props) {
       }
     })
     markersRef.current.setMarkers(markers)
-  }, [events])
+  }, [events, layerSettings])
+
+  // Rebuild price lines when events change or showPriceLines is toggled
+  useEffect(() => {
+    const series = seriesRef.current
+    if (!series) return
+
+    // Remove all existing price lines
+    priceLinesRef.current.forEach(pl => series.removePriceLine(pl))
+    priceLinesRef.current = []
+
+    if (!layerSettings.showPriceLines) return
+
+    priceLinesRef.current = events
+      .filter(ev => ev.kind === 'level' && ev.level)
+      .map(ev =>
+        series.createPriceLine({
+          price:            ev.level!.filledPrice,
+          color:            ev.level!.side === 'Buy' ? '#34d399' : '#f87171',
+          lineWidth:        1,
+          lineStyle:        2,    // LineStyle.Dashed
+          axisLabelVisible: true,
+          title:            `L${ev.level!.levelIdx}`,
+        })
+      )
+  }, [events, layerSettings.showPriceLines])
 
   return (
     <div ref={containerRef} className="w-full h-full" />
