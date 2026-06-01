@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"sis/pkg/proxy"
 )
@@ -72,9 +72,15 @@ func (s *Server) LVGetAccounts(w http.ResponseWriter, r *http.Request) {
 	var out []lvAccount
 	for rows.Next() {
 		var a lvAccount
-		if err := rows.Scan(&a.ID, &a.Label, &a.OwnerUsername); err == nil {
-			out = append(out, a)
+		if err := rows.Scan(&a.ID, &a.Label, &a.OwnerUsername); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
 		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
 	}
 	if out == nil {
 		out = []lvAccount{}
@@ -105,9 +111,15 @@ func (s *Server) LVGetStrategies(w http.ResponseWriter, r *http.Request) {
 	var out []lvStrategy
 	for rows.Next() {
 		var s lvStrategy
-		if err := rows.Scan(&s.ID, &s.Symbol, &s.Direction, &s.StrategyType, &s.Status); err == nil {
-			out = append(out, s)
+		if err := rows.Scan(&s.ID, &s.Symbol, &s.Direction, &s.StrategyType, &s.Status); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
 		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
 	}
 	if out == nil {
 		out = []lvStrategy{}
@@ -142,9 +154,15 @@ func (s *Server) LVGetEvents(w http.ResponseWriter, r *http.Request) {
 	var out []lvEvent
 	for rows.Next() {
 		var e lvEvent
-		if err := rows.Scan(&e.Message, &e.Level, &e.TsMs); err == nil {
-			out = append(out, e)
+		if err := rows.Scan(&e.Message, &e.Level, &e.TsMs); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
 		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
 	}
 	if out == nil {
 		out = []lvEvent{}
@@ -182,9 +200,15 @@ func (s *Server) LVGetLevels(w http.ResponseWriter, r *http.Request) {
 	var out []lvLevel
 	for rows.Next() {
 		var l lvLevel
-		if err := rows.Scan(&l.LevelIdx, &l.Side, &l.FilledPrice, &l.Qty, &l.Status, &l.TsMs); err == nil {
-			out = append(out, l)
+		if err := rows.Scan(&l.LevelIdx, &l.Side, &l.FilledPrice, &l.Qty, &l.Status, &l.TsMs); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
 		}
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
 	}
 	if out == nil {
 		out = []lvLevel{}
@@ -228,11 +252,18 @@ func lvFetchBybitKlines(ctx context.Context, symbol, interval string, fromMs, to
 	var all []lvCandle
 	cursor := toMs
 
-	for {
-		url := fmt.Sprintf("%s?category=linear&symbol=%s&interval=%s&start=%d&end=%d&limit=1000",
-			bybitURL, symbol, interval, fromMs, cursor)
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	const maxPages = 50
+	for page := 0; page < maxPages; page++ {
+		params := url.Values{
+			"category": {"linear"},
+			"symbol":   {symbol},
+			"interval": {interval},
+			"start":    {strconv.FormatInt(fromMs, 10)},
+			"end":      {strconv.FormatInt(cursor, 10)},
+			"limit":    {"1000"},
+		}
+		reqURL := bybitURL + "?" + params.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -334,5 +365,3 @@ func lvParseF(s string) float64 {
 	return v
 }
 
-// Ensure time import is used
-var _ = time.Now
