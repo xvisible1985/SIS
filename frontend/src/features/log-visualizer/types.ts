@@ -7,11 +7,13 @@ export interface LVAccount {
 }
 
 export interface LVStrategy {
-  id: string
-  symbol: string
-  direction: string   // 'long' | 'short' | 'both'
-  strategyType: string // 'grid' | 'matrix'
-  status: string
+  id:           string
+  symbol:       string
+  direction:    string   // 'long' | 'short' | 'both'
+  strategyType: string   // 'grid' | 'matrix'
+  status:       string
+  gridLevels:   number
+  lastPnl:      number | null
 }
 
 export interface LVEvent {
@@ -21,12 +23,13 @@ export interface LVEvent {
 }
 
 export interface LVLevel {
-  levelIdx: number
-  side: 'Buy' | 'Sell'
+  levelIdx:    number
+  side:        'Buy' | 'Sell'
   filledPrice: number
-  qty: string
-  status: 'filled' | 'sl_closed'
-  tsMs: number
+  qty:         string    // base asset amount, e.g. "0.001234"
+  sizeUsdt:    number    // position size in USDT
+  status:      'filled' | 'sl_closed'
+  tsMs:        number
 }
 
 export interface LVCandle {
@@ -44,7 +47,25 @@ export interface MergedEvent {
   kind:   'log' | 'level'
   log?:   LVEvent
   level?: LVLevel
-  label:  string   // display text, e.g. "L3 filled 0.4225" or "TP placed"
+  label:  string   // display text, e.g. "▲ L3 0.4225 · 0.001234" or "TP placed"
+}
+
+export interface LayerSettings {
+  showOrderMarkers: boolean   // arrowUp/arrowDown markers for level events
+  showLogMarkers:   boolean   // circle markers for log events
+  showPriceLines:   boolean   // horizontal dashed price lines at each filled level
+  showInfo:         boolean   // show log events with level 'info'
+  showWarn:         boolean   // show log events with level 'warn'
+  showError:        boolean   // show log events with level 'error'
+}
+
+export const DEFAULT_LAYER_SETTINGS: LayerSettings = {
+  showOrderMarkers: true,
+  showLogMarkers:   true,
+  showPriceLines:   false,
+  showInfo:         true,
+  showWarn:         true,
+  showError:        true,
 }
 
 export const INTERVALS = ['1m', '5m', '15m', '30m', '1h', '4h', '1D'] as const

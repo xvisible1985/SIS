@@ -4,12 +4,12 @@ import type { LVLevel, LVEvent } from '../features/log-visualizer/types'
 
 describe('makeMergedEventLabel', () => {
   it('formats filled Buy level', () => {
-    const level: LVLevel = { levelIdx: 3, side: 'Buy', filledPrice: 0.4225, qty: '47 USDT', status: 'filled', tsMs: 0 }
+    const level: LVLevel = { levelIdx: 3, side: 'Buy', filledPrice: 0.4225, qty: '47 USDT', sizeUsdt: 0, status: 'filled', tsMs: 0 }
     expect(makeMergedEventLabel('level', undefined, level)).toBe('▲ L3 0.4225 · 47 USDT')
   })
 
   it('formats sl_closed Sell level', () => {
-    const level: LVLevel = { levelIdx: 5, side: 'Sell', filledPrice: 1.2345, qty: '100 USDT', status: 'sl_closed', tsMs: 0 }
+    const level: LVLevel = { levelIdx: 5, side: 'Sell', filledPrice: 1.2345, qty: '100 USDT', sizeUsdt: 0, status: 'sl_closed', tsMs: 0 }
     expect(makeMergedEventLabel('level', undefined, level)).toBe('▼ L5 1.2345 · 100 USDT [SL]')
   })
 
