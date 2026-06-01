@@ -23,11 +23,13 @@ type lvAccount struct {
 }
 
 type lvStrategy struct {
-	ID           string `json:"id"`
-	Symbol       string `json:"symbol"`
-	Direction    string `json:"direction"`
-	StrategyType string `json:"strategyType"`
-	Status       string `json:"status"`
+	ID           string   `json:"id"`
+	Symbol       string   `json:"symbol"`
+	Direction    string   `json:"direction"`
+	StrategyType string   `json:"strategyType"`
+	Status       string   `json:"status"`
+	GridLevels   int      `json:"gridLevels"`
+	LastPnl      *float64 `json:"lastPnl"`
 }
 
 type lvEvent struct {
@@ -41,6 +43,7 @@ type lvLevel struct {
 	Side        string  `json:"side"`
 	FilledPrice float64 `json:"filledPrice"`
 	Qty         string  `json:"qty"`
+	SizeUsdt    float64 `json:"sizeUsdt"`
 	Status      string  `json:"status"`
 	TsMs        float64 `json:"tsMs"`
 }
@@ -97,8 +100,11 @@ func (s *Server) LVGetStrategies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := s.pool.Query(r.Context(), `
-		SELECT id, symbol, direction, strategy_type, status
-		FROM strategies
+		SELECT id, symbol, direction, strategy_type, status, grid_levels,
+		  (SELECT realized_pnl FROM strategy_cycles
+		   WHERE strategy_id = s.id AND ended_at IS NOT NULL
+		   ORDER BY cycle_num DESC LIMIT 1) AS last_pnl
+		FROM strategies s
 		WHERE account_id = $1
 		ORDER BY created_at DESC
 	`, accountID)
@@ -111,7 +117,7 @@ func (s *Server) LVGetStrategies(w http.ResponseWriter, r *http.Request) {
 	var out []lvStrategy
 	for rows.Next() {
 		var s lvStrategy
-		if err := rows.Scan(&s.ID, &s.Symbol, &s.Direction, &s.StrategyType, &s.Status); err != nil {
+		if err := rows.Scan(&s.ID, &s.Symbol, &s.Direction, &s.StrategyType, &s.Status, &s.GridLevels, &s.LastPnl); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
@@ -182,7 +188,7 @@ func (s *Server) LVGetLevels(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.pool.Query(r.Context(), `
 		SELECT level_idx, side,
 		       COALESCE(filled_price, 0),
-		       qty, status,
+		       qty, COALESCE(size_usdt, 0), status,
 		       EXTRACT(EPOCH FROM filled_at) * 1000 AS ts_ms
 		FROM strategy_levels
 		WHERE strategy_id = $1
@@ -200,7 +206,7 @@ func (s *Server) LVGetLevels(w http.ResponseWriter, r *http.Request) {
 	var out []lvLevel
 	for rows.Next() {
 		var l lvLevel
-		if err := rows.Scan(&l.LevelIdx, &l.Side, &l.FilledPrice, &l.Qty, &l.Status, &l.TsMs); err != nil {
+		if err := rows.Scan(&l.LevelIdx, &l.Side, &l.FilledPrice, &l.Qty, &l.SizeUsdt, &l.Status, &l.TsMs); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
