@@ -81,8 +81,6 @@ export function LogVisualizerChart({ candles, events }: Props) {
       open:  c.o, high: c.h, low: c.l, close: c.c,
     }))
     seriesRef.current.setData(data)
-    // Auto-scroll to latest candle
-    chartRef.current?.timeScale().scrollToRealTime()
   }, [candles])
 
   // Update event markers when list changes
