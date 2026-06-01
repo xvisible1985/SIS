@@ -16,6 +16,7 @@ import { AdminBotsTab } from '../features/admin-bots/AdminBotsTab'
 import { AdminProxiesTab } from '../features/admin-proxies/AdminProxiesTab'
 import { BybitNewsTab } from '../features/bybit-news/BybitNewsTab'
 import { BybitNewsCard } from '../features/bybit-news/BybitNewsCard'
+import { LogVisualizerTab } from '../features/log-visualizer/LogVisualizerTab'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -1180,6 +1181,7 @@ const TABS = [
   { id: 'signals',    label: 'Сигналы'      },
   { id: 'proxies',    label: 'Прокси'       },
   { id: 'bybit-news', label: 'Bybit News'   },
+  { id: 'log-visualizer', label: 'Визуализатор' },
 ] as const
 
 type TabId = typeof TABS[number]['id']
@@ -1240,6 +1242,11 @@ export function AdminPage() {
       {tab === 'bybit-news' && (
         <div className="flex flex-1 flex-col overflow-hidden">
           <BybitNewsTab />
+        </div>
+      )}
+      {tab === 'log-visualizer' && (
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <LogVisualizerTab />
         </div>
       )}
 
