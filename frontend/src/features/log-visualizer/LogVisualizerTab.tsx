@@ -42,6 +42,8 @@ export function LogVisualizerTab() {
   const eventIdxRef  = useRef(eventIdx)
   const candlesRef   = useRef(candles)
   const eventsRef    = useRef(events)
+  // Generation counter: prevents a slow first load from overwriting a faster second load
+  const loadGenRef   = useRef(0)
   useEffect(() => { candleIdxRef.current = candleIdx }, [candleIdx])
   useEffect(() => { eventIdxRef.current  = eventIdx  }, [eventIdx])
   useEffect(() => { candlesRef.current   = candles   }, [candles])
@@ -65,6 +67,7 @@ export function LogVisualizerTab() {
   // ── Load data ─────────────────────────────────────────────────────────
   const handleLoad = useCallback(async () => {
     if (!strategyId || !fromDate || !toDate) return
+    const gen = ++loadGenRef.current  // increment generation; ignore results from older loads
     setLoading(true)
     setLoadError(null)
     setCandles([]); setEvents([])
@@ -82,6 +85,8 @@ export function LogVisualizerTab() {
         lvGetLevels(strategyId, fromMs, toMs),
         lvGetKlines(symbol, interval, fromMs, toMs),
       ])
+
+      if (gen !== loadGenRef.current) return  // superseded by a newer load
 
       // Merge and sort by timestamp
       const merged: MergedEvent[] = [
@@ -103,9 +108,10 @@ export function LogVisualizerTab() {
       setEvents(merged)
       setCandleIdx(candlesRaw.length > 0 ? 0 : -1)
     } catch (e) {
+      if (gen !== loadGenRef.current) return
       setLoadError(e instanceof Error ? e.message : 'Ошибка загрузки')
     } finally {
-      setLoading(false)
+      if (gen === loadGenRef.current) setLoading(false)
     }
   }, [strategyId, fromDate, toDate, interval, strategies])
 
