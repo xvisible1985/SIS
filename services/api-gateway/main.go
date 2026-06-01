@@ -96,6 +96,9 @@ func main() {
 	// Start bot automation engine
 	go s.RunBotEngine(ctx)
 
+	// Start hedge bot automation engine
+	go s.runHedgeEngine(ctx)
+
 	// Start Telegram notification polling
 	go s.startTgNotifier(ctx)
 
@@ -286,6 +289,13 @@ func main() {
 			r.Get("/admin/bybit-news", s.ListBybitAnnouncements)
 			r.Get("/admin/bybit-news/latest", s.GetLatestBybitNews)
 			r.Post("/admin/bybit-news/refresh", s.RefreshBybitNews)
+
+			// Admin: log visualizer
+			r.Get("/admin/log-visualizer/accounts",   s.LVGetAccounts)
+			r.Get("/admin/log-visualizer/strategies", s.LVGetStrategies)
+			r.Get("/admin/log-visualizer/events",     s.LVGetEvents)
+			r.Get("/admin/log-visualizer/levels",     s.LVGetLevels)
+			r.Get("/admin/log-visualizer/klines",     s.LVGetKlines)
 
 				// Admin: sign Bybit trading agreement (disabled — requires master API key permissions)
 				// r.Post("/admin/accounts/{id}/sign-agreement", s.AdminSignAgreement)

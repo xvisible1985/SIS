@@ -34,7 +34,7 @@ func newTestServer(t *testing.T) *Server {
 		t.Skipf("redis unavailable: %v", err)
 	}
 	t.Cleanup(func() { rdb.Close() })
-	return NewServer(ctx, pool, rdb, "test-secret", "0000000000000000000000000000000000000000000000000000000000000000", "bot-test-secret", map[string]bool{}, nil, nil)
+	return NewServer(ctx, pool, rdb, "test-secret", "0000000000000000000000000000000000000000000000000000000000000000", "bot-test-secret", "", map[string]bool{}, nil, nil)
 }
 
 func TestRegister_Success(t *testing.T) {
