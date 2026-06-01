@@ -16,7 +16,7 @@ export interface LVStrategy {
 
 export interface LVEvent {
   message: string
-  level: string       // 'info' | 'warn' | 'error'
+  level: 'info' | 'warn' | 'error'
   tsMs: number
 }
 
@@ -25,7 +25,7 @@ export interface LVLevel {
   side: 'Buy' | 'Sell'
   filledPrice: number
   qty: string
-  status: string      // 'filled' | 'sl_closed'
+  status: 'filled' | 'sl_closed'
   tsMs: number
 }
 

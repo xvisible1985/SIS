@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { makeMergedEventLabel } from '../features/log-visualizer/api'
+import { makeMergedEventLabel } from '../features/log-visualizer/utils'
 import type { LVLevel, LVEvent } from '../features/log-visualizer/types'
 
 describe('makeMergedEventLabel', () => {
@@ -16,5 +16,9 @@ describe('makeMergedEventLabel', () => {
   it('formats log event', () => {
     const log: LVEvent = { message: 'TP placed', level: 'info', tsMs: 0 }
     expect(makeMergedEventLabel('log', log, undefined)).toBe('TP placed')
+  })
+
+  it('returns fallback when kind is level but level is undefined', () => {
+    expect(makeMergedEventLabel('level', undefined, undefined)).toBe('—')
   })
 })
