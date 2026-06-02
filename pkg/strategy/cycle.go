@@ -80,6 +80,30 @@ type StrategyRunner struct {
 	lastTaskNano  int64 // unix nanoseconds at start of last task; 0 = never
 }
 
+// effectiveDeposit returns the USDT deposit to use for slot sizing.
+// When SizeAsMain is enabled, it uses the opposite-direction main position's
+// current USDT value (coins × currentPrice). Falls back to GridSizeUSDT if
+// the main position size is unavailable or currentPrice is invalid.
+func (sr *StrategyRunner) effectiveDeposit(currentPrice float64) float64 {
+	if !sr.strategy.SizeAsMain || currentPrice <= 0 {
+		return sr.strategy.GridSizeUSDT
+	}
+	// The hedge strategy is COUNTER to the main position:
+	//   hedge long → main is short (positionIdx = 2)
+	//   hedge short → main is long  (positionIdx = 1)
+	var mainPosIdx int
+	if sr.strategy.Direction == DirectionLong {
+		mainPosIdx = 2
+	} else {
+		mainPosIdx = 1
+	}
+	sizeCoins := sr.runner.GetPositionSizeCoins(sr.strategy.Symbol, mainPosIdx)
+	if sizeCoins <= 0 {
+		return sr.strategy.GridSizeUSDT
+	}
+	return sizeCoins * currentPrice
+}
+
 // startWorker launches the per-strategy background goroutine.
 func (sr *StrategyRunner) startWorker() {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -729,6 +753,20 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 		}
 	}
 
+	// --- Orphaned SL cleanup (grid only) ---
+	// If updateSL's CancelOrder failed, the old stop order may still be on the exchange
+	// alongside the new one. Detect any stop orders whose linkId matches our SL prefix
+	// but doesn't match the current slOrderID and schedule them for cancellation.
+	var orphanedSLs []trader.Order
+	if sr.strategy.StrategyType != "matrix" {
+		slPrefix := fmt.Sprintf("SIS_STR-%s-sl-", sr.strategy.ID[:8])
+		for _, o := range openOrders {
+			if strings.HasPrefix(o.OrderLinkId, slPrefix) && o.OrderId != sr.slOrderID {
+				orphanedSLs = append(orphanedSLs, o)
+			}
+		}
+	}
+
 	// --- Grid levels ---
 	var passedLevels []*GridLevel
 	for i := range sr.levels {
@@ -756,7 +794,8 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 
 	if len(passedLevels) == 0 {
 		sr.mu.Unlock()
-		return false
+		sr.cancelOrphanedSLs(ctx, orphanedSLs)
+		return len(orphanedSLs) > 0
 	}
 
 	// Snapshot data needed for REST calls, then release the lock.
@@ -777,6 +816,8 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 	category := sr.strategy.Category
 	symbol := sr.strategy.Symbol
 	sr.mu.Unlock()
+
+	sr.cancelOrphanedSLs(ctx, orphanedSLs)
 
 	// Check order history for each passed level — no lock held during REST calls.
 	var stillMissing []*GridLevel
@@ -1414,9 +1455,13 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 				if step.PriceMovePct == 0 {
 					targetPrice = 0 // market order
 				} else if side == "Buy" {
-					targetPrice = prevPrice * (1 - step.PriceMovePct/100)
-				} else {
+					// Negative pct = against direction = below entry (averaging down for long)
+					// Positive pct = with direction = above entry (scaling in on upward move)
 					targetPrice = prevPrice * (1 + step.PriceMovePct/100)
+				} else {
+					// Negative pct = against direction = above entry (averaging up for short)
+					// Positive pct = with direction = below entry (scaling in on downward move)
+					targetPrice = prevPrice * (1 - step.PriceMovePct/100)
 				}
 				log.Printf("strategy %s: level L%d %s target=%.4f (step %.2f%% from prev=%.4f)",
 					sr.strategy.ID, levelIdx, side, targetPrice, step.PriceMovePct, prev)
@@ -1433,7 +1478,9 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 					priceForQty = targetPrice
 				}
 				qty := trader.FormatQty(sizeUSDT/priceForQty, sr.instr.QtyStep, sr.instr.MinQty)
-				forceVirtual := step.OrderType == "virtual"
+				// Positive price_move_pct = with direction = virtual (tracks momentum)
+				// Negative price_move_pct = against direction = exchange limit (passive, waits for price)
+				forceVirtual := step.OrderType == "virtual" || step.PriceMovePct > 0
 				var levelID string
 				if err := sr.runner.pool.QueryRow(ctx,
 					`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, force_virtual)
@@ -1940,6 +1987,10 @@ func (sr *StrategyRunner) handleLevelFill(ctx context.Context, levelID string, f
 // updateTP cancels the existing TP order (if any) and places a new one for the full position.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) updateTP(ctx context.Context) error {
+	// TP suppressed by active hedge — do not place/re-place TP.
+	if sr.strategy.HedgeTpSuppressed {
+		return nil
+	}
 	if sr.instr.QtyStep == 0 {
 		sr.warn(ctx, "updateTP: инструмент не загружен (QtyStep=0) — TP не выставлен, повтор при следующем событии")
 		return nil
@@ -2070,6 +2121,10 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 	if sr.strategy.StrategyType == "matrix" {
 		return nil // Matrix manages SL per-level via matrixPlacePerLevelSL
 	}
+	// SL suppressed by active hedge — do not place/re-place SL.
+	if sr.strategy.HedgeSlSuppressed {
+		return nil
+	}
 	if sr.strategy.SLType != SLTypeConditional || sr.strategy.SLPct >= 0 {
 		return nil
 	}
@@ -2163,6 +2218,23 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 		`UPDATE strategy_cycles SET sl_order_id=$1 WHERE id=$2`, result.OrderId, sr.cycle.ID)
 	sr.info(ctx, fmt.Sprintf("SL выставлен @ %.4f qty=%s (от посл. уровня %.4f)", slTrigger, slQty, slAvg))
 	return nil
+}
+
+// cancelOrphanedSLs отменяет стоп-ордера, которые принадлежат стратегии
+// (по prefix SIS_STR-{id8}-sl-) но не совпадают с текущим slOrderID.
+// Вызывается без мьютекса — только после sr.mu.Unlock().
+func (sr *StrategyRunner) cancelOrphanedSLs(ctx context.Context, orders []trader.Order) {
+	for _, o := range orders {
+		sr.warn(ctx, fmt.Sprintf("reconcile: осиротевший SL %s (linkId=%s) — отменяю", o.OrderId, o.OrderLinkId))
+		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+			Symbol:      sr.strategy.Symbol,
+			Category:    sr.strategy.Category,
+			OrderId:     o.OrderId,
+			OrderFilter: "StopOrder",
+		}); err != nil && !isOrderGone(err) {
+			sr.warn(ctx, fmt.Sprintf("reconcile: не удалось отменить осиротевший SL %s: %v", o.OrderId, err))
+		}
+	}
 }
 
 // logBotTrade writes a trade event to bot_events if this strategy is bot-managed.
@@ -3505,9 +3577,9 @@ func (sr *StrategyRunner) repriceRemainingFromFills(ctx context.Context) {
 			step := sr.strategy.Steps[stepIdx]
 			var target float64
 			if side == "Buy" {
-				target = prevPrice * (1 - step.PriceMovePct/100)
-			} else {
 				target = prevPrice * (1 + step.PriceMovePct/100)
+			} else {
+				target = prevPrice * (1 - step.PriceMovePct/100)
 			}
 			sizePct := step.SizePct
 			if sizePct == 0 && step.Lots > 0 {
@@ -3540,9 +3612,9 @@ func (sr *StrategyRunner) repriceRemainingFromFills(ctx context.Context) {
 				step := sr.strategy.Steps[stepIdx]
 				var target float64
 				if side == "Buy" {
-					target = prevPrice * (1 - step.PriceMovePct/100)
-				} else {
 					target = prevPrice * (1 + step.PriceMovePct/100)
+				} else {
+					target = prevPrice * (1 - step.PriceMovePct/100)
 				}
 				sizePct := step.SizePct
 				if sizePct == 0 && step.Lots > 0 {
@@ -3550,24 +3622,26 @@ func (sr *StrategyRunner) repriceRemainingFromFills(ctx context.Context) {
 				}
 				sizeUSDT := sizePct / 100 * sr.strategy.GridSizeUSDT
 				qty := trader.FormatQty(sizeUSDT/target, sr.instr.QtyStep, sr.instr.MinQty)
+				forceVirtual := step.OrderType == "virtual" || step.PriceMovePct > 0
 				maxIdx++
 				var levelID string
 				if err := sr.runner.pool.QueryRow(ctx,
-					`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty)
-					 VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-					sr.strategy.ID, sr.cycle.ID, maxIdx, side, target, sizeUSDT, qty,
+					`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, force_virtual)
+					 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+					sr.strategy.ID, sr.cycle.ID, maxIdx, side, target, sizeUSDT, qty, forceVirtual,
 				).Scan(&levelID); err != nil {
 					sr.errlog(ctx, fmt.Sprintf("Создание нового уровня L%d: %v", maxIdx, err))
 					break
 				}
 				sr.levels = append(sr.levels, GridLevel{
-					ID:          levelID,
-					LevelIdx:    maxIdx,
-					Side:        side,
-					TargetPrice: target,
-					SizeUSDT:    sizeUSDT,
-					Qty:         qty,
-					Status:      LevelPending,
+					ID:           levelID,
+					LevelIdx:     maxIdx,
+					Side:         side,
+					TargetPrice:  target,
+					SizeUSDT:     sizeUSDT,
+					Qty:          qty,
+					Status:       LevelPending,
+					ForceVirtual: forceVirtual,
 				})
 				if target > 0 {
 					prevPrice = target
@@ -4226,9 +4300,9 @@ func (sr *StrategyRunner) repriceStale(ctx context.Context) {
 				step := sr.strategy.Steps[k]
 				var p float64
 				if side == "Buy" {
-					p = prevPrice * (1 - step.PriceMovePct/100)
-				} else {
 					p = prevPrice * (1 + step.PriceMovePct/100)
+				} else {
+					p = prevPrice * (1 - step.PriceMovePct/100)
 				}
 				if p > 0 {
 					prevPrice = p

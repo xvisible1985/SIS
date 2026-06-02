@@ -333,7 +333,7 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		sizeUSDT := sizePctForSlot(slot) / 100 * sr.strategy.GridSizeUSDT
+		sizeUSDT := sizePctForSlot(slot) / 100 * sr.effectiveDeposit(price)
 		// Guard: skip slots with zero quantity (prevents zero-qty orders to exchange)
 		if sizeUSDT == 0 {
 			levelIdx++
@@ -953,19 +953,19 @@ func (sr *StrategyRunner) matrixReplaceSlots(ctx context.Context, currentPrice f
 			if sr.strategy.MatrixEntryLevel == nil {
 				continue
 			}
-			sizeUSDT = sr.strategy.MatrixEntryLevel.SizePct / 100 * sr.strategy.GridSizeUSDT
+			sizeUSDT = sr.strategy.MatrixEntryLevel.SizePct / 100 * sr.effectiveDeposit(currentPrice)
 		} else if slot > 0 {
 			idx := slot - 1
 			if idx >= len(above) {
 				continue
 			}
-			sizeUSDT = above[idx].SizePct / 100 * sr.strategy.GridSizeUSDT
+			sizeUSDT = above[idx].SizePct / 100 * sr.effectiveDeposit(currentPrice)
 		} else {
 			idx := -slot - 1
 			if idx >= len(below) {
 				continue
 			}
-			sizeUSDT = below[idx].SizePct / 100 * sr.strategy.GridSizeUSDT
+			sizeUSDT = below[idx].SizePct / 100 * sr.effectiveDeposit(currentPrice)
 		}
 		priceForQty := targetPrice
 		if priceForQty == 0 {
@@ -1115,6 +1115,10 @@ func (sr *StrategyRunner) matrixPlacePerLevelSL(ctx context.Context, l *GridLeve
 	if l.Slot != nil && *l.Slot < 0 {
 		return
 	}
+	// SL suppressed by active hedge — do not place/re-place per-level SL.
+	if sr.strategy.HedgeSlSuppressed {
+		return
+	}
 	if sr.strategy.MaxStopActive > 0 {
 		active := 0
 		for _, lv := range sr.levels {
@@ -1190,6 +1194,10 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	if sr.instr.QtyStep == 0 {
 		return
 	}
+	// TP suppressed by active hedge — do not place/re-place TP.
+	if sr.strategy.HedgeTpSuppressed {
+		return
+	}
 	latest, ok := sr.matrixLatestActiveFill()
 	if !ok {
 		// No active fills — cancel TP if it exists
@@ -1231,14 +1239,20 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 		return
 	}
 
+	// TP считается от средневзвешенной цены входа (ТВХ), чтобы гарантировать
+	// закрытие в плюс вне зависимости от глубины DCA.
+	avgEntryPrice, _ := sr.avgEntry()
+	if avgEntryPrice == 0 {
+		return
+	}
 	var tpPrice float64
 	var tpSide string
 	if sr.strategy.Direction == DirectionLong {
 		tpSide = "Sell"
-		tpPrice = latest.FilledPrice * (1 + *tpPctVal/100)
+		tpPrice = avgEntryPrice * (1 + *tpPctVal/100)
 	} else {
 		tpSide = "Buy"
-		tpPrice = latest.FilledPrice * (1 - *tpPctVal/100)
+		tpPrice = avgEntryPrice * (1 - *tpPctVal/100)
 	}
 
 	activeQty := sr.matrixActiveQty()
@@ -1300,7 +1314,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	sr.runner.RegisterOrder(result.OrderId, orderRef{strategyID: sr.strategy.ID, refType: "tp"})
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
 		`UPDATE strategy_cycles SET tp_order_id=$1 WHERE id=$2`, result.OrderId, sr.cycle.ID)
-	sr.info(ctx, fmt.Sprintf("Matrix TP @ %.4f qty=%s выставлен", tpPrice, tpQty))
+	sr.info(ctx, fmt.Sprintf("Matrix TP @ %.4f qty=%s выставлен (ТВХ=%.4f +%.2f%%)", tpPrice, tpQty, avgEntryPrice, *tpPctVal))
 }
 
 // applyNewMatrixPrices recalculates target_price, size_usdt and qty for every pending
@@ -1362,7 +1376,7 @@ func (sr *StrategyRunner) applyNewMatrixPrices(ctx context.Context, basePrice, c
 				`UPDATE strategy_levels SET status='cancelled', exchange_order_id=NULL WHERE id=$1`, l.ID)
 			continue
 		}
-		sizeUSDT := sizePctForSlot(slot) / 100 * sr.strategy.GridSizeUSDT
+		sizeUSDT := sizePctForSlot(slot) / 100 * sr.effectiveDeposit(currentPrice)
 		if sizeUSDT == 0 {
 			continue
 		}
@@ -1768,14 +1782,14 @@ func (sr *StrategyRunner) matrixReenterRelativeToRef(ctx context.Context, waitin
 			return
 		}
 		stepPct = above[idx].PriceStepPct
-		sizeUSDT = above[idx].SizePct / 100 * sr.strategy.GridSizeUSDT
+		sizeUSDT = above[idx].SizePct / 100 * sr.effectiveDeposit(currentPrice)
 	} else {
 		idx := -waitingSlot - 1
 		if idx >= len(below) {
 			return
 		}
 		stepPct = below[idx].PriceStepPct
-		sizeUSDT = below[idx].SizePct / 100 * sr.strategy.GridSizeUSDT
+		sizeUSDT = below[idx].SizePct / 100 * sr.effectiveDeposit(currentPrice)
 	}
 
 	if stepPct == 0 || sizeUSDT == 0 {
@@ -1850,13 +1864,13 @@ func (sr *StrategyRunner) matrixReenterAtConfigPrice(ctx context.Context, waitin
 		if idx >= len(above) {
 			return
 		}
-		sizeUSDT = above[idx].SizePct / 100 * sr.strategy.GridSizeUSDT
+		sizeUSDT = above[idx].SizePct / 100 * sr.effectiveDeposit(currentPrice)
 	} else {
 		idx := -waitingSlot - 1
 		if idx >= len(below) {
 			return
 		}
-		sizeUSDT = below[idx].SizePct / 100 * sr.strategy.GridSizeUSDT
+		sizeUSDT = below[idx].SizePct / 100 * sr.effectiveDeposit(currentPrice)
 	}
 
 	if sizeUSDT == 0 || targetPrice == 0 {
@@ -1927,7 +1941,7 @@ func (sr *StrategyRunner) matrixFindFilledL0() *GridLevel {
 func (sr *StrategyRunner) matrixReenterL0AtMarket(ctx context.Context, currentPrice float64) {
 	var sizeUSDT float64
 	if sr.strategy.MatrixEntryLevel != nil {
-		sizeUSDT = sr.strategy.MatrixEntryLevel.SizePct / 100 * sr.strategy.GridSizeUSDT
+		sizeUSDT = sr.strategy.MatrixEntryLevel.SizePct / 100 * sr.effectiveDeposit(currentPrice)
 	}
 	if sizeUSDT == 0 {
 		sr.warn(ctx, "matrixReenterL0AtMarket: size_usdt=0, пропускаем")
@@ -2002,13 +2016,13 @@ func (sr *StrategyRunner) matrixReenterFromL0(ctx context.Context, waitingSlot i
 		if idx >= len(above) {
 			return
 		}
-		sizeUSDT = above[idx].SizePct / 100 * sr.strategy.GridSizeUSDT
+		sizeUSDT = above[idx].SizePct / 100 * sr.effectiveDeposit(currentPrice)
 	} else {
 		idx := -waitingSlot - 1
 		if idx >= len(below) {
 			return
 		}
-		sizeUSDT = below[idx].SizePct / 100 * sr.strategy.GridSizeUSDT
+		sizeUSDT = below[idx].SizePct / 100 * sr.effectiveDeposit(currentPrice)
 	}
 	if sizeUSDT == 0 {
 		return
@@ -2095,8 +2109,8 @@ func (sr *StrategyRunner) matrixRebuildFromSZLow(ctx context.Context, stoppedSlo
 	//      — these were stopped in a prior SL event and must be rebuilt together with the
 	//      current one so the full sub-grid is anchored at the SZ boundary.
 	type slotCfg struct {
-		stepPct  float64
-		sizeUSDT float64
+		stepPct float64
+		sizePct float64
 	}
 	rebuildCfg := make(map[int]slotCfg) // slot → config
 
@@ -2114,8 +2128,8 @@ func (sr *StrategyRunner) matrixRebuildFromSZLow(ctx context.Context, stoppedSlo
 	// Config for the stopped slot.
 	if idx := stoppedSlot - 1; idx >= 0 && idx < len(above) {
 		rebuildCfg[stoppedSlot] = slotCfg{
-			stepPct:  above[idx].PriceStepPct,
-			sizeUSDT: above[idx].SizePct / 100 * sr.strategy.GridSizeUSDT,
+			stepPct: above[idx].PriceStepPct,
+			sizePct: above[idx].SizePct,
 		}
 	}
 
@@ -2134,8 +2148,8 @@ func (sr *StrategyRunner) matrixRebuildFromSZLow(ctx context.Context, stoppedSlo
 		idx := *l.Slot - 1
 		if idx >= 0 && idx < len(above) {
 			rebuildCfg[*l.Slot] = slotCfg{
-				stepPct:  above[idx].PriceStepPct,
-				sizeUSDT: above[idx].SizePct / 100 * sr.strategy.GridSizeUSDT,
+				stepPct: above[idx].PriceStepPct,
+				sizePct: above[idx].SizePct,
 			}
 		}
 	}
@@ -2152,8 +2166,8 @@ func (sr *StrategyRunner) matrixRebuildFromSZLow(ctx context.Context, stoppedSlo
 		idx := *l.Slot - 1
 		if idx >= 0 && idx < len(above) {
 			rebuildCfg[*l.Slot] = slotCfg{
-				stepPct:  above[idx].PriceStepPct,
-				sizeUSDT: above[idx].SizePct / 100 * sr.strategy.GridSizeUSDT,
+				stepPct: above[idx].PriceStepPct,
+				sizePct: above[idx].SizePct,
 			}
 		}
 		// Cancel on exchange (ignore "order not found" — may have raced with a fill).
@@ -2251,7 +2265,8 @@ func (sr *StrategyRunner) matrixRebuildFromSZLow(ctx context.Context, stoppedSlo
 			continue
 		}
 
-		qty := trader.FormatQty(cfg.sizeUSDT/targetPrice, sr.instr.QtyStep, sr.instr.MinQty)
+		sizeUSDT := cfg.sizePct / 100 * sr.effectiveDeposit(currentPrice)
+		qty := trader.FormatQty(sizeUSDT/targetPrice, sr.instr.QtyStep, sr.instr.MinQty)
 		if qty == "" || qty == "0" {
 			sr.warn(ctx, fmt.Sprintf("matrixRebuildFromSZLow: L%d qty=0 пропускаем", slot))
 			continue
@@ -2263,7 +2278,7 @@ func (sr *StrategyRunner) matrixRebuildFromSZLow(ctx context.Context, stoppedSlo
 		if err := sr.runner.pool.QueryRow(ctx,
 			`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-			sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, targetPrice, cfg.sizeUSDT, qty, slotCopy,
+			sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, targetPrice, sizeUSDT, qty, slotCopy,
 		).Scan(&levelID); err != nil {
 			sr.errlog(ctx, fmt.Sprintf("matrixRebuildFromSZLow: insert L%d: %v", slot, err))
 			continue
@@ -2271,7 +2286,7 @@ func (sr *StrategyRunner) matrixRebuildFromSZLow(ctx context.Context, stoppedSlo
 
 		newLevel := GridLevel{
 			ID: levelID, LevelIdx: nextLevelIdx, Side: side,
-			TargetPrice: targetPrice, SizeUSDT: cfg.sizeUSDT, Qty: qty,
+			TargetPrice: targetPrice, SizeUSDT: sizeUSDT, Qty: qty,
 			Status: LevelPending, Slot: &slotCopy,
 		}
 		sr.levels = append(sr.levels, newLevel)

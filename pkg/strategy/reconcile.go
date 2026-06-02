@@ -250,6 +250,9 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 				sr.submit(func(ctx context.Context) {
 					sr.mu.Lock()
 					defer sr.mu.Unlock()
+					if sr.strategy.HedgeTpSuppressed {
+						return
+					}
 					if sr.tpOrderID == tpOrderID {
 						sr.tpOrderID = ""
 						_, posQty := sr.avgEntry()
@@ -268,6 +271,9 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 			sr.submit(func(ctx context.Context) {
 				sr.mu.Lock()
 				defer sr.mu.Unlock()
+				if sr.strategy.HedgeTpSuppressed {
+					return
+				}
 				_, posQty := sr.avgEntry()
 				if posQty > 0 && sr.tpOrderID == "" && sr.strategy.TPPct > 0 {
 					log.Printf("strategy reconcile: cycle %s has position (qty=%.6f) but no TP — placing", cycleID, posQty)
@@ -290,6 +296,9 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 				sr.submit(func(ctx context.Context) {
 					sr.mu.Lock()
 					defer sr.mu.Unlock()
+					if sr.strategy.HedgeSlSuppressed {
+						return
+					}
 					if sr.slOrderID == slOrderID {
 						sr.slOrderID = ""
 						_, posQty := sr.avgEntry()
@@ -308,6 +317,9 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 			sr.submit(func(ctx context.Context) {
 				sr.mu.Lock()
 				defer sr.mu.Unlock()
+				if sr.strategy.HedgeSlSuppressed {
+					return
+				}
 				_, posQty := sr.avgEntry()
 				if posQty > 0 && sr.slOrderID == "" && sr.strategy.SLPct < 0 {
 					log.Printf("strategy reconcile: cycle %s has position (qty=%.6f) but no SL — placing", cycleID, posQty)
@@ -333,6 +345,10 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 		sr.submit(func(ctx context.Context) {
 			sr.mu.Lock()
 			defer sr.mu.Unlock()
+			// SL suppressed by active hedge — skip health-check re-placement.
+			if sr.strategy.HedgeSlSuppressed {
+				return
+			}
 			for i := range sr.levels {
 				l := &sr.levels[i]
 				if l.Status != LevelFilled || l.SLOrderID != "" || l.Slot == nil {
@@ -350,6 +366,44 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 				log.Printf("strategy reconcile: matrix L%d (strategy %s) — SL не выставлен, повтор @ fillPrice=%.4f",
 					l.LevelIdx, stratIDcopy[:8], ref)
 				sr.matrixPlacePerLevelSL(ctx, l, ref, *stopPct)
+			}
+		})
+	}
+
+	// --- 8b. Matrix pending entry health-check ---
+	// For each active matrix runner, retries placing non-virtual pending entry levels
+	// with no exchange_order_id. Covers placement failures during rebuild (transient
+	// exchange errors, service restart race) that leave levels permanently stuck.
+	// matrixPriceTick only fires virtual levels, so non-virtual stuck levels need
+	// this timer-based fallback.
+	for _, sr := range strategyRefs {
+		if sr.strategy.StrategyType != "matrix" {
+			continue
+		}
+		sr := sr // capture
+		sr.submit(func(ctx context.Context) {
+			sr.mu.Lock()
+			defer sr.mu.Unlock()
+			if sr.cycle == nil {
+				return
+			}
+			price := sr.lastMatrixPrice
+			if price <= 0 {
+				return
+			}
+			for i := range sr.levels {
+				l := &sr.levels[i]
+				if l.Status != LevelPending || l.ExchangeOrderID != "" {
+					continue
+				}
+				if sr.matrixIsVirtual(l) {
+					continue
+				}
+				log.Printf("strategy reconcile: matrix L%d (strategy %s) — pending без ордера, повтор placeMatrixLevel",
+					l.LevelIdx, sr.strategy.ID[:8])
+				if err := sr.placeMatrixLevel(ctx, l, price); err != nil {
+					log.Printf("strategy reconcile: matrix L%d place error: %v", l.LevelIdx, err)
+				}
 			}
 		})
 	}
