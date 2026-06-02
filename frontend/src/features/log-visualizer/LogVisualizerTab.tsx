@@ -290,7 +290,7 @@ export function LogVisualizerTab() {
             />
           )}
         </div>
-        <div className="w-[220px] flex-shrink-0">
+        <div className="w-[440px] flex-shrink-0">
           <LogVisualizerEventsList
             events={events}
             currentIndex={eventIdx}
