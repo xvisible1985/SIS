@@ -1,6 +1,6 @@
 // frontend/src/features/log-visualizer/utils.ts
 
-import type { LVEvent, LVLevel, MergedEvent, LayerSettings } from './types'
+import type { LVEvent, LVLevel, MergedEvent, LayerSettings, EventListFilter } from './types'
 
 /** Returns label for display in events list and info panel. */
 export function makeMergedEventLabel(
@@ -47,4 +47,27 @@ export function computeCardStats(visibleEvents: MergedEvent[]): {
 /** Format a PnL number with sign and 2 decimal places, e.g. "+124.50 $" */
 export function formatPnl(pnl: number): string {
   return (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + ' $'
+}
+
+/** Filter sidebar events by category. */
+export function filterEventsList(
+  events: MergedEvent[],
+  filter: EventListFilter,
+): MergedEvent[] {
+  if (filter === 'all') return events
+  return events.filter(ev => {
+    switch (filter) {
+      case 'orders':
+        return ev.kind === 'level'
+      case 'closes':
+        return (
+          (ev.kind === 'level' && ev.level?.status === 'sl_closed') ||
+          (ev.kind === 'log'   && /TP исполнен|SL сработал/i.test(ev.log?.message ?? ''))
+        )
+      case 'errors':
+        return ev.kind === 'log' && ev.log?.level === 'error'
+      default:
+        return true
+    }
+  })
 }

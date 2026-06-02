@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { makeMergedEventLabel, filterEvents, computeCardStats, formatPnl } from '../features/log-visualizer/utils'
-import type { LVLevel, LVEvent, MergedEvent, LayerSettings } from '../features/log-visualizer/types'
+import { makeMergedEventLabel, filterEvents, computeCardStats, formatPnl, filterEventsList } from '../features/log-visualizer/utils'
+import type { LVLevel, LVEvent, MergedEvent, LayerSettings, EventListFilter } from '../features/log-visualizer/types'
 import { DEFAULT_LAYER_SETTINGS } from '../features/log-visualizer/types'
 
 describe('makeMergedEventLabel', () => {
@@ -111,5 +111,65 @@ describe('formatPnl', () => {
 
   it('zero is treated as positive', () => {
     expect(formatPnl(0)).toBe('+0.00 $')
+  })
+})
+
+// ── filterEventsList ──────────────────────────────────────────────────────────
+
+function makeSlClosedLevel(): MergedEvent {
+  return {
+    tsMs: 0, kind: 'level',
+    level: { levelIdx: 2, side: 'Sell', filledPrice: 50000, qty: '0.002', sizeUsdt: 100, status: 'sl_closed', tsMs: 0 },
+    label: '',
+  }
+}
+
+function makeLogWithMsg(level: 'info' | 'warn' | 'error', message: string): MergedEvent {
+  return {
+    tsMs: 0, kind: 'log',
+    log: { message, level, tsMs: 0 },
+    label: '',
+  }
+}
+
+describe('filterEventsList', () => {
+  const order   = makeLevelEvent('Buy')
+  const slLevel = makeSlClosedLevel()
+  const tpLog   = makeLogWithMsg('info', 'TP исполнен @ 99100')
+  const slLog   = makeLogWithMsg('info', 'SL сработал')
+  const errLog  = makeLogEvent('error')
+  const infoLog = makeLogEvent('info')
+  const all     = [order, slLevel, tpLog, slLog, errLog, infoLog]
+
+  it("'all' returns every event unchanged", () => {
+    expect(filterEventsList(all, 'all')).toHaveLength(6)
+    expect(filterEventsList(all, 'all')).toBe(all)
+  })
+
+  it("'orders' returns only kind==='level' events (both filled and sl_closed)", () => {
+    const result = filterEventsList(all, 'orders')
+    expect(result).toHaveLength(2)
+    expect(result.every(e => e.kind === 'level')).toBe(true)
+  })
+
+  it("'closes' returns sl_closed levels + logs matching TP/SL regex", () => {
+    const result = filterEventsList(all, 'closes')
+    expect(result).toHaveLength(3)
+    expect(result).toContain(slLevel)
+    expect(result).toContain(tpLog)
+    expect(result).toContain(slLog)
+  })
+
+  it("'errors' returns only error-level log events", () => {
+    const result = filterEventsList(all, 'errors')
+    expect(result).toHaveLength(1)
+    expect(result[0]).toBe(errLog)
+  })
+
+  it('empty array returns empty for all filters', () => {
+    expect(filterEventsList([], 'all')).toHaveLength(0)
+    expect(filterEventsList([], 'orders')).toHaveLength(0)
+    expect(filterEventsList([], 'closes')).toHaveLength(0)
+    expect(filterEventsList([], 'errors')).toHaveLength(0)
   })
 })
