@@ -1,5 +1,6 @@
 // frontend/src/features/log-visualizer/LogVisualizerStrategyCard.tsx
 
+import { useRef, useState } from 'react'
 import type { LVStrategy, MergedEvent } from './types'
 import { computeCardStats, formatPnl } from './utils'
 
@@ -9,14 +10,56 @@ interface Props {
 }
 
 export function LogVisualizerStrategyCard({ strategy, visibleEvents }: Props) {
+  const cardRef = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
+  // pos === null means "use default CSS position (bottom-4 right-4)"
+
   const { filledCount, volumeUsdt } = computeCardStats(visibleEvents)
   const pnl    = strategy.lastPnl
   const isLong = strategy.direction.toLowerCase() === 'long'
 
+  function handleMouseDown(e: React.MouseEvent) {
+    e.preventDefault()
+    const card = cardRef.current
+    if (!card) return
+    const container = card.parentElement
+    if (!container) return
+
+    const cardRect      = card.getBoundingClientRect()
+    const containerRect = container.getBoundingClientRect()
+
+    // On first drag, compute starting position from the rendered layout
+    const startX = pos?.x ?? containerRect.width  - cardRect.width  - 16
+    const startY = pos?.y ?? containerRect.height - cardRect.height - 16
+
+    const offsetX = e.clientX - containerRect.left - startX
+    const offsetY = e.clientY - containerRect.top  - startY
+
+    const onMove = (me: MouseEvent) => {
+      if (!card.parentElement) return
+      const cr = card.parentElement.getBoundingClientRect()
+      const x = Math.max(0, Math.min(cr.width  - card.offsetWidth,  me.clientX - cr.left - offsetX))
+      const y = Math.max(0, Math.min(cr.height - card.offsetHeight, me.clientY - cr.top  - offsetY))
+      setPos({ x, y })
+    }
+
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup',   onUp)
+    }
+
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup',   onUp)
+  }
+
   return (
     <div
-      className="absolute bottom-4 right-4 z-10 backdrop-blur-sm pointer-events-none select-none"
+      ref={cardRef}
+      onMouseDown={handleMouseDown}
+      className="absolute z-10 backdrop-blur-sm select-none"
       style={{
+        ...(pos ? { left: pos.x, top: pos.y } : { bottom: 16, right: 16 }),
+        cursor:       'grab',
         background:   'rgba(6,6,12,0.85)',
         border:       '1px solid rgba(255,255,255,.10)',
         borderRadius: 10,
