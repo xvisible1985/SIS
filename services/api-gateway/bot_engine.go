@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"sis/pkg/crypto"
 	"sis/pkg/signal"
 	"sis/pkg/trader"
@@ -226,7 +228,7 @@ func (s *Server) applyBotOpportunities(ctx context.Context, botID string, opps [
 				}
 			}
 		}
-		if err := s.createBotStrategy(ctx, b, cfg, o.sym, o.dir, 0); err != nil {
+		if _, err := s.createBotStrategy(ctx, b, cfg, o.sym, o.dir, 0, ""); err != nil {
 			if !strings.Contains(err.Error(), "unique") {
 				s.logBotEvent(ctx, b.id, fmt.Sprintf("[%s] Ошибка открытия %s %s: %v", o.source, o.sym, o.dir, err), "error", "strategy")
 			}
@@ -392,6 +394,10 @@ func (s *Server) botEngineTick(ctx context.Context) {
 		var cfg botCfgJSON
 		if err := json.Unmarshal(b.stratCfg, &cfg); err != nil {
 			s.logBotEvent(ctx, b.id, fmt.Sprintf("Ошибка чтения конфига: %v", err), "error", "system")
+			continue
+		}
+		// Hedge bots are handled by the separate hedge engine loop — skip here.
+		if cfg.BotKind == "hedge" {
 			continue
 		}
 		if len(cfg.ActivationSignals) == 0 {
@@ -751,6 +757,35 @@ type botCfgJSON struct {
 		PriceMovePct float64 `json:"price_move_pct"`
 		Lots         float64 `json:"lots"`
 	} `json:"steps"`
+
+	// BotKind identifies the bot type ("signal" | "parser" | "hedge").
+	BotKind string `json:"bot_kind"`
+
+	// Hedge bot configuration fields.
+	HedgeActType         int     `json:"hedge_act_type"`          // 0=last_order%, 1=drawdown%, 2=pnl$, 3=roi%
+	HedgeActValue        float64 `json:"hedge_act_value"`
+	HedgeCloseType       int     `json:"hedge_close_type"`         // 0=wait_cycle, 1=max_loss$
+	HedgeCloseValue      float64 `json:"hedge_close_value"`
+	HedgeDeactCloseType  int     `json:"hedge_deact_close_type"`   // 0=pnl$, 1=roi%, 2=breakeven
+	HedgeDeactCloseValue float64 `json:"hedge_deact_close_value"`
+	HedgeProfitLazy      bool    `json:"hedge_profit_lazy"`
+	HedgeProfitLazyPct   float64 `json:"hedge_profit_lazy_pct"`
+	HedgeDeactType       int     `json:"hedge_deact_type"`         // 0=drawdown%, 1=pnl$, 2=roi%, 3=last_order%, 4=wait_pair
+	HedgeDeactValue      float64 `json:"hedge_deact_value"`
+
+	// Bot whitelist/blacklist: which bots' strategies are eligible for hedging.
+	// Empty whitelist means "any bot (or manual)". Blacklist always takes priority.
+	HedgeBotWhitelist []string `json:"hedge_bot_whitelist"`
+	HedgeBotBlacklist []string `json:"hedge_bot_blacklist"`
+
+	// SizeAsMain: when true, each slot's USDT size is derived from the opposite
+	// (main) position's volume instead of a fixed GridSizeUSDT.
+	SizeAsMain bool `json:"size_as_main"`
+
+	// Hedge → Main control actions (hedge bots only).
+	HedgeCancelMainTp bool `json:"hedge_cancel_main_tp"` // cancel TP on main at hedge activation
+	HedgeCancelMainSl bool `json:"hedge_cancel_main_sl"` // cancel all SL on main at hedge activation
+	HedgeStopMain     bool `json:"hedge_stop_main"`      // hard-stop main at hedge activation
 }
 
 // computeOpportunityScore returns a ranking score for a symbol based on the bot's
@@ -794,7 +829,11 @@ func join(items []string) string {
 	return result
 }
 
-func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botCfgJSON, sym, dir string, leverageOverride int) error {
+// createBotStrategy inserts a new bot strategy.
+// hedgedStrategyID (non-empty only for hedge bots) records which main strategy this hedge
+// covers. A unique partial index on hedged_strategy_id prevents two bots from hedging
+// the same main position; if the slot is already taken the INSERT is silently skipped.
+func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botCfgJSON, sym, dir string, leverageOverride int, hedgedStrategyID string) (string, error) {
 	// Apply defaults (same as strategyPayload.applyDefaults)
 	category := cfg.Category
 	if category == "" {
@@ -895,6 +934,8 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		}
 	}
 
+	// NULLIF converts empty hedgedStrategyID to NULL so the unique partial index
+	// only fires when a real main-strategy ID is provided.
 	var id string
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO strategies
@@ -904,14 +945,15 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		   leverage, margin_type, hedge_mode, strategy_type, entry_order_type,
 		   signal_configs, steps,
 		   trailing_stop_enabled, trailing_activation_pct, trailing_callback_pct,
-		   cycle_count, max_cycles)
+		   cycle_count, max_cycles, size_as_main, hedged_strategy_id)
 		VALUES ($1,$2,$3,$4,$5,$6,'active',
 		        $7,$8,$9,$10,
 		        $11,$12,$13,$14,$15,
 		        $16,$17,$18,$19,$20,
 		        $21::jsonb, ($22::text)::jsonb,
 		        $23,$24,$25,
-		        $26, $27)
+		        $26, $27, $28, NULLIF($29,'')::uuid)
+		ON CONFLICT DO NOTHING
 		RETURNING id`,
 		b.ownerID, b.accountID, b.id, sym, category, dir,
 		gridLevels, gridActive, gridStep, gridSize,
@@ -919,15 +961,19 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		leverage, marginType, cfg.HedgeMode, stratType, entryType,
 		string(scJSON), stepsParam,
 		cfg.TrailingEnabled, trailingActPct, trailingCallPct,
-		0, cfg.MaxCycles,
+		0, cfg.MaxCycles, cfg.SizeAsMain, hedgedStrategyID,
 	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Another hedge bot already claimed this main strategy — silently skip.
+		return "", nil
+	}
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Notify strategy engine to load and start this new strategy
 	go s.engine.Notify(context.Background(), id)
-	return nil
+	return id, nil
 }
 
 // loadBotAccountCreds decrypts and returns trading credentials for an exchange account.
@@ -951,6 +997,11 @@ func (s *Server) loadBotAccountCreds(ctx context.Context, accountID string) (tra
 
 // cleanupStoppedBotStrategies deletes stopped bot strategies that have no open exchange position.
 // Called each tick for bots configured with after_stop_mode="delete".
+//
+// For news bots (bybit-news activation signal) stopped strategies are kept for 25 h so that
+// processNewsBots — which scans the last 24 h of announcements — cannot immediately re-create
+// the same strategy after a TP/SL close.  After the announcement window expires the record is
+// deleted on the next cleanup tick.
 func (s *Server) cleanupStoppedBotStrategies(ctx context.Context, b botEngineRow, cfg botCfgJSON) {
 	type stoppedStrategy struct {
 		id       string
@@ -958,8 +1009,25 @@ func (s *Server) cleanupStoppedBotStrategies(ctx context.Context, b botEngineRow
 		category string
 	}
 
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, symbol, category FROM strategies WHERE bot_id=$1 AND status='stopped'`, b.id)
+	// Detect news bot: at least one activation signal is "bybit-news".
+	isNewsBot := false
+	for _, a := range cfg.ActivationSignals {
+		if a.Name == "bybit-news" {
+			isNewsBot = true
+			break
+		}
+	}
+
+	// For news bots only include strategies older than 25 h so that the 24-h re-creation
+	// guard remains in place until the announcement window is fully past.
+	query := `SELECT id, symbol, category FROM strategies WHERE bot_id=$1 AND status='stopped'`
+	if isNewsBot {
+		query = `SELECT id, symbol, category FROM strategies
+		         WHERE bot_id=$1 AND status='stopped'
+		           AND created_at < NOW() - INTERVAL '25 hours'`
+	}
+
+	rows, err := s.pool.Query(ctx, query, b.id)
 	if err != nil {
 		return
 	}
@@ -1153,12 +1221,18 @@ func (s *Server) processNewsBots(ctx context.Context) {
 					}
 				}
 
-				// Check not already open (including detached strategies)
+				// Check not already open or recently stopped for this symbol.
+				// Include stopped strategies created within the last 25 h so that a TP/SL close
+				// does not cause the bot to immediately re-enter on the same announcement.
 				var existing int
 				if err := s.pool.QueryRow(ctx,
 					`SELECT COUNT(*) FROM strategies
-					 WHERE symbol = $1 AND direction = $2 AND status IN ('active','finishing')
-					   AND (bot_id = $3 OR (bot_id IS NULL AND owner_id = $4 AND account_id = $5))`,
+					 WHERE symbol = $1 AND direction = $2
+					   AND (bot_id = $3 OR (bot_id IS NULL AND owner_id = $4 AND account_id = $5))
+					   AND (
+					     status IN ('active','finishing')
+					     OR (status = 'stopped' AND created_at > NOW() - INTERVAL '25 hours')
+					   )`,
 					sym, openDir, b.id, b.ownerID, b.accountID).Scan(&existing); err != nil || existing > 0 {
 					continue
 				}
@@ -1169,7 +1243,7 @@ func (s *Server) processNewsBots(ctx context.Context) {
 					levOverride = parseLeverage(*ann.MaxLeverage)
 				}
 
-				if err := s.createBotStrategy(ctx, b, cfg, sym, openDir, levOverride); err != nil {
+				if _, err := s.createBotStrategy(ctx, b, cfg, sym, openDir, levOverride, ""); err != nil {
 					if !strings.Contains(err.Error(), "unique") {
 						s.logBotEvent(ctx, b.id, fmt.Sprintf("Bybit News: ошибка открытия %s %s: %v", sym, openDir, err), "error", "strategy")
 					}

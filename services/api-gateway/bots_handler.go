@@ -1163,7 +1163,7 @@ func (s *Server) TriggerBot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.createBotStrategy(ctx, b, cfg, req.Symbol, req.Direction, 0); err != nil {
+	if _, err := s.createBotStrategy(ctx, b, cfg, req.Symbol, req.Direction, 0, ""); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
