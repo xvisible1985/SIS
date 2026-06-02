@@ -1,13 +1,15 @@
 // frontend/src/features/log-visualizer/LogVisualizerEventsList.tsx
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import type { MergedEvent, EventListFilter } from './types'
 import { filterEventsList } from './utils'
 
 interface Props {
-  events:       MergedEvent[]
-  currentIndex: number           // -1 = before first event
-  onJump:       (idx: number) => void
+  events:         MergedEvent[]
+  currentIndex:   number           // -1 = before first event
+  onJump:         (idx: number) => void
+  filter:         EventListFilter
+  onFilterChange: (f: EventListFilter) => void
 }
 
 const CHIPS: { label: string; value: EventListFilter }[] = [
@@ -17,9 +19,8 @@ const CHIPS: { label: string; value: EventListFilter }[] = [
   { label: 'Ошибки',   value: 'errors' },
 ]
 
-export function LogVisualizerEventsList({ events, currentIndex, onJump }: Props) {
+export function LogVisualizerEventsList({ events, currentIndex, onJump, filter, onFilterChange }: Props) {
   const activeRef = useRef<HTMLButtonElement>(null)
-  const [filter, setFilter] = useState<EventListFilter>('all')
 
   // Auto-scroll to current event
   useEffect(() => {
@@ -54,7 +55,7 @@ export function LogVisualizerEventsList({ events, currentIndex, onJump }: Props)
           return (
             <button
               key={chip.value}
-              onClick={() => setFilter(chip.value)}
+              onClick={() => onFilterChange(chip.value)}
               style={{
                 fontSize:     10,
                 padding:      '2px 8px',

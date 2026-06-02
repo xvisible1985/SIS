@@ -7,8 +7,8 @@ import { LogVisualizerControls }   from './LogVisualizerControls'
 import { LogVisualizerLayersPopup } from './LogVisualizerLayersPopup'
 import { LogVisualizerStrategyCard } from './LogVisualizerStrategyCard'
 import { lvGetAccounts, lvGetStrategies, lvGetEvents, lvGetLevels, lvGetKlines } from './api'
-import { makeMergedEventLabel } from './utils'
-import type { LVAccount, LVStrategy, LVCandle, MergedEvent, Interval } from './types'
+import { makeMergedEventLabel, filterEventsList } from './utils'
+import type { LVAccount, LVStrategy, LVCandle, MergedEvent, Interval, EventListFilter } from './types'
 import { INTERVALS, DEFAULT_LAYER_SETTINGS } from './types'
 import type { LayerSettings } from './types'
 
@@ -31,6 +31,9 @@ export function LogVisualizerTab() {
 
   // ── Layer settings ────────────────────────────────────────────────────
   const [layerSettings, setLayerSettings] = useState<LayerSettings>(DEFAULT_LAYER_SETTINGS)
+
+  // ── Event list filter (lifted from EventsList for filter-aware navigation) ──
+  const [filter, setFilter] = useState<EventListFilter>('all')
 
   // ── Loaded data ───────────────────────────────────────────────────────
   const [candles,   setCandles]   = useState<LVCandle[]>([])
@@ -177,10 +180,35 @@ export function LogVisualizerTab() {
     setEventIdx(idx)
   }, [candles, events])
 
-  const handlePrev  = useCallback(() => jumpToEvent(eventIdx - 1),      [jumpToEvent, eventIdx])
-  const handleNext  = useCallback(() => jumpToEvent(eventIdx + 1),      [jumpToEvent, eventIdx])
-  const handleFirst = useCallback(() => jumpToEvent(0),                 [jumpToEvent])
-  const handleLast  = useCallback(() => jumpToEvent(events.length - 1), [jumpToEvent, events.length])
+  const handlePrev = useCallback(() => {
+    if (filter === 'all') { jumpToEvent(eventIdx - 1); return }
+    const filtered = filterEventsList(events, filter)
+    for (let i = filtered.length - 1; i >= 0; i--) {
+      const origIdx = events.indexOf(filtered[i])
+      if (origIdx < eventIdx) { jumpToEvent(origIdx); return }
+    }
+  }, [jumpToEvent, eventIdx, filter, events])
+
+  const handleNext = useCallback(() => {
+    if (filter === 'all') { jumpToEvent(eventIdx + 1); return }
+    const filtered = filterEventsList(events, filter)
+    for (const ev of filtered) {
+      const origIdx = events.indexOf(ev)
+      if (origIdx > eventIdx) { jumpToEvent(origIdx); return }
+    }
+  }, [jumpToEvent, eventIdx, filter, events])
+
+  const handleFirst = useCallback(() => {
+    if (filter === 'all') { jumpToEvent(0); return }
+    const filtered = filterEventsList(events, filter)
+    if (filtered.length > 0) jumpToEvent(events.indexOf(filtered[0]))
+  }, [jumpToEvent, filter, events])
+
+  const handleLast = useCallback(() => {
+    if (filter === 'all') { jumpToEvent(events.length - 1); return }
+    const filtered = filterEventsList(events, filter)
+    if (filtered.length > 0) jumpToEvent(events.indexOf(filtered[filtered.length - 1]))
+  }, [jumpToEvent, filter, events])
 
   // ── Derived data ──────────────────────────────────────────────────────
   const visibleCandles = candleIdx >= 0 ? candles.slice(0, candleIdx + 1) : []
@@ -295,6 +323,8 @@ export function LogVisualizerTab() {
             events={events}
             currentIndex={eventIdx}
             onJump={jumpToEvent}
+            filter={filter}
+            onFilterChange={setFilter}
           />
         </div>
       </div>
@@ -306,8 +336,14 @@ export function LogVisualizerTab() {
         isMax={isMax}
         currentEvent={currentEvent}
         hasData={hasData}
-        canGoPrev={eventIdx > 0}
-        canGoNext={eventIdx < events.length - 1}
+        canGoPrev={filter === 'all'
+          ? eventIdx > 0
+          : filterEventsList(events, filter).some(ev => events.indexOf(ev) < eventIdx)
+        }
+        canGoNext={filter === 'all'
+          ? eventIdx < events.length - 1
+          : filterEventsList(events, filter).some(ev => events.indexOf(ev) > eventIdx)
+        }
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         onPrev={handlePrev}
