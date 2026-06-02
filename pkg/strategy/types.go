@@ -114,6 +114,12 @@ type Strategy struct {
 	ProtectedBuild        bool
 	RebuildOnSL           bool // Перестройка сетки от SZ: после SL немедленно переставить уровни от нижней границы SZ
 	RebuildFromEntry      bool // Якорь на точку входа: все уровни строятся от цены заполнения L(0); SL L(0) тоже ждёт SZ и перезаходит
+	SizeAsMain            bool // Deposit = Main-position volume: each slot sized against opposite-direction position's USDT value
+
+	// Hedge main control flags — set by hedge engine when a hedge activates/deactivates.
+	HedgeTpSuppressed bool    // do not place/re-place TP orders while true
+	HedgeSlSuppressed bool    // do not place/re-place SL orders while true
+	HedgeStoppedBy    *string // ID of the hedge strategy that stopped this main; nil if not stopped by hedge
 }
 
 type Cycle struct {

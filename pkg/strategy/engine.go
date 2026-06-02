@@ -58,7 +58,11 @@ func (e *Engine) Start(ctx context.Context) {
 		        COALESCE(protected_build,false),
 		        COALESCE(matrix_rebuild_on_sl,false),
 		        COALESCE(matrix_rebuild_from_entry,false),
-		        COALESCE(strategy_type,'grid')
+		        COALESCE(strategy_type,'grid'),
+		        COALESCE(size_as_main,false),
+		        COALESCE(hedge_tp_suppressed,false),
+		        COALESCE(hedge_sl_suppressed,false),
+		        hedge_stopped_by::text
 		 FROM strategies WHERE status IN ('active','finishing')`)
 	if err != nil {
 		log.Printf("strategy engine: load: %v", err)
@@ -87,7 +91,11 @@ func (e *Engine) Notify(ctx context.Context, strategyID string) {
 		        COALESCE(protected_build,false),
 		        COALESCE(matrix_rebuild_on_sl,false),
 		        COALESCE(matrix_rebuild_from_entry,false),
-		        COALESCE(strategy_type,'grid')
+		        COALESCE(strategy_type,'grid'),
+		        COALESCE(size_as_main,false),
+		        COALESCE(hedge_tp_suppressed,false),
+		        COALESCE(hedge_sl_suppressed,false),
+		        hedge_stopped_by::text
 		 FROM strategies WHERE id=$1`, strategyID)
 	if err := scanStrategyRow(row, &s); err != nil {
 		log.Printf("strategy engine: notify %s: %v", strategyID, err)
@@ -504,6 +512,7 @@ func (e *Engine) loadAccountInfo(ctx context.Context, accountID string) (account
 func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 	var dir, stat, tpm, slt, stepsJSON, signalConfigsJSON, matrixJSON, entryLevelJSON string
 	var sf, hm bool
+	var stoppedByStr *string
 	err := rows.Scan(
 		&s.ID, &s.OwnerID, &s.AccountID, &s.Symbol, &s.Category,
 		&dir, &stat,
@@ -516,6 +525,10 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 		&s.RebuildOnSL,
 		&s.RebuildFromEntry,
 		&s.StrategyType,
+		&s.SizeAsMain,
+		&s.HedgeTpSuppressed,
+		&s.HedgeSlSuppressed,
+		&stoppedByStr,
 	)
 	if err != nil {
 		return err
@@ -526,6 +539,7 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 	s.SLType = SLType(slt)
 	s.SignalFilter = sf
 	s.HedgeMode = hm
+	s.HedgeStoppedBy = stoppedByStr
 	if stepsJSON != "" && stepsJSON != "[]" {
 		_ = json.Unmarshal([]byte(stepsJSON), &s.Steps)
 	}
@@ -565,6 +579,11 @@ type AccountRunner struct {
 	tradeStream   *trader.TradeStream
 	cancel        context.CancelFunc
 	reconcileMu   sync.Mutex
+
+	// positions caches the latest position size (in coins) from private WS events.
+	// Key: "SYMBOL:positionIdx" (e.g. "BTCUSDT:1"). Used by SizeAsMain strategies.
+	posMu     sync.RWMutex
+	positions map[string]float64
 }
 
 func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trader.Credentials, pool *pgxpool.Pool, signalEngine *signal.Engine, cancel context.CancelFunc) *AccountRunner {
@@ -579,7 +598,18 @@ func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trade
 		orderIndex:    make(map[string]orderRef),
 		tradeStream:   trader.NewTradeStream(creds),
 		cancel:        cancel,
+		positions:     make(map[string]float64),
 	}
+}
+
+// GetPositionSizeCoins returns the cached position size (in coins) for a given symbol
+// and positionIdx (0=one-way, 1=long hedge, 2=short hedge). Returns 0 if unknown.
+func (ar *AccountRunner) GetPositionSizeCoins(symbol string, positionIdx int) float64 {
+	key := symbol + ":" + strconv.Itoa(positionIdx)
+	ar.posMu.RLock()
+	v := ar.positions[key]
+	ar.posMu.RUnlock()
+	return v
 }
 
 // safeLoop runs fn with full panic recovery. If fn panics and ctx is still active,
@@ -731,6 +761,13 @@ func (ar *AccountRunner) UnregisterOrder(exchangeOrderID string) {
 // Handles full and partial position changes.
 func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
 	size, _ := strconv.ParseFloat(ev.Size, 64)
+
+	// Update position size cache used by SizeAsMain strategies.
+	key := ev.Symbol + ":" + strconv.Itoa(ev.PositionIdx)
+	ar.posMu.Lock()
+	ar.positions[key] = size
+	ar.posMu.Unlock()
+
 	ar.mu.RLock()
 	var matched []*StrategyRunner
 	for _, sr := range ar.strategies {
