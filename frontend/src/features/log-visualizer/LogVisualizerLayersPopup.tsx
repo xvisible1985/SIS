@@ -80,7 +80,7 @@ export function LogVisualizerLayersPopup({ settings, onChange }: Props) {
 
   // Button is highlighted when any layer is hidden
   const isModified =
-    !settings.showOrderMarkers || !settings.showLogMarkers || !settings.showPriceLines ||
+    !settings.showOrderMarkers || !settings.showLogMarkers || settings.showPriceLines ||
     !settings.showInfo || !settings.showWarn || !settings.showError
 
   return (
