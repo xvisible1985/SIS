@@ -1,7 +1,8 @@
 // frontend/src/features/log-visualizer/LogVisualizerEventsList.tsx
 
-import { useEffect, useRef } from 'react'
-import type { MergedEvent } from './types'
+import { useEffect, useRef, useState } from 'react'
+import type { MergedEvent, EventListFilter } from './types'
+import { filterEventsList } from './utils'
 
 interface Props {
   events:       MergedEvent[]
@@ -9,8 +10,16 @@ interface Props {
   onJump:       (idx: number) => void
 }
 
+const CHIPS: { label: string; value: EventListFilter }[] = [
+  { label: 'Все',      value: 'all'    },
+  { label: 'Ордера',   value: 'orders' },
+  { label: 'Закрытия', value: 'closes' },
+  { label: 'Ошибки',   value: 'errors' },
+]
+
 export function LogVisualizerEventsList({ events, currentIndex, onJump }: Props) {
-  const activeRef  = useRef<HTMLButtonElement>(null)
+  const activeRef = useRef<HTMLButtonElement>(null)
+  const [filter, setFilter] = useState<EventListFilter>('all')
 
   // Auto-scroll to current event
   useEffect(() => {
@@ -18,10 +27,13 @@ export function LogVisualizerEventsList({ events, currentIndex, onJump }: Props)
   }, [currentIndex])
 
   function fmtTime(tsMs: number) {
-    return new Date(tsMs).toLocaleTimeString('ru-RU', {
-      hour: '2-digit', minute: '2-digit', second: '2-digit',
-    })
+    const d    = new Date(tsMs)
+    const date = d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })
+    const time = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    return `${date} ${time}`
   }
+
+  const filtered = filterEventsList(events, filter)
 
   return (
     <div className="flex flex-col h-full overflow-hidden border-l border-white/[.06]">
@@ -35,21 +47,46 @@ export function LogVisualizerEventsList({ events, currentIndex, onJump }: Props)
         </span>
       </div>
 
+      {/* Filter chips */}
+      <div className="flex-shrink-0 flex flex-wrap gap-1 px-3 py-1.5 border-b border-white/[.06]">
+        {CHIPS.map(chip => {
+          const active = chip.value === filter
+          return (
+            <button
+              key={chip.value}
+              onClick={() => setFilter(chip.value)}
+              style={{
+                fontSize:     10,
+                padding:      '2px 8px',
+                borderRadius: 5,
+                border:       active ? '1px solid rgba(74,125,255,.3)' : '1px solid transparent',
+                background:   active ? 'rgba(74,125,255,.15)' : 'rgba(255,255,255,.04)',
+                color:        active ? '#b8c8ff' : '#475569',
+                cursor:       'pointer',
+              }}
+            >
+              {chip.label}
+            </button>
+          )
+        })}
+      </div>
+
       {/* List */}
       <div className="flex-1 overflow-y-auto">
-        {events.length === 0 ? (
+        {filtered.length === 0 ? (
           <div className="flex h-full items-center justify-center text-[11px] text-slate-600">
             Нет событий
           </div>
         ) : (
-          events.map((ev, idx) => {
-            const isCurrent = idx === currentIndex
-            const isPast    = idx < currentIndex
+          filtered.map(ev => {
+            const originalIdx = events.indexOf(ev)
+            const isCurrent   = originalIdx === currentIndex
+            const isPast      = originalIdx < currentIndex
             return (
               <button
-                key={idx}
+                key={originalIdx}
                 ref={isCurrent ? activeRef : undefined}
-                onClick={() => onJump(idx)}
+                onClick={() => onJump(originalIdx)}
                 className={`w-full text-left px-3 py-1.5 border-b border-white/[.03] transition-colors hover:bg-white/[.03] ${
                   isCurrent
                     ? 'bg-amber-400/[.08] border-l-2 border-l-amber-400'
