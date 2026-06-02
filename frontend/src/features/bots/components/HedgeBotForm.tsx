@@ -324,8 +324,8 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
           hedge_profit_lazy_pct:   ha.profit_lazy_pct,
           hedge_deact_type:        ha.deact_type,
           hedge_deact_value:       ha.deact_value,
-          hedge_bot_whitelist:     botWhitelist.length > 0 ? botWhitelist : undefined,
-          hedge_bot_blacklist:     botBlacklist.length > 0 ? botBlacklist : undefined,
+          hedge_bot_whitelist:     botWhitelist,
+          hedge_bot_blacklist:     botBlacklist,
           size_as_main:            sizeAsMain,
         },
         maxStrategies,
@@ -1354,18 +1354,6 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                       </div>
                       <div>
                         <label className={labelCls}>
-                          Переводить Main в завершение
-                          <Tip text="При активации хеджа — переводит основной бот в режим завершения (новые ордера не открываются)." />
-                        </label>
-                        <Toggle
-                          options={[{ label: 'Выкл', value: 'false' }, { label: 'Вкл', value: 'true' }]}
-                          value={String(config.hedge_finish_main ?? false)}
-                          onChange={v => patch({ hedge_finish_main: v === 'true' })}
-                          optionColors={{ true: 'bg-orange-700 text-white' }}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>
                           Переводить Main в остановлено
                           <Tip text="При активации хеджа — полностью останавливает основной бот." />
                         </label>
@@ -1730,7 +1718,5 @@ function BotMultiPicker({
 const inputCls =
   'w-full rounded-lg border border-white/[.08] bg-black/[.25] px-3 py-2 text-[13px] text-slate-200 outline-none transition-colors placeholder:text-slate-500 focus:border-amber-500/50';
 
-const selectCls =
-  'w-full rounded-lg border border-white/[.08] bg-black/[.25] px-3 py-2 text-[13px] text-slate-200 outline-none transition-colors focus:border-amber-500/50 cursor-pointer';
 
 const labelCls = 'flex items-center text-xs text-gray-500 mb-1';

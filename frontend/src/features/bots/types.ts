@@ -80,8 +80,7 @@ export type StrategyConfig = {
   // Hedge → Main control actions
   hedge_cancel_main_tp?: boolean;   // cancel TP orders on main bot when hedge activates
   hedge_cancel_main_sl?: boolean;   // cancel SL orders on main bot when hedge activates
-  hedge_finish_main?: boolean;      // move main bot to "finishing" state
-  hedge_stop_main?: boolean;        // move main bot to "stopped" state
+  hedge_stop_main?: boolean;        // move main bot to "stopped" state and cancel all orders
 };
 
 export type Bot = {
