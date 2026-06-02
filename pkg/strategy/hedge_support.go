@@ -34,6 +34,8 @@ func (sr *StrategyRunner) cancelTPForHedge(ctx context.Context) {
 		OrderId:  old,
 	}); err != nil && !isOrderGone(err) {
 		sr.warn(ctx, fmt.Sprintf("cancelTPForHedge: %v", err))
+	} else {
+		sr.info(ctx, "Хедж: TP-ордер отменён (подавление активно)")
 	}
 }
 
@@ -62,6 +64,7 @@ func (sr *StrategyRunner) cancelSLForHedge(ctx context.Context) {
 	}
 	// Cancel all per-level SLs (matrix strategies).
 	sr.matrixCancelPerLevelSLs(ctx)
+	sr.info(ctx, "Хедж: все SL-ордера отменены (подавление активно)")
 }
 
 // restoreTPAfterHedge re-places the TP order after a hedge deactivates TP suppression.
@@ -74,6 +77,8 @@ func (sr *StrategyRunner) restoreTPAfterHedge(ctx context.Context) {
 	}
 	if err := sr.updateTPByType(ctx); err != nil {
 		sr.warn(ctx, fmt.Sprintf("restoreTPAfterHedge: %v", err))
+	} else {
+		sr.info(ctx, "Хедж деактивирован: TP-ордер восстановлен")
 	}
 }
 
@@ -90,10 +95,13 @@ func (sr *StrategyRunner) restoreSLAfterHedge(ctx context.Context) {
 	if sr.strategy.StrategyType != "matrix" {
 		if err := sr.updateSL(ctx); err != nil {
 			sr.warn(ctx, fmt.Sprintf("restoreSLAfterHedge (cycle): %v", err))
+		} else {
+			sr.info(ctx, "Хедж деактивирован: SL-ордер восстановлен")
 		}
 		return
 	}
 	// Matrix strategies: re-place per-level SLs for all filled levels that lost their SL.
+	restored := 0
 	for i := range sr.levels {
 		l := &sr.levels[i]
 		if l.Status != LevelFilled || l.SLOrderID != "" || l.Slot == nil {
@@ -104,5 +112,9 @@ func (sr *StrategyRunner) restoreSLAfterHedge(ctx context.Context) {
 			continue
 		}
 		sr.matrixPlacePerLevelSL(ctx, l, l.FilledPrice, *stopPct)
+		restored++
+	}
+	if restored > 0 {
+		sr.info(ctx, fmt.Sprintf("Хедж деактивирован: SL восстановлен на %d уровнях", restored))
 	}
 }

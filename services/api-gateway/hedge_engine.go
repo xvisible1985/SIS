@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"sis/pkg/signal"
@@ -592,6 +593,22 @@ func (s *Server) applyHedgeMainControls(ctx context.Context, botID, mainStrategy
 		return
 	}
 
+	// Log to the main strategy's event log so it appears in Log Visualizer.
+	var parts []string
+	if tpSuppressed {
+		parts = append(parts, "TP подавлен")
+	}
+	if slSuppressed {
+		parts = append(parts, "SL подавлен")
+	}
+	if cfg.HedgeStopMain {
+		parts = append(parts, "бот остановлен")
+	}
+	stratMsg := "Хедж активирован: " + strings.Join(parts, ", ")
+	s.pool.Exec(ctx, //nolint:errcheck
+		`INSERT INTO strategy_events (strategy_id, message, level) VALUES ($1, $2, 'info')`,
+		mainStrategyID, stratMsg)
+
 	go s.engine.Notify(context.Background(), mainStrategyID)
 	s.logBotEvent(ctx, botID,
 		fmt.Sprintf("Хедж: управление Main применено (tp_sup=%v sl_sup=%v stop=%v) → %s",
@@ -640,6 +657,15 @@ func (s *Server) restoreHedgeMainControls(ctx context.Context, botID, hedgeStrat
 			"error", "hedge")
 		return
 	}
+
+	// Log to the main strategy's event log so it appears in Log Visualizer.
+	restoreMsg := "Хедж деактивирован: TP/SL восстановлены"
+	if stoppedByID == hedgeStrategyID {
+		restoreMsg = "Хедж деактивирован: бот возобновлён, TP/SL восстановлены"
+	}
+	s.pool.Exec(ctx, //nolint:errcheck
+		`INSERT INTO strategy_events (strategy_id, message, level) VALUES ($1, $2, 'info')`,
+		mainStrategyID, restoreMsg)
 
 	go s.engine.Notify(context.Background(), mainStrategyID)
 	s.logBotEvent(ctx, botID,
