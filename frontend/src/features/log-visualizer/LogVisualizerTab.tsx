@@ -4,10 +4,13 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { LogVisualizerChart }      from './LogVisualizerChart'
 import { LogVisualizerEventsList } from './LogVisualizerEventsList'
 import { LogVisualizerControls }   from './LogVisualizerControls'
+import { LogVisualizerLayersPopup } from './LogVisualizerLayersPopup'
+import { LogVisualizerStrategyCard } from './LogVisualizerStrategyCard'
 import { lvGetAccounts, lvGetStrategies, lvGetEvents, lvGetLevels, lvGetKlines } from './api'
 import { makeMergedEventLabel } from './utils'
-import type { LVAccount, LVStrategy, LVCandle, MergedEvent, Interval, LayerSettings } from './types'
+import type { LVAccount, LVStrategy, LVCandle, MergedEvent, Interval } from './types'
 import { INTERVALS, DEFAULT_LAYER_SETTINGS } from './types'
+import type { LayerSettings } from './types'
 
 // Speed: candles per second = speed * CANDLES_PER_SEC_BASE
 const CANDLES_PER_SEC_BASE = 20
@@ -25,6 +28,8 @@ export function LogVisualizerTab() {
   const [interval,   setIntervalVal] = useState<Interval>('1m')
   const [speed,      setSpeed]      = useState(8)
   const [isMax,      setIsMax]      = useState(false)
+
+  // ── Layer settings ────────────────────────────────────────────────────
   const [layerSettings, setLayerSettings] = useState<LayerSettings>(DEFAULT_LAYER_SETTINGS)
 
   // ── Loaded data ───────────────────────────────────────────────────────
@@ -68,7 +73,7 @@ export function LogVisualizerTab() {
   // ── Load data ─────────────────────────────────────────────────────────
   const handleLoad = useCallback(async () => {
     if (!strategyId || !fromDate || !toDate) return
-    const gen = ++loadGenRef.current  // increment generation; ignore results from older loads
+    const gen = ++loadGenRef.current
     setLoading(true)
     setLoadError(null)
     setCandles([]); setEvents([])
@@ -76,7 +81,7 @@ export function LogVisualizerTab() {
 
     try {
       const fromMs = new Date(fromDate).getTime()
-      const toMs   = new Date(toDate).getTime() + 86_400_000 // include end of day
+      const toMs   = new Date(toDate).getTime() + 86_400_000
 
       const strat  = strategies.find(s => s.id === strategyId)
       const symbol = strat?.symbol ?? ''
@@ -87,9 +92,8 @@ export function LogVisualizerTab() {
         lvGetKlines(symbol, interval, fromMs, toMs),
       ])
 
-      if (gen !== loadGenRef.current) return  // superseded by a newer load
+      if (gen !== loadGenRef.current) return
 
-      // Merge and sort by timestamp
       const merged: MergedEvent[] = [
         ...eventsRaw.map(e => ({
           tsMs:  e.tsMs,
@@ -121,7 +125,6 @@ export function LogVisualizerTab() {
     if (!isPlaying) return
 
     if (isMax) {
-      // MAX: instant jump to next event, no animation
       const nextEvIdx = eventIdxRef.current + 1
       if (nextEvIdx >= eventsRef.current.length) {
         setCandleIdx(candlesRef.current.length - 1)
@@ -184,6 +187,7 @@ export function LogVisualizerTab() {
   const visibleEvents  = eventIdx  >= 0 ? events.slice(0, eventIdx + 1)  : []
   const currentEvent   = eventIdx >= 0 ? events[eventIdx] : null
   const hasData        = candles.length > 0
+  const strategy       = strategies.find(s => s.id === strategyId) ?? null
 
   function stratLabel(s: LVStrategy) {
     return `${s.symbol} · ${s.direction} · ${s.strategyType}`
@@ -240,6 +244,12 @@ export function LogVisualizerTab() {
           {INTERVALS.map(iv => <option key={iv} value={iv}>{iv}</option>)}
         </select>
 
+        {/* Layers popup */}
+        <LogVisualizerLayersPopup
+          settings={layerSettings}
+          onChange={setLayerSettings}
+        />
+
         {/* Load button */}
         <button
           onClick={handleLoad}
@@ -266,8 +276,19 @@ export function LogVisualizerTab() {
 
       {/* Main area: chart + sidebar */}
       <div className="flex-1 flex overflow-hidden min-h-0">
-        <div className="flex-1 min-w-0">
-          <LogVisualizerChart candles={visibleCandles} events={visibleEvents} layerSettings={layerSettings} />
+        {/* Chart wrapper — relative позволяет StrategyCard позиционироваться absolute */}
+        <div className="flex-1 relative min-w-0">
+          <LogVisualizerChart
+            candles={visibleCandles}
+            events={visibleEvents}
+            layerSettings={layerSettings}
+          />
+          {hasData && strategy && (
+            <LogVisualizerStrategyCard
+              strategy={strategy}
+              visibleEvents={visibleEvents}
+            />
+          )}
         </div>
         <div className="w-[220px] flex-shrink-0">
           <LogVisualizerEventsList
