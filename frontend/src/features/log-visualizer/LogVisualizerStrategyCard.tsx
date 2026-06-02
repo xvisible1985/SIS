@@ -15,7 +15,7 @@ export function LogVisualizerStrategyCard({ strategy, visibleEvents }: Props) {
 
   return (
     <div
-      className="absolute bottom-4 right-4 backdrop-blur-sm pointer-events-none select-none"
+      className="absolute bottom-4 right-4 z-10 backdrop-blur-sm pointer-events-none select-none"
       style={{
         background:   'rgba(6,6,12,0.85)',
         border:       '1px solid rgba(255,255,255,.10)',
