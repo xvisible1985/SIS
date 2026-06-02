@@ -1,3 +1,6 @@
+import type { MatrixLevel, MatrixEntryLevel } from '../../types';
+export type { MatrixLevel, MatrixEntryLevel };
+
 export type BotStatus = 'active' | 'stopped' | 'draft';
 
 export type TriggerSignal = {
@@ -44,6 +47,41 @@ export type StrategyConfig = {
   after_stop_mode?: 'delete' | 'restart';
   max_cycles?: number;
   priority_signal?: string;
+  // Signal-gated exit
+  tp_signal_name?: string;
+  tp_signal_dir?: 'buy' | 'sell';
+  sl_signal_name?: string;
+  sl_signal_dir?: 'buy' | 'sell';
+  // Matrix-specific
+  matrix_levels?: MatrixLevel[];
+  matrix_entry_level?: MatrixEntryLevel;
+  safe_zone_pct?: number;
+  protected_build?: boolean;
+  matrix_rebuild_on_sl?: boolean;
+  matrix_rebuild_from_entry?: boolean;
+  size_as_main?: boolean;
+  // Hedge bot activation (see HedgeBotForm)
+  hedge_act_type?: number;          // 0=last_order%, 1=drawdown%, 2=pnl$, 3=roi%
+  hedge_act_value?: number;
+  hedge_sig_enable?: boolean;
+  hedge_sig_name?: string;
+  hedge_sig_dir?: 'buy' | 'sell';
+  hedge_sig_dt_hours?: number;
+  hedge_close_type?: number;        // 0=at_cycle_end, 1=max_loss$
+  hedge_close_value?: number;
+  hedge_deact_close_type?: number;  // 0=pnl$, 1=roi%, 2=breakeven
+  hedge_deact_close_value?: number;
+  hedge_profit_lazy?: boolean;
+  hedge_profit_lazy_pct?: number;
+  hedge_deact_type?: number;        // 0=drawdown%, 1=pnl$, 2=roi%, 3=last_order%, 4=wait_pair
+  hedge_deact_value?: number;
+  hedge_bot_whitelist?: string[];   // bot IDs to allow (empty = any)
+  hedge_bot_blacklist?: string[];   // bot IDs to exclude
+  // Hedge → Main control actions
+  hedge_cancel_main_tp?: boolean;   // cancel TP orders on main bot when hedge activates
+  hedge_cancel_main_sl?: boolean;   // cancel SL orders on main bot when hedge activates
+  hedge_finish_main?: boolean;      // move main bot to "finishing" state
+  hedge_stop_main?: boolean;        // move main bot to "stopped" state
 };
 
 export type Bot = {
