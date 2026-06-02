@@ -687,6 +687,8 @@ func (ar *AccountRunner) addStrategy(s Strategy) {
 		prevStatus := existing.strategy.Status
 		prevSignalFilter := existing.strategy.SignalFilter
 		prevConfigsLen := len(existing.strategy.SignalConfigs)
+		prevTpSuppressed := existing.strategy.HedgeTpSuppressed
+		prevSlSuppressed := existing.strategy.HedgeSlSuppressed
 		if existing.strategy.HedgeMode != s.HedgeMode {
 			existing.positionModeVerified = false
 		}
@@ -704,6 +706,22 @@ func (ar *AccountRunner) addStrategy(s Strategy) {
 		if prevStatus == StatusActive && s.Status == StatusActive &&
 			(prevSignalFilter != s.SignalFilter || len(s.SignalConfigs) != prevConfigsLen) {
 			existing.submit(func(ctx context.Context) { existing.handleSignalConfigUpdate(ctx) })
+		}
+		// Hedge TP suppression activated — cancel existing TP order immediately.
+		if !prevTpSuppressed && s.HedgeTpSuppressed {
+			existing.submit(func(ctx context.Context) { existing.cancelTPForHedge(ctx) })
+		}
+		// Hedge TP suppression cleared — re-place TP if strategy is active.
+		if prevTpSuppressed && !s.HedgeTpSuppressed && s.Status == StatusActive {
+			existing.submit(func(ctx context.Context) { existing.restoreTPAfterHedge(ctx) })
+		}
+		// Hedge SL suppression activated — cancel all existing SL orders immediately.
+		if !prevSlSuppressed && s.HedgeSlSuppressed {
+			existing.submit(func(ctx context.Context) { existing.cancelSLForHedge(ctx) })
+		}
+		// Hedge SL suppression cleared — re-place SL orders if strategy is active.
+		if prevSlSuppressed && !s.HedgeSlSuppressed && s.Status == StatusActive {
+			existing.submit(func(ctx context.Context) { existing.restoreSLAfterHedge(ctx) })
 		}
 		return
 	}
