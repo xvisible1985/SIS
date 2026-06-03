@@ -7,8 +7,8 @@ services:
       POSTGRES_USER: sis
       POSTGRES_PASSWORD: sis_secret
       POSTGRES_DB: sis
-    ports:
-      - "5432:5432"
+    # No host port binding — only accessible inside Docker network.
+    # Host port 5432 may be used by another Postgres instance.
     volumes:
       - tsdb_data:/var/lib/postgresql/data
     healthcheck:
