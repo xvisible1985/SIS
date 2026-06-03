@@ -52,6 +52,28 @@ services:
       timeout: 3s
       retries: 10
 
+  api-gateway:
+    build:
+      context: .
+      dockerfile: services/api-gateway/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  squid:
+    image: sameersbn/squid:3.5.27-2
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3128:3128"
+
   tg-bot:
     build:
       context: .
@@ -62,10 +84,11 @@ services:
       TELEGRAM_BOT_SECRET: ${TELEGRAM_BOT_SECRET}
       GATEWAY_URL: ${GATEWAY_URL:-http://api-gateway:8080}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-      APP_URL: ${APP_URL:-https://app.novabot.io}
+      APP_URL: ${APP_URL:-https://n2.novabot.ru}
       TELEGRAM_GROUP_ID: ${TELEGRAM_GROUP_ID:-}
       WELCOME_ENABLED: ${WELCOME_ENABLED:-false}
     depends_on:
+      - api-gateway
       - redis
 
 volumes:
