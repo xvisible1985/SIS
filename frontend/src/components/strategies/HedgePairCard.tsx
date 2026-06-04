@@ -2,13 +2,13 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { Shield } from 'lucide-react'
 import {
   getStrategyState, getStrategyEvents,
-  setStrategyStatus, detachWithAction,
+  setStrategyStatus, detachWithAction, getHedgeSession,
   type DetachPositionData,
 } from '../../api/strategies'
 import { placeOrder } from '../../api/trader'
 import { ClosePositionModal, makeCloseConfirm, type CloseConfirm } from '../common/ClosePositionModal'
 import { CoinIcon } from '../common/CoinIcon'
-import type { Strategy, ExchangeAccount, ActiveOrder, Position, StrategyState, StrategyEvent } from '../../types'
+import type { Strategy, ExchangeAccount, ActiveOrder, Position, StrategyState, StrategyEvent, HedgeSession } from '../../types'
 import type { Bot } from '../../features/bots/types'
 
 export interface HedgePairCardProps {
@@ -105,6 +105,11 @@ function fmtPrice(v: number | null, d = 4): string {
 function fmtTime(iso: string): string {
   const d = new Date(iso)
   return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+function fmtDateTime(iso: string): string {
+  const d = new Date(iso)
+  return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
 function autoDec(price: number): number {
@@ -274,9 +279,6 @@ export function HedgePairCard({
   const botId   = hedge.bot_id ?? null
   const isAnyActive = main.status === 'active' || hedge.status === 'active'
 
-  // ── gap key (stable per pair) ─────────────────────────────────────────────
-  const gapKey = `hgap_${main.id}_${hedge.id}`
-
   // ── menu ──────────────────────────────────────────────────────────────────
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -297,36 +299,38 @@ export function HedgePairCard({
 
   const handleDetachAction = async (action: 'adopt' | 'close' | 'leave') => {
     setActing(true)
-    const pos: DetachPositionData | undefined = hedgePos
-      ? {
-          size:         hedgePos.size,
-          side:         hedgePos.side,
-          entry_price:  hedgePos.entryPrice,
-          position_idx: hedgePos.positionIdx,
-        }
-      : undefined
-
     try {
-      await detachWithAction(hedge.id, action, {
-        addBlacklist: detachBlacklist,
-        position: pos,
-      })
-    } catch { /* backend returns ok:true even on partial errors */ }
+      const pos: DetachPositionData | undefined = hedgePos
+        ? {
+            size:         hedgePos.size,
+            side:         hedgePos.side,
+            entry_price:  hedgePos.entryPrice,
+            position_idx: hedgePos.positionIdx,
+          }
+        : undefined
 
-    // For "close": stop main strategy too (full pair dissolution)
-    if (action === 'close') {
-      try { await setStrategyStatus(main.id, 'stopped') } catch {}
+      try {
+        await detachWithAction(hedge.id, action, {
+          addBlacklist: detachBlacklist,
+          position: pos,
+        })
+      } catch { /* backend returns ok:true even on partial errors */ }
+
+      // For "close": stop main strategy too (full pair dissolution)
+      if (action === 'close') {
+        try { await setStrategyStatus(main.id, 'stopped') } catch {}
+      }
+
+      if (detachBlacklist && botId) {
+        window.dispatchEvent(new CustomEvent('bot-updated'))
+      }
+
+      setStep('idle')
+      setDetachBlacklist(false)
+      onChanged()
+    } finally {
+      setActing(false)
     }
-
-    if (detachBlacklist && botId) {
-      window.dispatchEvent(new CustomEvent('bot-updated'))
-    }
-
-    localStorage.removeItem(gapKey)
-    setActing(false)
-    setStep('idle')
-    setDetachBlacklist(false)
-    onChanged()
   }
 
   // ── close position ────────────────────────────────────────────────────────
