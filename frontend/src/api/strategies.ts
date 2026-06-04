@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { Strategy, StrategyState, StrategyEvent, StrategyFormData, CycleAuditData } from '../types'
+import type { Strategy, StrategyState, StrategyEvent, StrategyFormData, CycleAuditData, HedgeSession } from '../types'
 
 export async function listStrategies(): Promise<Strategy[]> {
   const res = await apiClient.get<Strategy[]>('/strategies')
@@ -104,4 +104,13 @@ export async function getInstrumentConstraints(symbol: string, category = 'linea
   const res = await apiClient.get<InstrumentConstraints>(`/instrument-info?symbol=${symbol}&category=${category}`)
   instrConstraintsCache.set(key, { data: res.data, ts: Date.now() })
   return res.data
+}
+
+export async function getHedgeSession(strategyId: string): Promise<HedgeSession | null> {
+  try {
+    const r = await apiClient.get<HedgeSession>(`/strategies/${strategyId}/hedge-session`)
+    return r.data
+  } catch {
+    return null
+  }
 }

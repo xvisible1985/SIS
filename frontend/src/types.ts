@@ -259,9 +259,9 @@ export interface Strategy {
   grid_step_pct: number
   grid_size_usdt: number
   tp_mode: 'total' | 'per_level'
-  tp_pct: number
+  tp_pct: number | null
   sl_type: 'conditional' | 'programmatic'
-  sl_pct: number
+  sl_pct: number | null
   signal_filter: boolean
   leverage: number
   margin_type: 'isolated' | 'cross'
@@ -275,10 +275,16 @@ export interface Strategy {
   protected_build?: boolean | null
   matrix_rebuild_on_sl?: boolean | null
   matrix_rebuild_from_entry?: boolean | null
+  size_as_main?: boolean | null
+  hedged_strategy_id?: string | null
   matrix_entry_level?: MatrixEntryLevel | null
   trailing_stop_enabled: boolean
   trailing_activation_pct: number | null
   trailing_callback_pct: number | null
+  tp_signal_name?: string | null
+  tp_signal_dir?: 'buy' | 'sell' | null
+  sl_signal_name?: string | null
+  sl_signal_dir?: 'buy' | 'sell' | null
   created_at: string
   updated_at: string
   // Computed by server
@@ -326,10 +332,23 @@ export interface StrategyState {
   safe_zone?: { low: number; high: number } | null
 }
 
+export interface HedgeSession {
+  id:                   string
+  bot_id:               string
+  main_strategy_id:     string | null
+  hedge_strategy_id:    string
+  main_entry_at_start:  number | null
+  hedge_entry_at_start: number | null
+  gap_at_start:         number | null
+  started_at:           string
+  ended_at:             string | null
+  cumulative_hedge_pnl: number
+}
+
 export interface StrategyTemplate {
   id: string
   name: string
-  config: Partial<Strategy>
+  config: Partial<StrategyFormData>
   created_at: string
 }
 
@@ -373,18 +392,23 @@ export interface StrategyFormData {
   grid_active: number
   max_stop_active: number
   signal_configs: SignalConfig[]
-  tp_pct: number
+  tp_pct: number | null
   tp_mode: 'total' | 'per_level'
-  sl_pct: number
+  sl_pct: number | null
   sl_type: 'conditional' | 'programmatic'
   trailing_stop_enabled: boolean
   trailing_activation_pct: number
   trailing_callback_pct: number
+  tp_signal_name?: string | null
+  tp_signal_dir?: 'buy' | 'sell' | null
+  sl_signal_name?: string | null
+  sl_signal_dir?: 'buy' | 'sell' | null
   matrix_levels: MatrixLevel[]
   safe_zone_pct: number
   protected_build: boolean
   matrix_rebuild_on_sl: boolean
   matrix_rebuild_from_entry: boolean
+  size_as_main: boolean
   matrix_entry_level: MatrixEntryLevel
 }
 
