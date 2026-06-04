@@ -589,11 +589,12 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 					}
 					if _, sessErr := s.pool.Exec(ctx,
 						`INSERT INTO hedge_sessions (bot_id, main_strategy_id, hedge_strategy_id, main_entry_at_start)
-						 VALUES ($1, $2, $3, $4)`,
+						 VALUES ($1, $2, $3, $4)
+						 ON CONFLICT (hedge_strategy_id) WHERE ended_at IS NULL DO NOTHING`,
 						botID, mainStratIDPtr, hedgeStrategyID, mainEntryAtStart,
 					); sessErr != nil {
 						s.logBotEvent(ctx, botID,
-							fmt.Sprintf("Хедж: ошибка записи сессии для %s: %v", hedgeStrategyID[:8], sessErr),
+							fmt.Sprintf("Хедж: ошибка записи сессии: %v", sessErr),
 							"warn", "hedge")
 					}
 				}
