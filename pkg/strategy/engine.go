@@ -62,7 +62,8 @@ func (e *Engine) Start(ctx context.Context) {
 		        COALESCE(size_as_main,false),
 		        COALESCE(hedge_tp_suppressed,false),
 		        COALESCE(hedge_sl_suppressed,false),
-		        hedge_stopped_by::text
+		        hedge_stopped_by::text,
+		        COALESCE(adopt_position_data::text,'')
 		 FROM strategies WHERE status IN ('active','finishing')`)
 	if err != nil {
 		log.Printf("strategy engine: load: %v", err)
@@ -95,7 +96,8 @@ func (e *Engine) Notify(ctx context.Context, strategyID string) {
 		        COALESCE(size_as_main,false),
 		        COALESCE(hedge_tp_suppressed,false),
 		        COALESCE(hedge_sl_suppressed,false),
-		        hedge_stopped_by::text
+		        hedge_stopped_by::text,
+		        COALESCE(adopt_position_data::text,'')
 		 FROM strategies WHERE id=$1`, strategyID)
 	if err := scanStrategyRow(row, &s); err != nil {
 		log.Printf("strategy engine: notify %s: %v", strategyID, err)
@@ -263,6 +265,8 @@ func (e *Engine) RestartCycle(ctx context.Context, strategyID string) {
 
 // UpdateTPSL recalculates and re-places only TP and SL for a strategy without
 // touching grid level orders. Called when only TP/SL settings changed.
+// Runs for any strategy with an active cycle, including stopped ones —
+// a stopped strategy may still hold an open position that needs TP/SL protection.
 func (e *Engine) UpdateTPSL(ctx context.Context, strategyID string) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -274,7 +278,7 @@ func (e *Engine) UpdateTPSL(ctx context.Context, strategyID string) {
 			sr.submit(func(ctx context.Context) {
 				sr.mu.Lock()
 				defer sr.mu.Unlock()
-				if sr.cycle == nil || (sr.strategy.Status != StatusActive && sr.strategy.Status != StatusFinishing) {
+				if sr.cycle == nil {
 					return
 				}
 				if err := sr.updateTP(ctx); err != nil {
@@ -510,7 +514,7 @@ func (e *Engine) loadAccountInfo(ctx context.Context, accountID string) (account
 
 // scanStrategy scans a pgx row into a Strategy.
 func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
-	var dir, stat, tpm, slt, stepsJSON, signalConfigsJSON, matrixJSON, entryLevelJSON string
+	var dir, stat, tpm, slt, stepsJSON, signalConfigsJSON, matrixJSON, entryLevelJSON, adoptJSON string
 	var sf, hm bool
 	var stoppedByStr *string
 	err := rows.Scan(
@@ -529,6 +533,7 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 		&s.HedgeTpSuppressed,
 		&s.HedgeSlSuppressed,
 		&stoppedByStr,
+		&adoptJSON,
 	)
 	if err != nil {
 		return err
@@ -540,6 +545,12 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 	s.SignalFilter = sf
 	s.HedgeMode = hm
 	s.HedgeStoppedBy = stoppedByStr
+	if adoptJSON != "" && adoptJSON != "null" {
+		var apd AdoptPositionData
+		if err := json.Unmarshal([]byte(adoptJSON), &apd); err == nil && apd.EntryPrice != "" {
+			s.AdoptPositionData = &apd
+		}
+	}
 	if stepsJSON != "" && stepsJSON != "[]" {
 		_ = json.Unmarshal([]byte(stepsJSON), &s.Steps)
 	}
@@ -685,6 +696,7 @@ func (ar *AccountRunner) addStrategy(s Strategy) {
 			return
 		}
 		prevStatus := existing.strategy.Status
+		prevStrategyType := existing.strategy.StrategyType
 		prevSignalFilter := existing.strategy.SignalFilter
 		prevConfigsLen := len(existing.strategy.SignalConfigs)
 		prevTpSuppressed := existing.strategy.HedgeTpSuppressed
@@ -701,6 +713,24 @@ func (ar *AccountRunner) addStrategy(s Strategy) {
 		// Stop: cancel placed L-orders but keep TP/SL so the cycle ends naturally.
 		if prevStatus != StatusStopped && s.Status == StatusStopped {
 			existing.submit(func(ctx context.Context) { existing.handleStopRequest(ctx) })
+		}
+		// Strategy type changed matrix→grid: cancel per-level SL orders and apply
+		// grid-style TP/SL for the current position. Works even for stopped strategies.
+		if prevStrategyType == "matrix" && s.StrategyType == "grid" {
+			existing.submit(func(ctx context.Context) {
+				existing.mu.Lock()
+				defer existing.mu.Unlock()
+				existing.matrixCancelPerLevelSLs(ctx)
+				if existing.cycle == nil {
+					return
+				}
+				if err := existing.updateTP(ctx); err != nil {
+					log.Printf("strategy: matrix→grid UpdateTP %s: %v", s.ID[:8], err)
+				}
+				if err := existing.updateSL(ctx); err != nil {
+					log.Printf("strategy: matrix→grid UpdateSL %s: %v", s.ID[:8], err)
+				}
+			})
 		}
 		// Signal filter or configs changed while the strategy is running.
 		if prevStatus == StatusActive && s.Status == StatusActive &&
@@ -850,7 +880,8 @@ func (ar *AccountRunner) OnOrderEvent(ev trader.OrderEvent) {
 			switch ref.refType {
 			case "tp", "sl":
 				refType := ref.refType
-				sr.submit(func(ctx context.Context) { sr.handleTPSLCancelled(ctx, refType) })
+				cancelType := ev.CancelType
+				sr.submit(func(ctx context.Context) { sr.handleTPSLCancelled(ctx, refType, cancelType) })
 			case "level":
 				levelID, orderID := ref.levelID, ev.OrderID
 				sr.submit(func(ctx context.Context) { sr.handleLevelCancelled(ctx, levelID, orderID) })
