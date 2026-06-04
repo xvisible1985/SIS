@@ -64,6 +64,7 @@ type MatrixLevel struct {
 	StopReplacePct *float64 `json:"stop_replace_pct,omitempty"`
 	TPPct          *float64 `json:"tp_pct,omitempty"`
 	OrderType      string   `json:"order_type,omitempty"` // "exchange" | "virtual"
+	UseSignal      bool     `json:"use_signal,omitempty"` // gate this level on signal before placing
 }
 
 type MatrixEntryLevel struct {
@@ -74,6 +75,7 @@ type MatrixEntryLevel struct {
 	StopReplacePct *float64 `json:"stop_replace_pct,omitempty"`
 	TPPct          *float64 `json:"tp_pct,omitempty"`
 	OrderType      string   `json:"order_type,omitempty"` // "exchange" | "virtual"
+	UseSignal      bool     `json:"use_signal,omitempty"` // gate entry level on signal before placing
 }
 
 type Strategy struct {
@@ -115,6 +117,10 @@ type Strategy struct {
 	RebuildOnSL           bool // Перестройка сетки от SZ: после SL немедленно переставить уровни от нижней границы SZ
 	RebuildFromEntry      bool // Якорь на точку входа: все уровни строятся от цены заполнения L(0); SL L(0) тоже ждёт SZ и перезаходит
 	SizeAsMain            bool // Deposit = Main-position volume: each slot sized against opposite-direction position's USDT value
+
+	// AdoptPositionData — when non-nil, startMatrixCycle marks L(0) as already-filled
+	// using this position snapshot; cleared from the strategy record after consumption.
+	AdoptPositionData *AdoptPositionData
 
 	// Hedge main control flags — set by hedge engine when a hedge activates/deactivates.
 	HedgeTpSuppressed bool    // do not place/re-place TP orders while true
@@ -161,4 +167,12 @@ type GridLevel struct {
 	SLReplaced   bool
 	Slot         *int // nil = grid; matrix slot index: -N…0…+N
 	ForceVirtual bool // set at runtime when exchange rejected placement (e.g. 110007)
+}
+
+// AdoptPositionData carries the exchange-position snapshot that the next matrix
+// startMatrixCycle should absorb instead of placing a market L(0) order.
+// Cleared from the DB by startMatrixCycle after it is consumed.
+type AdoptPositionData struct {
+	Size       string `json:"size"`        // position qty string (e.g. "35")
+	EntryPrice string `json:"entry_price"` // avg entry price string (e.g. "0.4647")
 }
