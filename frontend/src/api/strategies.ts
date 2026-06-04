@@ -108,8 +108,8 @@ export async function getInstrumentConstraints(symbol: string, category = 'linea
 
 export async function getHedgeSession(strategyId: string): Promise<HedgeSession | null> {
   try {
-    const r = await apiClient.get<HedgeSession>(`/strategies/${strategyId}/hedge-session`)
-    return r.data
+    const res = await apiClient.get<HedgeSession>(`/strategies/${strategyId}/hedge-session`)
+    return res.data
   } catch {
     return null
   }
