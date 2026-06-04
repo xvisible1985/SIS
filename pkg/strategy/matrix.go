@@ -1317,26 +1317,12 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	if avgEntryPrice == 0 {
 		return
 	}
-	// Fetch live exchange position avg entry — temporarily release sr.mu for the HTTP call.
+	// Prefer the WS-cached exchange avg entry over the internal avgEntry() calculation.
 	{
-		sym := sr.strategy.Symbol
-		cat := sr.strategy.Category
-		wantSide := "Buy"
-		if sr.strategy.Direction == DirectionShort {
-			wantSide = "Sell"
-		}
 		wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
-		creds := sr.runner.creds
-		sr.mu.Unlock()
-		exAvg := fetchExchangeEntry(ctx, creds, cat, sym, wantSide, wantIdx)
-		sr.mu.Lock()
-		if exAvg > 0 {
-			sr.info(ctx, fmt.Sprintf("matrixUpdateTP: ТВХ биржи %.4f (расчётная %.4f)", exAvg, avgEntryPrice))
-			avgEntryPrice = exAvg
-		}
-		// Re-check suppression guard after re-acquiring mutex.
-		if sr.strategy.HedgeTpSuppressed {
-			return
+		if wsAvg := sr.runner.GetPositionAvgEntry(sr.strategy.Symbol, wantIdx); wsAvg > 0 {
+			sr.info(ctx, fmt.Sprintf("matrixUpdateTP: ТВХ биржи %.4f (расчётная %.4f)", wsAvg, avgEntryPrice))
+			avgEntryPrice = wsAvg
 		}
 	}
 	var tpPrice float64

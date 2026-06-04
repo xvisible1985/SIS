@@ -3,6 +3,7 @@ package strategy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"runtime/debug"
 	"strconv"
@@ -592,9 +593,11 @@ type AccountRunner struct {
 	reconcileMu   sync.Mutex
 
 	// positions caches the latest position size (in coins) from private WS events.
-	// Key: "SYMBOL:positionIdx" (e.g. "BTCUSDT:1"). Used by SizeAsMain strategies.
-	posMu     sync.RWMutex
-	positions map[string]float64
+	// posAvgEntry caches the exchange avg entry price for the same position.
+	// Key for both: "SYMBOL:positionIdx" (e.g. "BTCUSDT:1").
+	posMu       sync.RWMutex
+	positions   map[string]float64
+	posAvgEntry map[string]float64
 }
 
 func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trader.Credentials, pool *pgxpool.Pool, signalEngine *signal.Engine, cancel context.CancelFunc) *AccountRunner {
@@ -610,6 +613,7 @@ func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trade
 		tradeStream:   trader.NewTradeStream(creds),
 		cancel:        cancel,
 		positions:     make(map[string]float64),
+		posAvgEntry:   make(map[string]float64),
 	}
 }
 
@@ -619,6 +623,16 @@ func (ar *AccountRunner) GetPositionSizeCoins(symbol string, positionIdx int) fl
 	key := symbol + ":" + strconv.Itoa(positionIdx)
 	ar.posMu.RLock()
 	v := ar.positions[key]
+	ar.posMu.RUnlock()
+	return v
+}
+
+// GetPositionAvgEntry returns the cached exchange avg entry price for a given symbol
+// and positionIdx. Returns 0 if not yet received via WS (falls back to avgEntry()).
+func (ar *AccountRunner) GetPositionAvgEntry(symbol string, positionIdx int) float64 {
+	key := symbol + ":" + strconv.Itoa(positionIdx)
+	ar.posMu.RLock()
+	v := ar.posAvgEntry[key]
 	ar.posMu.RUnlock()
 	return v
 }
@@ -809,12 +823,27 @@ func (ar *AccountRunner) UnregisterOrder(exchangeOrderID string) {
 // Handles full and partial position changes.
 func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
 	size, _ := strconv.ParseFloat(ev.Size, 64)
+	avgPrice, _ := strconv.ParseFloat(ev.AvgPrice, 64)
 
-	// Update position size cache used by SizeAsMain strategies.
+	// Update position size and avg entry caches.
+	// Also detect when avgPrice changes — that means a fill changed the position,
+	// so we need to re-place TP with the correct exchange entry price.
 	key := ev.Symbol + ":" + strconv.Itoa(ev.PositionIdx)
 	ar.posMu.Lock()
 	ar.positions[key] = size
+	prevAvg := ar.posAvgEntry[key]
+	if avgPrice > 0 {
+		ar.posAvgEntry[key] = avgPrice
+	} else if size == 0 {
+		ar.posAvgEntry[key] = 0
+	}
 	ar.posMu.Unlock()
+
+	// When the exchange avg entry changes (position opened or averaged), re-place TP
+	// on all matching strategies so it reflects the accurate entry price.
+	// Bybit sends position snapshots on every order event (place/cancel) — the avgPrice
+	// guard ensures we only act on real position changes, not noise.
+	avgChanged := size > 0 && avgPrice > 0 && avgPrice != prevAvg
 
 	ar.mu.RLock()
 	var matched []*StrategyRunner
@@ -837,6 +866,21 @@ func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
 			sr.submit(func(ctx context.Context) { sr.handlePositionClose(ctx) })
 		} else {
 			sr.submit(func(ctx context.Context) { sr.handlePartialPositionChange(ctx, size) })
+		}
+		// When the exchange avg entry changed (new fill or averaging), re-place TP
+		// with the accurate WS price. This runs after handleLevelFill (which uses the
+		// internal avgEntry fallback) and corrects the TP to the real exchange value.
+		if avgChanged {
+			sr.submit(func(ctx context.Context) {
+				sr.mu.Lock()
+				defer sr.mu.Unlock()
+				if sr.cycle == nil || sr.strategy.Status != StatusActive {
+					return
+				}
+				if err := sr.updateTPByType(ctx); err != nil {
+					sr.warn(ctx, fmt.Sprintf("position avg update: TP: %v", err))
+				}
+			})
 		}
 	}
 	// Discrepancy check: if position is larger than our recorded fills, trigger reconcile.

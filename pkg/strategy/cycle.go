@@ -2073,28 +2073,14 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 		return nil
 	}
 
-	// Fetch live exchange position avg entry to handle market order slippage.
-	// Temporarily releases sr.mu for the HTTP call, then re-acquires.
-	// Read strategy fields before unlocking (they are stable but may be shadowed by mutex semantics).
+	// Prefer the WS-cached exchange avg entry (updated by OnPositionEvent) over the
+	// internally calculated avg. Falls back to avgEntry() if no WS data received yet
+	// (e.g. first fill before the position event arrives, or after service restart).
 	{
-		sym := sr.strategy.Symbol
-		cat := sr.strategy.Category
-		wantSide := "Buy"
-		if sr.strategy.Direction == DirectionShort {
-			wantSide = "Sell"
-		}
 		wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
-		creds := sr.runner.creds
-		sr.mu.Unlock()
-		exAvg := fetchExchangeEntry(ctx, creds, cat, sym, wantSide, wantIdx)
-		sr.mu.Lock()
-		if exAvg > 0 {
-			sr.info(ctx, fmt.Sprintf("updateTP: ТВХ биржи %.4f (расчётная %.4f)", exAvg, avg))
-			avg = exAvg
-		}
-		// Re-check suppression guard after re-acquiring mutex (hedge may have activated during HTTP call).
-		if sr.strategy.HedgeTpSuppressed {
-			return nil
+		if wsAvg := sr.runner.GetPositionAvgEntry(sr.strategy.Symbol, wantIdx); wsAvg > 0 {
+			sr.info(ctx, fmt.Sprintf("updateTP: ТВХ биржи %.4f (расчётная %.4f)", wsAvg, avg))
+			avg = wsAvg
 		}
 	}
 
@@ -2188,34 +2174,6 @@ func (sr *StrategyRunner) updateTPByType(ctx context.Context) error {
 		return nil
 	}
 	return sr.updateTP(ctx)
-}
-
-// fetchExchangeEntry queries the exchange for the current position's avg entry price
-// using a targeted single-symbol API call.
-// wantSide is "Buy" for long positions, "Sell" for short.
-// wantIdx is the Bybit positionIdx (0 = one-way mode, 1 = hedge-long, 2 = hedge-short).
-// Returns 0 if the position is not found, has zero size, or the call fails.
-// Must NOT be called with sr.mu held.
-func fetchExchangeEntry(ctx context.Context, creds trader.Credentials, category, symbol, wantSide string, wantIdx int) float64 {
-	positions, err := trader.FetchPositionBySymbol(ctx, creds, category, symbol)
-	if err != nil {
-		return 0
-	}
-	for _, p := range positions {
-		if p.Side != wantSide {
-			continue
-		}
-		if wantIdx != 0 && p.PositionIdx != wantIdx {
-			continue
-		}
-		size, _ := strconv.ParseFloat(p.Size, 64)
-		if size == 0 {
-			continue
-		}
-		entry, _ := strconv.ParseFloat(p.EntryPrice, 64)
-		return entry
-	}
-	return 0
 }
 
 func tpParams(dir Direction, avg, tpPct float64) (side string, price float64) {

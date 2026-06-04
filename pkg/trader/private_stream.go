@@ -25,6 +25,9 @@ type OrderEvent struct {
 	OrderType   string `json:"orderType"`
 	Category    string `json:"category"`
 	OrderFilter string `json:"orderFilter"`
+	// CancelType is set by Bybit when orderStatus == "Cancelled".
+	// Notable values: "CancelByUser", "CancelByReduceOnly", "CancelByAdminClosing" (market closed for stock tokens).
+	CancelType string `json:"cancelType"`
 }
 
 // PositionEvent carries position data from Bybit private WS "position" topic.
@@ -32,6 +35,7 @@ type PositionEvent struct {
 	Symbol      string `json:"symbol"`
 	Side        string `json:"side"`
 	Size        string `json:"size"`
+	AvgPrice    string `json:"avgPrice"` // exchange position avg entry price
 	Category    string `json:"category"`
 	PositionIdx int    `json:"positionIdx"`
 }
