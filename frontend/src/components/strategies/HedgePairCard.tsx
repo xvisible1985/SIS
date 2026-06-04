@@ -375,7 +375,7 @@ export function HedgePairCard({
       getStrategyState(hedge.id).catch(() => null),
       getStrategyEvents(main.id,  { limit: 60 }).catch(() => ({ total: 0, events: [] as StrategyEvent[] })),
       getStrategyEvents(hedge.id, { limit: 60 }).catch(() => ({ total: 0, events: [] as StrategyEvent[] })),
-      getHedgeSession(hedge.id),
+      getHedgeSession(hedge.id).catch(() => null),
     ]).then(([ms, hs, me, he, session]) => {
       setMainState(ms)
       setHedgeState(hs)
