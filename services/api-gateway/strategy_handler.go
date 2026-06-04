@@ -1324,8 +1324,8 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 				  AND (hs.ended_at IS NULL OR th.closed_at <= hs.ended_at)
 			), 0)
 		FROM hedge_sessions hs
-		WHERE (hs.main_strategy_id = $1::uuid OR hs.hedge_strategy_id = $1::uuid)
-		  AND hs.bot_id IN (SELECT id FROM bots WHERE owner_id = $2::uuid)
+		WHERE (hs.main_strategy_id = $1 OR hs.hedge_strategy_id = $1)
+		  AND hs.bot_id IN (SELECT id FROM bots WHERE owner_id = $2)
 		ORDER BY hs.started_at DESC
 		LIMIT 1`,
 		stratID, userID,
@@ -1335,7 +1335,7 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 		&resp.StartedAt, &resp.EndedAt, &resp.CumulativeHedgePnl,
 	)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
 
