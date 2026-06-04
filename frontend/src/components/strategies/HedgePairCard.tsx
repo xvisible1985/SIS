@@ -401,12 +401,12 @@ export function HedgePairCard({
       Promise.all([
         getStrategyState(main.id).catch(() => null),
         getStrategyState(hedge.id).catch(() => null),
-        getHedgeSession(hedge.id),
+        getHedgeSession(hedge.id).catch(() => null),
       ]).then(([ms, hs, session]) => {
         if (ms) setMainState(ms)
         if (hs) setHedgeState(hs)
         if (session) setHedgeSession(session)
-      })
+      }).catch(() => { /* ignore transient poll errors */ })
     }, 30_000)
     return () => clearInterval(id)
   }, [expanded, main.id, hedge.id])

@@ -1292,16 +1292,16 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 	stratID := chi.URLParam(r, "id")
 
 	type sessionResp struct {
-		ID                 string   `json:"id"`
-		BotID              string   `json:"bot_id"`
-		MainStrategyID     *string  `json:"main_strategy_id"`
-		HedgeStrategyID    string   `json:"hedge_strategy_id"`
-		MainEntryAtStart   *float64 `json:"main_entry_at_start"`
-		HedgeEntryAtStart  *float64 `json:"hedge_entry_at_start"`
-		GapAtStart         *float64 `json:"gap_at_start"`
-		StartedAt          string   `json:"started_at"`
-		EndedAt            *string  `json:"ended_at"`
-		CumulativeHedgePnl float64  `json:"cumulative_hedge_pnl"`
+		ID                 string     `json:"id"`
+		BotID              string     `json:"bot_id"`
+		MainStrategyID     *string    `json:"main_strategy_id"`
+		HedgeStrategyID    string     `json:"hedge_strategy_id"`
+		MainEntryAtStart   *float64   `json:"main_entry_at_start"`
+		HedgeEntryAtStart  *float64   `json:"hedge_entry_at_start"`
+		GapAtStart         *float64   `json:"gap_at_start"`
+		StartedAt          time.Time  `json:"started_at"`
+		EndedAt            *time.Time `json:"ended_at"`
+		CumulativeHedgePnl float64    `json:"cumulative_hedge_pnl"`
 	}
 
 	var resp sessionResp
@@ -1314,8 +1314,8 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 			hs.main_entry_at_start,
 			hs.hedge_entry_at_start,
 			hs.gap_at_start,
-			hs.started_at::text,
-			hs.ended_at::text,
+			hs.started_at,
+			hs.ended_at,
 			COALESCE((
 				SELECT SUM(th.net_pnl)
 				FROM trade_history th
