@@ -60,6 +60,32 @@ export async function detachFromBot(id: string): Promise<void> {
   await apiClient.post(`/strategies/${id}/detach`)
 }
 
+export interface DetachPositionData {
+  size: string
+  side: string          // "Buy" | "Sell" — exchange side of the hedge position
+  entry_price: string   // required for action="adopt"
+  position_idx: number  // Bybit positionIdx for reduce-only close
+}
+
+export async function detachWithAction(
+  id: string,
+  action: 'adopt' | 'close' | 'leave',
+  opts: {
+    addBlacklist?: boolean
+    position?: DetachPositionData
+  } = {}
+): Promise<void> {
+  await apiClient.post(`/strategies/${id}/detach`, {
+    action,
+    add_blacklist: opts.addBlacklist ?? false,
+    position: opts.position,
+  })
+}
+
+export async function addBotBlacklist(botId: string, symbol: string): Promise<void> {
+  await apiClient.post(`/bots/${botId}/blacklist-add`, { symbol })
+}
+
 export interface InstrumentConstraints {
   tick_size: number
   qty_step: number
