@@ -7,6 +7,7 @@ import { getInstrumentConstraints, type InstrumentConstraints } from '../../../a
 import { apiClient } from '../../../api/client';
 import { useSelectedAccount } from '../../../contexts/AccountContext';
 import type { Bot as BotType, CreateBotInput, StrategyConfig, MatrixLevel, MatrixEntryLevel } from '../types';
+import { BOT_KIND_META } from '../botKindMeta';
 import type { SignalConfig } from '../../../types';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -43,7 +44,7 @@ type BotOption = { id: string; name: string; avatarUrl?: string };
 const ACT_TYPES  = ['От последнего ордера Main', 'Просадка Main-позиции', 'PNL Main-позиции', 'ROI Main-позиции'];
 const ACT_UNITS  = ['%', '%', '$', '%'];
 
-const CLOSE_TYPES = ['По завершению цикла', 'Принять убыток не более, $'];
+const CLOSE_TYPES = ['По завершению цикла', 'Принять убыток не более, $', 'Приостановить и восстановить'];
 
 const DEACT_CLOSE_TYPES = ['PNL (общий), USDT', 'ROI (общий), %', 'В безубыток'];
 
@@ -312,7 +313,7 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
           strategy_type: 'matrix',
           grid_levels:   totalMatrixLevels,
           grid_step_pct: belowLevels[0]?.price_step_pct ?? aboveLevels[0]?.price_step_pct ?? 0,
-          signal_filter: (config.signal_configs?.length ?? 0) > 0,
+          signal_filter: false, // signal_configs used only for per-level use_signal gating, not cycle-start blocking
           // Hedge activation
           hedge_act_type:          ha.act_type,
           hedge_act_value:         ha.act_value,
@@ -723,7 +724,7 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                 <div>
                   <label className={labelCls}>
                     Если занят слот
-                    <Tip text="Что делать, если в направлении хеджа уже открыта позиция. «По завершению цикла» — ждём TP/SL, затем открываем хедж. «Принять убыток» — принудительно закрываем при достижении заданного убытка и сразу открываем хедж." />
+                    <Tip text="Что делать, если в направлении хеджа уже открыта стратегия. «По завершению цикла» — ждём TP/SL, затем открываем хедж. «Принять убыток» — принудительно останавливаем при достижении заданного убытка и сразу открываем хедж. «Приостановить и восстановить» — отменяем все ордера конфликтующей стратегии, перехватываем управление, а после деактивации хеджа возобновляем её с нового цикла." />
                   </label>
                   <div className="flex items-stretch gap-1.5">
                     <div className="w-[70%]">
@@ -1109,12 +1110,11 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                           </div>
                         ) : (
                           <div className="flex items-center gap-2">
-                            <input
-                              type="number" min={instrInfo?.min_order_usdt ?? 1}
+                            <MxNum
                               value={config.grid_size_usdt ?? 100}
-                              onChange={e => patch({ grid_size_usdt: Number(e.target.value) })}
+                              onChange={v => patch({ grid_size_usdt: v })}
                               disabled={minLotEnabled}
-                              className={`${inputCls} [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${minLotEnabled ? 'cursor-not-allowed opacity-50' : ''}`}
+                              cls={`${inputCls} ${minLotEnabled ? 'cursor-not-allowed opacity-50' : ''}`}
                             />
                             <button
                               type="button"
@@ -1142,12 +1142,13 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                           ]}
                           value={sizeAsMain ? 'main' : 'fixed'}
                           onChange={v => setSizeAsMain(v === 'main')}
+                          btnClassName="!py-2"
                         />
                       </div>
                     </div>
 
-                    {/* ── Строка 2: Плечо слайдер + toggle Фикс./Макс. ── */}
-                    <div className="grid grid-cols-[1fr_auto] gap-3 items-end">
+                    {/* ── Строка 2: Плечо слайдер (½ ширины) + toggle Фикс./Макс. (½ ширины) ── */}
+                    <div className="grid grid-cols-2 gap-3 items-end">
                       <div>
                         <label className={labelCls}>
                           Плечо&nbsp;
@@ -1163,14 +1164,16 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                           value={config.leverage ?? 5}
                           disabled={leverageMax}
                           onChange={e => { setLeverageMax(false); patch({ leverage: parseInt(e.target.value) }) }}
-                          className="w-full h-1.5 mt-2 cursor-pointer accent-amber-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                          className="w-full h-1.5 mt-2 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                          style={{ accentColor: BOT_KIND_META['hedge'].color }}
                         />
                         <div className="flex justify-between text-[10px] text-slate-500 mt-0.5">
                           <span>×1</span>
                           <span>×{instrInfo?.max_leverage ?? 100}</span>
                         </div>
                       </div>
-                      <div className="pb-[22px]">
+                      <div className="flex flex-col justify-end pb-[22px]">
+                        <label className={labelCls}>Фикс. / Макс.</label>
                         <Toggle
                           options={[
                             { label: 'Фикс.', value: 'fixed' },
@@ -1481,8 +1484,8 @@ function EnumPicker({ options, value, onChange }: {
   );
 }
 
-function MxNum({ value, onChange, cls, err }: {
-  value: number; onChange: (v: number) => void; cls?: string; err?: string | null;
+function MxNum({ value, onChange, cls, err, disabled }: {
+  value: number; onChange: (v: number) => void; cls?: string; err?: string | null; disabled?: boolean;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   return (
@@ -1490,6 +1493,7 @@ function MxNum({ value, onChange, cls, err }: {
       <input
         type="text"
         inputMode="decimal"
+        disabled={disabled}
         value={draft !== null ? draft : value}
         onChange={e => { setDraft(e.target.value); const n = parseFloat(e.target.value); if (!isNaN(n)) onChange(n); }}
         onBlur={() => { if (draft !== null && draft !== '' && draft !== '-') { const n = parseFloat(draft); if (!isNaN(n)) onChange(n); } setDraft(null); }}

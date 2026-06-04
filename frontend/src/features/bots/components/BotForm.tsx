@@ -2,10 +2,12 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { X, Bot, ToggleLeft, ToggleRight, Camera, Trash2, Search, Loader2 } from 'lucide-react';
 import { CoinMultiPicker } from '../../../components/common/CoinMultiPicker';
 import { Toggle, Tip, SignalPickerField } from '../../../components/strategies/FormWidgets';
+import { SIGNALS } from '../../indicators/signals';
 import { apiClient } from '../../../api/client';
 import { getAllSymbols, matchesPattern } from '../../../components/common/CoinMultiPicker';
 import { getInstrumentConstraints, type InstrumentConstraints } from '../../../api/strategies';
-import type { Bot as BotType, BotKind, CreateBotInput, StrategyConfig } from '../types';
+import type { Bot as BotType, BotKind, CreateBotInput, StrategyConfig, MatrixLevel, MatrixEntryLevel } from '../types';
+import { getBotKindMeta } from '../botKindMeta';
 import type { SignalConfig } from '../../../types';
 import { useSelectedAccount } from '../../../contexts/AccountContext';
 
@@ -18,7 +20,18 @@ type Props = {
 };
 
 type OuterTab = 'basic' | 'activation' | 'strategy';
-type StrategySubTab = 'entry' | 'grid' | 'exit';
+type StrategySubTab = 'entry' | 'grid' | 'exit' | 'matrix' | 'params';
+
+const DEFAULT_MATRIX_LEVELS: MatrixLevel[] = [
+  { direction: 'below', price_step_pct: -1.5, size_pct: 5,  stop_pct: -3.0, stop_cond_pct: -1.0, stop_replace_pct: -0.5, tp_pct: 2.5 },
+  { direction: 'below', price_step_pct: -3.0, size_pct: 8,  stop_pct: -2.5, stop_cond_pct: null,  stop_replace_pct: null,  tp_pct: 3.5 },
+  { direction: 'below', price_step_pct: -5.0, size_pct: 12, stop_pct: null,  stop_cond_pct: null,  stop_replace_pct: null,  tp_pct: 4.0 },
+  { direction: 'above', price_step_pct: 2.0,  size_pct: 5,  stop_pct: -3.5, stop_cond_pct: -1.0, stop_replace_pct: -0.5, tp_pct: 3.0 },
+  { direction: 'above', price_step_pct: 4.0,  size_pct: 8,  stop_pct: -3.0, stop_cond_pct: -1.5, stop_replace_pct: -1.5, tp_pct: 4.5 },
+];
+const DEFAULT_MATRIX_ENTRY: MatrixEntryLevel = {
+  price_step_pct: null, size_pct: 10, stop_pct: -5.0, stop_cond_pct: -2.0, stop_replace_pct: 1.0, tp_pct: 2.0,
+};
 
 type ScanItem = { symbol: string; state: 'buy' | 'sell' };
 
@@ -56,6 +69,18 @@ function defaultConfig(bot?: BotType, kind?: BotKind): StrategyConfig {
     after_stop_mode:         s.after_stop_mode         ?? 'restart',
     max_cycles:              s.max_cycles              ?? 0,
     priority_signal:         s.priority_signal         ?? undefined,
+    // Signal-gated exit
+    tp_signal_name:          s.tp_signal_name          ?? undefined,
+    tp_signal_dir:           s.tp_signal_dir           ?? undefined,
+    sl_signal_name:          s.sl_signal_name          ?? undefined,
+    sl_signal_dir:           s.sl_signal_dir           ?? undefined,
+    // Matrix-specific
+    matrix_levels:           s.matrix_levels           ?? DEFAULT_MATRIX_LEVELS,
+    matrix_entry_level:      s.matrix_entry_level      ?? DEFAULT_MATRIX_ENTRY,
+    safe_zone_pct:           s.safe_zone_pct           ?? 1.5,
+    protected_build:         s.protected_build         ?? false,
+    matrix_rebuild_on_sl:    s.matrix_rebuild_on_sl    ?? false,
+    matrix_rebuild_from_entry: s.matrix_rebuild_from_entry ?? false,
   };
 }
 
@@ -110,6 +135,8 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
   const [allSymbols,   setAllSymbols]   = useState<string[]>([]);
   const [instrInfo,    setInstrInfo]    = useState<InstrumentConstraints | null>(null);
   const [minLotEnabled, setMinLotEnabled] = useState(false);
+  const [leverageMax,   setLeverageMax]   = useState(false);
+  const [sizeAsMain,    setSizeAsMain]    = useState<boolean>(bot?.strategyConfig?.size_as_main ?? false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -118,6 +145,11 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
     window.addEventListener('keydown', fn);
     return () => window.removeEventListener('keydown', fn);
   }, [onClose]);
+
+  // Сбрасываем вкладку стратегии при смене типа стратегии
+  useEffect(() => {
+    setStratTab('entry');
+  }, [config.strategy_type]);
 
   // Загружаем все доступные символы при открытии вкладки Активация
   useEffect(() => {
@@ -183,6 +215,67 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
     patch({ steps: (config.steps ?? []).filter((_, idx) => idx !== i) });
   }
 
+  // ── Matrix helpers ────────────────────────────────────────────────────────
+  const matrixLevels      = config.matrix_levels      ?? DEFAULT_MATRIX_LEVELS;
+  const matrixEntryLevel  = config.matrix_entry_level ?? DEFAULT_MATRIX_ENTRY;
+  const aboveLevels = matrixLevels.filter(l => l.direction === 'above');
+  const belowLevels = matrixLevels.filter(l => l.direction === 'below');
+
+  function addAboveLevel() {
+    const last = aboveLevels[aboveLevels.length - 1];
+    const newLevel: MatrixLevel = {
+      direction: 'above',
+      price_step_pct: last ? +(last.price_step_pct + 2).toFixed(1) : 2.0,
+      size_pct: last ? +(last.size_pct + 2).toFixed(1) : 5,
+      stop_pct: null, stop_cond_pct: null, stop_replace_pct: null, tp_pct: null,
+    };
+    patch({ matrix_levels: [...matrixLevels, newLevel] });
+  }
+  function addBelowLevel() {
+    const last = belowLevels[belowLevels.length - 1];
+    const newLevel: MatrixLevel = {
+      direction: 'below',
+      price_step_pct: last ? +(last.price_step_pct - 1.5).toFixed(1) : -1.5,
+      size_pct: last ? +(last.size_pct + 3).toFixed(1) : 5,
+      stop_pct: null, stop_cond_pct: null, stop_replace_pct: null, tp_pct: null,
+    };
+    patch({ matrix_levels: [...matrixLevels, newLevel] });
+  }
+  function removeMatrixLevel(direction: 'above' | 'below', idx: number) {
+    const dirLevels = matrixLevels.filter(l => l.direction === direction);
+    if (dirLevels.length <= 1) return;
+    let removed = false;
+    patch({ matrix_levels: matrixLevels.filter(l => {
+      if (l.direction !== direction) return true;
+      const thisIdx = matrixLevels.filter(x => x.direction === direction).indexOf(l);
+      if (thisIdx === idx && !removed) { removed = true; return false; }
+      return true;
+    }) });
+  }
+  function updateMatrixLevel(direction: 'above' | 'below', idx: number, field: keyof MatrixLevel, value: number | string | boolean | null) {
+    let dirCount = 0;
+    patch({ matrix_levels: matrixLevels.map(l => {
+      if (l.direction !== direction) return l;
+      if (dirCount++ === idx) return { ...l, [field]: value };
+      return l;
+    }) });
+  }
+  function updateEntryLevel(field: keyof MatrixEntryLevel, value: number | null | string | boolean) {
+    patch({ matrix_entry_level: { ...matrixEntryLevel, [field]: value } });
+  }
+
+  const matrixLevelErrors = matrixLevels.map(l => ({
+    price_step_pct: l.direction === 'above' && l.price_step_pct <= 0 ? 'Должно быть положительным'
+                  : l.direction === 'below' && l.price_step_pct >= 0 ? 'Должно быть отрицательным'
+                  : null,
+    size_pct: l.size_pct <= 0 ? 'Объём > 0' : null,
+    stop_pct: l.stop_pct !== null && l.stop_pct >= 0 ? 'Стоп отрицательным' : null,
+  }));
+  const matrixEntryErrors = {
+    size_pct: matrixEntryLevel.size_pct <= 0 ? 'Объём > 0' : null,
+    stop_pct: matrixEntryLevel.stop_pct !== null && matrixEntryLevel.stop_pct >= 0 ? 'Стоп отрицательным' : null,
+  };
+
   const handleScan = async () => {
     const signals = (config.activation_signals as SignalConfig[]) ?? [];
     if (signals.length === 0) {
@@ -223,6 +316,8 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
     setSubmitting(true);
     setSubmitError(null);
     const steps = config.steps ?? [];
+    const isMatrix = config.strategy_type === 'matrix';
+    const totalMatrixLevels = aboveLevels.length + 1 + belowLevels.length;
     try {
       await onSubmit({
         name: name.trim(),
@@ -234,9 +329,12 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
         symbolBlacklist: blacklist,
         strategyConfig: {
           ...config,
-          grid_levels: steps.length || 1,
-          grid_step_pct: steps[0]?.price_move_pct ?? 1.0,
+          grid_levels: isMatrix ? totalMatrixLevels : (steps.length || 1),
+          grid_step_pct: isMatrix
+            ? (belowLevels[0]?.price_step_pct ?? aboveLevels[0]?.price_step_pct ?? 0)
+            : (steps[0]?.price_move_pct ?? 1.0),
           signal_filter: (config.signal_configs?.length ?? 0) > 0,
+          size_as_main: isMatrix ? sizeAsMain : false,
         },
         maxStrategies,
         maxLongStrategies,
@@ -260,11 +358,17 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
     { id: 'strategy',   label: 'Стратегия' },
   ];
 
-  const stratTabs: { id: StrategySubTab; label: string }[] = [
-    { id: 'entry', label: '1. Базовые' },
-    { id: 'grid',  label: '2. Сетка ордеров' },
-    { id: 'exit',  label: '3. Завершение' },
-  ];
+  const stratTabs: { id: StrategySubTab; label: string }[] = config.strategy_type === 'matrix'
+    ? [
+        { id: 'entry',  label: '1. Базовые' },
+        { id: 'matrix', label: '2. Матрица' },
+        { id: 'params', label: '3. Параметры' },
+      ]
+    : [
+        { id: 'entry', label: '1. Базовые' },
+        { id: 'grid',  label: '2. Сетка ордеров' },
+        { id: 'exit',  label: '3. Завершение' },
+      ];
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-auto bg-[rgba(8,11,18,.78)] p-6 backdrop-blur">
@@ -623,52 +727,6 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                     />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className={labelCls}>
-                        Плечо (×)
-                        <Tip text="Кратность заёмных средств. ×5 = на $100 открывается позиция $500." />
-                      </label>
-                      <input
-                        type="number" min={1} max={100}
-                        value={config.leverage ?? 5}
-                        onChange={e => patch({ leverage: Number(e.target.value) })}
-                        className={inputCls}
-                      />
-                    </div>
-                    <div>
-                      <label className={labelCls}>
-                        Объём 1 лота (USDT)
-                        {instrInfo && (
-                          <span className="ml-1.5 text-[10px] text-slate-500">
-                            мин. {instrInfo.min_order_usdt.toFixed(2)}$
-                          </span>
-                        )}
-                        <Tip text="Размер одного базового ордера. Итоговый объём уровня = лоты × этот размер." />
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="number" min={instrInfo?.min_order_usdt ?? 1}
-                          value={config.grid_size_usdt ?? 100}
-                          onChange={e => patch({ grid_size_usdt: Number(e.target.value) })}
-                          disabled={minLotEnabled}
-                          className={`${inputCls} [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${minLotEnabled ? 'cursor-not-allowed opacity-50' : ''}`}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setMinLotEnabled(v => !v)}
-                          className={`shrink-0 rounded-lg border px-3 py-2 text-[11px] font-semibold transition-colors ${
-                            minLotEnabled
-                              ? 'border-[#5b8cff]/40 bg-[#5b8cff]/[.18] text-[#a0b8ff]'
-                              : 'border-white/[.07] bg-white/[.02] text-slate-400 hover:bg-white/[.05]'
-                          }`}
-                        >
-                          min
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
                   <div>
                     <label className={labelCls}>
                       Тип маржи
@@ -703,6 +761,63 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
 
               {stratTab === 'grid' && (
                 <div className="flex flex-col gap-4">
+
+                  {/* ── Депозит + Плечо ── */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className={labelCls}>
+                        Депозит (USDT)
+                        {instrInfo && (
+                          <span className="ml-1.5 text-[10px] text-slate-500">
+                            мин. {instrInfo.min_order_usdt.toFixed(2)}$
+                          </span>
+                        )}
+                        <Tip text="Базовая сумма в USDT, от которой считается % каждого шага. USDT шага = % × депозит / 100." />
+                      </label>
+                      <MxNum
+                        value={config.grid_size_usdt ?? 100}
+                        onChange={v => patch({ grid_size_usdt: v })}
+                        cls={inputCls}
+                      />
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] gap-2">
+                      <div>
+                        <label className={labelCls}>
+                          Плечо&nbsp;<span className="font-bold text-white">×{config.leverage ?? 5}</span>
+                          {instrInfo && <span className="ml-1.5 text-[10px] text-slate-500">макс. ×{instrInfo.max_leverage}</span>}
+                          <Tip text="Кратность заёмных средств. ×5 = на $100 открывается позиция $500." />
+                        </label>
+                        <input
+                          type="range" min={1} max={instrInfo?.max_leverage ?? 100} step={1}
+                          value={config.leverage ?? 5}
+                          disabled={leverageMax}
+                          onChange={e => { setLeverageMax(false); patch({ leverage: parseInt(e.target.value) }) }}
+                          className="w-full h-1.5 mt-2 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                          style={{ accentColor: getBotKindMeta(initialKind ?? 'signal').color }}
+                        />
+                        <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
+                          <span>×1</span>
+                          <span>×{instrInfo?.max_leverage ?? 100}</span>
+                        </div>
+                      </div>
+                      <div className="self-end min-w-[96px]">
+                        <Toggle
+                          options={[
+                            { label: 'Фикс.', value: 'fixed' },
+                            { label: 'Макс.', value: 'max'   },
+                          ]}
+                          value={leverageMax ? 'max' : 'fixed'}
+                          onChange={v => {
+                            const isMax = v === 'max'
+                            setLeverageMax(isMax)
+                            if (isMax) patch({ leverage: instrInfo?.max_leverage ?? 100 })
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ── Шаги усреднения ── */}
                   <div>
                     <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 pb-1 border-b border-gray-800 mb-2">
                       Шаги усреднения
@@ -721,28 +836,24 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                           className="grid grid-cols-[28px_1fr_1fr_1fr_28px] gap-2 items-center py-1.5 border-b border-gray-800/60 last:border-0"
                         >
                           <div className="text-center text-[10px] text-gray-600">{i + 1}</div>
-                          <input
-                            type="number" step="0.1" min="0"
+                          <MxNum
                             value={step.price_move_pct}
-                            onChange={e => patchStep(i, 'price_move_pct', Number(e.target.value))}
-                            className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
+                            onChange={v => patchStep(i, 'price_move_pct', v)}
+                            cls="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
                           />
-                          <input
-                            type="number" step="0.01"
-                            value={step.size_pct}
-                            onChange={e => patchStep(i, 'size_pct', Number(e.target.value))}
-                            className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
+                          <MxNum
+                            value={step.size_pct ?? 0}
+                            onChange={v => patchStep(i, 'size_pct', v)}
+                            cls="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
                           />
-                          <input
-                            type="number" step="1"
+                          <MxNum
                             value={+((step.size_pct ?? 0) / 100 * (config.grid_size_usdt ?? 100)).toFixed(2)}
-                            onChange={e => {
-                              const usdt = Number(e.target.value);
+                            onChange={v => {
                               const base = config.grid_size_usdt ?? 100;
                               if (base > 0)
-                                patchStep(i, 'size_pct', Math.round(usdt / base * 10000) / 100);
+                                patchStep(i, 'size_pct', Math.round(v / base * 10000) / 100);
                             }}
-                            className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
+                            cls="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
                           />
                           <button
                             type="button"
@@ -768,12 +879,10 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                       Одновременно на бирже (0 = все шаги)
                       <Tip text="Сколько ордеров из сетки висит на бирже одновременно. 0 = все сразу." />
                     </label>
-                    <input
-                      type="number" min={0}
+                    <MxNum
                       value={config.grid_active ?? 0}
-                      onChange={e => patch({ grid_active: Number(e.target.value) })}
-                      className={inputCls}
-                      placeholder="0"
+                      onChange={v => patch({ grid_active: Math.max(0, Math.round(v)) })}
+                      cls={inputCls}
                     />
                   </div>
 
@@ -790,6 +899,326 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                 </div>
               )}
 
+              {stratTab === 'matrix' && (() => {
+                const colGrid = 'grid grid-cols-[30px_1fr_1fr_6px_1fr_1fr_1fr_1fr_42px_36px_18px] gap-[3px] items-center';
+                const sep = <div className="flex items-center justify-center"><div className="w-px h-[20px] bg-gray-700/60" /></div>;
+                const isShort = config.direction === 'short';
+                const numCls = (err: boolean, disabled: boolean) =>
+                  `bg-gray-900 border rounded py-1 px-1 text-[11px] text-gray-100 text-center w-full outline-none focus:border-blue-500 ${err ? 'border-red-500' : 'border-gray-700'} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`;
+
+                const orderTypeBtn = (isVirtual: boolean, onToggle: () => void) => (
+                  <button
+                    type="button"
+                    onClick={onToggle}
+                    title={isVirtual ? 'Виртуальный — бот следит за ценой' : 'Биржевой — ордер сразу на биржу'}
+                    className={`text-[8px] leading-4 font-bold rounded w-full py-1 transition-colors ${
+                      isVirtual
+                        ? 'bg-violet-950/60 text-violet-300 border border-violet-800/50 hover:bg-violet-900/60'
+                        : 'bg-gray-800 text-gray-500 border border-gray-700 hover:text-gray-300'
+                    }`}
+                  >
+                    {isVirtual ? 'Virtual' : 'Broker'}
+                  </button>
+                );
+
+                const colHdrs = () => (
+                  <div className={`${colGrid} px-1 pb-1`}>
+                    <span />
+                    <span className="text-[8px] text-gray-400 text-center">Шаг %<Tip text="% от точки входа до этого уровня." /></span>
+                    <span className="text-[8px] text-gray-400 text-center">Объём %<Tip text="Размер ордера как % от Депозита." /></span>
+                    <span />
+                    <span className="text-[8px] text-gray-400 text-center">Стоп %<Tip text="Расстояние частичного стопа от цены взятия. Пусто = не ставить." /></span>
+                    <span className="text-[8px] text-gray-400 text-center">Усл %<Tip text="Условие перевыставления стопа." /></span>
+                    <span className="text-[8px] text-gray-400 text-center">Замена %<Tip text="Новое расстояние стопа после перевыставления." /></span>
+                    <span className="text-[8px] text-gray-400 text-center">ТП %<Tip text="Тейкпрофит от цены входа. Пусто = не ставить." /></span>
+                    <span className="text-[8px] text-gray-400 text-center">Тип<Tip text="Broker — сразу на биржу. Virtual — бот следит за ценой." /></span>
+                    <span className="text-[8px] text-gray-400 text-center">Сигн<Tip text="Выставлять только при активном сигнале стратегии." /></span>
+                    <span />
+                  </div>
+                );
+
+                const levelRow = (
+                  direction: 'above' | 'below',
+                  level: MatrixLevel,
+                  dirIdx: number,
+                  labelNum: number,
+                  canDelete: boolean
+                ) => {
+                  const isAbove = direction === 'above';
+                  const badgeCls = isAbove
+                    ? (isShort ? 'bg-red-900 text-red-300 text-[8px] font-bold rounded text-center py-0.5'
+                               : 'bg-emerald-900 text-emerald-300 text-[8px] font-bold rounded text-center py-0.5')
+                    : 'bg-blue-900 text-blue-300 text-[8px] font-bold rounded text-center py-0.5';
+                  const rowCls = isAbove
+                    ? (isShort ? 'bg-red-950/20' : 'bg-emerald-950/20')
+                    : 'bg-blue-950/30';
+                  const globalIdx = matrixLevels.indexOf(level);
+                  const errs = matrixLevelErrors[globalIdx] ?? {};
+                  return (
+                    <div key={`${direction}-${dirIdx}`} className={`${colGrid} px-1 py-1 rounded mb-0.5 ${rowCls}`}>
+                      <div className={badgeCls}>{isAbove ? `L(${labelNum})` : `L(-${labelNum})`}</div>
+                      <MxNum value={level.price_step_pct} onChange={v => updateMatrixLevel(direction, dirIdx, 'price_step_pct', v)} err={errs.price_step_pct} cls={numCls(!!errs.price_step_pct, false)} />
+                      <MxNum value={level.size_pct} onChange={v => updateMatrixLevel(direction, dirIdx, 'size_pct', v)} err={errs.size_pct} cls={numCls(!!errs.size_pct, false)} />
+                      {sep}
+                      <MxNull value={level.stop_pct} onChange={v => updateMatrixLevel(direction, dirIdx, 'stop_pct', v)} err={errs.stop_pct} />
+                      <MxNull value={level.stop_cond_pct} onChange={v => updateMatrixLevel(direction, dirIdx, 'stop_cond_pct', v)} />
+                      <MxNull value={level.stop_replace_pct} onChange={v => updateMatrixLevel(direction, dirIdx, 'stop_replace_pct', v)} />
+                      <MxNull value={level.tp_pct} onChange={v => updateMatrixLevel(direction, dirIdx, 'tp_pct', v)} />
+                      {orderTypeBtn(level.order_type === 'virtual', () => updateMatrixLevel(direction, dirIdx, 'order_type', level.order_type === 'virtual' ? 'exchange' : 'virtual'))}
+                      <button
+                        type="button"
+                        onClick={() => updateMatrixLevel(direction, dirIdx, 'use_signal', !level.use_signal)}
+                        className={`text-[8px] leading-4 font-bold rounded w-full py-1 transition-colors ${
+                          level.use_signal
+                            ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/50 hover:bg-emerald-900/60'
+                            : 'bg-gray-800 text-gray-600 border border-gray-700 hover:text-gray-400'
+                        }`}
+                      >{level.use_signal ? 'Signal' : 'No'}</button>
+                      {canDelete
+                        ? <button type="button" onClick={() => removeMatrixLevel(direction, dirIdx)} className="text-center text-xs text-red-500 hover:text-red-400">✕</button>
+                        : <span />}
+                    </div>
+                  );
+                };
+
+                return (
+                  <div className="flex flex-col gap-3">
+                    {/* ── Строка 1: Депозит + toggle Фикс./Объём Main ── */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className={labelCls}>
+                          Депозит
+                          {instrInfo && !sizeAsMain && (
+                            <span className="ml-1.5 text-[10px] text-slate-500">
+                              мин. {instrInfo.min_order_usdt.toFixed(2)}$
+                            </span>
+                          )}
+                          <Tip text="Фиксированный — вводите USDT. Объём Main — размер от текущего объёма мейн-позиции." />
+                        </label>
+                        {sizeAsMain ? (
+                          <div className="flex items-center h-[34px] px-3 rounded-lg border border-[#5b8cff]/20 bg-[#5b8cff]/[.08] text-[11px] text-[#a0b8ff]">
+                            = объём Main-позиции
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <MxNum
+                              value={config.grid_size_usdt ?? 100}
+                              onChange={v => patch({ grid_size_usdt: v })}
+                              disabled={minLotEnabled}
+                              cls={`${inputCls} ${minLotEnabled ? 'cursor-not-allowed opacity-50' : ''}`}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setMinLotEnabled(v => !v)}
+                              className={`shrink-0 rounded-lg border px-3 py-2 text-[11px] font-semibold transition-colors ${
+                                minLotEnabled
+                                  ? 'border-[#5b8cff]/40 bg-[#5b8cff]/[.18] text-[#a0b8ff]'
+                                  : 'border-white/[.07] bg-white/[.02] text-slate-400 hover:bg-white/[.05]'
+                              }`}
+                            >
+                              min
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex flex-col justify-end">
+                        <label className={labelCls}>
+                          Режим депозита
+                          <Tip text="Фиксированный — задаёте USDT вручную. Объём Main — каждый слот размещается от объёма мейн-позиции." />
+                        </label>
+                        <Toggle
+                          options={[
+                            { label: 'Фикс.',       value: 'fixed' },
+                            { label: 'Объём Main',  value: 'main'  },
+                          ]}
+                          value={sizeAsMain ? 'main' : 'fixed'}
+                          onChange={v => setSizeAsMain(v === 'main')}
+                          btnClassName="!py-2"
+                        />
+                      </div>
+                    </div>
+
+                    {/* ── Строка 2: Плечо слайдер + toggle Фикс./Макс. ── */}
+                    <div className="grid grid-cols-2 gap-3 items-end">
+                      <div>
+                        <label className={labelCls}>
+                          Плечо&nbsp;
+                          <span className="font-bold text-white">×{config.leverage ?? 5}</span>
+                          {instrInfo && <span className="ml-1.5 text-[10px] text-slate-500">макс. ×{instrInfo.max_leverage}</span>}
+                          <Tip text="Кратность заёмных средств." />
+                        </label>
+                        <input
+                          type="range"
+                          min={1}
+                          max={instrInfo?.max_leverage ?? 100}
+                          step={1}
+                          value={config.leverage ?? 5}
+                          disabled={leverageMax}
+                          onChange={e => { setLeverageMax(false); patch({ leverage: parseInt(e.target.value) }) }}
+                          className="w-full h-1.5 mt-2 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                          style={{ accentColor: getBotKindMeta(initialKind ?? 'signal').color }}
+                        />
+                        <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
+                          <span>×1</span>
+                          <span>×{instrInfo?.max_leverage ?? 100}</span>
+                        </div>
+                      </div>
+                      <div className="flex flex-col justify-end pb-[22px]">
+                        <label className={labelCls}>Фикс. / Макс.</label>
+                        <Toggle
+                          options={[
+                            { label: 'Фикс.', value: 'fixed' },
+                            { label: 'Макс.', value: 'max'   },
+                          ]}
+                          value={leverageMax ? 'max' : 'fixed'}
+                          onChange={v => {
+                            const isMax = v === 'max'
+                            setLeverageMax(isMax)
+                            if (isMax) patch({ leverage: instrInfo?.max_leverage ?? 100 })
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* ABOVE */}
+                    <div>
+                      <div className="text-[9px] text-gray-400 uppercase tracking-wider flex items-center justify-between pb-1 border-b border-gray-800 mb-1">
+                        {isShort
+                          ? <span>Выше точки входа <span className="normal-case text-gray-600 font-normal">(против направления)</span></span>
+                          : <span>Выше точки входа <span className="normal-case text-gray-600 font-normal">(в сторону)</span></span>}
+                        <span className="bg-emerald-900/60 text-emerald-400 rounded px-1.5 py-0.5 text-[8px]">{aboveLevels.length} уровней</span>
+                      </div>
+                      <button type="button" onClick={addAboveLevel}
+                        className="w-full border border-dashed border-emerald-900 text-emerald-700 rounded py-1 text-[10px] hover:border-emerald-700 hover:text-emerald-400 transition-colors mb-2">
+                        + Добавить уровень выше
+                      </button>
+                      {colHdrs()}
+                      <div>
+                        {[...aboveLevels].reverse().map((level, revIdx) => {
+                          const dirIdx = aboveLevels.length - 1 - revIdx;
+                          return levelRow('above', level, dirIdx, dirIdx + 1, aboveLevels.length > 1);
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Entry L(0) */}
+                    <div className="border border-yellow-700/60 bg-yellow-950/10 rounded-lg p-2">
+                      <div className="text-[9px] text-yellow-600 uppercase tracking-wider mb-1.5">⬡ Нулевой уровень — точка входа L(0)</div>
+                      {colHdrs()}
+                      <div className={`${colGrid} px-1 py-1 rounded bg-yellow-950/20`}>
+                        <div className="text-[8px] font-bold rounded text-center py-0.5 bg-yellow-800/60 text-yellow-200">L(0)</div>
+                        <MxNull value={matrixEntryLevel.price_step_pct ?? null} onChange={v => updateEntryLevel('price_step_pct', v)} />
+                        <MxNum value={matrixEntryLevel.size_pct} onChange={v => updateEntryLevel('size_pct', v)} err={matrixEntryErrors.size_pct} cls={numCls(!!matrixEntryErrors.size_pct, false)} />
+                        {sep}
+                        <MxNull value={matrixEntryLevel.stop_pct} onChange={v => updateEntryLevel('stop_pct', v)} err={matrixEntryErrors.stop_pct} />
+                        <MxNull value={matrixEntryLevel.stop_cond_pct} onChange={v => updateEntryLevel('stop_cond_pct', v)} />
+                        <MxNull value={matrixEntryLevel.stop_replace_pct} onChange={v => updateEntryLevel('stop_replace_pct', v)} />
+                        <MxNull value={matrixEntryLevel.tp_pct} onChange={v => updateEntryLevel('tp_pct', v)} />
+                        {orderTypeBtn(
+                          matrixEntryLevel.order_type === 'virtual',
+                          () => updateEntryLevel('order_type', matrixEntryLevel.order_type === 'virtual' ? 'exchange' : 'virtual')
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => updateEntryLevel('use_signal', !matrixEntryLevel.use_signal)}
+                          className={`text-[8px] leading-4 font-bold rounded w-full py-1 transition-colors ${
+                            matrixEntryLevel.use_signal
+                              ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/50 hover:bg-emerald-900/60'
+                              : 'bg-gray-800 text-gray-600 border border-gray-700 hover:text-gray-400'
+                          }`}
+                        >{matrixEntryLevel.use_signal ? 'Signal' : 'No'}</button>
+                        <span />
+                      </div>
+                    </div>
+
+                    {/* BELOW */}
+                    <div>
+                      {colHdrs()}
+                      <div>
+                        {belowLevels.map((level, dirIdx) =>
+                          levelRow('below', level, dirIdx, dirIdx + 1, belowLevels.length > 1)
+                        )}
+                      </div>
+                      <div className="text-[9px] text-gray-400 uppercase tracking-wider flex items-center justify-between pt-1 border-t border-gray-800 mt-1 mb-1">
+                        {isShort
+                          ? <span>Ниже точки входа <span className="normal-case text-gray-600 font-normal">(в сторону)</span></span>
+                          : <span>Ниже точки входа <span className="normal-case text-gray-600 font-normal">(против направления)</span></span>}
+                        <span className="bg-blue-900/60 text-blue-400 rounded px-1.5 py-0.5 text-[8px]">{belowLevels.length} уровней</span>
+                      </div>
+                      <button type="button" onClick={addBelowLevel}
+                        className="w-full border border-dashed border-blue-900 text-blue-600 rounded py-1 text-[10px] hover:border-blue-700 hover:text-blue-400 transition-colors">
+                        + Добавить уровень ниже
+                      </button>
+                    </div>
+
+                    {/* Сигналы */}
+                    <div>
+                      <div className="flex items-center gap-1 text-[10px] text-gray-400 uppercase tracking-wider pb-1 border-b border-gray-800">
+                        Сигналы для входа<Tip text="AND-логика: все сигналы должны совпасть. Если не добавлены — матрица стартует сразу." />
+                      </div>
+                      <SignalPickerField
+                        configs={(config.signal_configs as SignalConfig[]) ?? []}
+                        onChange={v => patch({ signal_configs: v })}
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {stratTab === 'params' && (
+                <div className="flex flex-col gap-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className={labelCls}>
+                        Safe-Zone от SL %
+                        <Tip text="После срабатывания стоп-лосса — зона вокруг цены SL, в которой новые ордера матрицы не выставляются. Защита от немедленного повторного входа." />
+                      </label>
+                      <MxNum
+                        value={config.safe_zone_pct ?? 1.5}
+                        onChange={v => patch({ safe_zone_pct: v })}
+                        cls={inputCls}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelCls}>
+                        🔒 Защищённое построение
+                        <Tip text="Следующий уровень матрицы выставляется только после того, как предыдущий прикрыт хотя бы одним стопом. Также блокирует возврат SL-уровня до подтверждения стопа на опорном уровне." />
+                      </label>
+                      <Toggle
+                        options={[{ label: 'Выкл', value: 'false' }, { label: '🔒 Вкл', value: 'true' }]}
+                        value={String(config.protected_build ?? false)}
+                        onChange={v => patch({ protected_build: v === 'true' })}
+                        optionColors={{ true: 'bg-amber-700 text-white' }}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelCls}>
+                        ⟳ Перестройка сетки от SZ
+                        <Tip text="После срабатывания SL немедленно переставляет все незаполненные уровни от нижней границы SafeZone, не дожидаясь заполнения соседних уровней. Если SafeZone = 0, anchor = цена SL." />
+                      </label>
+                      <Toggle
+                        options={[{ label: 'Выкл', value: 'false' }, { label: '⟳ Вкл', value: 'true' }]}
+                        value={String(config.matrix_rebuild_on_sl ?? false)}
+                        onChange={v => patch({ matrix_rebuild_on_sl: v === 'true' })}
+                        optionColors={{ true: 'bg-blue-700 text-white' }}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelCls}>
+                        ⚓ Якорь на точку входа
+                        <Tip text="Все уровни строятся от цены заполнения L(0). После SL L(0) тоже ждёт SafeZone и перезаходит маркетом; остальные уровни восстанавливаются от новой цены входа." />
+                      </label>
+                      <Toggle
+                        options={[{ label: 'Выкл', value: 'false' }, { label: '⚓ Вкл', value: 'true' }]}
+                        value={String(config.matrix_rebuild_from_entry ?? false)}
+                        onChange={v => patch({ matrix_rebuild_from_entry: v === 'true' })}
+                        optionColors={{ true: 'bg-violet-700 text-white' }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {stratTab === 'exit' && (
                 <div className="flex flex-col gap-4">
                   {/* TP */}
@@ -801,11 +1230,10 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                           TP %
                           <Tip text="Процент прибыли от средней цены входа, при котором выставляется закрывающий ордер." />
                         </label>
-                        <input
-                          type="number" step="0.1" min="0.1"
+                        <MxNum
                           value={config.tp_pct ?? 2.0}
-                          onChange={e => patch({ tp_pct: Number(e.target.value) })}
-                          className={inputCls}
+                          onChange={v => patch({ tp_pct: v })}
+                          cls={inputCls}
                         />
                       </div>
                       <div>
@@ -852,11 +1280,10 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                               Активация %
                               <Tip text="Прибыль от входа, при которой трейлинг начинает следить за ценой." />
                             </label>
-                            <input
-                              type="number" step="0.1" min="0.1"
+                            <MxNum
                               value={config.trailing_activation_pct ?? 1.5}
-                              onChange={e => patch({ trailing_activation_pct: Number(e.target.value) })}
-                              className={inputCls}
+                              onChange={v => patch({ trailing_activation_pct: v })}
+                              cls={inputCls}
                             />
                           </div>
                           <div>
@@ -864,16 +1291,22 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                               Callback %
                               <Tip text="Откат от пика, после которого трейлинг-стоп срабатывает." />
                             </label>
-                            <input
-                              type="number" step="0.1" min="0.1"
+                            <MxNum
                               value={config.trailing_callback_pct ?? 0.5}
-                              onChange={e => patch({ trailing_callback_pct: Number(e.target.value) })}
-                              className={inputCls}
+                              onChange={v => patch({ trailing_callback_pct: v })}
+                              cls={inputCls}
                             />
                           </div>
                         </div>
                       )}
                     </div>
+                    <BotSignalGate
+                      label="Сигнал для ТП"
+                      tip="Тейкпрофит сработает только при подтверждении указанным сигналом. Для Long-позиции ждите Sell-сигнал (разворот вниз)."
+                      name={config.tp_signal_name ?? null}
+                      dir={config.tp_signal_dir ?? null}
+                      onChange={(n, d) => patch({ tp_signal_name: n ?? undefined, tp_signal_dir: d ?? undefined })}
+                    />
                   </div>
 
                   {/* SL */}
@@ -885,11 +1318,10 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                           SL %
                           <Tip text="Процент убытка от средней цены, при котором позиция принудительно закрывается." />
                         </label>
-                        <input
-                          type="number" step="0.1" min="0.1"
+                        <MxNum
                           value={config.sl_pct ?? 5.0}
-                          onChange={e => patch({ sl_pct: Number(e.target.value) })}
-                          className={inputCls}
+                          onChange={v => patch({ sl_pct: v })}
+                          cls={inputCls}
                         />
                       </div>
                       <div>
@@ -907,6 +1339,13 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                         />
                       </div>
                     </div>
+                    <BotSignalGate
+                      label="Сигнал для СЛ"
+                      tip="Стоп-лосс сработает только при подтверждении указанным сигналом. Для Long-позиции ждите Sell-сигнал (разворот вниз)."
+                      name={config.sl_signal_name ?? null}
+                      dir={config.sl_signal_dir ?? null}
+                      onChange={(n, d) => patch({ sl_signal_name: n ?? undefined, sl_signal_dir: d ?? undefined })}
+                    />
                   </div>
 
                 </div>
@@ -1129,6 +1568,108 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Signal-gated exit widget for BotForm's TP/SL sections */
+function BotSignalGate({ label, tip, name, dir, onChange }: {
+  label: string;
+  tip: string;
+  name: string | null;
+  dir: 'buy' | 'sell' | null;
+  onChange: (name: string | null, dir: 'buy' | 'sell' | null) => void;
+}) {
+  const enabled = !!name;
+  return (
+    <div className="pt-2 border-t border-white/[.04] space-y-2">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onChange(enabled ? null : (SIGNALS[0]?.id ?? ''), enabled ? null : 'sell')}
+          className={`w-8 h-4 rounded-full relative transition-colors shrink-0 ${enabled ? 'bg-[#5b8cff]' : 'bg-gray-700'}`}
+        >
+          <span className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0'}`} />
+        </button>
+        <span className="flex items-center gap-1 text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+          {label}<Tip text={tip} />
+        </span>
+      </div>
+      {enabled && (
+        <div className="grid grid-cols-[1fr_auto] gap-2 pl-10">
+          <select
+            value={name ?? ''}
+            onChange={e => onChange(e.target.value || null, dir)}
+            className="w-full rounded-lg border border-white/[.08] bg-black/[.25] px-2 py-1.5 text-[12px] text-slate-200 outline-none focus:border-[#5b8cff]/50"
+          >
+            {SIGNALS.map(s => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+          <Toggle
+            options={[{ label: 'Buy', value: 'buy' }, { label: 'Sell', value: 'sell' }]}
+            value={dir ?? 'sell'}
+            onChange={v => onChange(name, v as 'buy' | 'sell')}
+            optionColors={{ buy: 'bg-emerald-700 text-white', sell: 'bg-rose-700 text-white' }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Numeric input for matrix level cells (non-nullable) */
+function MxNum({ value, onChange, cls, err, disabled }: {
+  value: number;
+  onChange: (v: number) => void;
+  cls?: string;
+  err?: string | null;
+  disabled?: boolean;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <div className="relative group">
+      <input
+        type="text" inputMode="decimal"
+        disabled={disabled}
+        value={draft !== null ? draft : value}
+        onChange={e => { setDraft(e.target.value); const n = parseFloat(e.target.value); if (!isNaN(n)) onChange(n); }}
+        onBlur={() => { if (draft !== null && draft !== '' && draft !== '-') { const n = parseFloat(draft); if (!isNaN(n)) onChange(n); } setDraft(null); }}
+        onFocus={() => setDraft(String(value))}
+        className={cls ?? 'bg-gray-900 border border-gray-700 rounded py-1 px-1 text-[11px] text-gray-100 text-center w-full outline-none focus:border-blue-500'}
+      />
+      {err && (
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 z-[200] px-2 py-1 text-[9px] bg-red-950 border border-red-600 text-red-200 rounded whitespace-nowrap pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">
+          {err}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Nullable numeric input for matrix level cells */
+function MxNull({ value, onChange, err }: {
+  value: number | null;
+  onChange: (v: number | null) => void;
+  err?: string | null;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const display = draft !== null ? draft : (value === null ? '' : String(value));
+  return (
+    <div className="relative group">
+      <input
+        type="text" inputMode="decimal" placeholder="—"
+        value={display}
+        onChange={e => { setDraft(e.target.value); const n = parseFloat(e.target.value); if (!isNaN(n)) onChange(n); else if (e.target.value === '' || e.target.value === '-') onChange(null); }}
+        onBlur={() => { if (draft !== null) { if (draft === '' || draft === '-') onChange(null); else { const n = parseFloat(draft); onChange(isNaN(n) ? null : n); } } setDraft(null); }}
+        onFocus={() => setDraft(value === null ? '' : String(value))}
+        className={`bg-gray-900 border rounded py-1 px-1 text-[11px] text-center w-full outline-none focus:border-blue-500 ${err ? 'border-red-500 text-gray-100' : value === null && draft === null ? 'border-dashed border-gray-700 text-gray-500' : 'border-gray-700 text-gray-100'}`}
+      />
+      {err && (
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 z-[200] px-2 py-1 text-[9px] bg-red-950 border border-red-600 text-red-200 rounded whitespace-nowrap pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">
+          {err}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Field({ label, children, required, hint }: { label: string; children: React.ReactNode; required?: boolean; hint?: string }) {
   return (

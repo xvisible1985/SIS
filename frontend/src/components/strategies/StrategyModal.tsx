@@ -33,9 +33,9 @@ function defaultForm(): StrategyFormData {
     margin_type: 'isolated',
     hedge_mode: false,
     steps: [
-      { price_move_pct: 0,   size_pct: 50 },
-      { price_move_pct: 1.5, size_pct: 100 },
-      { price_move_pct: 2.0, size_pct: 150 },
+      { price_move_pct: 0,    size_pct: 50 },
+      { price_move_pct: -1.5, size_pct: 100 },
+      { price_move_pct: -2.0, size_pct: 150 },
     ],
     grid_active: 0,
     max_stop_active: 10,
@@ -52,7 +52,12 @@ function defaultForm(): StrategyFormData {
     protected_build: false,
     matrix_rebuild_on_sl: false,
     matrix_rebuild_from_entry: false,
+    size_as_main: false,
     matrix_entry_level: DEFAULT_MATRIX_ENTRY,
+    tp_signal_name: null,
+    tp_signal_dir: null,
+    sl_signal_name: null,
+    sl_signal_dir: null,
   }
 }
 
@@ -74,9 +79,9 @@ function strategyToForm(s: Strategy): StrategyFormData {
     grid_active: s.grid_active ?? 0,
     max_stop_active: s.max_stop_active ?? 10,
     signal_configs: s.signal_configs ?? [],
-    tp_pct: s.tp_pct,
+    tp_pct: s.tp_pct !== 0 ? s.tp_pct : null,
     tp_mode: s.tp_mode,
-    sl_pct: s.sl_pct,
+    sl_pct: s.sl_pct !== 0 ? s.sl_pct : null,
     sl_type: s.sl_type,
     trailing_stop_enabled: s.trailing_stop_enabled,
     trailing_activation_pct: s.trailing_activation_pct ?? 1.5,
@@ -96,7 +101,12 @@ function strategyToForm(s: Strategy): StrategyFormData {
     protected_build: s.protected_build ?? false,
     matrix_rebuild_on_sl: s.matrix_rebuild_on_sl ?? false,
     matrix_rebuild_from_entry: s.matrix_rebuild_from_entry ?? false,
+    size_as_main: s.size_as_main ?? false,
     matrix_entry_level: s.matrix_entry_level ?? DEFAULT_MATRIX_ENTRY,
+    tp_signal_name: s.tp_signal_name ?? null,
+    tp_signal_dir: s.tp_signal_dir ?? null,
+    sl_signal_name: s.sl_signal_name ?? null,
+    sl_signal_dir: s.sl_signal_dir ?? null,
   }
 }
 
@@ -235,7 +245,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
   const [filledLevels, setFilledLevels] = useState(filledLevelsProp)
   const [entryFilled, setEntryFilled] = useState(false)
   const [instrInfo, setInstrInfo] = useState<InstrumentConstraints | null>(null)
-  const [minLotEnabled, setMinLotEnabled] = useState(false)
+  const [leverageMax, setLeverageMax] = useState(false)
   const [openOrderTypeDrop, setOpenOrderTypeDrop] = useState<number | null>(null)
 
   // Fetch live filled count when editing — card state may not be loaded yet.
@@ -243,7 +253,6 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
     if (!strategy) return
     getStrategyState(strategy.id)
       .then(state => {
-        const isShort = strategy?.direction === 'short'
         setFilledLevels(state.levels?.filter(l => {
           const slot = l.slot ?? 0
           return l.status === 'filled' && slot < 0
@@ -259,19 +268,12 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
     getInstrumentConstraints(form.symbol, form.category).then(setInstrInfo).catch(() => {})
   }, [form.symbol, form.category])
 
-  // Если включён min-lot — форсируем grid_size_usdt
-  useEffect(() => {
-    if (minLotEnabled && instrInfo && instrInfo.min_order_usdt > 0) {
-      patch({ grid_size_usdt: instrInfo.min_order_usdt })
-    }
-  }, [minLotEnabled, instrInfo])
-
   function patch(partial: Partial<StrategyFormData>) {
     setForm(f => ({ ...f, ...partial }))
   }
 
   function addStep() {
-    setForm(f => ({ ...f, steps: [...f.steps, { price_move_pct: 1.0, size_pct: 50 }] }))
+    setForm(f => ({ ...f, steps: [...f.steps, { price_move_pct: -1.0, size_pct: 50 }] }))
   }
 
   function removeStep(i: number) {
@@ -341,12 +343,12 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
       setError('Заполните символ и аккаунт')
       return
     }
-    if (form.sl_pct > 0) {
+    if (form.sl_pct !== null && form.sl_pct > 0) {
       setError('Stop Loss должен быть отрицательным (например, -5 = 5% ниже цены входа)')
       return
     }
     const currentStepErrors = form.steps.map((s, i) => ({
-      price_move_pct: i > 0 && s.price_move_pct <= 0,
+      price_move_pct: i > 0 && s.price_move_pct === 0,
       size_pct: s.size_pct <= 0,
     }))
     const hasStepErrors = currentStepErrors.some(e => e.price_move_pct || e.size_pct)
@@ -355,7 +357,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
       !!(matrixEntryErrors.size_pct || matrixEntryErrors.stop_pct || matrixEntryErrors.stop_cond_pct)
     )
     const currentFieldErrors = {
-      tp_pct: form.tp_pct <= 0,
+      tp_pct: form.tp_pct !== null && form.tp_pct <= 0,
       trailing_activation_pct: form.trailing_stop_enabled && form.trailing_activation_pct <= 0,
       trailing_callback_pct: form.trailing_stop_enabled && form.trailing_callback_pct <= 0,
     }
@@ -409,13 +411,13 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
     }
   }
 
-  const tabLabels = ['1. Базовые', form.strategy_type === 'matrix' ? '2. Матрица' : '2. Сетка ордеров', '3. Завершение']
+  const tabLabels = ['1. Базовые', form.strategy_type === 'matrix' ? '2. Матрица' : '2. Сетка ордеров', form.strategy_type === 'matrix' ? '3. Параметры' : '3. Завершение']
   const inputCls = 'w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-1.5 text-sm text-gray-100 focus:outline-none focus:border-blue-500'
   const labelCls = 'flex items-center text-xs text-gray-400 mb-1'
 
   // Inline validation — computed from current form state
   const stepErrors = form.steps.map((s, i) => ({
-    price_move_pct: i > 0 && s.price_move_pct <= 0, // step 0 allows 0 (market entry)
+    price_move_pct: i > 0 && s.price_move_pct === 0, // step 0 = entry (0 allowed); others must be non-zero (± both ok)
     size_pct: s.size_pct <= 0,
   }))
   const matrixLevelErrors = form.matrix_levels.map(l => ({
@@ -434,10 +436,10 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
   const fieldErrors = {
     grid_active: form.grid_active < 0 || form.grid_active > form.steps.length,
     max_stop_active: form.max_stop_active < 0 || form.max_stop_active > 10,
-    tp_pct: form.tp_pct <= 0,
+    tp_pct: form.tp_pct !== null && form.tp_pct <= 0,
     trailing_activation_pct: form.trailing_stop_enabled && form.trailing_activation_pct <= 0,
     trailing_callback_pct: form.trailing_stop_enabled && form.trailing_callback_pct <= 0,
-    sl_pct: form.sl_pct >= 0,
+    sl_pct: form.sl_pct !== null && form.sl_pct >= 0,
   }
   const errCls = (hasErr: boolean) =>
     hasErr
@@ -595,7 +597,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
           {/* Tab 2: Matrix */}
           {tab === 1 && form.strategy_type === 'matrix' && (() => {
             const colHdrCls = 'text-[8px] text-gray-400 text-center flex items-center justify-center gap-0.5'
-            const colGrid = 'grid grid-cols-[34px_1fr_1fr_6px_1fr_1fr_1fr_1fr_46px_40px_18px] gap-[3px] items-center'
+            const colGrid = 'grid grid-cols-[34px_1fr_1fr_6px_1fr_1fr_1fr_1fr_42px_36px_18px] gap-[3px] items-center'
             const sep = <div className="flex items-center justify-center"><div className="w-px h-[22px] bg-gray-700/60" /></div>
             const orderTypeBtn = (isVirtual: boolean, isFilled: boolean, onToggle: () => void) => (
               <button
@@ -696,100 +698,84 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
 
             return (
               <>
-                {/* Auto-virtual fallback notice */}
-                <div className="flex items-start gap-2 bg-violet-950/30 border border-violet-800/40 rounded-lg px-3 py-2 text-[10px] text-violet-300">
-                  <span className="mt-0.5 shrink-0 text-violet-400">ℹ</span>
-                  <span>
-                    Если биржа отклоняет ордер (нехватка баланса), уровень автоматически переходит в режим <strong>Virtual</strong> — бот будет следить за ценой и исполнит его рыночным ордером в нужный момент.
-                    Устанавливайте <strong>Virtual</strong> заранее для уровней, по которым ожидаете нехватку маржи.
-                  </span>
-                </div>
-
                 {/* Global params */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className={labelCls}>
-                      Депозит (USDT)
-                      {instrInfo?.min_order_usdt ? <span className="ml-1.5 text-[10px] text-gray-500">мин. {instrInfo.min_order_usdt.toFixed(2)}$</span> : null}
-                      <Tip text="Базовая сумма в USDT, от которой рассчитывается объём каждого ордера. Объём уровня = Депозит × Объём %." />
-                    </label>
-                    <input type="number" min={1} value={form.grid_size_usdt}
-                      onChange={e => patch({ grid_size_usdt: Number(e.target.value) })}
-                      className={inputCls} />
+                <div className="flex flex-col gap-3">
+                  {/* Row 1: Deposit + Size-as-Main toggle */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className={labelCls}>
+                        Депозит (USDT)
+                        {instrInfo?.min_order_usdt ? <span className="ml-1.5 text-[10px] text-gray-500">мин. {instrInfo.min_order_usdt.toFixed(2)}$</span> : null}
+                        <Tip text="Базовая сумма в USDT, от которой рассчитывается объём каждого ордера. Объём уровня = Депозит × Объём %." />
+                      </label>
+                      {!form.size_as_main && (
+                        <input type="number" min={1} value={form.grid_size_usdt}
+                          onChange={e => patch({ grid_size_usdt: Number(e.target.value) })}
+                          className={inputCls} />
+                      )}
+                      {form.size_as_main && (
+                        <div className="flex items-center h-[34px] px-3 rounded-lg border border-white/[.06] bg-white/[.03] text-[11px] text-amber-400">
+                          = объём Main-позиции
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <label className={labelCls}>
+                        Режим депозита
+                        <Tip text="Фиксированный — задаёте сумму вручную. Объём Main — каждый ордер рассчитывается от текущего объёма мейн-позиции." />
+                      </label>
+                      <Toggle
+                        options={[
+                          { label: 'Фикс.', value: 'fixed' },
+                          { label: 'Объём Main', value: 'main' },
+                        ]}
+                        value={form.size_as_main ? 'main' : 'fixed'}
+                        onChange={v => patch({ size_as_main: v === 'main' })}
+                        btnClassName="!py-1.5"
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className={labelCls}>
-                      Плечо&nbsp;
-                      <span className="font-bold text-white">×{form.leverage}</span>
-                      {instrInfo && <span className="ml-1.5 text-[10px] text-gray-500">макс. ×{instrInfo.max_leverage}</span>}
-                      <Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500." />
-                    </label>
-                    <input
-                      type="range"
-                      min={1}
-                      max={instrInfo?.max_leverage ?? 100}
-                      step={1}
-                      value={form.leverage}
-                      onChange={e => patch({ leverage: parseInt(e.target.value) })}
-                      className="w-full h-1.5 mt-2 cursor-pointer accent-blue-500"
-                    />
-                    <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
-                      <span>×1</span>
-                      <span>×{instrInfo?.max_leverage ?? 100}</span>
+                  {/* Row 2: Leverage slider (½) + Fixed/Max toggle (½) */}
+                  <div className="grid grid-cols-2 gap-3 items-end">
+                    <div>
+                      <label className={labelCls}>
+                        Плечо&nbsp;
+                        <span className="font-bold text-white">×{form.leverage}</span>
+                        {instrInfo && <span className="ml-1.5 text-[10px] text-gray-500">макс. ×{instrInfo.max_leverage}</span>}
+                        <Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500." />
+                      </label>
+                      <input
+                        type="range"
+                        min={1}
+                        max={instrInfo?.max_leverage ?? 100}
+                        step={1}
+                        value={form.leverage}
+                        disabled={leverageMax}
+                        onChange={e => { setLeverageMax(false); patch({ leverage: parseInt(e.target.value) }) }}
+                        className="w-full h-1.5 mt-2 cursor-pointer accent-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                      />
+                      <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
+                        <span>×1</span>
+                        <span>×{instrInfo?.max_leverage ?? 100}</span>
+                      </div>
+                    </div>
+                    <div className="flex flex-col justify-end pb-[22px]">
+                      <label className={labelCls}>Фикс. / Макс.</label>
+                      <Toggle
+                        options={[
+                          { label: 'Фикс.', value: 'fixed' },
+                          { label: 'Макс.', value: 'max'   },
+                        ]}
+                        value={leverageMax ? 'max' : 'fixed'}
+                        onChange={v => {
+                          const isMax = v === 'max'
+                          setLeverageMax(isMax)
+                          if (isMax) patch({ leverage: instrInfo?.max_leverage ?? 100 })
+                        }}
+                      />
                     </div>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className={labelCls}>Safe-Zone от SL %<Tip text="После срабатывания стоп-лосса — зона вокруг цены SL, в которой новые ордера матрицы не выставляются. Защита от немедленного повторного входа." /></label>
-                    <input type="number" step="0.1" min={0} value={form.safe_zone_pct}
-                      onChange={e => patch({ safe_zone_pct: Number(e.target.value) })}
-                      className={inputCls} />
-                  </div>
-                  <div>
-                    <label className={labelCls}>
-                      🔒 Защищённое построение
-                      <Tip text="Следующий уровень матрицы выставляется только после того, как предыдущий прикрыт хотя бы одним стопом. Также блокирует возврат SL-уровня до подтверждения стопа на опорном уровне." />
-                    </label>
-                    <Toggle
-                      options={[{ label: 'Выкл', value: 'false' }, { label: '🔒 Вкл', value: 'true' }]}
-                      value={String(form.protected_build ?? false)}
-                      onChange={v => patch({ protected_build: v === 'true' })}
-                      optionColors={{ true: 'bg-amber-700 text-white' }}
-                      className="h-[34px]"
-                      btnClassName="h-full"
-                    />
-                  </div>
-                  <div>
-                    <label className={labelCls}>
-                      ⟳ Перестройка сетки от SZ
-                      <Tip text="После срабатывания SL немедленно переставляет все незаполненные уровни от нижней границы SafeZone, не дожидаясь заполнения соседних уровней. Если SafeZone = 0, anchor = цена SL." />
-                    </label>
-                    <Toggle
-                      options={[{ label: 'Выкл', value: 'false' }, { label: '⟳ Вкл', value: 'true' }]}
-                      value={String(form.matrix_rebuild_on_sl ?? false)}
-                      onChange={v => patch({ matrix_rebuild_on_sl: v === 'true' })}
-                      optionColors={{ true: 'bg-blue-700 text-white' }}
-                      className="h-[34px]"
-                      btnClassName="h-full"
-                    />
-                  </div>
-                  <div>
-                    <label className={labelCls}>
-                      ⚓ Якорь на точку входа
-                      <Tip text="Все уровни строятся от цены заполнения L(0). После SL L(0) тоже ждёт SafeZone и перезаходит маркетом; остальные уровни восстанавливаются от новой цены входа." />
-                    </label>
-                    <Toggle
-                      options={[{ label: 'Выкл', value: 'false' }, { label: '⚓ Вкл', value: 'true' }]}
-                      value={String(form.matrix_rebuild_from_entry ?? false)}
-                      onChange={v => patch({ matrix_rebuild_from_entry: v === 'true' })}
-                      optionColors={{ true: 'bg-violet-700 text-white' }}
-                      className="h-[34px]"
-                      btnClassName="h-full"
-                    />
-                  </div>
-                </div>
-
                 {/* ABOVE section — always shows aboveLevels (positive slots L(N)), visually above L(0) for both long and short */}
                 {(() => {
                   const topLevels = aboveLevels
@@ -924,45 +910,48 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                     {instrInfo?.min_order_usdt ? <span className="ml-1.5 text-[10px] text-gray-500">мин. {instrInfo.min_order_usdt.toFixed(2)}$</span> : null}
                     <Tip text="Базовая сумма, от которой считается % каждого шага. USDT шага = % × депозит / 100." />
                   </label>
-                  <div className="flex items-center gap-2">
-                    <NumericInput
-                      value={form.grid_size_usdt}
-                      onChange={v => patch({ grid_size_usdt: v })}
-                      disabled={minLotEnabled}
-                      className={`${inputCls} [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${minLotEnabled ? 'cursor-not-allowed opacity-50' : ''} ${instrInfo && form.grid_size_usdt < instrInfo.min_order_usdt ? 'border-red-500' : ''}`}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setMinLotEnabled(v => !v)}
-                      className={`shrink-0 rounded-lg border px-3 py-1.5 text-[11px] font-semibold transition-colors ${
-                        minLotEnabled
-                          ? 'border-blue-500/40 bg-blue-500/[.18] text-blue-400'
-                          : 'border-gray-700 bg-gray-800 text-gray-400 hover:bg-gray-700'
-                      }`}
-                    >
-                      min
-                    </button>
-                  </div>
-                </div>
-                <div>
-                  <label className={labelCls}>
-                    Плечо&nbsp;
-                    <span className="font-bold text-white">×{form.leverage}</span>
-                    {instrInfo && <span className="ml-1.5 text-[10px] text-gray-500">макс. ×{instrInfo.max_leverage}</span>}
-                    <Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500." />
-                  </label>
-                  <input
-                    type="range"
-                    min={1}
-                    max={instrInfo?.max_leverage ?? 100}
-                    step={1}
-                    value={form.leverage}
-                    onChange={e => patch({ leverage: parseInt(e.target.value) })}
-                    className="w-full h-1.5 mt-2 cursor-pointer accent-blue-500"
+                  <NumericInput
+                    value={form.grid_size_usdt}
+                    onChange={v => patch({ grid_size_usdt: v })}
+                    className={`${inputCls} [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${instrInfo && form.grid_size_usdt < instrInfo.min_order_usdt ? 'border-red-500' : ''}`}
                   />
-                  <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
-                    <span>×1</span>
-                    <span>×{instrInfo?.max_leverage ?? 100}</span>
+                </div>
+                <div className="grid grid-cols-[1fr_150px] gap-3 items-end">
+                  <div>
+                    <label className={labelCls}>
+                      Плечо&nbsp;
+                      <span className="font-bold text-white">×{form.leverage}</span>
+                      {instrInfo && <span className="ml-1.5 text-[10px] text-gray-500">макс. ×{instrInfo.max_leverage}</span>}
+                      <Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500." />
+                    </label>
+                    <input
+                      type="range"
+                      min={1}
+                      max={instrInfo?.max_leverage ?? 100}
+                      step={1}
+                      value={form.leverage}
+                      disabled={leverageMax}
+                      onChange={e => { setLeverageMax(false); patch({ leverage: parseInt(e.target.value) }) }}
+                      className="w-full h-1.5 mt-2 cursor-pointer accent-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                    />
+                    <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
+                      <span>×1</span>
+                      <span>×{instrInfo?.max_leverage ?? 100}</span>
+                    </div>
+                  </div>
+                  <div className="pb-[22px]">
+                    <Toggle
+                      options={[
+                        { label: 'Фикс.', value: 'fixed' },
+                        { label: 'Макс.', value: 'max'   },
+                      ]}
+                      value={leverageMax ? 'max' : 'fixed'}
+                      onChange={v => {
+                        const isMax = v === 'max'
+                        setLeverageMax(isMax)
+                        if (isMax) patch({ leverage: instrInfo?.max_leverage ?? 100 })
+                      }}
+                    />
                   </div>
                 </div>
               </div>
@@ -974,12 +963,12 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                 {/* col layout: label | move% | size% | usdt | sep | order-type | signal | del */}
                 <div className="grid grid-cols-[32px_1fr_1fr_1fr_9px_108px_108px_22px] gap-1.5 text-[9px] text-gray-500 mb-1 px-0.5">
                   <div className="text-center">#</div>
-                  <div className="text-center">Движение<br/>%<Tip text="Процент движения цены от предыдущего уровня. L1 = 0 означает вход по текущей цене." /></div>
-                  <div className="text-center">%<br/>депоз.<Tip text="Доля депозита на этот уровень. USDT = % × Депозит / 100." /></div>
-                  <div className="text-center">USDT<Tip text="Объём ордера в USDT. Редактируется напрямую — пересчитывает % депозита." /></div>
+                  <div className="text-center whitespace-nowrap">% от входа<Tip text="Отклонение цены от точки входа (L1=0). Отрицательное значение (−1%, −2%) — уровень берётся при движении цены против направления (усреднение). Положительное (+1%, +2%) — при движении по направлению (набор на росте/падении)." /></div>
+                  <div className="text-center whitespace-nowrap">% депоз.<Tip text="Доля депозита на этот уровень. USDT = % × Депозит / 100." /></div>
+                  <div className="text-center whitespace-nowrap">USDT<Tip text="Объём ордера в USDT. Редактируется напрямую — пересчитывает % депозита." /></div>
                   <div />
-                  <div className="text-center">Тип<Tip text="Биржевой — ордер сразу выставляется на биржу. Виртуальный — бот следит за ценой и выставляет ордер в нужный момент." /></div>
-                  <div className="text-center">Сигнал<Tip text="Условие по сигналу для выставления этого уровня. «Нет» — выставлять независимо от сигнала." /></div>
+                  <div className="text-center whitespace-nowrap">Тип<Tip text="Биржевой — ордер сразу выставляется на биржу. Виртуальный — бот следит за ценой и выставляет ордер в нужный момент." /></div>
+                  <div className="text-center whitespace-nowrap">Сигнал<Tip text="Условие по сигналу для выставления этого уровня. «Нет» — выставлять независимо от сигнала." /></div>
                   <div />
                 </div>
                 <div className="space-y-0.5">
@@ -1122,24 +1111,80 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
 
           {/* Tab 3: Exit */}
           {tab === 2 && form.strategy_type === 'matrix' && (
-            <div className="py-10 text-center text-gray-500 text-sm">
-              Настройки завершения для матрикс-стратегии будут добавлены позже.
+            <div className="flex flex-col gap-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>Safe-Zone от SL %<Tip text="После срабатывания стоп-лосса — зона вокруг цены SL, в которой новые ордера матрицы не выставляются. Защита от немедленного повторного входа." /></label>
+                  <input type="number" step="0.1" min={0} value={form.safe_zone_pct}
+                    onChange={e => patch({ safe_zone_pct: Number(e.target.value) })}
+                    className={inputCls} />
+                </div>
+                <div>
+                  <label className={labelCls}>
+                    🔒 Защищённое построение
+                    <Tip text="Следующий уровень матрицы выставляется только после того, как предыдущий прикрыт хотя бы одним стопом. Также блокирует возврат SL-уровня до подтверждения стопа на опорном уровне." />
+                  </label>
+                  <Toggle
+                    options={[{ label: 'Выкл', value: 'false' }, { label: '🔒 Вкл', value: 'true' }]}
+                    value={String(form.protected_build ?? false)}
+                    onChange={v => patch({ protected_build: v === 'true' })}
+                    optionColors={{ true: 'bg-amber-700 text-white' }}
+                    className="h-[34px]"
+                    btnClassName="h-full"
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>
+                    ⟳ Перестройка сетки от SZ
+                    <Tip text="После срабатывания SL немедленно переставляет все незаполненные уровни от нижней границы SafeZone, не дожидаясь заполнения соседних уровней. Если SafeZone = 0, anchor = цена SL." />
+                  </label>
+                  <Toggle
+                    options={[{ label: 'Выкл', value: 'false' }, { label: '⟳ Вкл', value: 'true' }]}
+                    value={String(form.matrix_rebuild_on_sl ?? false)}
+                    onChange={v => patch({ matrix_rebuild_on_sl: v === 'true' })}
+                    optionColors={{ true: 'bg-blue-700 text-white' }}
+                    className="h-[34px]"
+                    btnClassName="h-full"
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>
+                    ⚓ Якорь на точку входа
+                    <Tip text="Все уровни строятся от цены заполнения L(0). После SL L(0) тоже ждёт SafeZone и перезаходит маркетом; остальные уровни восстанавливаются от новой цены входа." />
+                  </label>
+                  <Toggle
+                    options={[{ label: 'Выкл', value: 'false' }, { label: '⚓ Вкл', value: 'true' }]}
+                    value={String(form.matrix_rebuild_from_entry ?? false)}
+                    onChange={v => patch({ matrix_rebuild_from_entry: v === 'true' })}
+                    optionColors={{ true: 'bg-violet-700 text-white' }}
+                    className="h-[34px]"
+                    btnClassName="h-full"
+                  />
+                </div>
+              </div>
             </div>
           )}
           {tab === 2 && form.strategy_type !== 'matrix' && (
             <>
               {/* TP */}
               <div className="border border-green-900/50 bg-green-950/20 rounded-lg p-3 space-y-3">
-                <div className="text-xs font-semibold text-green-400">Take Profit</div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-green-400">Take Profit</span>
+                  <button
+                    type="button"
+                    onClick={() => patch({ tp_pct: form.tp_pct === null ? 2.0 : null })}
+                    className={`w-8 h-4 rounded-full relative transition-colors shrink-0 ${form.tp_pct !== null ? 'bg-green-600' : 'bg-gray-700'}`}
+                  >
+                    <span className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${form.tp_pct !== null ? 'translate-x-4' : 'translate-x-0'}`} />
+                  </button>
+                </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className={labelCls}>TP %<Tip text="Процент прибыли от средней цены входа по всей позиции, при достижении которого выставляется ордер закрытия. Отсчитывается от средневзвешенной цены всех заполненных уровней." /></label>
-                    <NumericInput
-                      step="0.1"
-                      value={form.tp_pct}
-                      onChange={v => patch({ tp_pct: v })}
-                      className={errCls(fieldErrors.tp_pct)}
-                    />
+                    <label className={labelCls}>TP %<Tip text="Процент прибыли от средней цены входа. Если не задан — позиция закрывается только по сигналу." /></label>
+                    {form.tp_pct !== null
+                      ? <NumericInput step="0.1" value={form.tp_pct} onChange={v => patch({ tp_pct: v })} className={errCls(fieldErrors.tp_pct)} />
+                      : <div className={`${inputCls} text-gray-600 italic select-none`}>Без лимита</div>
+                    }
                   </div>
                   <div>
                     <label className={labelCls}>Режим<Tip text="«На всю позицию» — один TP-ордер закрывает сразу всё. «По уровням» — каждый заполненный уровень получает свой TP; позиция закрывается порциями по мере роста цены." /></label>
@@ -1147,27 +1192,30 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                       options={[{ label: 'На всю позицию', value: 'total' }, { label: 'По уровням', value: 'per_level' }]}
                       value={form.tp_mode}
                       onChange={v => patch({ tp_mode: v as 'total' | 'per_level' })}
+                      className="h-[34px]"
+                      btnClassName="h-full"
                     />
                   </div>
                 </div>
-                {/* Trailing stop inside TP */}
+                <SignalGate
+                  label="Сигнал для ТП"
+                  tip="Тейкпрофит сработает только при подтверждении указанным сигналом. Если TP % не задан — позиция закрывается только по этому сигналу."
+                  name={form.tp_signal_name ?? null}
+                  dir={form.tp_signal_dir ?? null}
+                  onChange={(name, dir) => patch({ tp_signal_name: name, tp_signal_dir: dir })}
+                />
+                {/* Trailing stop */}
                 <div className="pt-2 border-t border-green-900/40 space-y-3">
-                  <div className="flex items-center gap-1 text-[10px] text-green-600/80 uppercase tracking-wider pb-1">
-                    Трейлинг-стоп<Tip text="Автоматически подтягивает стоп вслед за ценой, фиксируя накопленную прибыль. Пока цена идёт в твою сторону — стоп следует за ней. Как только цена откатывается на заданный callback — позиция закрывается." />
-                  </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
                     <button
+                      type="button"
                       onClick={() => patch({ trailing_stop_enabled: !form.trailing_stop_enabled })}
-                      className={`w-10 h-5 rounded-full relative transition-colors ${
-                        form.trailing_stop_enabled ? 'bg-green-600' : 'bg-gray-700'
-                      }`}
+                      className={`w-8 h-4 rounded-full relative transition-colors shrink-0 ${form.trailing_stop_enabled ? 'bg-green-600' : 'bg-gray-700'}`}
                     >
-                      <span className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
-                        form.trailing_stop_enabled ? 'translate-x-5' : 'translate-x-0'
-                      }`} />
+                      <span className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${form.trailing_stop_enabled ? 'translate-x-4' : 'translate-x-0'}`} />
                     </button>
-                    <span className={`text-xs ${form.trailing_stop_enabled ? 'text-green-400' : 'text-gray-500'}`}>
-                      {form.trailing_stop_enabled ? 'Включён' : 'Выключен'}
+                    <span className="flex items-center gap-1 text-[10px] text-gray-400 font-semibold uppercase tracking-wider">
+                      Трейлинг-стоп<Tip text="Автоматически подтягивает стоп вслед за ценой, фиксируя накопленную прибыль. Пока цена идёт в твою сторону — стоп следует за ней. Как только цена откатывается на заданный callback — позиция закрывается." />
                     </span>
                   </div>
                   {form.trailing_stop_enabled && (
@@ -1197,16 +1245,23 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
 
               {/* SL */}
               <div className="border border-red-900/50 bg-red-950/20 rounded-lg p-3 space-y-3">
-                <div className="text-xs font-semibold text-red-400">Stop Loss</div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-red-400">Stop Loss</span>
+                  <button
+                    type="button"
+                    onClick={() => patch({ sl_pct: form.sl_pct === null ? -5.0 : null })}
+                    className={`w-8 h-4 rounded-full relative transition-colors shrink-0 ${form.sl_pct !== null ? 'bg-red-600' : 'bg-gray-700'}`}
+                  >
+                    <span className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${form.sl_pct !== null ? 'translate-x-4' : 'translate-x-0'}`} />
+                  </button>
+                </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className={labelCls}>SL %<Tip text="Расстояние стоп-лосса от средней цены входа. Отрицательное значение = ниже средней для Long (например, -5 = SL на 5% ниже). Положительное значение = выше средней (для Short SL)." /></label>
-                    <NumericInput
-                      step="0.1"
-                      value={form.sl_pct}
-                      onChange={v => patch({ sl_pct: v })}
-                      className={errCls(fieldErrors.sl_pct)}
-                    />
+                    <label className={labelCls}>SL %<Tip text="Расстояние стоп-лосса от средней цены входа. Отрицательное значение = ниже средней для Long (например, -5 = SL на 5% ниже). Если не задан — стоп только по сигналу." /></label>
+                    {form.sl_pct !== null
+                      ? <NumericInput step="0.1" value={form.sl_pct} onChange={v => patch({ sl_pct: v })} className={errCls(fieldErrors.sl_pct)} />
+                      : <div className={`${inputCls} text-gray-600 italic select-none`}>Без лимита</div>
+                    }
                   </div>
                   <div>
                     <label className={labelCls}>Тип<Tip text="«На бирже» — стоп-ордер живёт непосредственно на Bybit и сработает даже если сервер недоступен. «Программный» — сервис сам следит за ценой через WS и закрывает позицию рыночным ордером при достижении уровня." /></label>
@@ -1217,9 +1272,18 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                       ]}
                       value={form.sl_type}
                       onChange={v => patch({ sl_type: v as 'conditional' | 'programmatic' })}
+                      className="h-[34px]"
+                      btnClassName="h-full"
                     />
                   </div>
                 </div>
+                <SignalGate
+                  label="Сигнал для СЛ"
+                  tip="Стоп-лосс сработает только при подтверждении указанным сигналом. Если SL % не задан — позиция закрывается только по этому сигналу."
+                  name={form.sl_signal_name ?? null}
+                  dir={form.sl_signal_dir ?? null}
+                  onChange={(name, dir) => patch({ sl_signal_name: name, sl_signal_dir: dir })}
+                />
               </div>
             </>
           )}
@@ -1247,6 +1311,56 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ─── SignalGate ───────────────────────────────────────────────────────────────
+// Reusable signal-gated exit confirmation widget used in TP and SL sections.
+
+function SignalGate({ label, tip, name, dir, onChange }: {
+  label: string
+  tip: string
+  name: string | null
+  dir: 'buy' | 'sell' | null
+  onChange: (name: string | null, dir: 'buy' | 'sell' | null) => void
+}) {
+  const enabled = !!name
+  return (
+    <div className="pt-2 border-t border-white/[.04] space-y-2">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onChange(enabled ? null : (SIGNALS[0]?.id ?? ''), enabled ? null : 'sell')}
+          className={`w-8 h-4 rounded-full relative transition-colors shrink-0 ${enabled ? 'bg-blue-600' : 'bg-gray-700'}`}
+        >
+          <span className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0'}`} />
+        </button>
+        <span className="flex items-center gap-1 text-[10px] text-gray-400 font-semibold uppercase tracking-wider">
+          {label}<Tip text={tip} />
+        </span>
+      </div>
+      {enabled && (
+        <div className="grid grid-cols-[1fr_auto] gap-2 pl-10">
+          <select
+            value={name ?? ''}
+            onChange={e => onChange(e.target.value || null, dir)}
+            className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 outline-none focus:border-blue-500"
+          >
+            {SIGNALS.map(s => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+          <Toggle
+            options={[{ label: 'Buy', value: 'buy' }, { label: 'Sell', value: 'sell' }]}
+            value={dir ?? 'sell'}
+            onChange={v => onChange(name, v as 'buy' | 'sell')}
+            optionColors={{ buy: 'bg-emerald-700 text-white', sell: 'bg-rose-700 text-white' }}
+            className="h-[28px]"
+            btnClassName="h-full text-[11px] px-2"
+          />
+        </div>
+      )}
     </div>
   )
 }
