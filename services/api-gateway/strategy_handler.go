@@ -892,12 +892,15 @@ func (s *Server) DetachFromBot(w http.ResponseWriter, r *http.Request) {
 
 	// Read strategy context before any mutation.
 	var botID *string
-	var symbol, category, direction, accountID string
-	_ = s.pool.QueryRow(r.Context(),
-		`SELECT bot_id, symbol, category, direction, account_id
+	var symbol, category, accountID string
+	if err := s.pool.QueryRow(r.Context(),
+		`SELECT bot_id, symbol, category, account_id
 		 FROM strategies WHERE id=$1 AND owner_id=$2`,
 		id, userID,
-	).Scan(&botID, &symbol, &category, &direction, &accountID)
+	).Scan(&botID, &symbol, &category, &accountID); err != nil {
+		writeError(w, http.StatusNotFound, "strategy not found")
+		return
+	}
 
 	// Optional blacklist (applied regardless of action).
 	if body.AddBlacklist && botID != nil {
@@ -999,9 +1002,12 @@ func (s *Server) DetachFromBot(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		closeMsg := fmt.Sprintf("Стратегия %s откреплена (close)", symbol)
+		if body.Position != nil && body.Position.Size != "" && body.Position.Size != "0" {
+			closeMsg = fmt.Sprintf("Стратегия %s откреплена (close) — позиция закрыта", symbol)
+		}
 		if botID != nil {
-			s.logBotEvent(r.Context(), *botID,
-				fmt.Sprintf("Стратегия %s откреплена (close) — позиция закрыта", symbol), "info", "user")
+			s.logBotEvent(r.Context(), *botID, closeMsg, "info", "user")
 		}
 		s.pool.Exec(r.Context(), //nolint:errcheck
 			`INSERT INTO strategy_events (strategy_id, message, level) VALUES ($1, $2, 'info')`,
