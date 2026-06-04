@@ -118,6 +118,11 @@ type strategyPayload struct {
 	ProtectedBuild          bool            `json:"protected_build"`
 	MatrixRebuildOnSL       bool            `json:"matrix_rebuild_on_sl"`
 	MatrixRebuildFromEntry  bool            `json:"matrix_rebuild_from_entry"`
+	SizeAsMain              bool            `json:"size_as_main"`
+	TPSignalName            *string         `json:"tp_signal_name"`
+	TPSignalDir             *string         `json:"tp_signal_dir"`
+	SLSignalName            *string         `json:"sl_signal_name"`
+	SLSignalDir             *string         `json:"sl_signal_dir"`
 }
 
 func (p *strategyPayload) applyDefaults() {
@@ -170,7 +175,9 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 			s.trailing_stop_enabled, s.trailing_activation_pct, s.trailing_callback_pct,
 			(s.matrix_levels::text), COALESCE(s.safe_zone_pct,0), (s.matrix_entry_level::text),
 			COALESCE(s.protected_build,false), COALESCE(s.matrix_rebuild_on_sl,false),
-			COALESCE(s.matrix_rebuild_from_entry,false),
+			COALESCE(s.matrix_rebuild_from_entry,false), COALESCE(s.size_as_main,false),
+			s.hedged_strategy_id,
+			s.tp_signal_name, s.tp_signal_dir, s.sl_signal_name, s.sl_signal_dir,
 			s.created_at, s.updated_at, s.manual_alert,
 			COALESCE((
 				SELECT SUM(sl.size_usdt)
@@ -193,15 +200,6 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 		FROM strategies s
 		LEFT JOIN bots b ON b.id = s.bot_id
 		WHERE s.owner_id = $1
-		  AND NOT (
-		    s.status = 'stopped'
-		    AND s.bot_id IS NOT NULL
-		    AND NOT EXISTS (
-		      SELECT 1 FROM strategy_cycles sc
-		      JOIN strategy_levels sl ON sl.cycle_id = sc.id
-		      WHERE sc.strategy_id = s.id AND sl.status = 'filled'
-		    )
-		  )
 		ORDER BY s.created_at DESC`, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -242,6 +240,8 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 		ProtectedBuild          bool            `json:"protected_build"`
 		MatrixRebuildOnSL       bool            `json:"matrix_rebuild_on_sl"`
 		MatrixRebuildFromEntry  bool            `json:"matrix_rebuild_from_entry"`
+		SizeAsMain              bool            `json:"size_as_main"`
+		HedgedStrategyID        *string         `json:"hedged_strategy_id"`
 		CreatedAt               time.Time       `json:"created_at"`
 		UpdatedAt             time.Time       `json:"updated_at"`
 		ManualAlert           *string         `json:"manual_alert"`
@@ -250,6 +250,10 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 		LastPnl               float64         `json:"last_pnl"`
 		BotID                 *string         `json:"bot_id"`
 		BotName               *string         `json:"bot_name"`
+		TPSignalName          *string         `json:"tp_signal_name"`
+		TPSignalDir           *string         `json:"tp_signal_dir"`
+		SLSignalName          *string         `json:"sl_signal_name"`
+		SLSignalDir           *string         `json:"sl_signal_dir"`
 	}
 
 	var result []row
@@ -265,7 +269,9 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 			&scStr, &stepsStr,
 			&r.TrailingStopEnabled, &r.TrailingActivationPct, &r.TrailingCallbackPct,
 			&matrixStr, &r.SafeZonePct, &entryLevelStr, &r.ProtectedBuild, &r.MatrixRebuildOnSL,
-			&r.MatrixRebuildFromEntry,
+			&r.MatrixRebuildFromEntry, &r.SizeAsMain,
+			&r.HedgedStrategyID,
+			&r.TPSignalName, &r.TPSignalDir, &r.SLSignalName, &r.SLSignalDir,
 			&r.CreatedAt, &r.UpdatedAt, &r.ManualAlert,
 			&r.VolumeUSDT, &r.ActiveLevels, &r.LastPnl,
 			&r.BotID, &r.BotName,
@@ -308,7 +314,7 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 	req.applyDefaults()
 
-	// Prevent duplicate active/finishing strategies for same account+symbol+direction.
+	// Prevent duplicate strategies for same account+symbol+direction (any status).
 	var dupCount int
 	if err := s.pool.QueryRow(r.Context(),
 		`SELECT COUNT(*) FROM strategies
@@ -330,12 +336,14 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		   signal_configs, steps,
 		   trailing_stop_enabled, trailing_activation_pct, trailing_callback_pct,
 		   matrix_levels, safe_zone_pct, matrix_entry_level, protected_build, matrix_rebuild_on_sl,
-		   matrix_rebuild_from_entry)
+		   matrix_rebuild_from_entry, size_as_main,
+		   tp_signal_name, tp_signal_dir, sl_signal_name, sl_signal_dir)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
 		        $16,$17,$18,$19,$20,
 		        $21::jsonb, ($22::text)::jsonb,
 		        $23,$24,$25,
-		        ($26::text)::jsonb, $27, ($28::text)::jsonb, $29, $30, $31)
+		        ($26::text)::jsonb, $27, ($28::text)::jsonb, $29, $30, $31, $32,
+		        $33,$34,$35,$36)
 		RETURNING id`,
 		userID, req.AccountID, req.Symbol, req.Category, req.Direction,
 		req.GridLevels, req.GridActive, req.MaxStopActive, req.GridStepPct, req.GridSizeUSDT,
@@ -344,7 +352,8 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		string(req.SignalConfigs), nullableJSONB(req.Steps),
 		req.TrailingStopEnabled, req.TrailingActivationPct, req.TrailingCallbackPct,
 		nullableJSONB(req.MatrixLevels), req.SafeZonePct, nullableJSONB(req.MatrixEntryLevel),
-		req.ProtectedBuild, req.MatrixRebuildOnSL, req.MatrixRebuildFromEntry,
+		req.ProtectedBuild, req.MatrixRebuildOnSL, req.MatrixRebuildFromEntry, req.SizeAsMain,
+		req.TPSignalName, req.TPSignalDir, req.SLSignalName, req.SLSignalDir,
 	).Scan(&id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -417,9 +426,10 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		  matrix_levels=($24::text)::jsonb,
 		  safe_zone_pct=$25, matrix_entry_level=($26::text)::jsonb,
 		  protected_build=$27, matrix_rebuild_on_sl=$28,
-		  matrix_rebuild_from_entry=$29,
+		  matrix_rebuild_from_entry=$29, size_as_main=$30,
+		  tp_signal_name=$31, tp_signal_dir=$32, sl_signal_name=$33, sl_signal_dir=$34,
 		  updated_at=NOW()
-		WHERE id=$30 AND owner_id=$31`,
+		WHERE id=$35 AND owner_id=$36`,
 		req.Symbol, req.Category, req.Direction,
 		req.GridLevels, req.GridActive, req.MaxStopActive, req.GridStepPct, req.GridSizeUSDT,
 		req.TPMode, req.TPPct, req.SLType, req.SLPct, req.SignalFilter,
@@ -428,7 +438,8 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		req.TrailingStopEnabled, req.TrailingActivationPct, req.TrailingCallbackPct,
 		nullableJSONB(req.MatrixLevels),
 		req.SafeZonePct, nullableJSONB(req.MatrixEntryLevel),
-		req.ProtectedBuild, req.MatrixRebuildOnSL, req.MatrixRebuildFromEntry,
+		req.ProtectedBuild, req.MatrixRebuildOnSL, req.MatrixRebuildFromEntry, req.SizeAsMain,
+		req.TPSignalName, req.TPSignalDir, req.SLSignalName, req.SLSignalDir,
 		id, userID,
 	)
 	if err != nil {
@@ -836,39 +847,194 @@ func (s *Server) RestartCycle(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// DetachFromBot removes bot management from a strategy (sets bot_id = NULL).
+// DetachFromBot removes bot management from a strategy.
 // POST /strategies/{id}/detach
+//
+// Body (JSON, optional):
+//
+//	{
+//	  "action":       "adopt" | "close" | "leave",  // default: "leave"
+//	  "add_blacklist": true | false,
+//	  "position": {       // required for "adopt" and "close"
+//	    "size":         "35",
+//	    "side":         "Buy",
+//	    "entry_price":  "0.4647",
+//	    "position_idx": 2
+//	  }
+//	}
+//
+// Actions:
+//
+//	adopt — stop old strategy, create new copy with adopt_position_data set;
+//	        startMatrixCycle absorbs existing position without placing market L(0)
+//	close — place market reduce-only close for hedge position, stop strategy
+//	leave — set bot_id=NULL, keep status=active; strategy runs independently,
+//	        bot finds slot occupied via resolveHedgeSlotConflict
 func (s *Server) DetachFromBot(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 
-	// Read current bot_id and symbol before detaching so we can log and notify properly.
+	type posBody struct {
+		Size        string `json:"size"`
+		Side        string `json:"side"`
+		EntryPrice  string `json:"entry_price"`
+		PositionIdx int    `json:"position_idx"`
+	}
+	var body struct {
+		Action       string   `json:"action"`
+		AddBlacklist bool     `json:"add_blacklist"`
+		Position     *posBody `json:"position"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.Action == "" {
+		body.Action = "leave"
+	}
+
+	// Read strategy context before any mutation.
 	var botID *string
-	var symbol string
+	var symbol, category, direction, accountID string
 	_ = s.pool.QueryRow(r.Context(),
-		`SELECT bot_id, symbol FROM strategies WHERE id=$1 AND owner_id=$2`, id, userID,
-	).Scan(&botID, &symbol)
-
-	tag, err := s.pool.Exec(r.Context(),
-		`UPDATE strategies SET bot_id=NULL, updated_at=NOW() WHERE id=$1 AND owner_id=$2`,
+		`SELECT bot_id, symbol, category, direction, account_id
+		 FROM strategies WHERE id=$1 AND owner_id=$2`,
 		id, userID,
-	)
-	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "strategy not found")
-		return
+	).Scan(&botID, &symbol, &category, &direction, &accountID)
+
+	// Optional blacklist (applied regardless of action).
+	if body.AddBlacklist && botID != nil {
+		s.pool.Exec(r.Context(), //nolint:errcheck
+			`UPDATE bots SET symbol_blacklist = array_append(symbol_blacklist, $1)
+			 WHERE id=$2 AND owner_id=$3 AND NOT ($1 = ANY(symbol_blacklist))`,
+			symbol, *botID, userID)
 	}
 
-	// Log the detachment event to the bot's history.
-	if botID != nil {
-		s.logBotEvent(r.Context(), *botID,
-			fmt.Sprintf("Стратегия %s откреплена пользователем", symbol), "info", "user")
-	}
+	switch body.Action {
+	case "adopt":
+		adoptSize, adoptEntry := "", ""
+		if body.Position != nil {
+			adoptSize = body.Position.Size
+			adoptEntry = body.Position.EntryPrice
+		}
+		adoptJSON := fmt.Sprintf(`{"size":%q,"entry_price":%q}`, adoptSize, adoptEntry)
 
-	// Reload strategy in engine — clears BotID in memory so the runner
-	// stops writing to bot_events and switches to normal (non-bot) restart behaviour.
-	go s.engine.Notify(context.Background(), id)
+		tag, err := s.pool.Exec(r.Context(),
+			`UPDATE strategies SET bot_id=NULL, status='stopped', updated_at=NOW()
+			 WHERE id=$1 AND owner_id=$2`, id, userID)
+		if err != nil || tag.RowsAffected() == 0 {
+			writeError(w, http.StatusNotFound, "strategy not found")
+			return
+		}
+		go s.engine.Notify(context.Background(), id)
+
+		var newID string
+		if err := s.pool.QueryRow(r.Context(), `
+			INSERT INTO strategies (
+				owner_id, account_id, bot_id, symbol, category, direction, status,
+				grid_levels, grid_active, max_stop_active, grid_step_pct, grid_size_usdt,
+				tp_mode, tp_pct, sl_type, sl_pct, signal_filter, hedge_mode,
+				leverage, margin_type, entry_order_type, steps, signal_configs,
+				max_cycles, matrix_levels, safe_zone_pct, matrix_entry_level,
+				protected_build, matrix_rebuild_on_sl, matrix_rebuild_from_entry,
+				strategy_type, size_as_main, hedged_strategy_id,
+				adopt_position_data
+			)
+			SELECT
+				owner_id, account_id, $2, symbol, category, direction, 'active',
+				grid_levels, grid_active, COALESCE(max_stop_active,0), grid_step_pct, grid_size_usdt,
+				tp_mode, tp_pct, sl_type, sl_pct, signal_filter, hedge_mode,
+				leverage, COALESCE(margin_type,'isolated'), entry_order_type, steps, signal_configs,
+				max_cycles, matrix_levels, COALESCE(safe_zone_pct,0), matrix_entry_level,
+				COALESCE(protected_build,false), COALESCE(matrix_rebuild_on_sl,false),
+				COALESCE(matrix_rebuild_from_entry,false),
+				COALESCE(strategy_type,'grid'), COALESCE(size_as_main,false), hedged_strategy_id,
+				$3::jsonb
+			FROM strategies WHERE id=$1
+			RETURNING id`,
+			id, botIDOrNull(botID), adoptJSON,
+		).Scan(&newID); err == nil {
+			go s.engine.Notify(context.Background(), newID)
+			s.pool.Exec(r.Context(), //nolint:errcheck
+				`INSERT INTO strategy_events (strategy_id, message, level) VALUES ($1, $2, 'info')`,
+				newID, fmt.Sprintf("Создана в режиме adopt — поглощение позиции @ %s", adoptEntry))
+			if botID != nil {
+				s.logBotEvent(r.Context(), *botID,
+					fmt.Sprintf("Стратегия %s: adopt detach — новая стратегия %s поглощает позицию @ %s",
+						symbol, newID[:8], adoptEntry), "info", "hedge")
+			}
+		} else if botID != nil {
+			s.logBotEvent(r.Context(), *botID,
+				fmt.Sprintf("Хедж: не удалось создать adopt-стратегию для %s: %v", symbol, err),
+				"error", "hedge")
+		}
+
+	case "close":
+		tag, err := s.pool.Exec(r.Context(),
+			`UPDATE strategies SET bot_id=NULL, status='stopped', updated_at=NOW()
+			 WHERE id=$1 AND owner_id=$2`, id, userID)
+		if err != nil || tag.RowsAffected() == 0 {
+			writeError(w, http.StatusNotFound, "strategy not found")
+			return
+		}
+		go s.engine.Notify(context.Background(), id)
+
+		if body.Position != nil && body.Position.Size != "" && body.Position.Size != "0" {
+			if creds, credsErr := s.loadCreds(r, accountID, userID); credsErr == nil {
+				closeSide := "Sell"
+				if body.Position.Side == "Sell" {
+					closeSide = "Buy"
+				}
+				closeReq := trader.OrderRequest{
+					Category:    category,
+					Symbol:      symbol,
+					Side:        closeSide,
+					OrderType:   "Market",
+					Qty:         body.Position.Size,
+					ReduceOnly:  true,
+					PositionIdx: body.Position.PositionIdx,
+					OrderLinkId: fmt.Sprintf("SIS_DTH_%d", time.Now().UnixMilli()),
+				}
+				if _, placeErr := trader.PlaceOrder(r.Context(), creds, closeReq); placeErr != nil && botID != nil {
+					s.logBotEvent(r.Context(), *botID,
+						fmt.Sprintf("Хедж: ошибка закрытия позиции %s при detach: %v", symbol, placeErr),
+						"error", "hedge")
+				}
+			}
+		}
+		if botID != nil {
+			s.logBotEvent(r.Context(), *botID,
+				fmt.Sprintf("Стратегия %s откреплена (close) — позиция закрыта", symbol), "info", "user")
+		}
+		s.pool.Exec(r.Context(), //nolint:errcheck
+			`INSERT INTO strategy_events (strategy_id, message, level) VALUES ($1, $2, 'info')`,
+			id, "Откреплена от бота (close) — позиция закрыта рыночным ордером")
+
+	default: // "leave"
+		tag, err := s.pool.Exec(r.Context(),
+			`UPDATE strategies SET bot_id=NULL, updated_at=NOW() WHERE id=$1 AND owner_id=$2`,
+			id, userID)
+		if err != nil || tag.RowsAffected() == 0 {
+			writeError(w, http.StatusNotFound, "strategy not found")
+			return
+		}
+		if botID != nil {
+			s.logBotEvent(r.Context(), *botID,
+				fmt.Sprintf("Стратегия %s откреплена (leave) — продолжает работу независимо", symbol),
+				"info", "user")
+		}
+		s.pool.Exec(r.Context(), //nolint:errcheck
+			`INSERT INTO strategy_events (strategy_id, message, level) VALUES ($1, $2, 'info')`,
+			id, "Откреплена от бота (leave) — продолжает работу независимо")
+		go s.engine.Notify(context.Background(), id)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// botIDOrNull converts *string to interface{} for pgx $N binding (nil → SQL NULL).
+func botIDOrNull(botID *string) interface{} {
+	if botID == nil {
+		return nil
+	}
+	return *botID
 }
 
 // DismissManualAlert clears the manual intervention alert on a strategy.
@@ -1025,7 +1191,10 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	var filledQtySum float64
 	for _, l := range levels {
-		if l.DbStatus == "filled" || l.DbStatus == "sl_closed" {
+		// For matrix strategies, sl_closed means the level entered AND was subsequently
+		// closed by its per-level SL (net-zero effect on open position). Only "filled"
+		// levels still hold an open position contribution. For grid both statuses count.
+		if l.DbStatus == "filled" || (l.DbStatus == "sl_closed" && strategyType != "matrix") {
 			q, _ := strconv.ParseFloat(l.Qty, 64)
 			filledQtySum += q
 		}
