@@ -343,7 +343,17 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 		if priceForQty == 0 {
 			priceForQty = price // market entry: use current price for qty calc
 		}
-		qty := trader.FormatQty(sizeUSDT/priceForQty, sr.instr.QtyStep, sr.instr.MinQty)
+		rawQty := trader.FormatQty(sizeUSDT/priceForQty, sr.instr.QtyStep, sr.instr.MinQty)
+		// Bump up if needed so qty*price meets exchange minimum notional value.
+		if sr.instr.MinNotionalValue > 0 {
+			if qf, _ := strconv.ParseFloat(rawQty, 64); qf > 0 {
+				bumped := trader.EnsureMinNotional(qf, sr.instr.QtyStep, priceForQty, sr.instr.MinNotionalValue)
+				if bumped != qf {
+					rawQty = trader.FormatQty(bumped, sr.instr.QtyStep, sr.instr.MinQty)
+				}
+			}
+		}
+		qty := rawQty
 
 		slotCopy := slot
 		var levelID string
@@ -392,6 +402,21 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 		if slot == 0 {
 			if sr.matrixIsVirtual(l) {
 				sr.matrixTriggerVirtualLevel(ctx, l)
+			} else if sr.strategy.AdoptPositionData != nil {
+				// Adopt mode: an existing exchange position is absorbed — no market order placed.
+				adopt := sr.strategy.AdoptPositionData
+				fillPrice, _ := strconv.ParseFloat(adopt.EntryPrice, 64)
+				if fillPrice <= 0 {
+					fillPrice = price // fallback to current mark price
+				}
+				// Clear adopt flag in DB before calling handleMatrixLevelFill (prevents re-use on reload).
+				sr.runner.pool.Exec(ctx, //nolint:errcheck
+					`UPDATE strategies SET adopt_position_data=NULL, updated_at=NOW() WHERE id=$1`,
+					sr.strategy.ID)
+				sr.strategy.AdoptPositionData = nil
+				sr.info(ctx, fmt.Sprintf("Matrix L(0): поглощение существующей позиции @ %.4f (qty=%s, adopt mode)",
+					fillPrice, adopt.Size))
+				sr.handleMatrixLevelFill(ctx, l.ID, fillPrice)
 			} else {
 				if err := sr.placeMatrixLevel(ctx, l, price); err != nil {
 					sr.errlog(ctx, fmt.Sprintf("Ошибка выставления matrix entry %s: %v", slotLabel(l.Slot), err))
@@ -515,8 +540,41 @@ func (sr *StrategyRunner) placeMatrixLevel(ctx context.Context, l *GridLevel, cu
 			sr.warn(ctx, fmt.Sprintf("Matrix %s: недостаточно баланса — переведён в виртуальный режим", slotLabel(l.Slot)))
 			return nil
 		}
+		if isMinOrderValue(err) {
+			// Stored qty is below exchange minimum notional (e.g. < 5 USDT) — likely due to
+			// rounding at cycle creation before MinNotionalValue was checked.
+			// Try bumping qty by one step and retrying once; if still too small, go virtual.
+			priceForBump := l.TargetPrice
+			if priceForBump <= 0 {
+				priceForBump, _ = trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+			}
+			qtyF, _ := strconv.ParseFloat(l.Qty, 64)
+			bumped := trader.EnsureMinNotional(qtyF, sr.instr.QtyStep, priceForBump, sr.instr.MinNotionalValue)
+			if bumped > qtyF && sr.instr.QtyStep > 0 {
+				newQtyStr := trader.FormatQty(bumped, sr.instr.QtyStep, sr.instr.MinQty)
+				sr.warn(ctx, fmt.Sprintf("Matrix %s: qty %s → %s (ниже минимального объёма, корректируем)", slotLabel(l.Slot), l.Qty, newQtyStr))
+				l.Qty = newQtyStr
+				req.Qty = newQtyStr
+				sr.runner.pool.Exec(ctx, //nolint:errcheck
+					`UPDATE strategy_levels SET qty=$1 WHERE id=$2`, newQtyStr, l.ID)
+				sr.runner.RegisterOrder(linkID, ref)
+				result, err = sr.runner.tradeStream.PlaceOrder(ctx, req)
+				if err == nil {
+					// Retry succeeded — fall through to the success path below.
+					goto placed
+				}
+				sr.runner.UnregisterOrder(linkID)
+			}
+			// Still failing or bump not possible — mark virtual.
+			l.ForceVirtual = true
+			sr.runner.pool.Exec(ctx, //nolint:errcheck
+				`UPDATE strategy_levels SET force_virtual=true WHERE id=$1`, l.ID)
+			sr.warn(ctx, fmt.Sprintf("Matrix %s: размер ордера ниже минимума биржи — переведён в виртуальный режим", slotLabel(l.Slot)))
+			return nil
+		}
 		return err
 	}
+placed:
 
 	roundedPrice := l.TargetPrice
 	if l.TargetPrice > 0 {
@@ -971,7 +1029,17 @@ func (sr *StrategyRunner) matrixReplaceSlots(ctx context.Context, currentPrice f
 		if priceForQty == 0 {
 			priceForQty = currentPrice
 		}
-		qty := trader.FormatQty(sizeUSDT/priceForQty, sr.instr.QtyStep, sr.instr.MinQty)
+		rawQty := trader.FormatQty(sizeUSDT/priceForQty, sr.instr.QtyStep, sr.instr.MinQty)
+		// Bump up if needed so qty*price meets exchange minimum notional value.
+		if sr.instr.MinNotionalValue > 0 {
+			if qf, _ := strconv.ParseFloat(rawQty, 64); qf > 0 {
+				bumped := trader.EnsureMinNotional(qf, sr.instr.QtyStep, priceForQty, sr.instr.MinNotionalValue)
+				if bumped != qf {
+					rawQty = trader.FormatQty(bumped, sr.instr.QtyStep, sr.instr.MinQty)
+				}
+			}
+		}
+		qty := rawQty
 
 		// Leave any sl_closed rows for this slot in place — they serve as a historical
 		// record and are needed by the frontend to resolve level_idx → slot for old fills.
