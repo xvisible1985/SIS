@@ -200,6 +200,7 @@ func main() {
 
 		// Strategy state and events
 		r.Get("/strategies/{id}/state", s.GetStrategyState)
+		r.Get("/strategies/{id}/hedge-session", s.GetHedgeSession)
 		r.Get("/strategies/{id}/cycle-audit", s.GetCycleAudit)
 		r.Post("/strategies/{id}/cycle-restart", s.RestartCycle)
 		r.Post("/strategies/{id}/dismiss-alert", s.DismissManualAlert)
@@ -241,10 +242,12 @@ func main() {
 		r.Get("/bots/{id}/events", s.GetBotEvents)
 		r.Get("/bots/{id}/scan", s.ScanBot)
 		r.Post("/bots/{id}/trigger", s.TriggerBot)
+		r.Post("/bots/{id}/blacklist-add", s.AddBotBlacklist)
 		r.Post("/bots/signal-scan", s.ScanSignals)
 
 			// Trade history
 			r.Get("/trade-history", s.GetTradeHistory)
+			r.Get("/trade-history/symbols", s.GetTradeHistorySymbols)
 
 			// Dashboard
 			r.Get("/dashboard", s.GetDashboard)

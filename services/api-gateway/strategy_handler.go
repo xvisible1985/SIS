@@ -1283,3 +1283,62 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GetHedgeSession returns the most recent hedge session for a strategy.
+// The strategy ID can be either the main_strategy_id or hedge_strategy_id.
+// Cumulative hedge P&L is computed live from trade_history.
+// GET /strategies/{id}/hedge-session
+func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	stratID := chi.URLParam(r, "id")
+
+	type sessionResp struct {
+		ID                 string   `json:"id"`
+		BotID              string   `json:"bot_id"`
+		MainStrategyID     *string  `json:"main_strategy_id"`
+		HedgeStrategyID    string   `json:"hedge_strategy_id"`
+		MainEntryAtStart   *float64 `json:"main_entry_at_start"`
+		HedgeEntryAtStart  *float64 `json:"hedge_entry_at_start"`
+		GapAtStart         *float64 `json:"gap_at_start"`
+		StartedAt          string   `json:"started_at"`
+		EndedAt            *string  `json:"ended_at"`
+		CumulativeHedgePnl float64  `json:"cumulative_hedge_pnl"`
+	}
+
+	var resp sessionResp
+	err := s.pool.QueryRow(r.Context(), `
+		SELECT
+			hs.id::text,
+			hs.bot_id::text,
+			hs.main_strategy_id::text,
+			hs.hedge_strategy_id::text,
+			hs.main_entry_at_start,
+			hs.hedge_entry_at_start,
+			hs.gap_at_start,
+			hs.started_at::text,
+			hs.ended_at::text,
+			COALESCE((
+				SELECT SUM(th.net_pnl)
+				FROM trade_history th
+				WHERE th.strategy_id = hs.hedge_strategy_id
+				  AND th.closed_at >= hs.started_at
+				  AND (hs.ended_at IS NULL OR th.closed_at <= hs.ended_at)
+			), 0)
+		FROM hedge_sessions hs
+		WHERE (hs.main_strategy_id = $1::uuid OR hs.hedge_strategy_id = $1::uuid)
+		  AND hs.bot_id IN (SELECT id FROM bots WHERE owner_id = $2::uuid)
+		ORDER BY hs.started_at DESC
+		LIMIT 1`,
+		stratID, userID,
+	).Scan(
+		&resp.ID, &resp.BotID, &resp.MainStrategyID, &resp.HedgeStrategyID,
+		&resp.MainEntryAtStart, &resp.HedgeEntryAtStart, &resp.GapAtStart,
+		&resp.StartedAt, &resp.EndedAt, &resp.CumulativeHedgePnl,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
