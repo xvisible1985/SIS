@@ -365,6 +365,7 @@ export function HedgePairCard({
   const [mainEvents, setMainEvents]   = useState<StrategyEvent[]>([])
   const [hedgeEvents, setHedgeEvents] = useState<StrategyEvent[]>([])
   const [dataLoading, setDataLoading] = useState(false)
+  const [hedgeSession, setHedgeSession] = useState<HedgeSession | null>(null)
 
   useEffect(() => {
     if (!expanded) return
@@ -374,11 +375,13 @@ export function HedgePairCard({
       getStrategyState(hedge.id).catch(() => null),
       getStrategyEvents(main.id,  { limit: 60 }).catch(() => ({ total: 0, events: [] as StrategyEvent[] })),
       getStrategyEvents(hedge.id, { limit: 60 }).catch(() => ({ total: 0, events: [] as StrategyEvent[] })),
-    ]).then(([ms, hs, me, he]) => {
+      getHedgeSession(hedge.id),
+    ]).then(([ms, hs, me, he, session]) => {
       setMainState(ms)
       setHedgeState(hs)
       setMainEvents(me.events)
       setHedgeEvents(he.events)
+      setHedgeSession(session)
     }).finally(() => setDataLoading(false))
   }, [expanded, main.id, hedge.id])
 
@@ -387,18 +390,26 @@ export function HedgePairCard({
   const hedgeEntry = (hedgeState?.avg_entry ?? 0) > 0 ? (hedgeState?.avg_entry ?? null) : null
   const currentGap = mainEntry !== null && hedgeEntry !== null ? Math.abs(mainEntry - hedgeEntry) : null
 
-  // Store initial gap once per session when pair is first opened
-  const [initialGap, setInitialGap] = useState<number | null>(() => {
-    const v = localStorage.getItem(gapKey)
-    return v ? parseFloat(v) : null
-  })
-  useEffect(() => {
-    if (!expanded || currentGap === null || initialGap !== null) return
-    localStorage.setItem(gapKey, currentGap.toFixed(6))
-    setInitialGap(currentGap)
-  }, [expanded, currentGap, initialGap, gapKey])
+  const gapReduced = hedgeSession?.gap_at_start != null && currentGap !== null
+    ? hedgeSession.gap_at_start - currentGap
+    : null
 
-  const gapReduced = initialGap !== null && currentGap !== null ? initialGap - currentGap : null
+  // ── 30s polling: refresh states + session ────────────────────────────────
+  useEffect(() => {
+    if (!expanded) return
+    const id = setInterval(() => {
+      Promise.all([
+        getStrategyState(main.id).catch(() => null),
+        getStrategyState(hedge.id).catch(() => null),
+        getHedgeSession(hedge.id),
+      ]).then(([ms, hs, session]) => {
+        if (ms) setMainState(ms)
+        if (hs) setHedgeState(hs)
+        if (session) setHedgeSession(session)
+      })
+    }, 30_000)
+    return () => clearInterval(id)
+  }, [expanded, main.id, hedge.id])
 
   // ── Paired close target ───────────────────────────────────────────────────
   // Uses live position data (real-time WebSocket) + hedge bot config (close condition).
@@ -683,7 +694,7 @@ export function HedgePairCard({
                 />
                 <StatRow
                   label="Разрыв на старте"
-                  value={initialGap !== null ? fmtPrice(initialGap, dec) : '—'}
+                  value={hedgeSession?.gap_at_start != null ? fmtPrice(hedgeSession.gap_at_start, dec) : '—'}
                 />
                 <StatRow
                   label="Сокращение разрыва"
@@ -718,14 +729,13 @@ export function HedgePairCard({
                 <div className="h-px bg-white/[.05] my-1.5" />
 
                 <StatRow
-                  label="P&L Main (тек.)"
-                  value={fmtPnl(mainPnl)}
-                  color={mainPnl !== null ? (mainPnl > 0 ? '#6ee7b7' : mainPnl < 0 ? '#fca5a5' : undefined) : undefined}
+                  label="Накоплено хеджем"
+                  value={hedgeSession != null ? fmtPnl(hedgeSession.cumulative_hedge_pnl) : '—'}
+                  color={hedgeSession != null ? (hedgeSession.cumulative_hedge_pnl > 0 ? '#6ee7b7' : hedgeSession.cumulative_hedge_pnl < 0 ? '#fca5a5' : undefined) : undefined}
                 />
                 <StatRow
-                  label="P&L Hedge (тек.)"
-                  value={fmtPnl(hedgePnl)}
-                  color={hedgePnl !== null ? (hedgePnl > 0 ? '#6ee7b7' : hedgePnl < 0 ? '#fca5a5' : undefined) : undefined}
+                  label="Сессия начата"
+                  value={hedgeSession != null ? fmtDateTime(hedgeSession.started_at) : '—'}
                 />
               </div>
 
