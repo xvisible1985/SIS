@@ -211,6 +211,9 @@ func main() {
 		r.Post("/strategy-templates", s.CreateTemplate)
 		r.Delete("/strategy-templates/{id}", s.DeleteTemplate)
 
+		// Strategy defaults (all authenticated users — read-only)
+		r.Get("/strategy-defaults", s.GetStrategyDefaults)
+
 		// Trader
 		r.Post("/trader/order", s.TraderPlaceOrder)
 		r.Delete("/trader/order", s.TraderCancelOrder)
@@ -280,6 +283,10 @@ func main() {
 			r.Patch("/admin/indicator-types/{id}", s.ToggleIndicatorType)
 			r.Get("/admin/signal-override/{name}", s.GetSignalOverride)
 			r.Put("/admin/signal-override/{name}", s.SetSignalOverride)
+
+			// Admin: strategy defaults management
+			r.Get("/admin/strategy-defaults", s.GetStrategyDefaults)
+			r.Put("/admin/strategy-defaults/{type}", s.UpdateStrategyDefaults)
 
 			// Admin: proxy management
 			r.Get("/admin/proxies", s.ListProxies)

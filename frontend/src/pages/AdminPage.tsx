@@ -14,6 +14,7 @@ import { AdminUsersPage } from '../features/admin-users'
 import { useAdminUsers } from '../features/admin-users/api'
 import { AdminBotsTab } from '../features/admin-bots/AdminBotsTab'
 import { AdminProxiesTab } from '../features/admin-proxies/AdminProxiesTab'
+import { AdminDefaultsTab } from '../features/admin-defaults/AdminDefaultsTab'
 import { BybitNewsTab } from '../features/bybit-news/BybitNewsTab'
 import { BybitNewsCard } from '../features/bybit-news/BybitNewsCard'
 import { LogVisualizerTab } from '../features/log-visualizer/LogVisualizerTab'
@@ -1180,6 +1181,7 @@ const TABS = [
   { id: 'monitoring', label: 'Мониторинг'   },
   { id: 'signals',    label: 'Сигналы'      },
   { id: 'proxies',    label: 'Прокси'       },
+  { id: 'defaults',   label: 'Дефолты'      },
   { id: 'bybit-news', label: 'Bybit News'   },
   { id: 'log-visualizer', label: 'Визуализатор' },
 ] as const
@@ -1237,6 +1239,11 @@ export function AdminPage() {
       {tab === 'proxies' && (
         <div className="flex flex-1 flex-col overflow-hidden">
           <AdminProxiesTab />
+        </div>
+      )}
+      {tab === 'defaults' && (
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <AdminDefaultsTab />
         </div>
       )}
       {tab === 'bybit-news' && (

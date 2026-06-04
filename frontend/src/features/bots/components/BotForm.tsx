@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { getStrategyDefaults } from '../../admin-defaults/api';
 import { X, Bot, ToggleLeft, ToggleRight, Camera, Trash2, Search, Loader2 } from 'lucide-react';
 import { CoinMultiPicker } from '../../../components/common/CoinMultiPicker';
 import { Toggle, Tip, SignalPickerField } from '../../../components/strategies/FormWidgets';
@@ -171,6 +172,33 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
       patch({ grid_size_usdt: instrInfo.min_order_usdt });
     }
   }, [minLotEnabled, instrInfo]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Apply admin-configured defaults for new bots
+  useEffect(() => {
+    if (bot) return // don't override existing bot config
+    getStrategyDefaults().then(defaults => {
+      const isMatrix = config.strategy_type === 'matrix'
+      const d = isMatrix ? defaults.matrix : defaults.grid
+      if (!d) return
+      setConfig(c => {
+        const overrides: Partial<typeof c> = {}
+        if (d.leverage !== undefined) overrides.leverage = d.leverage
+        if (d.grid_size_usdt !== undefined) overrides.grid_size_usdt = d.grid_size_usdt
+        if (!isMatrix) {
+          const gd = d as import('../../admin-defaults/types').GridDefaults
+          if (gd.tp_pct !== undefined) overrides.tp_pct = gd.tp_pct
+          if (gd.sl_pct !== undefined) overrides.sl_pct = gd.sl_pct
+          if (gd.trailing_activation_pct !== undefined) overrides.trailing_activation_pct = gd.trailing_activation_pct
+          if (gd.trailing_callback_pct !== undefined) overrides.trailing_callback_pct = gd.trailing_callback_pct
+          if (gd.steps) overrides.steps = gd.steps
+        } else {
+          const md = d as import('../../admin-defaults/types').MatrixDefaults
+          if (md.safe_zone_pct !== undefined) overrides.safe_zone_pct = md.safe_zone_pct
+        }
+        return { ...c, ...overrides }
+      })
+    }).catch(() => {}) // silently ignore errors — fall back to hardcoded defaults
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Итоговый список монет: применяем правила whitelist и blacklist (с поддержкой масок)
   const resolvedSymbols = useMemo(() => {
