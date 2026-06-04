@@ -1311,9 +1311,33 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 
 	// TP считается от средневзвешенной цены входа (ТВХ), чтобы гарантировать
 	// закрытие в плюс вне зависимости от глубины DCA.
+	// Используем ТВХ с биржи (pos.EntryPrice), а не расчётный avgEntry(),
+	// чтобы корректно учесть проскальзывание маркет-ордеров.
 	avgEntryPrice, _ := sr.avgEntry()
 	if avgEntryPrice == 0 {
 		return
+	}
+	// Fetch live exchange position avg entry — temporarily release sr.mu for the HTTP call.
+	{
+		sym := sr.strategy.Symbol
+		cat := sr.strategy.Category
+		wantSide := "Buy"
+		if sr.strategy.Direction == DirectionShort {
+			wantSide = "Sell"
+		}
+		wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
+		creds := sr.runner.creds
+		sr.mu.Unlock()
+		exAvg := fetchExchangeEntry(ctx, creds, cat, sym, wantSide, wantIdx)
+		sr.mu.Lock()
+		if exAvg > 0 {
+			sr.info(ctx, fmt.Sprintf("matrixUpdateTP: ТВХ биржи %.4f (расчётная %.4f)", exAvg, avgEntryPrice))
+			avgEntryPrice = exAvg
+		}
+		// Re-check suppression guard after re-acquiring mutex.
+		if sr.strategy.HedgeTpSuppressed {
+			return
+		}
 	}
 	var tpPrice float64
 	var tpSide string

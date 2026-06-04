@@ -429,6 +429,32 @@ func FetchPositions(ctx context.Context, creds Credentials) ([]Position, error) 
 	return all, nil
 }
 
+// FetchPositionBySymbol fetches positions for a specific symbol from the exchange.
+// It makes a single targeted API call rather than fetching all positions.
+// Useful when only one symbol's position is needed (e.g. for TP base price).
+func FetchPositionBySymbol(ctx context.Context, creds Credentials, category, symbol string) ([]Position, error) {
+	q := "category=" + category + "&symbol=" + symbol
+	data, err := doSignedGET(ctx, creds, "/v5/position/list", q)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkRetCode(data); err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Result struct {
+			List []Position `json:"list"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	for i := range resp.Result.List {
+		resp.Result.List[i].Category = category
+	}
+	return resp.Result.List, nil
+}
+
 // FetchOrderByLinkId looks up a single order by orderLinkId.
 // Checks active orders first; falls back to history if not found.
 // Returns the order, whether it is still open (active), and any error.
