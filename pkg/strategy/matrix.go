@@ -410,9 +410,11 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 					fillPrice = price // fallback to current mark price
 				}
 				// Clear adopt flag in DB before calling handleMatrixLevelFill (prevents re-use on reload).
-				sr.runner.pool.Exec(ctx, //nolint:errcheck
+				if _, err := sr.runner.pool.Exec(ctx,
 					`UPDATE strategies SET adopt_position_data=NULL, updated_at=NOW() WHERE id=$1`,
-					sr.strategy.ID)
+					sr.strategy.ID); err != nil {
+					sr.errlog(ctx, fmt.Sprintf("Matrix L(0) adopt: не удалось сбросить adopt_position_data: %v", err))
+				}
 				sr.strategy.AdoptPositionData = nil
 				sr.info(ctx, fmt.Sprintf("Matrix L(0): поглощение существующей позиции @ %.4f (qty=%s, adopt mode)",
 					fillPrice, adopt.Size))
