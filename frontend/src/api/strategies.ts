@@ -1,8 +1,9 @@
 import { apiClient } from './client'
 import type { Strategy, StrategyState, StrategyEvent, StrategyFormData, CycleAuditData, HedgeSession } from '../types'
 
-export async function listStrategies(): Promise<Strategy[]> {
-  const res = await apiClient.get<Strategy[]>('/strategies')
+export async function listStrategies(asAccountId?: string): Promise<Strategy[]> {
+  const params = asAccountId ? { as_account_id: asAccountId } : undefined
+  const res = await apiClient.get<Strategy[]>('/strategies', { params })
   return res.data
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"sis/pkg/trader"
 )
 
@@ -161,46 +162,65 @@ func (p *strategyPayload) applyDefaults() {
 	}
 }
 
-// ListStrategies returns all strategies for the authenticated user with computed fields.
+// listStrategiesQuery is the common SELECT body used by ListStrategies.
+// Caller appends the WHERE clause and args.
+const listStrategiesQuery = `
+	SELECT
+		s.id, s.account_id, s.symbol, s.category, s.direction, s.status,
+		s.grid_levels, s.grid_active, COALESCE(s.max_stop_active,0), s.grid_step_pct, s.grid_size_usdt,
+		s.tp_mode, s.tp_pct, s.sl_type, s.sl_pct, s.signal_filter,
+		s.leverage, s.margin_type, s.hedge_mode, s.strategy_type, s.entry_order_type,
+		s.signal_configs::text, (s.steps::text),
+		s.trailing_stop_enabled, s.trailing_activation_pct, s.trailing_callback_pct,
+		(s.matrix_levels::text), COALESCE(s.safe_zone_pct,0), (s.matrix_entry_level::text),
+		COALESCE(s.protected_build,false), COALESCE(s.matrix_rebuild_on_sl,false),
+		COALESCE(s.matrix_rebuild_from_entry,false), COALESCE(s.size_as_main,false),
+		s.hedged_strategy_id,
+		s.tp_signal_name, s.tp_signal_dir, s.sl_signal_name, s.sl_signal_dir,
+		s.created_at, s.updated_at, s.manual_alert,
+		COALESCE((
+			SELECT SUM(sl.size_usdt)
+			FROM strategy_levels sl
+			JOIN strategy_cycles sc ON sl.cycle_id = sc.id
+			WHERE sc.strategy_id = s.id AND sc.ended_at IS NULL AND sl.status = 'filled'
+		), 0),
+		COALESCE((
+			SELECT COUNT(*)::int
+			FROM strategy_levels sl
+			JOIN strategy_cycles sc ON sl.cycle_id = sc.id
+			WHERE sc.strategy_id = s.id AND sc.ended_at IS NULL AND sl.status = 'filled'
+		), 0),
+		COALESCE((
+			SELECT realized_pnl FROM strategy_cycles
+			WHERE strategy_id = s.id AND ended_at IS NOT NULL
+			ORDER BY cycle_num DESC LIMIT 1
+		), 0),
+		s.bot_id, b.name
+	FROM strategies s
+	LEFT JOIN bots b ON b.id = s.bot_id`
+
+// ListStrategies returns strategies for the authenticated user.
+// Admin users may pass ?as_account_id=<uuid> to view another account's strategies.
 // GET /strategies
 func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
-	rows, err := s.pool.Query(r.Context(), `
-		SELECT
-			s.id, s.account_id, s.symbol, s.category, s.direction, s.status,
-			s.grid_levels, s.grid_active, COALESCE(s.max_stop_active,0), s.grid_step_pct, s.grid_size_usdt,
-			s.tp_mode, s.tp_pct, s.sl_type, s.sl_pct, s.signal_filter,
-			s.leverage, s.margin_type, s.hedge_mode, s.strategy_type, s.entry_order_type,
-			s.signal_configs::text, (s.steps::text),
-			s.trailing_stop_enabled, s.trailing_activation_pct, s.trailing_callback_pct,
-			(s.matrix_levels::text), COALESCE(s.safe_zone_pct,0), (s.matrix_entry_level::text),
-			COALESCE(s.protected_build,false), COALESCE(s.matrix_rebuild_on_sl,false),
-			COALESCE(s.matrix_rebuild_from_entry,false), COALESCE(s.size_as_main,false),
-			s.hedged_strategy_id,
-			s.tp_signal_name, s.tp_signal_dir, s.sl_signal_name, s.sl_signal_dir,
-			s.created_at, s.updated_at, s.manual_alert,
-			COALESCE((
-				SELECT SUM(sl.size_usdt)
-				FROM strategy_levels sl
-				JOIN strategy_cycles sc ON sl.cycle_id = sc.id
-				WHERE sc.strategy_id = s.id AND sc.ended_at IS NULL AND sl.status = 'filled'
-			), 0),
-			COALESCE((
-				SELECT COUNT(*)::int
-				FROM strategy_levels sl
-				JOIN strategy_cycles sc ON sl.cycle_id = sc.id
-				WHERE sc.strategy_id = s.id AND sc.ended_at IS NULL AND sl.status = 'filled'
-			), 0),
-			COALESCE((
-				SELECT realized_pnl FROM strategy_cycles
-				WHERE strategy_id = s.id AND ended_at IS NOT NULL
-				ORDER BY cycle_num DESC LIMIT 1
-			), 0),
-			s.bot_id, b.name
-		FROM strategies s
-		LEFT JOIN bots b ON b.id = s.bot_id
-		WHERE s.owner_id = $1
-		ORDER BY s.created_at DESC`, userID)
+
+	asAccountID := r.URL.Query().Get("as_account_id")
+	var rows pgx.Rows
+	var err error
+	if asAccountID != "" {
+		if !s.isAdmin(r.Context(), userID) {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		rows, err = s.pool.Query(r.Context(),
+			listStrategiesQuery+` WHERE s.account_id = $1 ORDER BY s.created_at DESC`,
+			asAccountID)
+	} else {
+		rows, err = s.pool.Query(r.Context(),
+			listStrategiesQuery+` WHERE s.owner_id = $1 ORDER BY s.created_at DESC`,
+			userID)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

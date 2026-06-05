@@ -23,13 +23,16 @@ import { StrategyCard } from '../components/strategies/StrategyCard'
 import { HedgePairCard } from '../components/strategies/HedgePairCard'
 import { StrategyModal } from '../components/strategies/StrategyModal'
 import { useBots } from '../features/bots/api'
+import { useAuth } from '../hooks/useAuth'
+import { useAdminUsers } from '../features/admin-users/api'
+import type { AdminUser } from '../features/admin-users/types'
 import { useBotSignalCounts } from '../hooks/useBotSignalCounts'
 import { useBotEventsWs, type BotEventCategory } from '../hooks/useBotEventsWs'
 import { BotForm } from '../features/bots/components/BotForm'
 import { HedgeBotForm } from '../features/bots/components/HedgeBotForm'
 import { BotScanModal } from '../features/bots/components/BotScanModal'
 import { getBotKindMeta } from '../features/bots/botKindMeta'
-import { TrendingUp, Search, Shield } from 'lucide-react'
+import { TrendingUp, Search, Shield, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { Bot, BotKind, BotAction } from '../features/bots/types'
 import type { Strategy, ExchangeAccount, ActiveOrder, Position, ChartExecution, StrategyLevel } from '../types'
@@ -626,7 +629,7 @@ function countHedgeWatchers(strategy: Strategy, hedgeBots: Bot[]): number {
 // ── Strategies tab ───────────────────────────────────────────────────────────
 type LiveSignal = { signal_state: string; signal_values: Record<string, number> }
 
-function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices, accountId, onStrategySelect, onCycleNumUpdate, onStrategiesChange, onPairTargetUpdate, freeMargin, hedgeBots }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[]; positions: Position[]; tickerPrices?: Map<string, number>; accountId: string | null; onStrategySelect?: (s: Strategy | null) => void; onCycleNumUpdate?: (id: string, cycleNum: number) => void; onStrategiesChange?: (strategies: Strategy[]) => void; onPairTargetUpdate?: (target: number | null) => void; freeMargin?: number | null; hedgeBots: Bot[] }) {
+function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices, accountId, asAccountId, onStrategySelect, onCycleNumUpdate, onStrategiesChange, onPairTargetUpdate, freeMargin, hedgeBots }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[]; positions: Position[]; tickerPrices?: Map<string, number>; accountId: string | null; asAccountId?: string; onStrategySelect?: (s: Strategy | null) => void; onCycleNumUpdate?: (id: string, cycleNum: number) => void; onStrategiesChange?: (strategies: Strategy[]) => void; onPairTargetUpdate?: (target: number | null) => void; freeMargin?: number | null; hedgeBots: Bot[] }) {
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
   const [loading, setLoading] = useState(true)
@@ -646,7 +649,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
   async function load() {
     setLoading(true)
     try {
-      const [strats, accs] = await Promise.all([listStrategies(), listAccounts()])
+      const [strats, accs] = await Promise.all([listStrategies(asAccountId), listAccounts()])
       setStrategies(strats)
       setAccounts(accs)
     } catch {
@@ -657,7 +660,8 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
   }
 
 
-  useEffect(() => { load() }, [])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [asAccountId])
 
   useEffect(() => {
     function onCreated() { load() }
@@ -950,10 +954,161 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
   )
 }
 
+// ── Admin user picker bar ────────────────────────────────────────────────────
+
+function AdminUserPickerBar({
+  selectedUser,
+  selectedAccountId: selectedAccId,
+  onSelectUser,
+  onSelectAccount,
+}: {
+  selectedUser: AdminUser | null
+  selectedAccountId: string | null
+  onSelectUser: (u: AdminUser | null) => void
+  onSelectAccount: (id: string) => void
+}) {
+  const { users, loading } = useAdminUsers()
+  const [search, setSearch] = useState('')
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onDown(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase().trim()
+    if (!q) return users.slice(0, 15)
+    return users
+      .filter(u =>
+        (u.name ?? '').toLowerCase().includes(q) ||
+        u.email.toLowerCase().includes(q) ||
+        u.id.toLowerCase().includes(q),
+      )
+      .slice(0, 15)
+  }, [users, search])
+
+  const displayName = selectedUser?.name || selectedUser?.email || ''
+
+  return (
+    <div className="flex items-center gap-2 px-3 flex-shrink-0 border-b border-amber-500/15 bg-[#0d0a00]" style={{ height: 44 }}>
+      {/* Admin indicator */}
+      <div className="flex items-center gap-1.5 text-amber-500/60">
+        <Shield size={12} strokeWidth={2} />
+        <span className="text-[10px] font-bold uppercase tracking-[1px]">Admin</span>
+      </div>
+
+      <div className="h-3 w-px bg-white/[.07]" />
+
+      {/* Selected user badge + account switcher */}
+      {selectedUser && (
+        <>
+          <div className="flex items-center gap-1.5 rounded-md border border-amber-400/25 bg-amber-400/[.10] px-2 py-0.5">
+            <span className="max-w-[140px] truncate text-[11px] font-semibold text-amber-200">{displayName}</span>
+            <button
+              type="button"
+              onClick={() => onSelectUser(null)}
+              className="text-amber-400/60 hover:text-amber-200 transition-colors"
+            >
+              <X size={10} />
+            </button>
+          </div>
+          {selectedUser.accounts.length > 1 && (
+            <select
+              value={selectedAccId ?? ''}
+              onChange={e => onSelectAccount(e.target.value)}
+              className="h-6 rounded border border-white/[.10] bg-white/[.05] px-1.5 text-[11px] text-slate-300 outline-none focus:border-white/[.20]"
+            >
+              {selectedUser.accounts.map(a => (
+                <option key={a.id} value={a.id}>{a.label || a.exchange}</option>
+              ))}
+            </select>
+          )}
+        </>
+      )}
+
+      <div className="flex-1" />
+
+      {/* User search picker */}
+      <div className="relative" ref={wrapRef}>
+        <button
+          type="button"
+          onClick={() => { setOpen(v => !v); setSearch('') }}
+          className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+            open
+              ? 'border-amber-400/40 bg-amber-400/[.12] text-amber-200'
+              : 'border-white/[.10] bg-white/[.04] text-slate-400 hover:text-slate-200 hover:bg-white/[.07]'
+          }`}
+        >
+          <Search size={11} />
+          {selectedUser ? 'Сменить пользователя' : 'Выбрать пользователя'}
+        </button>
+
+        {open && (
+          <div className="absolute right-0 top-full mt-1.5 z-[100] w-[300px] overflow-hidden rounded-[13px] border border-white/[.10] bg-[#0d1220] shadow-[0_16px_40px_-8px_rgba(0,0,0,.9)]">
+            <div className="border-b border-white/[.07] p-2">
+              <input
+                autoFocus
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Имя, email или ID..."
+                className="w-full rounded-lg border border-white/[.08] bg-white/[.04] px-2.5 py-1.5 text-[12px] text-slate-200 placeholder-slate-600 outline-none focus:border-white/[.18]"
+              />
+            </div>
+            <div className="max-h-[260px] overflow-y-auto py-1">
+              {loading && (
+                <div className="py-4 text-center text-[11px] text-slate-600">Загрузка...</div>
+              )}
+              {!loading && filtered.length === 0 && (
+                <div className="py-4 text-center text-[11px] text-slate-600">Не найдено</div>
+              )}
+              {filtered.map(u => (
+                <button
+                  key={u.id}
+                  type="button"
+                  onClick={() => { onSelectUser(u); setOpen(false); setSearch('') }}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-white/[.04]"
+                >
+                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[linear-gradient(135deg,#6b8cff,#c14dff)] text-[9px] font-bold text-white">
+                    {(u.name || u.email).slice(0, 2).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[12px] font-semibold text-slate-200">{u.name || u.email}</div>
+                    {u.name && <div className="truncate text-[10px] text-slate-500">{u.email}</div>}
+                  </div>
+                  <div className="text-[10px] text-slate-600 shrink-0">{u.accounts.length} акк.</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Main page ────────────────────────────────────────────────────────────────
 export function TerminalPage() {
   const { selectedAccountId } = useSelectedAccount()
-  const accountId = selectedAccountId || null
+  const { isAdmin } = useAuth()
+  const [impersonatedUser, setImpersonatedUser] = useState<AdminUser | null>(null)
+  const [impersonatedAccountId, setImpersonatedAccountId] = useState<string | null>(null)
+
+  // Auto-select first account when impersonated user changes
+  useEffect(() => {
+    if (impersonatedUser) {
+      setImpersonatedAccountId(impersonatedUser.accounts[0]?.id ?? null)
+    } else {
+      setImpersonatedAccountId(null)
+    }
+  }, [impersonatedUser])
+
+  const accountId = (impersonatedAccountId ?? selectedAccountId) || null
   const [searchParams, setSearchParams] = useSearchParams()
 
   // Bots state lifted here so it can feed both the bots tab and the hedge overlay.
@@ -1230,11 +1385,20 @@ export function TerminalPage() {
   ]
 
   return (
-    <div
-      ref={containerRef}
-      className="bg-gray-100 dark:bg-[#07070f]"
-      style={{ display: 'flex', height: 'calc(100vh - 65px)', padding: 10 }}
-    >
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {isAdmin && (
+        <AdminUserPickerBar
+          selectedUser={impersonatedUser}
+          selectedAccountId={impersonatedAccountId}
+          onSelectUser={setImpersonatedUser}
+          onSelectAccount={setImpersonatedAccountId}
+        />
+      )}
+      <div
+        ref={containerRef}
+        className="bg-gray-100 dark:bg-[#07070f]"
+        style={{ display: 'flex', flex: 1, minHeight: 0, padding: 10 }}
+      >
       {/* ── Mobile layout ───────────────────────────────────────── */}
       <div className="flex md:hidden flex-col w-full h-full gap-2">
         {/* Chart */}
@@ -1267,7 +1431,7 @@ export function TerminalPage() {
           <div className="flex-1 overflow-auto">
             {mobileTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} tickerPrices={tickerPrices} />}
             {mobileTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} onRemoveOrder={removeOrder} strategyLevels={strategyLevels} />}
-            {mobileTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} />}
+            {mobileTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} asAccountId={impersonatedAccountId ?? undefined} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} />}
             {mobileTab === 'trade' && (
               <div className="flex flex-col gap-2 p-2 overflow-y-auto">
                 {accountId ? (
@@ -1430,13 +1594,14 @@ export function TerminalPage() {
               </div>
             </>
           )}
-          {rightTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} />}
+          {rightTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} asAccountId={impersonatedAccountId ?? undefined} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} />}
           {rightTab === 'bots' && <TerminalBotsTab onSymbolChange={setSymbol} mine={myBots} loading={botsLoading} action={botAction} />}
         </div>
 
       </div>{/* /Right panel */}
 
     </div>{/* /Desktop layout */}
+      </div>
     </div>
   )
 }

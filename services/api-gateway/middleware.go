@@ -51,6 +51,14 @@ func (s *Server) RequireBotSecret(next http.Handler) http.Handler {
 	})
 }
 
+// isAdmin reports whether userID has role='admin' in the database.
+// Performs a single DB round-trip; cache at call-site if hot path.
+func (s *Server) isAdmin(ctx context.Context, userID string) bool {
+	var role string
+	err := s.pool.QueryRow(ctx, `SELECT role FROM users WHERE id=$1`, userID).Scan(&role)
+	return err == nil && role == "admin"
+}
+
 // RequireAdmin checks that the authenticated user has role='admin' in the DB.
 // Must be used after RequireAuth.
 func (s *Server) RequireAdmin(next http.Handler) http.Handler {

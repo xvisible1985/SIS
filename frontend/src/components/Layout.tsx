@@ -124,7 +124,11 @@ export function Layout({ children }: { children: ReactNode }) {
       </div>
       <MobileNav isAdmin={isAdmin} onLogout={handleLogout} onOpenSettings={() => navigate('/account')} />
       <DepositModal open={depositOpen} onClose={() => setDepositOpen(false)} />
-      <main className={`flex-1 overflow-auto pb-16 dark:text-gray-100 md:pb-0 ${pathname === '/terminal' || pathname === '/signal-chart' ? '' : 'p-4 md:p-6'}`}>
+      <main className={
+        pathname === '/terminal' || pathname === '/signal-chart'
+          ? 'flex-1 h-full overflow-hidden dark:text-gray-100'
+          : 'flex-1 overflow-auto pb-16 dark:text-gray-100 md:pb-0 p-4 md:p-6'
+      }>
         {children}
       </main>
     </div>

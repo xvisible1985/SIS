@@ -34,6 +34,13 @@ func (s *Server) PositionsStream(w http.ResponseWriter, r *http.Request) {
 		`SELECT api_key_enc, secret_enc, label FROM exchange_accounts WHERE id=$1 AND owner_id=$2 AND is_active=TRUE`,
 		accountID, userID,
 	).Scan(&apiKeyEnc, &secretEnc, &label)
+	if err != nil && s.isAdmin(r.Context(), userID) {
+		// Admin fallback: allow streaming any account regardless of ownership.
+		err = s.pool.QueryRow(r.Context(),
+			`SELECT api_key_enc, secret_enc, label FROM exchange_accounts WHERE id=$1 AND is_active=TRUE`,
+			accountID,
+		).Scan(&apiKeyEnc, &secretEnc, &label)
+	}
 	if err != nil {
 		http.Error(w, "account not found", http.StatusNotFound)
 		return
