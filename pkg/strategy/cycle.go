@@ -4873,8 +4873,9 @@ func (sr *StrategyRunner) handlePartialPositionChange(ctx context.Context, excha
 // is cancelled on the exchange (manual cancel or exchange action). It warns the user
 // and immediately re-places the order.
 // cancelType is the Bybit cancelType field from the WS order event (may be empty).
+// cancelledOrderID is the Bybit order ID of the cancelled order.
 // Must NOT be called with sr.mu held.
-func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType string, cancelType string) {
+func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType string, cancelType string, cancelledOrderID string) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	if sr.cycle == nil || sr.strategy.Status == StatusStopped {
@@ -4906,6 +4907,12 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 
 	switch refType {
 	case "tp":
+		// Guard against stale cancel events: the cancelled order may no longer be the
+		// current TP (e.g. a delayed WS event from before restart arrived after resumeGridCycle
+		// already placed a new TP). In that case the event is irrelevant — ignore it.
+		if cancelledOrderID != "" && sr.tpOrderID != cancelledOrderID {
+			return
+		}
 		sr.tpOrderID = "" // already unregistered by OnOrderEvent
 		sr.tpCancelStreak++
 		// Circuit breaker: Bybit cancelling our TP repeatedly without a fill means either
@@ -4943,6 +4950,10 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 			sr.warn(ctx, fmt.Sprintf("TP ордер отменён биржей или вручную%s — выставляем повторно", ctInfo))
 		}
 	case "sl":
+		// Same stale-event guard as for TP above.
+		if cancelledOrderID != "" && sr.slOrderID != cancelledOrderID {
+			return
+		}
 		sr.slOrderID = ""
 		if err := sr.updateSL(ctx); err != nil {
 			if isPositionZero(err) {

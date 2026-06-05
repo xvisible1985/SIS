@@ -976,7 +976,8 @@ func (ar *AccountRunner) OnOrderEvent(ev trader.OrderEvent) {
 			case "tp", "sl":
 				refType := ref.refType
 				cancelType := ev.CancelType
-				sr.submit(func(ctx context.Context) { sr.handleTPSLCancelled(ctx, refType, cancelType) })
+				cancelledOrderID := ev.OrderID
+				sr.submit(func(ctx context.Context) { sr.handleTPSLCancelled(ctx, refType, cancelType, cancelledOrderID) })
 			case "level":
 				levelID, orderID := ref.levelID, ev.OrderID
 				sr.submit(func(ctx context.Context) { sr.handleLevelCancelled(ctx, levelID, orderID) })
