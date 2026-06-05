@@ -25,6 +25,17 @@ export function MyBotCard({ bot, minPublishDays = 15, onToggle, onEdit, onDelete
   const [optimisticRunning, setOptimisticRunning] = useState(bot.status === 'running');
   const running = optimisticRunning;
 
+  const effectiveSecs = bot.activeSecondsAcc
+    + (bot.activeSince && !isNaN(new Date(bot.activeSince).getTime())
+        ? (Date.now() - new Date(bot.activeSince).getTime()) / 1000
+        : 0)
+  const thresholdSecs = minPublishDays * 86400
+  const progressPct   = Math.min(100, (effectiveSecs / thresholdSecs) * 100)
+  const daysActive    = Math.floor(effectiveSecs / 86400)
+  const thresholdReached = effectiveSecs >= thresholdSecs
+  const isApproved    = bot.approvalStatus === 'approved'
+  const showApprovalFlow = !bot.isOfficial   // approval flow only for user-created bots
+
   const km   = getBotKindMeta(bot.botKind)
   const Icon = bot.botKind ? KIND_ICONS[bot.botKind] : KIND_ICONS.signal
 
@@ -148,6 +159,52 @@ export function MyBotCard({ bot, minPublishDays = 15, onToggle, onEdit, onDelete
           <Stat label="Сигнал" value={bot.symbolsWithSignal} />
           <Stat label="Лимит"  value={bot.symbolsLimit} />
         </div>
+
+        {/* ── Approval progress (only for user-created bots) ──────────────── */}
+        {showApprovalFlow && !isApproved && (
+          <div className="mb-3 border-t border-white/[.05] pt-2.5">
+            <div className="mb-1 flex items-center justify-between text-[10px] text-slate-400">
+              <span>Активность</span>
+              <span className="font-mono">{daysActive} / {minPublishDays} дн.</span>
+            </div>
+            <div className="h-1 overflow-hidden rounded-full bg-white/[.06]">
+              <div
+                className="h-1 rounded-full bg-blue-500 transition-all duration-500"
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
+            <div className="mt-2">
+              {bot.approvalStatus === null && thresholdReached && (
+                <button
+                  type="button"
+                  onClick={onRequestApproval}
+                  className="w-full rounded-lg border border-blue-400/30 bg-blue-400/[.12] px-3 py-1.5 text-xs font-semibold text-blue-300 hover:bg-blue-400/[.18]"
+                >
+                  Отправить на согласование
+                </button>
+              )}
+              {bot.approvalStatus === 'pending' && (
+                <div className="flex items-center gap-1.5 rounded-lg bg-amber-400/[.08] px-3 py-1.5 text-xs text-amber-300">
+                  <span>🕐</span> На рассмотрении
+                </div>
+              )}
+              {bot.approvalStatus === 'rejected' && (
+                <button
+                  type="button"
+                  onClick={onRequestApproval}
+                  className="w-full rounded-lg border border-rose-400/30 bg-rose-400/[.10] px-3 py-1.5 text-xs font-semibold text-rose-300 hover:bg-rose-400/[.18]"
+                >
+                  ✕ Отклонён — переотправить
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+        {showApprovalFlow && isApproved && (
+          <div className="mb-3 flex items-center gap-1.5 border-t border-white/[.05] pt-2.5 text-xs text-emerald-400">
+            <span>✓</span> Одобрен — можно опубликовать
+          </div>
+        )}
 
         {/* actions */}
         <div className="flex gap-1.5">

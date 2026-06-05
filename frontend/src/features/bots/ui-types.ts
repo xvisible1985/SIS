@@ -73,6 +73,7 @@ export type MyBot = {
   symbolsLimit: string;
   /** Кастомный бот (созданный с нуля) */
   custom?: boolean;
+  isOfficial?: boolean;
   approvalStatus: 'pending' | 'approved' | 'rejected' | null;
   activeSecondsAcc: number;
   activeSince: string | null;
