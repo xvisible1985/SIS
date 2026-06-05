@@ -385,6 +385,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
 
   const [closeConfirm, setCloseConfirm] = useState<CloseConfirm | null>(null)
   const [closing, setClosing] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [debugOpen, setDebugOpen] = useState(false)
   const [auditOpen, setAuditOpen] = useState(false)
   const [hovered, setHovered] = useState(false)
@@ -557,12 +558,19 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
   }
 
   async function handleDelete() {
+    // If there is an open exchange position, require explicit confirmation first.
+    if (stratPosition && !deleteConfirm) {
+      setDeleteConfirm(true)
+      return
+    }
+    setDeleteConfirm(false)
     setCs(p => ({ ...p, acting: true }))
     try {
       await deleteStrategy(s.id)
       onChanged()
-    } catch {
-      setCs(p => ({ ...p, acting: false }))
+    } catch (e: any) {
+      const msg = e?.response?.data?.error ?? e?.message ?? 'Ошибка'
+      setCs(p => ({ ...p, acting: false, actionError: msg }))
     }
   }
 
@@ -1273,13 +1281,13 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
               </button>
               <button
                 type="button"
-                disabled={cs.acting || s.status !== 'stopped'}
+                disabled={cs.acting}
                 onClick={e => { e.stopPropagation(); handleDelete() }}
                 className="relative group/ctip flex-1 py-1.5 text-[11px] font-semibold rounded-[8px] border text-rose-300 hover:text-rose-200 transition-colors disabled:opacity-40"
                 style={{ background: 'rgba(248,113,113,.07)', borderColor: 'rgba(248,113,113,.25)' }}
               >
                 Удалить
-                <CardTip text="Полностью удалить стратегию из системы. Доступно только в статусе Стоп." />
+                <CardTip text="Удалить стратегию из системы. Ордера отменятся, позиция на бирже останется открытой." />
               </button>
             </div>
 
@@ -1294,6 +1302,36 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
           onCancel={() => setCloseConfirm(null)}
           closing={closing}
         />
+      )}
+
+      {deleteConfirm && createPortal(
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setDeleteConfirm(false)}>
+          <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-xl w-80 p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-white mb-2">Удалить стратегию?</h3>
+            <p className="text-xs text-amber-300 mb-1">
+              ⚠️ У стратегии есть открытая позиция на бирже.
+            </p>
+            <p className="text-xs text-gray-400 mb-5">
+              Карточка будет удалена, ордера отменены. Позиция останется открытой — закройте её вручную через биржу или терминал торговли.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setDeleteConfirm(false)}
+                className="flex-1 px-3 py-2 text-xs border border-gray-600 rounded-lg text-gray-300 hover:bg-gray-800 transition-colors"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={cs.acting}
+                className="flex-1 px-3 py-2 text-xs bg-rose-700 text-white rounded-lg hover:bg-rose-600 disabled:opacity-50 transition-colors font-medium"
+              >
+                {cs.acting ? 'Удаление...' : 'Удалить'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
 
       {debugOpen && createPortal(

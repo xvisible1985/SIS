@@ -570,33 +570,21 @@ func (s *Server) SetStrategyStatus(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-// DeleteStrategy deletes a strategy (only if stopped and no open position).
+// DeleteStrategy deletes a strategy and cancels its exchange orders.
+// The exchange position (if any) is NOT closed — it remains open on the exchange.
 // DELETE /strategies/{id}
 func (s *Server) DeleteStrategy(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 
-	// Fetch account_id and check for open filled levels in a single query.
+	// Verify ownership and get account_id. No status restriction.
 	var accountID string
-	var openFills int
-	err := s.pool.QueryRow(r.Context(), `
-		SELECT st.account_id,
-		       COALESCE((
-		           SELECT COUNT(*) FROM strategy_levels sl
-		           JOIN strategy_cycles sc ON sl.cycle_id = sc.id
-		           WHERE sc.strategy_id = st.id
-		             AND sc.ended_at IS NULL
-		             AND sl.status = 'filled'
-		       ), 0)
-		FROM strategies st
-		WHERE st.id = $1 AND st.owner_id = $2 AND st.status = 'stopped'
-	`, id, userID).Scan(&accountID, &openFills)
+	err := s.pool.QueryRow(r.Context(),
+		`SELECT account_id FROM strategies WHERE id=$1 AND owner_id=$2`,
+		id, userID,
+	).Scan(&accountID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "strategy not found or not stopped")
-		return
-	}
-	if openFills > 0 {
-		writeError(w, http.StatusBadRequest, "у стратегии есть открытая позиция — дождитесь её закрытия перед удалением")
+		writeError(w, http.StatusNotFound, "strategy not found")
 		return
 	}
 
@@ -605,7 +593,8 @@ func (s *Server) DeleteStrategy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cancel remaining exchange orders and clean up the in-memory runner.
+	// Cancel exchange orders and remove from the in-memory runner.
+	// The exchange position is intentionally left open.
 	s.engine.ForceRemoveStrategy(r.Context(), id, accountID)
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
