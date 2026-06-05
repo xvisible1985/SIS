@@ -6,7 +6,7 @@ import { AdminBotCard } from './AdminBotCard';
 import type { Bot as BotType, CreateBotInput } from '../bots/types';
 
 export function AdminBotsTab() {
-  const { bots, loading, create, remove, togglePublic, update, approve, reject, refresh } = useAdminBots();
+  const { bots, loading, create, remove, togglePublic, update, approve, reject } = useAdminBots();
   const [creating, setCreating] = useState(false);
   const [editingBot, setEditingBot] = useState<BotType | null>(null);
 
@@ -72,7 +72,7 @@ export function AdminBotsTab() {
             {pendingBots.length > 0 && (
               <div>
                 <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-amber-400">
-                  На согласование ({pendingBots.length})
+                  На согласовании ({pendingBots.length})
                 </h3>
                 <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
                   {pendingBots.map(bot => (
