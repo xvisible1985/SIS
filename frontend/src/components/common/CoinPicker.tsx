@@ -1,6 +1,8 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import ReactDOM from 'react-dom'
 import { CoinIcon } from './CoinIcon'
+import { getCoinFilter, checkCoinFlagged } from './coinFilter'
+import type { CoinFilterSettings } from './coinFilter'
 
 // ─── Ticker cache ─────────────────────────────────────────────────────────────
 interface TickerRow {
@@ -112,6 +114,7 @@ export function CoinPicker({ value, onChange, size = 'md', triggerClassName, dis
   const [tab, setTab]               = useState<TabId>('all')
   const [savedLists, setSavedLists] = useState<SavedList[]>([])
   const [activeList, setActiveList] = useState<SavedList | null>(null)
+  const [coinFilterSettings, setCoinFilterSettings] = useState<CoinFilterSettings | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const inputRef   = useRef<HTMLInputElement>(null)
 
@@ -128,6 +131,7 @@ export function CoinPicker({ value, onChange, size = 'md', triggerClassName, dis
     if (!open) return
     loadTickers().then(() => setRows([..._tickers]))
     setSavedLists(getSavedLists())
+    getCoinFilter().then(setCoinFilterSettings).catch(() => {})
     setTimeout(() => inputRef.current?.focus(), 30)
   }, [open])
 
@@ -192,6 +196,26 @@ export function CoinPicker({ value, onChange, size = 'md', triggerClassName, dis
   const isSm      = size === 'sm'
   const showLists = tab === 'lists' && !activeList && !query.trim()
 
+  // Map of symbol → reason string for flagged coins (from blacklist or low volume)
+  const flaggedMap = useMemo((): Map<string, string> => {
+    if (!coinFilterSettings) return new Map()
+    const map = new Map<string, string>()
+    for (const r of rows) {
+      const { flagged, reason } = checkCoinFlagged(r.symbol, r.turnover, coinFilterSettings)
+      if (flagged) map.set(r.symbol, reason)
+    }
+    return map
+  }, [rows, coinFilterSettings])
+
+  // Reason if the currently selected value is flagged (empty string = not flagged)
+  const selectedFlagReason = useMemo((): string => {
+    if (!coinFilterSettings) return ''
+    const row = rows.find(r => r.symbol === value)
+    if (!row) return ''
+    const { flagged, reason } = checkCoinFlagged(value, row.turnover, coinFilterSettings)
+    return flagged ? reason : ''
+  }, [rows, value, coinFilterSettings])
+
   return (
     <>
       {/* ── Trigger ─────────────────────────────────────────────────────────── */}
@@ -207,6 +231,9 @@ export function CoinPicker({ value, onChange, size = 'md', triggerClassName, dis
       >
         <CoinIcon symbol={value} className={isSm ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
         <span className={`font-mono font-semibold text-gray-900 dark:text-white flex-1 text-left ${isSm ? 'text-[11px]' : 'text-base'}`}>{value}</span>
+        {selectedFlagReason && (
+          <span title={selectedFlagReason} className="text-amber-400 text-xs leading-none">⚠️</span>
+        )}
         <svg className="w-3.5 h-3.5 text-gray-400 flex-shrink-0 ml-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
         </svg>
@@ -334,6 +361,9 @@ export function CoinPicker({ value, onChange, size = 'md', triggerClassName, dis
                         <div className="flex items-baseline gap-0.5">
                           <span className="font-semibold text-sm text-gray-900 dark:text-white">{base}</span>
                           <span className="text-[10px] text-gray-400">/USDT</span>
+                          {flaggedMap.has(r.symbol) && (
+                            <span title={flaggedMap.get(r.symbol)} className="text-amber-400 text-[10px] leading-none cursor-help">⚠️</span>
+                          )}
                         </div>
                         <div className="text-[10px] text-gray-400">{fmtVol(r.turnover)} USDT</div>
                       </div>
