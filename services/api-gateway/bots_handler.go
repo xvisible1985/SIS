@@ -49,6 +49,7 @@ type botResp struct {
 	ActiveStrategiesCount int             `json:"activeStrategiesCount"`
 	AccountID             *string         `json:"accountId"`
 	AutoMode              bool            `json:"autoMode"`
+	IgnoreCoinFilter      bool            `json:"ignoreCoinFilter"`
 }
 
 type listBotsResp struct {
@@ -75,7 +76,8 @@ const botCols = `b.id, b.name, b.description, b.full_description, b.avatar_url, 
 	b.triggers, b.strategy_config, b.deploy_count, b.created_at,
 	b.max_strategies, b.max_margin_usdt,
 	(SELECT COUNT(*) FROM strategies s WHERE s.bot_id = b.id AND s.status = 'active') AS active_strategies_count,
-	b.account_id, b.auto_mode, b.max_long_strategies, b.max_short_strategies, b.max_sym_consecutive_runs`
+	b.account_id, b.auto_mode, b.max_long_strategies, b.max_short_strategies, b.max_sym_consecutive_runs,
+	b.ignore_coin_filter`
 
 const botFrom = ` FROM bots b JOIN users u ON u.id = b.owner_id `
 
@@ -93,6 +95,7 @@ func collectBots(rows pgx.Rows, callerID string) ([]botResp, error) {
 			&triggers, &stratCfg, &b.DeployCount, &b.CreatedAt,
 			&b.MaxStrategies, &b.MaxMarginUsdt, &b.ActiveStrategiesCount,
 			&b.AccountID, &b.AutoMode, &b.MaxLongStrategies, &b.MaxShortStrategies, &b.MaxSymConsecutiveRuns,
+			&b.IgnoreCoinFilter,
 		); err != nil {
 			return nil, err
 		}
@@ -198,6 +201,7 @@ func (s *Server) CreateBot(w http.ResponseWriter, r *http.Request) {
 		MaxMarginUsdt        float64         `json:"maxMarginUsdt"`
 		MaxSymConsecutiveRuns int             `json:"maxSymConsecutiveRuns"`
 		AutoMode             bool            `json:"autoMode"`
+		IgnoreCoinFilter      bool            `json:"ignoreCoinFilter"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -224,13 +228,13 @@ func (s *Server) CreateBot(w http.ResponseWriter, r *http.Request) {
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO bots (owner_id, name, description, full_description, avatar_url, is_public,
 		                  account_id, symbol_whitelist, symbol_blacklist, triggers, strategy_config,
-		                  max_strategies, max_long_strategies, max_short_strategies, max_margin_usdt, max_sym_consecutive_runs, auto_mode)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+		                  max_strategies, max_long_strategies, max_short_strategies, max_margin_usdt, max_sym_consecutive_runs, auto_mode, ignore_coin_filter)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		RETURNING id`,
 		callerID, req.Name, req.Description, req.FullDescription, req.AvatarURL, req.IsPublic,
 		req.AccountID, req.SymbolWhitelist, req.SymbolBlacklist,
 		[]byte(req.Triggers), []byte(req.StrategyConfig),
-		req.MaxStrategies, req.MaxLongStrategies, req.MaxShortStrategies, req.MaxMarginUsdt, req.MaxSymConsecutiveRuns, req.AutoMode,
+		req.MaxStrategies, req.MaxLongStrategies, req.MaxShortStrategies, req.MaxMarginUsdt, req.MaxSymConsecutiveRuns, req.AutoMode, req.IgnoreCoinFilter,
 	).Scan(&id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
@@ -364,6 +368,7 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 	addStr("avatarUrl", "avatar_url")
 	addBool("isPublic", "is_public")
 	addBool("autoMode", "auto_mode")
+	addBool("ignoreCoinFilter", "ignore_coin_filter")
 	addNullableStr("accountId", "account_id")
 	addSlice("symbolWhitelist", "symbol_whitelist")
 	addSlice("symbolBlacklist", "symbol_blacklist")
@@ -657,6 +662,43 @@ func (s *Server) ForkBot(w http.ResponseWriter, r *http.Request) {
 
 // POST /bots/{id}/start
 func (s *Server) StartBot(w http.ResponseWriter, r *http.Request) {
+	callerID := UserIDFromCtx(r.Context())
+	botID := chi.URLParam(r, "id")
+	ctx := r.Context()
+
+	// Fetch bot kind, symbol, and override flag to check coin filter.
+	var botKind, symbol string
+	var ignoreCoinFilter bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(strategy_config->>'bot_kind', ''),
+		        COALESCE(strategy_config->>'symbol', ''),
+		        COALESCE(ignore_coin_filter, false)
+		 FROM bots WHERE id = $1 AND owner_id = $2`,
+		botID, callerID,
+	).Scan(&botKind, &symbol, &ignoreCoinFilter)
+	if err != nil {
+		// bot not found — let setBotStatus return 404
+		s.setBotStatus(w, r, "active")
+		return
+	}
+
+	// For signal bots without the override, check the global blacklist.
+	if botKind == "signal" && !ignoreCoinFilter && symbol != "" {
+		var blacklist []string
+		if dbErr := s.pool.QueryRow(ctx,
+			`SELECT blacklist FROM coin_filter_settings WHERE id = 1`,
+		).Scan(&blacklist); dbErr == nil {
+			for _, b := range blacklist {
+				if b == symbol {
+					writeError(w, http.StatusUnprocessableEntity,
+						"Монета «"+symbol+"» находится в чёрном списке фильтра монет. "+
+							"Включите «Игнорировать фильтр монет» в настройках бота, чтобы продолжить.")
+					return
+				}
+			}
+		}
+	}
+
 	s.setBotStatus(w, r, "active")
 }
 
