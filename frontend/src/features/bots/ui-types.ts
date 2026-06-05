@@ -12,6 +12,7 @@ export type FeaturedBot = {
   name: string;
   /** автор: 'NovaBot' для официальных, username для коммьюнити */
   author: string;
+  botKind?: BotKind;
   strategy: BotStrategy;
   risk: RiskLevel;
   /** Verified by NovaBot — синяя галочка */
@@ -21,6 +22,8 @@ export type FeaturedBot = {
   /** USD/мес. 0 или undefined = бесплатно */
   price: number;
   desc: string;
+  /** Развёрнутое описание для модалки */
+  fullDescription?: string;
   /** Например ['BTC','ETH'] — UI добавляет USDT */
   pairs: string[];
   /** Минимальный депозит, USDT */
@@ -83,6 +86,7 @@ export type MyBot = {
 
 export type BotFilters = {
   q: string;
+  botKind: BotKind | 'all';
   strategy: BotStrategy | 'all';
   risk: RiskLevel | 'all';
   mode: TradeMode | 'all';

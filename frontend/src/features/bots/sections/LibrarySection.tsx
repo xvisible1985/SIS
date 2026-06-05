@@ -15,7 +15,7 @@ type Props = {
 };
 
 const DEFAULTS: BotFilters = {
-  q: '', strategy: 'all', risk: 'all', mode: 'all',
+  q: '', botKind: 'all', strategy: 'all', risk: 'all', mode: 'all',
   sort: 'popular', verified: false, pricing: 'all', view: 'grid',
 };
 
@@ -86,6 +86,7 @@ export function LibrarySection({ bots, onLaunch, onConfigure, onClone }: Props) 
 
 function filterAndSort(bots: FeaturedBot[], f: BotFilters): FeaturedBot[] {
   let res = bots.slice();
+  if (f.botKind  !== 'all') res = res.filter((b) => b.botKind === f.botKind);
   if (f.strategy !== 'all') res = res.filter((b) => b.strategy === f.strategy);
   if (f.risk     !== 'all') res = res.filter((b) => b.risk === f.risk);
   if (f.mode     !== 'all') res = res.filter((b) => b.mode === f.mode);

@@ -1,10 +1,19 @@
-import { Check, Flame, Users, Star, ArrowRight } from 'lucide-react';
+import { Check, Flame, Users, Star, ArrowRight, TrendingUp, Search, Shield } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { FeaturedBot } from '../ui-types';
+import type { BotKind } from '../types';
 import { STRAT_META } from '../strategyMeta';
+import { getBotKindMeta } from '../botKindMeta';
 import { StrategyChip } from './StrategyChip';
 import { RiskChip } from './RiskChip';
 import { PriceBadge } from './PriceBadge';
 import { Sparkline } from './Sparkline';
+
+const KIND_ICONS: Record<BotKind, LucideIcon> = {
+  signal: TrendingUp,
+  parser: Search,
+  hedge:  Shield,
+};
 
 type Props = {
   bot: FeaturedBot;
@@ -14,8 +23,14 @@ type Props = {
 
 /** Свернутая карточка готового бота (для библиотеки) */
 export function FeaturedBotCard({ bot, onOpen, onLaunch }: Props) {
-  const m = STRAT_META[bot.strategy];
-  const Icon = m.icon;
+  const strat = STRAT_META[bot.strategy];
+  const km    = bot.botKind ? getBotKindMeta(bot.botKind) : null;
+
+  // Icon and colours: prefer botKind meta, fall back to strategy meta
+  const Icon: LucideIcon = bot.botKind ? KIND_ICONS[bot.botKind] : strat.icon;
+  const iconBg    = km ? km.iconBg    : strat.bg;
+  const iconBorder = km ? km.border   : strat.border;
+  const iconColor  = km ? km.color    : strat.color;
 
   return (
     <button
@@ -38,7 +53,7 @@ export function FeaturedBotCard({ bot, onOpen, onLaunch }: Props) {
       <div className="mb-3 flex items-start gap-3 pr-20">
         <div
           className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-[10px] border"
-          style={{ background: m.bg, borderColor: m.border, color: m.color }}
+          style={{ background: iconBg, borderColor: iconBorder, color: iconColor }}
         >
           <Icon size={18} strokeWidth={2} />
         </div>

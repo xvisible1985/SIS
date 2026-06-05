@@ -1,6 +1,16 @@
-import { Search, X, Check, LayoutGrid, SlidersHorizontal } from 'lucide-react';
+import { Search, X, Check, LayoutGrid, SlidersHorizontal, TrendingUp, Rss, Shield } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { BotFilters, BotStrategy, RiskLevel, TradeMode } from '../ui-types';
+import type { BotKind } from '../types';
 import { RISK_META, STRAT_META } from '../strategyMeta';
+import { getBotKindMeta } from '../botKindMeta';
+
+const KIND_BUTTONS: { kind: BotKind | 'all'; label: string; Icon?: LucideIcon }[] = [
+  { kind: 'all',    label: 'Все' },
+  { kind: 'signal', label: 'Signal',  Icon: TrendingUp },
+  { kind: 'parser', label: 'Parser',  Icon: Rss        },
+  { kind: 'hedge',  label: 'Hedge',   Icon: Shield     },
+];
 
 type Props = {
   value: BotFilters;
@@ -109,9 +119,34 @@ export function Filters({ value, onChange }: Props) {
         </div>
       </div>
 
-      {/* chips row: strategy + risk + mode + pricing */}
+      {/* chips row: botKind + strategy + risk + mode + pricing */}
       <div className="flex flex-wrap items-center gap-3.5">
-        <FilterGroup label="Тип">
+        <FilterGroup label="Бот">
+          {KIND_BUTTONS.map(({ kind, label, Icon }) => {
+            const on = value.botKind === kind;
+            const km = kind !== 'all' ? getBotKindMeta(kind as BotKind) : null;
+            return (
+              <button
+                key={kind}
+                type="button"
+                onClick={() => set('botKind', kind)}
+                className="inline-flex items-center gap-1.5 rounded-[7px] border px-2.5 py-1 text-[11px] font-semibold"
+                style={
+                  on
+                    ? { background: km?.iconBg ?? 'rgba(91,140,255,.16)', borderColor: km?.border ?? 'rgba(91,140,255,.28)', color: km?.color ?? '#b8c8ff' }
+                    : { background: 'rgba(255,255,255,.025)', borderColor: 'rgba(255,255,255,.06)', color: '#9aa6c8' }
+                }
+              >
+                {Icon && <Icon size={11} strokeWidth={2} />}
+                {label}
+              </button>
+            );
+          })}
+        </FilterGroup>
+
+        <Divider />
+
+        <FilterGroup label="Стратегия">
           {STRATEGIES.map((s) => {
             const on = value.strategy === s;
             const m = s !== 'all' ? STRAT_META[s as BotStrategy] : null;

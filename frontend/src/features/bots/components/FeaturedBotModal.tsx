@@ -1,11 +1,20 @@
 import { useEffect } from 'react';
-import { Check, Flame, X, Copy, Share2, SlidersHorizontal, Play } from 'lucide-react';
+import { Check, Flame, X, Copy, Share2, SlidersHorizontal, Play, TrendingUp, Search, Shield } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { FeaturedBot } from '../ui-types';
+import type { BotKind } from '../types';
 import { STRAT_META } from '../strategyMeta';
+import { getBotKindMeta } from '../botKindMeta';
 import { StrategyChip } from './StrategyChip';
 import { RiskChip } from './RiskChip';
 import { PriceBadge } from './PriceBadge';
 import { Sparkline } from './Sparkline';
+
+const KIND_ICONS: Record<BotKind, LucideIcon> = {
+  signal: TrendingUp,
+  parser: Search,
+  hedge:  Shield,
+};
 
 type Props = {
   bot: FeaturedBot;
@@ -24,8 +33,12 @@ export function FeaturedBotModal({ bot, onClose, onLaunchDefault, onConfigure, o
     return () => window.removeEventListener('keydown', fn);
   }, [onClose]);
 
-  const m = STRAT_META[bot.strategy];
-  const Icon = m.icon;
+  const strat = STRAT_META[bot.strategy];
+  const km    = bot.botKind ? getBotKindMeta(bot.botKind) : null;
+  const Icon: LucideIcon = bot.botKind ? KIND_ICONS[bot.botKind] : strat.icon;
+  const iconBg     = km ? km.iconBg  : strat.bg;
+  const iconBorder = km ? km.border  : strat.border;
+  const iconColor  = km ? km.color   : strat.color;
 
   return (
     <div
@@ -40,7 +53,7 @@ export function FeaturedBotModal({ bot, onClose, onLaunchDefault, onConfigure, o
         <div className="flex items-start gap-3.5 border-b border-white/[.06] px-5 pb-4 pt-5">
           <div
             className="flex h-[54px] w-[54px] shrink-0 items-center justify-center rounded-xl border"
-            style={{ background: m.bg, borderColor: m.border, color: m.color }}
+            style={{ background: iconBg, borderColor: iconBorder, color: iconColor }}
           >
             <Icon size={22} strokeWidth={2} />
           </div>
@@ -107,6 +120,19 @@ export function FeaturedBotModal({ bot, onClose, onLaunchDefault, onConfigure, o
               <Sparkline data={bot.spark} color="#5be0a0" width={400} height={60} />
             </div>
           </div>
+
+          {/* full description */}
+          {bot.fullDescription && (
+            <div>
+              <SectionLabel>Описание</SectionLabel>
+              <div
+                className="rounded-xl border border-white/[.05] bg-white/[.02] px-4 py-3.5 text-[13px] leading-relaxed text-slate-300 whitespace-pre-wrap"
+                style={{ borderColor: km ? `${km.border}` : undefined }}
+              >
+                {bot.fullDescription}
+              </div>
+            </div>
+          )}
 
           {/* stats */}
           <div>
