@@ -330,6 +330,12 @@ func TestBotApprovalFlow(t *testing.T) {
 	if rec3.Code != http.StatusNoContent {
 		t.Errorf("case 3: expected 204, got %d", rec3.Code)
 	}
+	var approvedStatus string
+	s.pool.QueryRow(context.Background(),
+		`SELECT approval_status FROM bots WHERE id = $1`, botID).Scan(&approvedStatus)
+	if approvedStatus != "approved" {
+		t.Errorf("case 3: expected approval_status=approved, got %q", approvedStatus)
+	}
 
 	// ── Case 4: publish now succeeds ─────────────────────────────────────────
 	rec4 := httptest.NewRecorder()
