@@ -982,7 +982,7 @@ func (s *Server) DetachFromBot(w http.ResponseWriter, r *http.Request) {
 
 	case "close":
 		tag, err := s.pool.Exec(r.Context(),
-			`UPDATE strategies SET bot_id=NULL, status='stopped', updated_at=NOW()
+			`UPDATE strategies SET bot_id=NULL, hedged_strategy_id=NULL, status='stopped', updated_at=NOW()
 			 WHERE id=$1 AND owner_id=$2`, id, userID)
 		if err != nil || tag.RowsAffected() == 0 {
 			writeError(w, http.StatusNotFound, "strategy not found")
@@ -1026,7 +1026,7 @@ func (s *Server) DetachFromBot(w http.ResponseWriter, r *http.Request) {
 
 	default: // "leave"
 		tag, err := s.pool.Exec(r.Context(),
-			`UPDATE strategies SET bot_id=NULL, updated_at=NOW() WHERE id=$1 AND owner_id=$2`,
+			`UPDATE strategies SET bot_id=NULL, hedged_strategy_id=NULL, updated_at=NOW() WHERE id=$1 AND owner_id=$2`,
 			id, userID)
 		if err != nil || tag.RowsAffected() == 0 {
 			writeError(w, http.StatusNotFound, "strategy not found")
