@@ -245,6 +245,7 @@ func main() {
 		r.Post("/bots/{id}/start", s.StartBot)
 		r.Post("/bots/{id}/stop", s.StopBot)
 		r.Post("/bots/{id}/publish", s.PublishBot)
+		r.Post("/bots/{id}/request-approval", s.RequestBotApproval)
 		r.Get("/bots/{id}/events", s.GetBotEvents)
 		r.Get("/bots/{id}/scan", s.ScanBot)
 		r.Post("/bots/{id}/trigger", s.TriggerBot)
@@ -279,6 +280,8 @@ func main() {
 			// Admin: bots management
 			r.Get("/admin/bots", s.ListAdminBots)
 			r.Post("/admin/bots", s.CreateOfficialBot)
+			r.Post("/admin/bots/{id}/approve", s.ApproveBotPublication)
+			r.Post("/admin/bots/{id}/reject",  s.RejectBotPublication)
 			// Admin: signal and indicator types management
 			r.Get("/admin/signal-types", s.ListSignalTypes)
 			r.Patch("/admin/signal-types/{id}", s.ToggleSignalType)

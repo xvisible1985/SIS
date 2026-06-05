@@ -18,7 +18,15 @@ CREATE INDEX IF NOT EXISTS bots_approval_pending
   WHERE approval_status = 'pending';
 
 -- Ensure min_publish_days is always at least 1
-ALTER TABLE coin_filter_settings
-  ADD CONSTRAINT coin_filter_min_publish_days_check
-    CHECK (min_publish_days >= 1)
-    NOT VALID;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'coin_filter_min_publish_days_check'
+  ) THEN
+    ALTER TABLE coin_filter_settings
+      ADD CONSTRAINT coin_filter_min_publish_days_check
+        CHECK (min_publish_days >= 1)
+        NOT VALID;
+  END IF;
+END $$;

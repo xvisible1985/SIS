@@ -281,6 +281,116 @@ func TestDeleteBot(t *testing.T) {
 	}
 }
 
+func TestBotApprovalFlow(t *testing.T) {
+	s := newTestServer(t)
+	userID := createAdminTestUser(t, s, "approval_user@example.com", "pass1234", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", userID)
+	adminID := createAdminTestUser(t, s, "approval_admin@example.com", "pass1234", true)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", adminID)
+
+	botID := createTestBot(t, s, userID, "Approval Bot", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1", botID)
+
+	// ── Case 1: insufficient time → 422 ──────────────────────────────────────
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bots/"+botID+"/request-approval", nil)
+	req = withUserID(req, userID)
+	req = addChiParams(req, map[string]string{"id": botID})
+	s.RequestBotApproval(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("case 1: expected 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// ── Case 2: sufficient time → 204, status = pending ──────────────────────
+	s.pool.Exec(context.Background(),
+		`UPDATE bots SET active_seconds_acc = 16*86400 WHERE id = $1`, botID)
+
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/bots/"+botID+"/request-approval", nil)
+	req2 = withUserID(req2, userID)
+	req2 = addChiParams(req2, map[string]string{"id": botID})
+	s.RequestBotApproval(rec2, req2)
+	if rec2.Code != http.StatusNoContent {
+		t.Errorf("case 2: expected 204, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	var gotStatus string
+	s.pool.QueryRow(context.Background(),
+		`SELECT approval_status FROM bots WHERE id = $1`, botID).Scan(&gotStatus)
+	if gotStatus != "pending" {
+		t.Errorf("case 2: expected approval_status=pending, got %q", gotStatus)
+	}
+
+	// ── Case 3: admin approves → 204, status = approved ──────────────────────
+	rec3 := httptest.NewRecorder()
+	req3 := httptest.NewRequest(http.MethodPost, "/admin/bots/"+botID+"/approve", nil)
+	req3 = withUserID(req3, adminID)
+	req3 = addChiParams(req3, map[string]string{"id": botID})
+	s.ApproveBotPublication(rec3, req3)
+	if rec3.Code != http.StatusNoContent {
+		t.Errorf("case 3: expected 204, got %d", rec3.Code)
+	}
+
+	// ── Case 4: publish now succeeds ─────────────────────────────────────────
+	rec4 := httptest.NewRecorder()
+	req4 := httptest.NewRequest(http.MethodPost, "/bots/"+botID+"/publish", nil)
+	req4 = withUserID(req4, userID)
+	req4 = addChiParams(req4, map[string]string{"id": botID})
+	s.PublishBot(rec4, req4)
+	if rec4.Code != http.StatusNoContent {
+		t.Errorf("case 4: expected 204, got %d", rec4.Code)
+	}
+}
+
+func TestPublishBot_RequiresApproval(t *testing.T) {
+	s := newTestServer(t)
+	userID := createAdminTestUser(t, s, "pub_gate@example.com", "pass1234", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", userID)
+
+	botID := createTestBot(t, s, userID, "Publish Gate", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1", botID)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bots/"+botID+"/publish", nil)
+	req = withUserID(req, userID)
+	req = addChiParams(req, map[string]string{"id": botID})
+	s.PublishBot(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422 without approval, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminRejectBot(t *testing.T) {
+	s := newTestServer(t)
+	userID := createAdminTestUser(t, s, "reject_user@example.com", "pass1234", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", userID)
+	adminID := createAdminTestUser(t, s, "reject_admin@example.com", "pass1234", true)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", adminID)
+
+	botID := createTestBot(t, s, userID, "Reject Bot", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1", botID)
+
+	// Set pending state directly
+	s.pool.Exec(context.Background(),
+		`UPDATE bots SET approval_status = 'pending' WHERE id = $1`, botID)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/admin/bots/"+botID+"/reject", nil)
+	req = withUserID(req, adminID)
+	req = addChiParams(req, map[string]string{"id": botID})
+	s.RejectBotPublication(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("expected 204, got %d", rec.Code)
+	}
+
+	var gotStatus string
+	s.pool.QueryRow(context.Background(),
+		`SELECT approval_status FROM bots WHERE id = $1`, botID).Scan(&gotStatus)
+	if gotStatus != "rejected" {
+		t.Errorf("expected rejected, got %q", gotStatus)
+	}
+}
+
 func TestStartBot_CoinFilterBlocked(t *testing.T) {
 	s := newTestServer(t)
 	userID := createAdminTestUser(t, s, "coinfilter@example.com", "pass1234", false)
