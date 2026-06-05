@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { getStrategyDefaults } from '../../admin-defaults/api';
 import { X, Bot, ToggleLeft, ToggleRight, Camera, Trash2, Search, Loader2 } from 'lucide-react';
+import { getCoinFilter, checkCoinFlagged } from '../../../components/common/coinFilter';
+import type { CoinFilterSettings } from '../../../components/common/coinFilter';
 import { CoinMultiPicker } from '../../../components/common/CoinMultiPicker';
 import { Toggle, Tip, SignalPickerField } from '../../../components/strategies/FormWidgets';
 import { SIGNALS } from '../../indicators/signals';
@@ -138,6 +140,9 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
   const [minLotEnabled, setMinLotEnabled] = useState(false);
   const [leverageMax,   setLeverageMax]   = useState(false);
   const [sizeAsMain,    setSizeAsMain]    = useState<boolean>(bot?.strategyConfig?.size_as_main ?? false);
+  const [ignoreCoinFilter, setIgnoreCoinFilter] = useState<boolean>(bot?.ignoreCoinFilter ?? false);
+  const [coinFilterSettings, setCoinFilterSettings] = useState<CoinFilterSettings | null>(null);
+  const [showCoinFilterConfirm, setShowCoinFilterConfirm] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -198,6 +203,11 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
         return { ...c, ...overrides }
       })
     }).catch(() => {}) // silently ignore errors — fall back to hardcoded defaults
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load coin filter settings for the confirm dialog check
+  useEffect(() => {
+    getCoinFilter().then(setCoinFilterSettings).catch(() => {})
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Итоговый список монет: применяем правила whitelist и blacklist (с поддержкой масок)
@@ -341,6 +351,22 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
+
+    // For signal bots: if the symbol is flagged and the user hasn't opted out,
+    // show a confirmation dialog instead of submitting immediately.
+    const isSignalBot = (config.bot_kind ?? initialKind ?? 'signal') === 'signal'
+    if (isSignalBot && !ignoreCoinFilter && coinFilterSettings) {
+      const symbol = config.symbol ?? ''
+      // Pass turnover=Infinity so only blacklist check fires (turnover requires
+      // the ticker cache which isn't accessible here).
+      const { flagged } = checkCoinFlagged(symbol, Infinity, coinFilterSettings)
+      if (flagged && !showCoinFilterConfirm) {
+        setShowCoinFilterConfirm(true)
+        return
+      }
+    }
+    setShowCoinFilterConfirm(false)
+
     setSubmitting(true);
     setSubmitError(null);
     const steps = config.steps ?? [];
@@ -371,6 +397,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
         maxSymConsecutiveRuns,
         accountId: selectedAccountId || null,
         autoMode,
+        ignoreCoinFilter,
       });
       onClose();
     } catch (e) {
@@ -591,6 +618,20 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                   </button>
                 </div>
               </div>
+
+              {/* Ignore coin filter — only relevant for signal bots */}
+              {(config.bot_kind ?? initialKind ?? 'signal') === 'signal' && (
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-slate-400">Игнорировать фильтр монет</span>
+                  <button
+                    type="button"
+                    onClick={() => setIgnoreCoinFilter(v => !v)}
+                    className="text-slate-400 hover:text-slate-200"
+                  >
+                    {ignoreCoinFilter ? <ToggleRight size={20} className="text-amber-400" /> : <ToggleLeft size={20} />}
+                  </button>
+                </div>
+              )}
 
               {/* Ограничения */}
               <div>
@@ -1591,6 +1632,38 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
           </div>
         </div>
       </div>
+
+      {/* Coin filter confirm dialog */}
+      {showCoinFilterConfirm && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60">
+          <div className="w-80 rounded-xl border border-amber-500/30 bg-slate-900 p-5 shadow-2xl">
+            <div className="mb-3 flex items-center gap-2 text-amber-400">
+              <span className="text-xl">⚠️</span>
+              <span className="text-sm font-semibold">Монета в чёрном списке</span>
+            </div>
+            <p className="mb-4 text-sm text-slate-300">
+              Монета <span className="font-mono font-bold text-slate-100">{config.symbol}</span> помечена фильтром монет.
+              Создать бота на этой монете?
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => { setShowCoinFilterConfirm(false); void handleSubmit() }}
+                className="flex-1 rounded bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-500"
+              >
+                Создать всё равно
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowCoinFilterConfirm(false)}
+                className="flex-1 rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-300 hover:bg-slate-700"
+              >
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

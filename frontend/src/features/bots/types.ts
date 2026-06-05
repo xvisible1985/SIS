@@ -111,6 +111,7 @@ export type Bot = {
   activeStrategiesCount: number;
   accountId: string | null;
   autoMode: boolean;
+  ignoreCoinFilter?: boolean;
   custom?: boolean;
 };
 
@@ -131,6 +132,7 @@ export type CreateBotInput = {
   maxSymConsecutiveRuns?: number;
   accountId?: string | null;
   autoMode?: boolean;
+  ignoreCoinFilter?: boolean;
 };
 
 export type BotFilters = {
