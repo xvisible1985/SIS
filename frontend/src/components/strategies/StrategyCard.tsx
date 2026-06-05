@@ -786,7 +786,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
             })()}
           </div>
 
-          {/* right: status · gear */}
+          {/* right: status · close-pos · gear */}
           {s.bot_id
             ? <BotBadge botName={s.bot_name ?? 'Bot'} botId={s.bot_id ?? ''} symbol={s.symbol} strategyId={s.id} onDetached={onChanged} onInteract={() => onSelect?.(s)} isHedge={!!isHedgeItself} />
             : (
@@ -798,6 +798,23 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
               </div>
             )
           }
+          {/* Quick close-position button — visible only when there is an open position */}
+          {stratPosition && (
+            <button
+              type="button"
+              title="Закрыть позицию рыночным ордером"
+              onClick={e => { e.stopPropagation(); handleCloseClick() }}
+              className="relative group/qclose shrink-0 flex items-center gap-1 px-2 h-7 rounded-[7px] border border-rose-500/30 bg-rose-500/[.08] hover:bg-rose-500/[.18] text-rose-400 hover:text-rose-300 transition-colors text-[10px] font-semibold"
+            >
+              <svg width={8} height={8} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" style={{ display: 'block', flexShrink: 0 }}>
+                <path d="M18 6 6 18M6 6l12 12"/>
+              </svg>
+              <span>Закрыть</span>
+              <span className="pointer-events-none absolute right-0 top-full mt-1.5 z-50 hidden group-hover/qclose:block whitespace-nowrap rounded-[6px] px-2 py-1 text-[10px] font-medium text-slate-200 shadow-lg" style={{ background: '#181b28', border: '1px solid rgba(255,255,255,.14)' }}>
+                Рыночный ордер reduce-only · позиция {stratPosition.size} {s.symbol.replace('USDT','')}
+              </span>
+            </button>
+          )}
           <button
             ref={menuBtnRef}
             type="button"
