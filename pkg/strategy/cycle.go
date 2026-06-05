@@ -4903,7 +4903,11 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 			}
 			sr.errlog(ctx, fmt.Sprintf("Ошибка повторного выставления TP: %v", err))
 		} else {
-			sr.warn(ctx, "TP ордер отменён биржей или вручную — выставляем повторно")
+			ctInfo := ""
+			if cancelType != "" {
+				ctInfo = fmt.Sprintf(" (cancelType=%s)", cancelType)
+			}
+			sr.warn(ctx, fmt.Sprintf("TP ордер отменён биржей или вручную%s — выставляем повторно", ctInfo))
 		}
 	case "sl":
 		sr.slOrderID = ""
@@ -4914,7 +4918,11 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 			}
 			sr.errlog(ctx, fmt.Sprintf("Ошибка повторного выставления SL: %v", err))
 		} else {
-			sr.warn(ctx, "SL ордер отменён биржей или вручную — выставляем повторно")
+			ctInfo := ""
+			if cancelType != "" {
+				ctInfo = fmt.Sprintf(" (cancelType=%s)", cancelType)
+			}
+			sr.warn(ctx, fmt.Sprintf("SL ордер отменён биржей или вручную%s — выставляем повторно", ctInfo))
 		}
 	}
 }
