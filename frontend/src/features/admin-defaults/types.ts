@@ -27,4 +27,5 @@ export interface AllStrategyDefaults {
 export interface CoinFilterSettings {
   min_turnover_usdt: number
   blacklist: string[]
+  min_publish_days: number
 }

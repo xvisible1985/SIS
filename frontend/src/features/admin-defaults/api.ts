@@ -28,7 +28,7 @@ export async function getCoinFilter(): Promise<CoinFilterSettings> {
   if (_coinFilterCache) return _coinFilterCache
   const res = await apiClient.get<CoinFilterSettings>('/coin-filter')
   const d = res.data ?? { min_turnover_usdt: 500000, blacklist: [] }
-  _coinFilterCache = { ...d, blacklist: d.blacklist ?? [] }
+  _coinFilterCache = { ...d, blacklist: d.blacklist ?? [], min_publish_days: d.min_publish_days ?? 15 }
   return _coinFilterCache
 }
 
