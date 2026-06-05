@@ -277,12 +277,12 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 	botID := chi.URLParam(r, "id")
 	ctx := r.Context()
 
-	var ownerID string
-	var isFork bool
+	var ownerID, botStatus string
+	var isFork, isOfficial bool
 	var sourceID *string
 	if err := s.pool.QueryRow(ctx,
-		`SELECT owner_id, is_fork, source_bot_id FROM bots WHERE id = $1`, botID,
-	).Scan(&ownerID, &isFork, &sourceID); err != nil {
+		`SELECT owner_id, is_fork, source_bot_id, status, is_official FROM bots WHERE id = $1`, botID,
+	).Scan(&ownerID, &isFork, &sourceID, &botStatus, &isOfficial); err != nil {
 		writeError(w, http.StatusNotFound, "bot not found")
 		return
 	}
@@ -299,6 +299,15 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
+	}
+
+	// Block strategy_config changes on active non-official bots.
+	if _, changingStrategy := body["strategyConfig"]; changingStrategy && !isOfficial {
+		if botStatus == "active" {
+			writeError(w, http.StatusUnprocessableEntity,
+				"Нельзя изменить стратегию активного бота. Сначала остановите бота.")
+			return
+		}
 	}
 
 	args := []interface{}{botID}
@@ -384,6 +393,11 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 	addInt("maxShortStrategies", "max_short_strategies")
 	addFloat("maxMarginUsdt", "max_margin_usdt")
 	addInt("maxSymConsecutiveRuns", "max_sym_consecutive_runs")
+
+	// Reset approval timer when strategy_config changes on a non-official user bot.
+	if _, changingStrategy := body["strategyConfig"]; changingStrategy && !isOfficial {
+		sets = append(sets, "active_seconds_acc = 0", "active_since = NULL")
+	}
 
 	if len(sets) == 0 {
 		bot, ok := fetchBot(s, r, botID, callerID)
@@ -874,7 +888,27 @@ func (s *Server) GetBotEvents(w http.ResponseWriter, r *http.Request) {
 func (s *Server) PublishBot(w http.ResponseWriter, r *http.Request) {
 	callerID := UserIDFromCtx(r.Context())
 	botID := chi.URLParam(r, "id")
-	tag, err := s.pool.Exec(r.Context(),
+	ctx := r.Context()
+
+	// Non-official bots require admin approval before publishing.
+	var isOfficial bool
+	var approvalStatus *string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT is_official, approval_status FROM bots WHERE id = $1 AND owner_id = $2`,
+		botID, callerID,
+	).Scan(&isOfficial, &approvalStatus); err != nil {
+		writeError(w, http.StatusNotFound, "bot not found")
+		return
+	}
+	if !isOfficial {
+		if approvalStatus == nil || *approvalStatus != "approved" {
+			writeError(w, http.StatusUnprocessableEntity,
+				"Бот не прошёл согласование. Отправьте заявку и дождитесь одобрения администратора.")
+			return
+		}
+	}
+
+	tag, err := s.pool.Exec(ctx,
 		`UPDATE bots SET is_public = true, updated_at = NOW() WHERE id = $1 AND owner_id = $2`,
 		botID, callerID)
 	if err != nil {
