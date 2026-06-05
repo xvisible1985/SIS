@@ -214,6 +214,9 @@ func main() {
 		// Strategy defaults (all authenticated users — read-only)
 		r.Get("/strategy-defaults", s.GetStrategyDefaults)
 
+		// Coin filter settings (all authenticated users — read-only)
+		r.Get("/coin-filter", s.GetCoinFilter)
+
 		// Trader
 		r.Post("/trader/order", s.TraderPlaceOrder)
 		r.Delete("/trader/order", s.TraderCancelOrder)
@@ -287,6 +290,9 @@ func main() {
 			// Admin: strategy defaults management
 			r.Get("/admin/strategy-defaults", s.GetStrategyDefaults)
 			r.Put("/admin/strategy-defaults/{type}", s.UpdateStrategyDefaults)
+
+			// Admin: coin filter management
+			r.Put("/admin/coin-filter", s.UpdateCoinFilter)
 
 			// Admin: proxy management
 			r.Get("/admin/proxies", s.ListProxies)
