@@ -1039,9 +1039,11 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
                       </span>
                       <span className="text-[10px] text-[#5b6479] font-mono font-medium">{s.strategy_type === 'matrix' ? `${s.grid_levels} слотов` : `L1–L${s.grid_levels}`}</span>
                     </div>
-                    {s.status === 'active' && cs.state?.tp_halted && (
+                    {s.status === 'active' && cs.state?.trading_halt_reason && (
                       <div className="mb-1.5 px-2 py-[5px] rounded-[5px] bg-red-500/10 border border-red-500/25 text-red-400/90 text-[10px] text-center font-semibold tracking-[.3px]">
-                        ⏸ Торги приостановлены — TP не выставляется
+                        {cs.state.trading_halt_reason === 'circuit_breaker'
+                          ? '⚠️ TP отменялся биржей — выставление приостановлено'
+                          : `⏸ Торги закрыты (${cs.state.trading_halt_reason}) — TP/SL не выставляются`}
                       </div>
                     )}
                     {s.status === 'active' && s.signal_filter && !!(s.signal_configs?.length) &&

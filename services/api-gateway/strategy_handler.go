@@ -817,9 +817,10 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 		"volume_usdt":   volumeUSDT,
 		"avg_entry":     avgEntry,
 		"safe_zone":     safeZone,
-		"signal_state":  s.engine.GetSignalState(id),
-		"signal_values": s.engine.GetSignalValues(id),
-		"tp_halted":     s.engine.GetTPHalted(id),
+		"signal_state":         s.engine.GetSignalState(id),
+		"signal_values":        s.engine.GetSignalValues(id),
+		"tp_halted":            s.engine.GetTPHalted(id),
+		"trading_halt_reason":  s.engine.GetTradingHaltReason(id),
 	})
 }
 

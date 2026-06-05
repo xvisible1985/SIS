@@ -260,6 +260,65 @@ func parseF64(s string) float64 {
 	return v
 }
 
+// ── Instrument trading status ────────────────────────────────────────────────
+
+var (
+	instrStatusMu    sync.RWMutex
+	instrStatusCache = map[string]struct {
+		status string
+		at     time.Time
+	}{}
+)
+
+// GetInstrumentStatus returns the current trading status for a symbol from Bybit
+// (e.g. "Trading", "Closed", "PreLaunch", "Delivering", "Settling").
+// Cached for 60 seconds — short enough to detect market open/close transitions.
+// Useful for tokenized stocks (IBM, TSLA, AAPL…) that have limited trading hours.
+func GetInstrumentStatus(ctx context.Context, category, symbol string) (string, error) {
+	key := category + "/" + symbol
+	instrStatusMu.RLock()
+	if e, ok := instrStatusCache[key]; ok && time.Since(e.at) < 60*time.Second {
+		instrStatusMu.RUnlock()
+		return e.status, nil
+	}
+	instrStatusMu.RUnlock()
+
+	url := bybitBase + "/v5/market/instruments-info?category=" + category + "&symbol=" + symbol
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := proxy.HTTPClient().Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		Result struct {
+			List []struct {
+				Status string `json:"status"`
+			} `json:"list"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil || len(result.Result.List) == 0 {
+		return "", fmt.Errorf("instruments-info: no data for %s/%s", category, symbol)
+	}
+	status := result.Result.List[0].Status
+
+	instrStatusMu.Lock()
+	instrStatusCache[key] = struct {
+		status string
+		at     time.Time
+	}{status, time.Now()}
+	instrStatusMu.Unlock()
+
+	return status, nil
+}
+
 // ── All linear symbols ────────────────────────────────────────────────────────
 
 var (

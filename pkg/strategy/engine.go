@@ -294,10 +294,11 @@ func (e *Engine) UpdateTPSL(ctx context.Context, strategyID string) {
 	}
 }
 
-// GetTPHalted returns true when the TP circuit breaker has fired for a strategy
-// (tpCancelStreak >= 5), meaning the engine stopped re-placing the TP order after
-// repeated exchange cancellations (e.g. tokenized stock outside market hours).
-func (e *Engine) GetTPHalted(strategyID string) bool {
+// GetTradingHaltReason returns why order placement is currently suppressed for a strategy:
+//   - "" — trading is normal
+//   - "Closed", "PreLaunch", etc. — instrument status returned by Bybit (market session closed)
+//   - "circuit_breaker" — TP was cancelled >= 5 times in a row; engine stopped retrying
+func (e *Engine) GetTradingHaltReason(strategyID string) string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	for _, runner := range e.runners {
@@ -306,12 +307,25 @@ func (e *Engine) GetTPHalted(strategyID string) bool {
 		runner.mu.RUnlock()
 		if ok {
 			sr.mu.Lock()
-			halted := sr.tpCancelStreak >= 5
+			reason := sr.tradingHaltReason
+			streak := sr.tpCancelStreak
 			sr.mu.Unlock()
-			return halted
+			if reason != "" {
+				return reason
+			}
+			if streak >= 5 {
+				return "circuit_breaker"
+			}
+			return ""
 		}
 	}
-	return false
+	return ""
+}
+
+// GetTPHalted returns true when trading is halted for any reason (market closed or circuit breaker).
+// Kept for backward compatibility — prefer GetTradingHaltReason for detailed reason.
+func (e *Engine) GetTPHalted(strategyID string) bool {
+	return e.GetTradingHaltReason(strategyID) != ""
 }
 
 // GetSignalState returns the current signal state string for a running strategy:

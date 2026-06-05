@@ -331,6 +331,9 @@ export interface StrategyState {
   signal_values?: Record<string, number>
   safe_zone?: { low: number; high: number } | null
   tp_halted?: boolean
+  /** Non-empty when order placement is suppressed: Bybit instrument status (e.g. "Closed")
+   *  or "circuit_breaker" if the TP cancel streak reached the limit. */
+  trading_halt_reason?: string
 }
 
 export interface HedgeSession {

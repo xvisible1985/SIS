@@ -65,6 +65,12 @@ type StrategyRunner struct {
 	// Reset to 0 on TP fill or cycle close.
 	tpCancelStreak int
 
+	// tradingHaltReason is non-empty when order placement is suppressed because the
+	// instrument's trading session is closed (e.g. tokenized stocks outside market hours).
+	// Set by updateTP/updateSL when instrument status != "Trading"; cleared when it returns
+	// to "Trading". Exposed via GetTradingHaltReason for the API/UI.
+	tradingHaltReason string
+
 	// pendingDelete is set (under sr.mu) before the delete goroutine fires so that
 	// a concurrent Notify cannot submit a loadOrStart and restart the strategy.
 	pendingDelete bool
@@ -2064,6 +2070,23 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 	if sr.strategy.HedgeTpSuppressed {
 		return nil
 	}
+
+	// Check if the instrument's trading session is currently active.
+	// Tokenized stocks (IBM, TSLA, AAPL…) have limited market hours; placing orders
+	// outside that window wastes API quota and causes immediate exchange cancellations.
+	if status, err := trader.GetInstrumentStatus(ctx, sr.strategy.Category, sr.strategy.Symbol); err == nil && status != "Trading" {
+		if sr.tradingHaltReason == "" {
+			sr.warn(ctx, fmt.Sprintf("updateTP: торги по %s приостановлены (status=%s) — TP не выставляется до открытия", sr.strategy.Symbol, status))
+		}
+		sr.tradingHaltReason = status
+		return nil
+	} else if err == nil && sr.tradingHaltReason != "" {
+		// Market just reopened — clear halt and let placement proceed.
+		sr.info(ctx, fmt.Sprintf("updateTP: торги по %s возобновлены (status=%s) — выставляем TP", sr.strategy.Symbol, status))
+		sr.tradingHaltReason = ""
+		sr.tpCancelStreak = 0 // reset circuit breaker — previous cancels were during market halt
+	}
+
 	if sr.instr.QtyStep == 0 {
 		sr.warn(ctx, "updateTP: инструмент не загружен (QtyStep=0) — TP не выставлен, повтор при следующем событии")
 		return nil
@@ -2218,6 +2241,16 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 	if sr.strategy.SLType != SLTypeConditional || sr.strategy.SLPct >= 0 {
 		return nil
 	}
+
+	// Check instrument trading session (same guard as updateTP).
+	if status, err := trader.GetInstrumentStatus(ctx, sr.strategy.Category, sr.strategy.Symbol); err == nil && status != "Trading" {
+		sr.tradingHaltReason = status
+		return nil
+	} else if err == nil && sr.tradingHaltReason != "" {
+		sr.tradingHaltReason = ""
+		sr.tpCancelStreak = 0
+	}
+
 	if sr.instr.QtyStep == 0 {
 		sr.warn(ctx, "updateSL: инструмент не загружен (QtyStep=0) — SL не выставлен, повтор при следующем событии")
 		return nil
