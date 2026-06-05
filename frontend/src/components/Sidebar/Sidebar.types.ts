@@ -36,6 +36,7 @@ export type SidebarProps = {
   user: User;
   counters?: Partial<Record<'webhooks' | 'accounts', number>>;
   noActiveAccounts?: boolean;
+  isAdmin?: boolean;
   onSelectAccount?: (id: string) => void;
   onTopUp?: () => void;
   onOpenSettings?: () => void;

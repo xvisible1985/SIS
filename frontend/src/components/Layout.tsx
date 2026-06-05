@@ -12,7 +12,7 @@ import { useState, useEffect, type ReactNode } from 'react'
 
 export function Layout({ children }: { children: ReactNode }) {
   const { pathname } = useLocation()
-  const { logout, email } = useAuth()
+  const { logout, email, isAdmin } = useAuth()
   const navigate = useNavigate()
   const { theme, toggle } = useTheme()
 
@@ -115,13 +115,14 @@ export function Layout({ children }: { children: ReactNode }) {
           user={{ initials: userInitials, name: userName, email: userEmail }}
           noActiveAccounts={accounts.length === 0}
           counters={{ accounts: accounts.length }}
+          isAdmin={isAdmin}
           onSelectAccount={(id) => setSelectedAccountId(id)}
           onTopUp={() => setDepositOpen(true)}
           onOpenSettings={() => navigate('/account')}
           onLogout={handleLogout}
         />
       </div>
-      <MobileNav onLogout={handleLogout} onOpenSettings={() => navigate('/account')} />
+      <MobileNav isAdmin={isAdmin} onLogout={handleLogout} onOpenSettings={() => navigate('/account')} />
       <DepositModal open={depositOpen} onClose={() => setDepositOpen(false)} />
       <main className={`flex-1 overflow-auto pb-16 dark:text-gray-100 md:pb-0 ${pathname === '/terminal' || pathname === '/signal-chart' ? '' : 'p-4 md:p-6'}`}>
         {children}

@@ -21,9 +21,10 @@ const MORE = [
 type Props = {
   onLogout: () => void
   onOpenSettings: () => void
+  isAdmin?: boolean
 }
 
-export function MobileNav({ onLogout, onOpenSettings }: Props) {
+export function MobileNav({ onLogout, onOpenSettings, isAdmin = false }: Props) {
   const { pathname } = useLocation()
   const [sheetOpen, setSheetOpen] = useState(false)
 
@@ -82,7 +83,7 @@ export function MobileNav({ onLogout, onOpenSettings }: Props) {
               </button>
             </div>
             <div className="flex flex-col gap-1">
-              {MORE.map((item) => {
+              {MORE.filter(item => item.to !== '/admin' || isAdmin).map((item) => {
                 const active = isActive(item.to)
                 const Icon = item.icon
                 return (

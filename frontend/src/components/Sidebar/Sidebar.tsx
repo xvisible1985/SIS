@@ -75,6 +75,7 @@ export function Sidebar({
   user,
   counters = {},
   noActiveAccounts = false,
+  isAdmin = false,
   onSelectAccount,
   onTopUp,
   onOpenSettings,
@@ -227,7 +228,7 @@ export function Sidebar({
 
       {/* nav */}
       <nav className="flex flex-col gap-0.5">
-        {NAV.map((item) => {
+        {NAV.filter(item => item.to !== '/admin' || isAdmin).map((item) => {
           const Icon = item.icon;
           const isApiKeys = item.key === 'accounts';
           const highlightApiKeys = isApiKeys && noActiveAccounts;

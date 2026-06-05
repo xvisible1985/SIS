@@ -1,7 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './hooks/useAuth'
 import { AccountProvider } from './contexts/AccountContext'
-import { ProtectedRoute } from './components/ProtectedRoute'
+import { ProtectedRoute, AdminRoute } from './components/ProtectedRoute'
 import { Layout } from './components/Layout'
 import { AuthPage } from './pages/AuthPage'
 import { DashboardPage } from './pages/DashboardPage'
@@ -49,7 +49,7 @@ export default function App() {
                     <Route path="trade-history" element={<TradeHistoryPage />} />
                     <Route path="webhooks" element={<WebhooksPage />} />
                     <Route path="accounts" element={<AccountsPage />} />
-                    <Route path="admin"    element={<AdminPage />} />
+                    <Route path="admin"    element={<AdminRoute><AdminPage /></AdminRoute>} />
                     <Route path="signal-chart" element={<SignalChartPage />} />
                     <Route path="account" element={<AccountPage />} />
                     <Route path="balances" element={<BalancesPage />} />
