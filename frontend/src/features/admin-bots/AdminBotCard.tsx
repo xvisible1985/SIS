@@ -1,4 +1,4 @@
-import { TrendingUp, Search, Shield, Pencil, Trash2, Eye, EyeOff, Bot } from 'lucide-react';
+import { TrendingUp, Search, Shield, Settings, Trash2, Eye, EyeOff, Bot } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Bot as BotType, BotKind } from '../bots/types';
 import { getBotKindMeta } from '../bots/botKindMeta';
@@ -168,7 +168,7 @@ export function AdminBotCard({ bot, onEdit, onTogglePublic, onDelete, onApprove,
               onClick={onEdit}
               className="flex h-[34px] w-[34px] items-center justify-center rounded-md border border-white/[.08] bg-white/[.04] text-slate-300 hover:bg-white/[.08]"
             >
-              <Pencil size={13} />
+              <Settings size={13} />
             </button>
           )}
 
