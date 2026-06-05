@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { apiClient } from '../../api/client'
-import { updateStrategyDefaults, invalidateStrategyDefaultsCache, updateCoinFilter, getCoinFilter } from './api'
+import { updateStrategyDefaults, invalidateStrategyDefaultsCache, updateCoinFilter, getCoinFilter, invalidateCoinFilterCache } from './api'
 import type { GridDefaults, MatrixDefaults, GridStep, AllStrategyDefaults, CoinFilterSettings } from './types'
 
 // ── Local numeric input (text-based, decimal) ─────────────────────────────────
@@ -438,8 +438,9 @@ export function AdminDefaultsTab() {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleSaved() {
-    // After saving, invalidate the shared cache so BotForm picks up new defaults
+    // After saving, invalidate the shared caches so other components pick up new values
     invalidateStrategyDefaultsCache()
+    invalidateCoinFilterCache()
   }
 
   return (

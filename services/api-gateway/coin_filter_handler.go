@@ -18,7 +18,7 @@ func (s *Server) GetCoinFilter(w http.ResponseWriter, r *http.Request) {
 		`SELECT min_turnover_usdt, blacklist FROM coin_filter_settings WHERE id = 1`,
 	).Scan(&cfg.MinTurnoverUsdt, &cfg.Blacklist)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 	if cfg.Blacklist == nil {
@@ -45,7 +45,7 @@ func (s *Server) UpdateCoinFilter(w http.ResponseWriter, r *http.Request) {
 		body.MinTurnoverUsdt, body.Blacklist,
 	)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
