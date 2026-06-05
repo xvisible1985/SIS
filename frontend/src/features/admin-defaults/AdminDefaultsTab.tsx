@@ -407,6 +407,64 @@ function CoinFilterSection({
   )
 }
 
+// ── Publication section ───────────────────────────────────────────────────────
+
+function PublicationSection({
+  initial,
+  onSaved,
+}: {
+  initial: CoinFilterSettings
+  onSaved: () => void
+}) {
+  const [minDays, setMinDays] = useState(initial.min_publish_days)
+  const [saving, setSaving]   = useState(false)
+  const [saved, setSaved]     = useState(false)
+  const [error, setError]     = useState<string | null>(null)
+
+  useEffect(() => { setMinDays(initial.min_publish_days) }, [initial])
+
+  async function handleSave() {
+    setSaving(true); setError(null)
+    try {
+      await updateCoinFilter({ ...initial, min_publish_days: minDays })
+      setSaved(true); onSaved()
+      setTimeout(() => setSaved(false), 2000)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-5">
+      <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-slate-300">
+        Публикация ботов
+      </h3>
+      <Field label="Мин. активных дней">
+        <NumInput
+          value={minDays}
+          onChange={v => setMinDays(Math.max(1, Math.round(v)))}
+        />
+      </Field>
+      {error && (
+        <div className="mt-3 rounded border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-400">
+          {error}
+        </div>
+      )}
+      <div className="mt-4 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={saving}
+          className="rounded bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+        >
+          {saving ? 'Сохранение…' : 'Сохранить'}
+        </button>
+        {saved && <span className="text-sm text-emerald-400">Сохранено ✓</span>}
+      </div>
+    </div>
+  )
+}
+
 // ── Main tab component ────────────────────────────────────────────────────────
 
 export function AdminDefaultsTab() {
@@ -482,7 +540,10 @@ export function AdminDefaultsTab() {
             onSaved={handleSaved}
           />
           {coinFilter && (
-            <CoinFilterSection initial={coinFilter} onSaved={handleSaved} />
+            <>
+              <CoinFilterSection initial={coinFilter} onSaved={handleSaved} />
+              <PublicationSection initial={coinFilter} onSaved={handleSaved} />
+            </>
           )}
         </div>
       )}
