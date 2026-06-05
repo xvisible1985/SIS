@@ -100,9 +100,17 @@ export function StrategiesPage() {
   const hedgeInfoMap = useMemo(() => {
     const map = new Map<string, { hasActiveHedge: boolean; isHedgeItself: boolean }>()
     for (const s of strategies) {
-      const isHedgeItself = !!s.bot_id && hedgeBotIds.has(s.bot_id)
+      // A strategy is "hedge itself" if:
+      //  - it was created by a hedge bot (bot_id present and in hedgeBotIds), OR
+      //  - it is stopped and has hedged_strategy_id set (old hedge activations created
+      //    before bot_id was reliably populated — they must not appear as orphan cards).
+      const isHedgeItself =
+        (!!s.bot_id && hedgeBotIds.has(s.bot_id)) ||
+        (s.status === 'stopped' && !!s.hedged_strategy_id)
       let hasActiveHedge = false
-      if (!isHedgeItself) {
+      // Only active/finishing strategies can be mains; stopped strategies should
+      // not be treated as "has active hedge" to avoid spurious pair cards.
+      if (!isHedgeItself && (s.status === 'active' || s.status === 'finishing')) {
         const oppDir = s.direction === 'long' ? 'short' : 'long'
         hasActiveHedge = strategies.some(h =>
           !!h.bot_id &&
