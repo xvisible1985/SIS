@@ -6,12 +6,13 @@ import { AdminBotCard } from './AdminBotCard';
 import type { Bot as BotType, CreateBotInput } from '../bots/types';
 
 export function AdminBotsTab() {
-  const { bots, loading, create, remove, togglePublic, update, refresh } = useAdminBots();
+  const { bots, loading, create, remove, togglePublic, update, approve, reject, refresh } = useAdminBots();
   const [creating, setCreating] = useState(false);
   const [editingBot, setEditingBot] = useState<BotType | null>(null);
 
-  const officialBots = bots.filter(b => b.isOfficial);
-  const userBots   = bots.filter(b => !b.isOfficial);
+  const pendingBots  = bots.filter(b => b.approvalStatus === 'pending');
+  const officialBots = bots.filter(b => b.isOfficial && b.approvalStatus !== 'pending');
+  const userBots     = bots.filter(b => !b.isOfficial && b.approvalStatus !== 'pending');
 
   async function handleCreate(data: CreateBotInput) {
     await create(data);
@@ -29,7 +30,14 @@ export function AdminBotsTab() {
       <div className="flex items-center justify-between border-b border-white/[.06] px-5 py-3">
         <div className="flex items-baseline gap-3">
           <h2 className="m-0 text-sm font-semibold text-slate-100">Библиотека ботов</h2>
-          <span className="text-[11px] text-slate-400">{officialBots.length} NovaBot · {userBots.length} пользовательских</span>
+          <span className="text-[11px] text-slate-400">
+            {officialBots.length} NovaBot · {userBots.length} пользовательских
+            {pendingBots.length > 0 && (
+              <span className="ml-2 rounded-full bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-300">
+                {pendingBots.length} на согласовании
+              </span>
+            )}
+          </span>
         </div>
         <button
           type="button"
@@ -43,11 +51,7 @@ export function AdminBotsTab() {
 
       {/* Create / Edit modal */}
       {creating && (
-        <BotForm
-          mode="admin"
-          onSubmit={handleCreate}
-          onClose={() => setCreating(false)}
-        />
+        <BotForm mode="admin" onSubmit={handleCreate} onClose={() => setCreating(false)} />
       )}
       {editingBot && (
         <BotForm
@@ -59,23 +63,57 @@ export function AdminBotsTab() {
       )}
 
       {/* Cards grid */}
-      <div className="flex-1 overflow-auto px-5 py-3">
+      <div className="flex-1 overflow-auto px-5 py-3 space-y-6">
         {loading ? (
           <div className="py-12 text-center text-sm text-slate-500">Загрузка…</div>
-        ) : bots.length === 0 ? (
-          <div className="py-12 text-center text-sm text-slate-500">Нет ботов</div>
         ) : (
-          <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
-            {bots.map(bot => (
-              <AdminBotCard
-                key={bot.id}
-                bot={bot}
-                onEdit={bot.isOfficial ? () => setEditingBot(bot) : undefined}
-                onTogglePublic={() => togglePublic(bot.id, !bot.isPublic)}
-                onDelete={() => { if (window.confirm('Удалить бота?')) remove(bot.id); }}
-              />
-            ))}
-          </div>
+          <>
+            {/* ── Pending approval section ────────────────────────────────── */}
+            {pendingBots.length > 0 && (
+              <div>
+                <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-amber-400">
+                  На согласование ({pendingBots.length})
+                </h3>
+                <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
+                  {pendingBots.map(bot => (
+                    <AdminBotCard
+                      key={bot.id}
+                      bot={bot}
+                      onApprove={() => approve(bot.id)}
+                      onReject={() => { if (window.confirm(`Отклонить заявку бота «${bot.name}»?`)) reject(bot.id); }}
+                      onDelete={() => { if (window.confirm('Удалить бота?')) remove(bot.id); }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── All other bots ──────────────────────────────────────────── */}
+            {(officialBots.length > 0 || userBots.length > 0) && (
+              <div>
+                {pendingBots.length > 0 && (
+                  <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-400">
+                    Все боты
+                  </h3>
+                )}
+                <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
+                  {[...officialBots, ...userBots].map(bot => (
+                    <AdminBotCard
+                      key={bot.id}
+                      bot={bot}
+                      onEdit={bot.isOfficial ? () => setEditingBot(bot) : undefined}
+                      onTogglePublic={() => togglePublic(bot.id, !bot.isPublic)}
+                      onDelete={() => { if (window.confirm('Удалить бота?')) remove(bot.id); }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {bots.length === 0 && (
+              <div className="py-12 text-center text-sm text-slate-500">Нет ботов</div>
+            )}
+          </>
         )}
       </div>
     </div>

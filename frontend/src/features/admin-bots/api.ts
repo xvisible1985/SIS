@@ -74,5 +74,15 @@ export function useAdminBots() {
     await load();
   }, [load]);
 
-  return { bots, loading, create, remove, togglePublic, update, refresh: load };
+  const approve = useCallback(async (botId: string) => {
+    await apiClient.post(`/admin/bots/${botId}/approve`);
+    await load();
+  }, [load]);
+
+  const reject = useCallback(async (botId: string) => {
+    await apiClient.post(`/admin/bots/${botId}/reject`);
+    await load();
+  }, [load]);
+
+  return { bots, loading, create, remove, togglePublic, update, approve, reject, refresh: load };
 }

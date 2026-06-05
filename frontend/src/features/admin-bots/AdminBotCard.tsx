@@ -8,9 +8,11 @@ type Props = {
   onEdit?: () => void;
   onTogglePublic?: () => void;
   onDelete?: () => void;
+  onApprove?: () => void;
+  onReject?: () => void;
 };
 
-export function AdminBotCard({ bot, onEdit, onTogglePublic, onDelete }: Props) {
+export function AdminBotCard({ bot, onEdit, onTogglePublic, onDelete, onApprove, onReject }: Props) {
   const strat = (bot.strategyConfig?.strategy_type ?? 'grid') as keyof typeof STRAT_META;
   const m = STRAT_META[strat] ?? STRAT_META.grid;
   const Icon = m.icon;
@@ -46,6 +48,21 @@ export function AdminBotCard({ bot, onEdit, onTogglePublic, onDelete }: Props) {
         }`}>
           {bot.status}
         </span>
+        {bot.approvalStatus === 'pending' && (
+          <span className="rounded-full border border-amber-400/30 bg-amber-400/[.12] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-300">
+            На согласовании
+          </span>
+        )}
+        {bot.approvalStatus === 'approved' && (
+          <span className="rounded-full border border-emerald-400/25 bg-emerald-400/[.10] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-emerald-300">
+            Одобрен
+          </span>
+        )}
+        {bot.approvalStatus === 'rejected' && (
+          <span className="rounded-full border border-rose-400/25 bg-rose-400/[.10] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-rose-300">
+            Отклонён
+          </span>
+        )}
       </div>
 
       {/* header */}
@@ -132,6 +149,26 @@ export function AdminBotCard({ bot, onEdit, onTogglePublic, onDelete }: Props) {
             title={bot.isPublic ? 'Скрыть из библиотеки' : 'Опубликовать'}
           >
             {bot.isPublic ? <Eye size={13} /> : <EyeOff size={13} />}
+          </button>
+        )}
+        {onApprove && (
+          <button
+            type="button"
+            onClick={onApprove}
+            className="flex items-center gap-1 rounded-md border border-emerald-400/25 bg-emerald-400/[.10] px-2.5 py-1.5 text-xs font-semibold text-emerald-300 hover:bg-emerald-400/[.18]"
+            title="Одобрить публикацию"
+          >
+            ✓ Одобрить
+          </button>
+        )}
+        {onReject && (
+          <button
+            type="button"
+            onClick={onReject}
+            className="flex items-center gap-1 rounded-md border border-rose-400/20 bg-rose-400/[.08] px-2.5 py-1.5 text-xs font-semibold text-rose-300 hover:bg-rose-400/[.15]"
+            title="Отклонить заявку"
+          >
+            ✕ Отклонить
           </button>
         )}
         {onDelete && (
