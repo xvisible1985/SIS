@@ -786,6 +786,14 @@ type botCfgJSON struct {
 	HedgeCancelMainTp bool `json:"hedge_cancel_main_tp"` // cancel TP on main at hedge activation
 	HedgeCancelMainSl bool `json:"hedge_cancel_main_sl"` // cancel all SL on main at hedge activation
 	HedgeStopMain     bool `json:"hedge_stop_main"`      // hard-stop main at hedge activation
+
+	// Matrix-specific strategy config (used when StrategyType="matrix").
+	MatrixLevels          json.RawMessage `json:"matrix_levels"`
+	MatrixEntryLevel      json.RawMessage `json:"matrix_entry_level"`
+	SafeZonePct           float64         `json:"safe_zone_pct"`
+	ProtectedBuild        bool            `json:"protected_build"`
+	MatrixRebuildOnSL     bool            `json:"matrix_rebuild_on_sl"`
+	MatrixRebuildFromEntry bool           `json:"matrix_rebuild_from_entry"`
 }
 
 // computeOpportunityScore returns a ranking score for a symbol based on the bot's
@@ -934,6 +942,15 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		}
 	}
 
+	// Matrix level params — NULL when not a matrix strategy so the columns stay clean.
+	matrixLevelsParam := nullableJSONB(cfg.MatrixLevels)
+	matrixEntryParam := nullableJSONB(cfg.MatrixEntryLevel)
+
+	// signal_filter is always false for hedge-bot strategies: signal_configs serves
+	// only as a pool for per-level use_signal buttons and must never block cycle start.
+	// Ignoring cfg.SignalFilter intentionally — the backend is authoritative here.
+	signalFilter := false
+
 	// NULLIF converts empty hedgedStrategyID to NULL so the unique partial index
 	// only fires when a real main-strategy ID is provided.
 	var id string
@@ -945,23 +962,32 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		   leverage, margin_type, hedge_mode, strategy_type, entry_order_type,
 		   signal_configs, steps,
 		   trailing_stop_enabled, trailing_activation_pct, trailing_callback_pct,
-		   cycle_count, max_cycles, size_as_main, hedged_strategy_id)
+		   cycle_count, max_cycles, size_as_main,
+		   matrix_levels, matrix_entry_level, safe_zone_pct,
+		   protected_build, matrix_rebuild_on_sl, matrix_rebuild_from_entry,
+		   hedged_strategy_id)
 		VALUES ($1,$2,$3,$4,$5,$6,'active',
 		        $7,$8,$9,$10,
 		        $11,$12,$13,$14,$15,
 		        $16,$17,$18,$19,$20,
 		        $21::jsonb, ($22::text)::jsonb,
 		        $23,$24,$25,
-		        $26, $27, $28, NULLIF($29,'')::uuid)
+		        $26, $27, $28,
+		        ($29::text)::jsonb, ($30::text)::jsonb, $31,
+		        $32, $33, $34,
+		        NULLIF($35,'')::uuid)
 		ON CONFLICT DO NOTHING
 		RETURNING id`,
 		b.ownerID, b.accountID, b.id, sym, category, dir,
 		gridLevels, gridActive, gridStep, gridSize,
-		tpMode, tpPct, slType, slPct, cfg.SignalFilter,
+		tpMode, tpPct, slType, slPct, signalFilter,
 		leverage, marginType, cfg.HedgeMode, stratType, entryType,
 		string(scJSON), stepsParam,
 		cfg.TrailingEnabled, trailingActPct, trailingCallPct,
-		0, cfg.MaxCycles, cfg.SizeAsMain, hedgedStrategyID,
+		0, cfg.MaxCycles, cfg.SizeAsMain,
+		matrixLevelsParam, matrixEntryParam, cfg.SafeZonePct,
+		cfg.ProtectedBuild, cfg.MatrixRebuildOnSL, cfg.MatrixRebuildFromEntry,
+		hedgedStrategyID,
 	).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Another hedge bot already claimed this main strategy — silently skip.
@@ -998,10 +1024,9 @@ func (s *Server) loadBotAccountCreds(ctx context.Context, accountID string) (tra
 // cleanupStoppedBotStrategies deletes stopped bot strategies that have no open exchange position.
 // Called each tick for bots configured with after_stop_mode="delete".
 //
-// For news bots (bybit-news activation signal) stopped strategies are kept for 25 h so that
-// processNewsBots — which scans the last 24 h of announcements — cannot immediately re-create
-// the same strategy after a TP/SL close.  After the announcement window expires the record is
-// deleted on the next cleanup tick.
+// For news bots (bybit-news activation signal) stopped strategies are held for lifetime_minutes
+// (the same window configured in the signal) so that processNewsBots cannot immediately re-create
+// the same strategy after a TP/SL close. Once the window expires the record is deleted.
 func (s *Server) cleanupStoppedBotStrategies(ctx context.Context, b botEngineRow, cfg botCfgJSON) {
 	type stoppedStrategy struct {
 		id       string
@@ -1009,22 +1034,35 @@ func (s *Server) cleanupStoppedBotStrategies(ctx context.Context, b botEngineRow
 		category string
 	}
 
-	// Detect news bot: at least one activation signal is "bybit-news".
+	// Detect news bot and read its lifetime_minutes.
 	isNewsBot := false
+	lifetimeMin := 60
 	for _, a := range cfg.ActivationSignals {
 		if a.Name == "bybit-news" {
 			isNewsBot = true
+			if v, ok := a.Params["lifetime_minutes"]; ok {
+				switch n := v.(type) {
+				case float64:
+					if n > 0 {
+						lifetimeMin = int(n)
+					}
+				case int:
+					if n > 0 {
+						lifetimeMin = n
+					}
+				}
+			}
 			break
 		}
 	}
 
-	// For news bots only include strategies older than 25 h so that the 24-h re-creation
-	// guard remains in place until the announcement window is fully past.
+	// For news bots only include strategies older than lifetime_minutes so that the
+	// re-creation guard in processNewsBots remains active until the window expires.
 	query := `SELECT id, symbol, category FROM strategies WHERE bot_id=$1 AND status='stopped'`
 	if isNewsBot {
-		query = `SELECT id, symbol, category FROM strategies
+		query = fmt.Sprintf(`SELECT id, symbol, category FROM strategies
 		         WHERE bot_id=$1 AND status='stopped'
-		           AND created_at < NOW() - INTERVAL '25 hours'`
+		           AND created_at < NOW() - INTERVAL '%d minutes'`, lifetimeMin)
 	}
 
 	rows, err := s.pool.Query(ctx, query, b.id)
@@ -1162,7 +1200,8 @@ func (s *Server) processNewsBots(ctx context.Context) {
 		return
 	}
 
-	// Fetch recent listing announcements (last 24h for safety net)
+	// Fetch all recent listing announcements (broad 24 h window).
+	// Per-bot lifetime_minutes filtering happens inside the bot loop below.
 	announcements, err := s.newsScraper.ListingAnnouncements(ctx, time.Now().Add(-24*time.Hour))
 	if err != nil {
 		log.Printf("news bot: listing announcements: %v", err)
@@ -1172,7 +1211,11 @@ func (s *Server) processNewsBots(ctx context.Context) {
 		return
 	}
 
-	delistSymbols := s.GetDelistingSymbols()
+	// Build a set of known exchange symbols for availability gating.
+	allSymSet := make(map[string]bool, len(allSymbols))
+	for _, s := range allSymbols {
+		allSymSet[s] = true
+	}
 
 	for _, nb := range newsBots {
 		b := nb.row
@@ -1181,18 +1224,39 @@ func (s *Server) processNewsBots(ctx context.Context) {
 			continue
 		}
 
-		for _, ann := range announcements {
-			for _, sym := range ann.Symbols {
-				// Check symbol passes whitelist/blacklist (and is not delisted)
-				botSymbols := resolveSymbolList(b.whitelist, b.blacklist, delistSymbols, allSymbols)
-				found := false
-				for _, bs := range botSymbols {
-					if bs == sym {
-						found = true
-						break
+		// Read lifetime_minutes from the bybit-news signal params (default 60).
+		// This controls both how long after an announcement the strategy can open
+		// and how long a stopped strategy blocks re-entry.
+		lifetimeMin := 60
+		for _, a := range cfg.ActivationSignals {
+			if a.Name == "bybit-news" {
+				if v, ok := a.Params["lifetime_minutes"]; ok {
+					switch n := v.(type) {
+					case float64:
+						if n > 0 {
+							lifetimeMin = int(n)
+						}
+					case int:
+						if n > 0 {
+							lifetimeMin = n
+						}
 					}
 				}
-				if !found {
+				break
+			}
+		}
+		windowCutoff := time.Now().Add(-time.Duration(lifetimeMin) * time.Minute)
+
+		for _, ann := range announcements {
+			// Skip announcements outside this bot's lifetime window.
+			if ann.CreatedAt.Before(windowCutoff) {
+				continue
+			}
+
+			for _, sym := range ann.Symbols {
+				// Skip symbols not yet available on the exchange.
+				// New listings may be announced before the perpetual contract is live.
+				if len(allSymbols) > 0 && !allSymSet[sym] {
 					continue
 				}
 
@@ -1221,18 +1285,17 @@ func (s *Server) processNewsBots(ctx context.Context) {
 					}
 				}
 
-				// Check not already open or recently stopped for this symbol.
-				// Include stopped strategies created within the last 25 h so that a TP/SL close
-				// does not cause the bot to immediately re-enter on the same announcement.
+				// Guard: skip if strategy already active/finishing OR was stopped within
+				// the bot's lifetime window (prevents re-entry on the same announcement).
 				var existing int
 				if err := s.pool.QueryRow(ctx,
-					`SELECT COUNT(*) FROM strategies
+					fmt.Sprintf(`SELECT COUNT(*) FROM strategies
 					 WHERE symbol = $1 AND direction = $2
 					   AND (bot_id = $3 OR (bot_id IS NULL AND owner_id = $4 AND account_id = $5))
 					   AND (
 					     status IN ('active','finishing')
-					     OR (status = 'stopped' AND created_at > NOW() - INTERVAL '25 hours')
-					   )`,
+					     OR (status = 'stopped' AND created_at > NOW() - INTERVAL '%d minutes')
+					   )`, lifetimeMin),
 					sym, openDir, b.id, b.ownerID, b.accountID).Scan(&existing); err != nil || existing > 0 {
 					continue
 				}
@@ -1281,10 +1344,10 @@ func (s *Server) runReactiveProcessor(ctx context.Context) {
 	}
 }
 
-// runNewsBotTicker polls the local DB every second for new Bybit listing
+// runNewsBotTicker polls the local DB every 5 seconds for new Bybit listing
 // announcements and immediately creates strategies for news bots.
 func (s *Server) runNewsBotTicker(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	running := make(chan struct{}, 1) // prevents concurrent processNewsBots calls
 	for {

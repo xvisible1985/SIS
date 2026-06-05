@@ -5,7 +5,6 @@ import type { MyBot } from '../ui-types';
 import type { BotKind } from '../types';
 import { getBotKindMeta, BOT_KIND_META } from '../botKindMeta';
 import { StatusPill } from './StatusPill';
-
 const KIND_ICONS: Record<BotKind, LucideIcon> = {
   signal: TrendingUp,
   parser: Search,
@@ -51,19 +50,31 @@ export function MyBotCard({ bot, onToggle, onEdit, onDelete }: Props) {
           {/* аватар / иконка */}
           <div className="relative h-9 w-9 shrink-0">
             {running && (
-              <span
-                aria-hidden
-                className="pointer-events-none absolute inset-[-1.5px] overflow-hidden rounded-[11px]"
-              >
-                <span
-                  className="absolute animate-spin"
-                  style={{
-                    width: '200%', height: '200%', top: '-50%', left: '-50%',
-                    background: `conic-gradient(from 0deg, transparent 0deg, ${km.color}cc 50deg, transparent 100deg)`,
-                    animationDuration: '2.5s',
-                  }}
-                />
-              </span>
+              bot.botKind === 'hedge'
+                ? [0, 0.8, 1.6].map((delay, i) => (
+                    <span
+                      key={i}
+                      aria-hidden
+                      className="pointer-events-none absolute inset-0 rounded-[9px] border"
+                      style={{
+                        borderColor: km.color,
+                        opacity: 0,
+                        animation: `hedge-ring 2.4s ease-out ${delay}s infinite`,
+                      }}
+                    />
+                  ))
+                : (
+                    <span aria-hidden className="pointer-events-none absolute inset-[-1.5px] overflow-hidden rounded-[11px]">
+                      <span
+                        className="absolute animate-spin"
+                        style={{
+                          width: '200%', height: '200%', top: '-50%', left: '-50%',
+                          background: `conic-gradient(from 0deg, transparent 0deg, ${km.color}cc 50deg, transparent 100deg)`,
+                          animationDuration: '2.5s',
+                        }}
+                      />
+                    </span>
+                  )
             )}
             <div
               className="h-9 w-9 overflow-hidden rounded-[9px] border flex items-center justify-center"

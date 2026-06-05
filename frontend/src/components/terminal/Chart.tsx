@@ -30,6 +30,7 @@ interface Props {
   strategyLevels?: StrategyLevel[]
   tickerPrices?: Map<string, number>
   safeZone?: { low: number; high: number } | null
+  hedgePairTarget?: number | null
 }
 
 function parseOrderLabel(linkId: string, side?: string): string {
@@ -102,7 +103,7 @@ function isOtherStrategyLinkId(linkId: string | undefined, stratIdShort: string 
   return /^(?:SIS_STR|STP|STR)-[a-f0-9]/.test(linkId) && !linkId.includes(stratIdShort)
 }
 
-export function Chart({ candles, candleSymbol, positions, orders, executions, symbol, lastPrice, onLoadMore, overlaySettings, strategyDir, stratIdShort, currentCycleNum, strategyLevels, tickerPrices, safeZone }: Props) {
+export function Chart({ candles, candleSymbol, positions, orders, executions, symbol, lastPrice, onLoadMore, overlaySettings, strategyDir, stratIdShort, currentCycleNum, strategyLevels, tickerPrices, safeZone, hedgePairTarget }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -111,6 +112,8 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
   const markersPluginRef = useRef<any>(null)
   const priceLines = useRef<any[]>([])
   const currentPriceLineRef = useRef<any>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const hedgePairTargetLineRef = useRef<any>(null)
   const safeZoneOverlayRef = useRef<HTMLDivElement>(null)
   const loadedSymbolRef = useRef<string | null>(null)
   const prevFirstTimeRef = useRef<number | null>(null)
@@ -165,16 +168,30 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     })
 
     const dark = document.documentElement.classList.contains('dark')
+    // tickMarkFormatter: type 0=Year 1=Month 2=DayOfMonth 3=Time 4=TimeWithSeconds
+    const tzTickMarkFormatter = (time: number, type: number) => {
+      const d = new Date(time * 1000) // local timezone via Date
+      if (type === 0) return String(d.getFullYear())
+      if (type === 1) return d.toLocaleDateString('ru-RU', { month: 'short' })
+      if (type === 2) return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
+      if (type === 3) return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+      return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    }
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
       ...themeColors(dark),
       crosshair: { mode: 1 },
+      timeScale: {
+        borderColor: dark ? '#2d2d3d' : '#d1d5db',
+        timeVisible: true,
+        tickMarkFormatter: tzTickMarkFormatter,
+      },
       localization: {
         locale: 'ru-RU',
         timeFormatter: (time: number) => {
           const d = new Date(time * 1000)
-          return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+          return d.toLocaleString('ru-RU', { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })
         },
       },
     })
@@ -306,6 +323,26 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       })
     }
   }, [lastPrice, afterSetData])
+
+  // Hedge pair target — dashed amber line at planned paired-close level
+  useEffect(() => {
+    const series = seriesRef.current
+    if (!series) return
+    if (hedgePairTargetLineRef.current) {
+      try { series.removePriceLine(hedgePairTargetLineRef.current) } catch {}
+      hedgePairTargetLineRef.current = null
+    }
+    if (hedgePairTarget && hedgePairTarget > 0) {
+      hedgePairTargetLineRef.current = series.createPriceLine({
+        price: hedgePairTarget,
+        color: 'rgba(245,158,11,.75)',
+        lineWidth: 1,
+        lineStyle: 3, // LargeDashed
+        axisLabelVisible: true,
+        title: '⇌',
+      })
+    }
+  }, [hedgePairTarget, afterSetData])
 
   // Auto price precision — updates series priceFormat when the price magnitude changes
   useEffect(() => {

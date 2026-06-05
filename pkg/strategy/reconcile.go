@@ -253,6 +253,12 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 					if sr.strategy.HedgeTpSuppressed {
 						return
 					}
+					// If the circuit breaker fired (>= 5 consecutive external cancels)
+					// do not re-place — something on the exchange keeps rejecting it.
+					// The streak resets on TP fill or cycle close.
+					if sr.tpCancelStreak >= 5 {
+						return
+					}
 					if sr.tpOrderID == tpOrderID {
 						sr.tpOrderID = ""
 						_, posQty := sr.avgEntry()
@@ -272,6 +278,10 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 				sr.mu.Lock()
 				defer sr.mu.Unlock()
 				if sr.strategy.HedgeTpSuppressed {
+					return
+				}
+				// Do not re-place if the circuit breaker fired — exchange keeps rejecting it.
+				if sr.tpCancelStreak >= 5 {
 					return
 				}
 				_, posQty := sr.avgEntry()

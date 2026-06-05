@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { BotsPage as BotsPageUI } from '../features/bots/BotsPage';
 import { BotForm } from '../features/bots/components/BotForm';
+import { HedgeBotForm } from '../features/bots/components/HedgeBotForm';
 import { BotTypePickerModal } from '../features/bots/components/BotTypePickerModal';
 import { DeployModal } from '../features/bots/components/DeployModal';
 import { useBots } from '../features/bots/api';
@@ -103,6 +104,7 @@ export function BotsPage() {
   const handleEditBot = (id: string) => {
     const bot = mine.find((b) => b.id === id) ?? null;
     setEditBot(bot);
+    setSelectedKind((bot?.strategyConfig?.bot_kind as BotKind) ?? 'signal');
     setFormMode('edit');
   };
 
@@ -166,7 +168,15 @@ export function BotsPage() {
         />
       )}
 
-      {formMode !== null && (
+      {formMode !== null && selectedKind === 'hedge' && (
+        <HedgeBotForm
+          bot={editBot ?? undefined}
+          onSubmit={handleFormSubmit}
+          onClose={handleFormClose}
+        />
+      )}
+
+      {formMode !== null && selectedKind !== 'hedge' && (
         <BotForm
           bot={editBot ?? undefined}
           initialKind={selectedKind}

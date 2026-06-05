@@ -63,6 +63,7 @@ func (s *Server) GetTradeHistory(w http.ResponseWriter, r *http.Request) {
 
 	botID := q.Get("bot_id")
 	strategyID := q.Get("strategy_id")
+	symbol := q.Get("symbol")
 	result := q.Get("result") // "tp" | "sl" | "manual" | ""
 	fromStr := q.Get("from")
 	toStr := q.Get("to")
@@ -127,6 +128,9 @@ func (s *Server) GetTradeHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	if strategyID != "" {
 		addArg("th.strategy_id =", strategyID)
+	}
+	if symbol != "" {
+		addArg("th.symbol =", symbol)
 	}
 	if fromTime != nil {
 		addArg("th.closed_at >=", *fromTime)
@@ -272,4 +276,32 @@ func (s *Server) GetTradeHistory(w http.ResponseWriter, r *http.Request) {
 		Limit:  limit,
 		Offset: offset,
 	})
+}
+
+// GetTradeHistorySymbols returns distinct symbols that have trade history for the user.
+// GET /api/trade-history/symbols
+// Response: ["BTCUSDT", "ETHUSDT", ...]
+func (s *Server) GetTradeHistorySymbols(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+
+	rows, err := s.pool.Query(r.Context(),
+		`SELECT DISTINCT symbol FROM trade_history WHERE owner_id = $1 ORDER BY symbol`,
+		userID,
+	)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	symbols := []string{}
+	for rows.Next() {
+		var sym string
+		if err := rows.Scan(&sym); err == nil {
+			symbols = append(symbols, sym)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(symbols)
 }

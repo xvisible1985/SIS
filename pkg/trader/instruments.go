@@ -16,9 +16,10 @@ import (
 
 // InstrumentInfo holds the precision rules for a trading pair.
 type InstrumentInfo struct {
-	TickSize float64 // price tick size
-	QtyStep  float64 // lot size step
-	MinQty   float64 // minimum order qty
+	TickSize         float64 // price tick size
+	QtyStep          float64 // lot size step
+	MinQty           float64 // minimum order qty
+	MinNotionalValue float64 // minimum order value in quote currency (e.g. 5 USDT on Bybit)
 }
 
 type instrEntry struct {
@@ -50,8 +51,9 @@ func GetInstrumentInfo(ctx context.Context, creds Credentials, category, symbol 
 		Result struct {
 			List []struct {
 				LotSizeFilter struct {
-					QtyStep     string `json:"qtyStep"`
-					MinOrderQty string `json:"minOrderQty"`
+					QtyStep          string `json:"qtyStep"`
+					MinOrderQty      string `json:"minOrderQty"`
+					MinNotionalValue string `json:"minNotionalValue"`
 				} `json:"lotSizeFilter"`
 				PriceFilter struct {
 					TickSize string `json:"tickSize"`
@@ -66,7 +68,8 @@ func GetInstrumentInfo(ctx context.Context, creds Credentials, category, symbol 
 	tick, _ := strconv.ParseFloat(item.PriceFilter.TickSize, 64)
 	step, _ := strconv.ParseFloat(item.LotSizeFilter.QtyStep, 64)
 	minQty, _ := strconv.ParseFloat(item.LotSizeFilter.MinOrderQty, 64)
-	info := InstrumentInfo{TickSize: tick, QtyStep: step, MinQty: minQty}
+	minNotional, _ := strconv.ParseFloat(item.LotSizeFilter.MinNotionalValue, 64)
+	info := InstrumentInfo{TickSize: tick, QtyStep: step, MinQty: minQty, MinNotionalValue: minNotional}
 
 	instrMu.Lock()
 	instrCache[key] = instrEntry{info: info, at: time.Now()}
@@ -112,6 +115,17 @@ func FormatQty(qty, qtyStep, minQty float64) string {
 		return "0"
 	}
 	return strconv.FormatFloat(rounded, 'f', stepDecimals(qtyStep), 64)
+}
+
+// EnsureMinNotional bumps qty up to the smallest multiple of qtyStep such that
+// qty*price >= minNotional. Returns qty unchanged if minNotional <= 0 or price <= 0
+// or the notional is already satisfied.
+func EnsureMinNotional(qty, qtyStep, price, minNotional float64) float64 {
+	if minNotional <= 0 || price <= 0 || qtyStep <= 0 || qty*price >= minNotional {
+		return qty
+	}
+	steps := math.Ceil(minNotional / price / qtyStep)
+	return steps * qtyStep
 }
 
 // ── Public instrument constraints ────────────────────────────────────────────

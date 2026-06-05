@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -116,16 +117,31 @@ func hashString(s string) uint32 {
 	return h
 }
 
+// listingLangRe matches language found in genuine new-listing announcements.
+// Promo/event titles (e.g. "HYPE Token Splash— Grab a share of 100,000 USDT")
+// typically contain none of these words and are therefore correctly excluded.
+var listingLangRe = regexp.MustCompile(
+	`(?i)\b(will\s+list|now\s+list|has\s+listed|listing\b|delist|trading\s|perpetual|futures\s+contract|inverse\s+contract|leverage|launches?|spot\s+trading)\b`,
+)
+
+func hasListingLanguage(title, description string) bool {
+	return listingLangRe.MatchString(title) || listingLangRe.MatchString(description)
+}
+
 func classify(key string) (isListing, isDelisting bool) {
-	switch key {
-	case "new_crypto":
+	lower := strings.ToLower(key)
+	// Explicit known Bybit type_key values for new listings.
+	switch lower {
+	case "new_crypto", "new_spot_listing", "spot_listing",
+		"new_fiat_listings", "new_futures", "new_usdc_contract", "new_inverse_contract":
 		return true, false
 	case "delisting":
 		return false, true
 	}
-	// fuzzy match for keys that contain these words
-	lower := strings.ToLower(key)
-	if strings.Contains(lower, "list") && !strings.Contains(lower, "delist") {
+	// Narrow fuzzy: only "new_*" keys that contain "list".
+	// Generic category labels like "spot_listings" (a section, not an action)
+	// are intentionally excluded — they can contain promo events.
+	if strings.HasPrefix(lower, "new_") && strings.Contains(lower, "list") {
 		return true, false
 	}
 	if strings.Contains(lower, "delist") {
@@ -137,6 +153,13 @@ func classify(key string) (isListing, isDelisting bool) {
 func (s *Scraper) upsert(ctx context.Context, a Announcement) error {
 	id := extractID(a.URL)
 	isListing, isDelisting := classify(a.Type.Key)
+	// Secondary guard: even if the type_key looks like a listing category,
+	// require explicit listing language in the title/description.
+	// This prevents promo events (e.g. "HYPE Token Splash— Grab a share of
+	// the 100,000 USDT prize pool") from being misclassified as new listings.
+	if isListing && !hasListingLanguage(a.Title, a.Description) {
+		isListing = false
+	}
 	parsed := ParseListingDetails(a.Title, a.Description)
 
 	var launchAt interface{}
@@ -207,8 +230,11 @@ func (s *Scraper) Latest(ctx context.Context, limit int) ([]DBAnnouncement, erro
 	return out, rows.Err()
 }
 
-// ListingAnnouncements returns new listings with parsed symbols and launch time,
+// ListingAnnouncements returns new listings with parsed symbols,
 // filtered by minimum date. Used by the news bot processor.
+// Note: announcements with NULL launch_at are included — they represent
+// listings published after-the-fact ("trading is now open"), and the
+// allSymbols check in processNewsBots handles availability gating.
 func (s *Scraper) ListingAnnouncements(ctx context.Context, since time.Time) ([]DBAnnouncement, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, announcement_id, title, description, type_key, type_title, tags, url,
@@ -216,7 +242,6 @@ func (s *Scraper) ListingAnnouncements(ctx context.Context, since time.Time) ([]
 			symbols, markets, max_leverage, launch_at, is_pre_market, parsed_at, created_at
 		 FROM bybit_announcements
 		 WHERE is_new_listing = true
-		   AND launch_at IS NOT NULL
 		   AND symbols IS NOT NULL AND array_length(symbols, 1) > 0
 		   AND created_at >= $1
 		 ORDER BY date_ts DESC

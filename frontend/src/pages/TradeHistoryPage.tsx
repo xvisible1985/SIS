@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { getTradeHistory, type TradeHistoryRow, type TradeHistoryStats, type TradeHistoryParams } from '../api/tradeHistory'
+import { getTradeHistory, getTradeHistorySymbols, type TradeHistoryRow, type TradeHistoryStats, type TradeHistoryParams } from '../api/tradeHistory'
 import { listStrategies } from '../api/strategies'
 import { apiClient } from '../api/client'
 import type { Bot } from '../features/bots/types'
@@ -440,7 +440,9 @@ function TradeRow({ t }: { t: TradeHistoryRow }) {
 type FilterItem = { id: string; label: string; kind: 'bot' | 'strategy' }
 
 export function TradeHistoryPage() {
-  const [filterItems, setFilterItems] = useState<FilterItem[]>([])
+  const [filterItems, setFilterItems]   = useState<FilterItem[]>([])
+  const [symbolOptions, setSymbolOptions] = useState<string[]>([])
+  const [filterSymbol, setFilterSymbol] = useState('')
   const [stats, setStats]   = useState<TradeHistoryStats | null>(null)
   const [trades, setTrades] = useState<TradeHistoryRow[]>([])
   const [total, setTotal]   = useState(0)
@@ -457,17 +459,49 @@ export function TradeHistoryPage() {
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 
   useEffect(() => {
+    getTradeHistorySymbols().then(setSymbolOptions).catch(() => {})
+  }, [])
+
+  useEffect(() => {
     Promise.all([
       apiClient.get<{ catalog: Bot[]; mine: Bot[] }>('/bots').then(r => r.data.mine ?? []).catch(() => [] as Bot[]),
       listStrategies().catch(() => []),
-    ]).then(([bots, strategies]) => {
+    ]).then(([bots, allStrategies]) => {
+      // Hide stopped strategies with no open position, no realized PnL — they have no trade history worth showing.
+      const strategies = allStrategies.filter(s =>
+        s.status !== 'stopped' ||
+        (s.active_levels ?? 0) > 0 ||
+        (s.volume_usdt ?? 0) > 0 ||
+        (s.last_pnl ?? 0) !== 0
+      )
+
       const items: FilterItem[] = []
       for (const b of bots) items.push({ id: `bot:${b.id}`, label: b.name, kind: 'bot' })
+
+      // Manual (non-bot) strategies — filter by strategy_id
       for (const s of strategies) {
         if (!s.bot_id) {
           items.push({ id: `strategy:${s.id}`, label: `${s.symbol} · ${s.direction.toUpperCase()}`, kind: 'strategy' })
         }
       }
+
+      // Bot-managed strategies — deduplicated by bot+symbol, filter by bot_id+symbol
+      const seenBotSymbol = new Set<string>()
+      for (const s of strategies) {
+        if (s.bot_id) {
+          const key = `${s.bot_id}:${s.symbol}`
+          if (!seenBotSymbol.has(key)) {
+            seenBotSymbol.add(key)
+            const botLabel = s.bot_name ? ` (${s.bot_name})` : ''
+            items.push({
+              id: `bot-symbol:${s.bot_id}:${s.symbol}`,
+              label: `${s.symbol}${botLabel}`,
+              kind: 'strategy',
+            })
+          }
+        }
+      }
+
       setFilterItems(items)
     })
   }, [])
@@ -477,7 +511,16 @@ export function TradeHistoryPage() {
     const params: TradeHistoryParams = { limit: LIMIT, offset: off, sort_by: sortCol, sort_dir: sortDir }
     if (filterItem.startsWith('bot:'))      params.bot_id      = filterItem.slice(4)
     if (filterItem.startsWith('strategy:')) params.strategy_id = filterItem.slice(9)
-    if (filterResult) params.result = filterResult
+    if (filterItem.startsWith('bot-symbol:')) {
+      const rest = filterItem.slice('bot-symbol:'.length)       // "botId:SYMBOL"
+      const colon = rest.indexOf(':')
+      if (colon !== -1) {
+        params.bot_id = rest.slice(0, colon)
+        params.symbol = rest.slice(colon + 1)
+      }
+    }
+    if (filterSymbol)  params.symbol  = filterSymbol
+    if (filterResult)  params.result  = filterResult
     if (dateFrom) params.from = new Date(dateFrom).toISOString()
     if (dateTo)   params.to   = new Date(dateTo + 'T23:59:59').toISOString()
     try {
@@ -491,7 +534,7 @@ export function TradeHistoryPage() {
     } finally {
       if (!silent) setLoading(false)
     }
-  }, [filterItem, filterResult, dateFrom, dateTo, sortCol, sortDir])
+  }, [filterItem, filterSymbol, filterResult, dateFrom, dateTo, sortCol, sortDir])
 
   useEffect(() => { load(0) }, [load])
 
@@ -506,7 +549,7 @@ export function TradeHistoryPage() {
     // offset reset happens via useEffect on load deps change
   }
 
-  const hasFilter = !!(filterItem || filterResult || dateFrom || dateTo)
+  const hasFilter = !!(filterItem || filterSymbol || filterResult || dateFrom || dateTo)
 
   const COLS: [SortCol, string, string][] = [
     ['symbol',     'Символ',          'left'],
@@ -553,6 +596,20 @@ export function TradeHistoryPage() {
           )}
         </select>
 
+        {/* Symbol filter — populated from actual trade_history data */}
+        {symbolOptions.length > 0 && (
+          <select
+            value={filterSymbol}
+            onChange={e => setFilterSymbol(e.target.value)}
+            className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200"
+          >
+            <option value="">Все монеты</option>
+            {symbolOptions.map(s => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        )}
+
         <select
           value={filterResult}
           onChange={e => setFilterResult(e.target.value as '' | 'tp' | 'sl' | 'manual')}
@@ -573,7 +630,7 @@ export function TradeHistoryPage() {
 
         {hasFilter && (
           <button
-            onClick={() => { setFilterItem(''); setFilterResult(''); setDateFrom(''); setDateTo(''); setDatePreset('all') }}
+            onClick={() => { setFilterItem(''); setFilterSymbol(''); setFilterResult(''); setDateFrom(''); setDateTo(''); setDatePreset('all') }}
             className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 underline"
           >
             Сбросить

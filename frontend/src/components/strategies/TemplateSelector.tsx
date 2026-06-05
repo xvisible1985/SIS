@@ -33,7 +33,7 @@ export function TemplateSelector({ formData, onLoad, strategyType, onStrategyTyp
   function handleLoad(tpl: StrategyTemplate) {
     setSelected(tpl.id)
     setOpen(false)
-    onLoad(tpl.config as Partial<StrategyFormData>)
+    onLoad(tpl.config)
   }
 
   async function handleDelete(id: string, e: React.MouseEvent) {
@@ -58,11 +58,10 @@ export function TemplateSelector({ formData, onLoad, strategyType, onStrategyTyp
   }
 
   const filteredTemplates = templates.filter(t => {
-    const cfg = t.config as Partial<StrategyFormData>
     // Only show templates whose strategy_type matches current type.
     // Exclude old templates without strategy_type — they may contain
     // incompatible fields (e.g. grid steps inside a DCA strategy).
-    return cfg.strategy_type === strategyType
+    return t.config.strategy_type === strategyType
   })
 
   const selectedName = filteredTemplates.find(t => t.id === selected)?.name

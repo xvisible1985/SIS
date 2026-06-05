@@ -1,11 +1,13 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { listStrategies } from '../api/strategies'
 import { listAccounts } from '../api/accounts'
 import { StrategyCard } from '../components/strategies/StrategyCard'
+import { HedgePairCard } from '../components/strategies/HedgePairCard'
 import { StrategyModal } from '../components/strategies/StrategyModal'
 import { MatrixDebugOverlay } from '../components/strategies/MatrixDebugOverlay'
 import { useSelectedAccount } from '../contexts/AccountContext'
 import { usePositionsWs } from '../hooks/terminal/usePositionsWs'
+import { useBots } from '../features/bots/api'
 import type { Strategy, ExchangeAccount } from '../types'
 
 const STATUS_ORDER: Record<string, number> = { active: 0, finishing: 1, stopped: 2 }
@@ -19,6 +21,7 @@ function sortStrategies(list: Strategy[]): Strategy[] {
 export function StrategiesPage() {
   const { selectedAccountId } = useSelectedAccount()
   const { positions, orders } = usePositionsWs(selectedAccountId || null)
+  const { mine: hedgeBots } = useBots()
 
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
@@ -89,6 +92,102 @@ export function StrategiesPage() {
     }
   }, [])
 
+  const hedgeBotIds = useMemo(
+    () => new Set(hedgeBots.filter(b => b.strategyConfig.bot_kind === 'hedge').map(b => b.id)),
+    [hedgeBots],
+  )
+
+  const hedgeInfoMap = useMemo(() => {
+    const map = new Map<string, { hasActiveHedge: boolean; isHedgeItself: boolean }>()
+    for (const s of strategies) {
+      const isHedgeItself = !!s.bot_id && hedgeBotIds.has(s.bot_id)
+      let hasActiveHedge = false
+      if (!isHedgeItself) {
+        const oppDir = s.direction === 'long' ? 'short' : 'long'
+        hasActiveHedge = strategies.some(h =>
+          !!h.bot_id &&
+          hedgeBotIds.has(h.bot_id) &&
+          h.symbol === s.symbol &&
+          h.account_id === s.account_id &&
+          h.direction === oppDir &&
+          (h.status === 'active' || h.status === 'finishing'),
+        )
+      }
+      map.set(s.id, { hasActiveHedge, isHedgeItself })
+    }
+    return map
+  }, [strategies, hedgeBotIds])
+
+  const renderItems = useMemo(() => {
+    const sorted = sortStrategies(strategies)
+    const usedIds = new Set<string>()
+    const items: Array<
+      | { type: 'single'; strategy: Strategy }
+      | { type: 'pair'; main: Strategy; hedge: Strategy }
+    > = []
+    for (const s of sorted) {
+      if (usedIds.has(s.id)) continue
+
+      // Method 1: direct link via hedged_strategy_id
+      if (s.hedged_strategy_id) {
+        const partner = sorted.find(h => !usedIds.has(h.id) && h.id === s.hedged_strategy_id)
+        if (partner) {
+          usedIds.add(s.id)
+          usedIds.add(partner.id)
+          const sIsHedge = !!hedgeInfoMap.get(s.id)?.isHedgeItself
+          const [main, hedge] = sIsHedge ? [partner, s] : [s, partner]
+          items.push({ type: 'pair', main, hedge })
+          continue
+        }
+      }
+
+      // Method 2: hedgeInfoMap detection
+      const info = hedgeInfoMap.get(s.id)
+      if (info?.hasActiveHedge || info?.isHedgeItself) {
+        const isMain = !!info.hasActiveHedge
+        const partner = sorted.find(h =>
+          !usedIds.has(h.id) &&
+          h.symbol === s.symbol &&
+          h.account_id === s.account_id &&
+          h.direction !== s.direction &&
+          (isMain
+            ? hedgeInfoMap.get(h.id)?.isHedgeItself
+            : hedgeInfoMap.get(h.id)?.hasActiveHedge),
+        )
+        if (partner) {
+          usedIds.add(s.id)
+          usedIds.add(partner.id)
+          const [main, hedge] = isMain ? [s, partner] : [partner, s]
+          items.push({ type: 'pair', main, hedge })
+          continue
+        }
+      }
+
+      usedIds.add(s.id)
+      // Hedge-bot strategies (isHedgeItself) that couldn't pair are suppressed —
+      // they're managed from HedgePairCard. When bot is detached, bot_id becomes
+      // null → isHedgeItself = false → strategy reappears as a standalone card.
+      if (hedgeInfoMap.get(s.id)?.isHedgeItself) continue
+      items.push({ type: 'single', strategy: s })
+    }
+
+    // Post-filter: suppress stopped standalone strategies whose symbol+account+direction
+    // matches the hedge side of an active pair — these are "ghost" hedges left after a
+    // detach → bot-creates-new-hedge cycle. Active/finishing singles are never suppressed.
+    const hedgeCoveredCombos = new Set<string>()
+    for (const item of items) {
+      if (item.type === 'pair') {
+        hedgeCoveredCombos.add(`${item.hedge.symbol}:${item.hedge.account_id}:${item.hedge.direction}`)
+      }
+    }
+    return items.filter(item => {
+      if (item.type !== 'single') return true
+      const s = item.strategy
+      if (s.status !== 'stopped') return true
+      return !hedgeCoveredCombos.has(`${s.symbol}:${s.account_id}:${s.direction}`)
+    })
+  }, [strategies, hedgeInfoMap])
+
   function handleSelect(s: Strategy) {
     setSelectedId(s.id)
     setExpandedId(prev => (prev !== null && prev !== s.id ? null : prev))
@@ -153,25 +252,46 @@ export function StrategiesPage() {
           </div>
         ) : (
           <ul className="divide-y divide-gray-100 dark:divide-gray-700">
-            {sortStrategies(strategies).map(s => (
-              <StrategyCard
-                key={s.id}
-                strategy={s}
-                accounts={accounts}
-                orders={orders}
-                positions={positions}
-                onEdit={openEdit}
-                onChanged={load}
-                selected={s.id === selectedId}
-                onSelect={handleSelect}
-                isOpen={s.id === expandedId}
-                onToggleOpen={() => {
-                  const isExpanding = expandedId !== s.id
-                  setExpandedId(isExpanding ? s.id : null)
-                  if (isExpanding) setSelectedId(s.id)
-                }}
-              />
-            ))}
+            {renderItems.map(item => {
+              if (item.type === 'pair') {
+                return (
+                  <li key={`pair-${item.main.id}`} className="p-2">
+                    <HedgePairCard
+                      main={item.main}
+                      hedge={item.hedge}
+                      accounts={accounts}
+                      orders={orders}
+                      positions={positions}
+                      selectedStrategyId={selectedId}
+                      hedgeBot={hedgeBots.find(b => b.id === item.hedge.bot_id) ?? null}
+                      onEdit={openEdit}
+                      onChanged={load}
+                      onSelect={handleSelect}
+                    />
+                  </li>
+                )
+              }
+              const s = item.strategy
+              return (
+                <StrategyCard
+                  key={s.id}
+                  strategy={s}
+                  accounts={accounts}
+                  orders={orders}
+                  positions={positions}
+                  onEdit={openEdit}
+                  onChanged={load}
+                  selected={s.id === selectedId}
+                  onSelect={handleSelect}
+                  isOpen={s.id === expandedId}
+                  onToggleOpen={() => {
+                    const isExpanding = expandedId !== s.id
+                    setExpandedId(isExpanding ? s.id : null)
+                    if (isExpanding) setSelectedId(s.id)
+                  }}
+                />
+              )
+            })}
           </ul>
         )}
       </div>

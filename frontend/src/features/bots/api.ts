@@ -58,6 +58,13 @@ export function useBots() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Refresh when any component signals a bot was updated externally (e.g. blacklist-add from StrategyCard).
+  useEffect(() => {
+    const handler = () => { load(); };
+    window.addEventListener('bot-updated', handler);
+    return () => window.removeEventListener('bot-updated', handler);
+  }, [load]);
+
   const action = useCallback(async (a: BotAction) => {
     try {
       switch (a.type) {

@@ -49,6 +49,7 @@ export interface TradeHistoryResponse {
 export interface TradeHistoryParams {
   bot_id?: string
   strategy_id?: string
+  symbol?: string
   result?: 'tp' | 'sl' | 'manual' | ''
   from?: string
   to?: string
@@ -58,10 +59,16 @@ export interface TradeHistoryParams {
   sort_dir?: 'asc' | 'desc'
 }
 
+export async function getTradeHistorySymbols(): Promise<string[]> {
+  const res = await apiClient.get<string[]>('/trade-history/symbols')
+  return res.data ?? []
+}
+
 export async function getTradeHistory(params: TradeHistoryParams = {}): Promise<TradeHistoryResponse> {
   const q = new URLSearchParams()
   if (params.bot_id)      q.set('bot_id',      params.bot_id)
   if (params.strategy_id) q.set('strategy_id', params.strategy_id)
+  if (params.symbol)      q.set('symbol',      params.symbol)
   if (params.result)      q.set('result',      params.result)
   if (params.from)        q.set('from',        params.from)
   if (params.to)          q.set('to',          params.to)

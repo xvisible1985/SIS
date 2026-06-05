@@ -49,7 +49,6 @@ export const BOT_KIND_META: Record<BotKind, BotKindMeta> = {
     bg:       'rgba(180,83,9,0.15)',
     bgHeader: 'linear-gradient(135deg,rgba(180,83,9,0.24) 0%,rgba(120,53,15,0.06) 100%)',
     iconBg:   'rgba(180,83,9,0.20)',
-    disabled: true,
   },
 }
 

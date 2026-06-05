@@ -20,17 +20,20 @@ import { useSelectedAccount } from '../contexts/AccountContext'
 import { listStrategies, getStrategyState } from '../api/strategies'
 import { listExecutions } from '../api/trader'
 import { StrategyCard } from '../components/strategies/StrategyCard'
+import { HedgePairCard } from '../components/strategies/HedgePairCard'
 import { StrategyModal } from '../components/strategies/StrategyModal'
 import { useBots } from '../features/bots/api'
 import { useBotSignalCounts } from '../hooks/useBotSignalCounts'
 import { useBotEventsWs, type BotEventCategory } from '../hooks/useBotEventsWs'
 import { BotForm } from '../features/bots/components/BotForm'
+import { HedgeBotForm } from '../features/bots/components/HedgeBotForm'
 import { BotScanModal } from '../features/bots/components/BotScanModal'
 import { getBotKindMeta } from '../features/bots/botKindMeta'
 import { TrendingUp, Search, Shield } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import type { Bot, BotKind } from '../features/bots/types'
+import type { Bot, BotKind, BotAction } from '../features/bots/types'
 import type { Strategy, ExchangeAccount, ActiveOrder, Position, ChartExecution, StrategyLevel } from '../types'
+import { HedgeBotOverlay } from '../components/terminal/HedgeBotOverlay'
 
 const KIND_ICONS: Record<BotKind, LucideIcon> = {
   signal: TrendingUp,
@@ -290,16 +293,31 @@ function BotTerminalCard({ bot, sc, onSymbolChange, onStop, onStart, onEdit, onA
       <div className="mb-3 flex items-start gap-2.5">
         <div className="relative h-9 w-9 shrink-0">
           {running && (
-            <span className="pointer-events-none absolute inset-[-1.5px] overflow-hidden rounded-[11px]" aria-hidden>
-              <span
-                className="absolute animate-spin"
-                style={{
-                  width: '200%', height: '200%', top: '-50%', left: '-50%',
-                  background: 'conic-gradient(from 0deg, transparent 0deg, rgba(91,224,160,0.9) 50deg, transparent 100deg)',
-                  animationDuration: '2.5s',
-                }}
-              />
-            </span>
+            bot.strategyConfig.bot_kind === 'hedge'
+              ? [0, 0.8, 1.6].map((delay, i) => (
+                  <span
+                    key={i}
+                    aria-hidden
+                    className="pointer-events-none absolute inset-0 rounded-[9px] border"
+                    style={{
+                      borderColor: km.color,
+                      opacity: 0,
+                      animation: `hedge-ring 2.4s ease-out ${delay}s infinite`,
+                    }}
+                  />
+                ))
+              : (
+                  <span aria-hidden className="pointer-events-none absolute inset-[-1.5px] overflow-hidden rounded-[11px]">
+                    <span
+                      className="absolute animate-spin"
+                      style={{
+                        width: '200%', height: '200%', top: '-50%', left: '-50%',
+                        background: `conic-gradient(from 0deg, transparent 0deg, ${km.color}cc 50deg, transparent 100deg)`,
+                        animationDuration: '2.5s',
+                      }}
+                    />
+                  </span>
+                )
           )}
           <div
             className={'h-9 w-9 overflow-hidden rounded-[9px] border flex items-center justify-center ' + (running ? '' : 'opacity-50')}
@@ -440,8 +458,12 @@ function saveHidden(s: Set<string>) {
   localStorage.setItem(TERMINAL_HIDDEN_KEY, JSON.stringify([...s]))
 }
 
-function TerminalBotsTab({ onSymbolChange }: { onSymbolChange: (sym: string) => void }) {
-  const { mine, loading, action } = useBots()
+function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
+  onSymbolChange: (sym: string) => void
+  mine: Bot[]
+  loading: boolean
+  action: (a: BotAction) => Promise<void>
+}) {
   const { selectedAccountId } = useSelectedAccount()
   const signalCounts = useBotSignalCounts(true)
   const [editBotId, setEditBotId] = useState<string | null>(null)
@@ -539,7 +561,14 @@ function TerminalBotsTab({ onSymbolChange }: { onSymbolChange: (sym: string) => 
         ))}
       </div>
 
-      {editBot && (
+      {editBot && editBot.strategyConfig.bot_kind === 'hedge' && (
+        <HedgeBotForm
+          bot={editBot}
+          onSubmit={async (data) => { await action({ type: 'update', botId: editBot.id, data }); setEditBotId(null) }}
+          onClose={() => setEditBotId(null)}
+        />
+      )}
+      {editBot && editBot.strategyConfig.bot_kind !== 'hedge' && (
         <BotForm
           bot={editBot}
           onSubmit={async (data) => { await action({ type: 'update', botId: editBot.id, data }); setEditBotId(null) }}
@@ -553,10 +582,51 @@ function TerminalBotsTab({ onSymbolChange }: { onSymbolChange: (sym: string) => 
   )
 }
 
+// ── Hedge monitoring helper ───────────────────────────────────────────────────
+
+/**
+ * Returns true if `strategy` is being monitored as a potential main position
+ * by at least one active hedge bot.
+ *
+ * Rules (mirror the backend hedge_engine.go logic):
+ *  - Hedge bot must be active and linked to the same account
+ *  - Strategy symbol must pass the bot's symbol whitelist/blacklist
+ *  - Strategy direction must match the bot's direction filter
+ *  - Strategy's bot_id must pass the bot's hedge_bot_whitelist/blacklist
+ *  - The strategy itself must NOT be a hedge strategy created by this hedge bot
+ */
+function countHedgeWatchers(strategy: Strategy, hedgeBots: Bot[]): number {
+  return hedgeBots.filter(bot => {
+    if (bot.status !== 'active') return false
+    if (bot.strategyConfig.bot_kind !== 'hedge') return false
+    if (bot.accountId && bot.accountId !== strategy.account_id) return false
+    // Exclude the hedge bot's own strategies (the hedge strategies themselves)
+    if (strategy.bot_id === bot.id) return false
+
+    // Symbol filter
+    const sym = strategy.symbol
+    if (bot.symbolBlacklist.includes(sym)) return false
+    if (bot.symbolWhitelist.length > 0 && !bot.symbolWhitelist.includes(sym)) return false
+
+    // Direction filter (matches engine: bot.direction = direction of MAIN position)
+    const botDir = bot.strategyConfig.direction ?? 'both'
+    if (botDir !== 'both' && botDir !== strategy.direction) return false
+
+    // Bot whitelist/blacklist (hedge_bot_whitelist/blacklist filter on main strategy's bot)
+    const hwl = (bot.strategyConfig.hedge_bot_whitelist ?? []) as string[]
+    const hbl = (bot.strategyConfig.hedge_bot_blacklist ?? []) as string[]
+    const stratBot = strategy.bot_id ?? ''
+    if (hbl.includes(stratBot)) return false
+    if (hwl.length > 0 && !hwl.includes(stratBot)) return false
+
+    return true
+  }).length
+}
+
 // ── Strategies tab ───────────────────────────────────────────────────────────
 type LiveSignal = { signal_state: string; signal_values: Record<string, number> }
 
-function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices, accountId, onStrategySelect, onCycleNumUpdate, freeMargin }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[]; positions: Position[]; tickerPrices?: Map<string, number>; accountId: string | null; onStrategySelect?: (s: Strategy | null) => void; onCycleNumUpdate?: (id: string, cycleNum: number) => void; freeMargin?: number | null }) {
+function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices, accountId, onStrategySelect, onCycleNumUpdate, onStrategiesChange, onPairTargetUpdate, freeMargin, hedgeBots }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[]; positions: Position[]; tickerPrices?: Map<string, number>; accountId: string | null; onStrategySelect?: (s: Strategy | null) => void; onCycleNumUpdate?: (id: string, cycleNum: number) => void; onStrategiesChange?: (strategies: Strategy[]) => void; onPairTargetUpdate?: (target: number | null) => void; freeMargin?: number | null; hedgeBots: Bot[] }) {
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
   const [loading, setLoading] = useState(true)
@@ -569,6 +639,9 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
   // Ref для быстрого доступа к текущему списку из WS-обработчика (без closure-захвата)
   const strategiesRef = useRef<Strategy[]>([])
   useEffect(() => { strategiesRef.current = strategies }, [strategies])
+
+  // Bubble strategies up to TerminalPage so HedgeBotOverlay always has fresh data
+  useEffect(() => { onStrategiesChange?.(strategies) }, [strategies, onStrategiesChange])
 
   async function load() {
     setLoading(true)
@@ -671,6 +744,8 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
     onSymbolChange(s.symbol)
     onStrategySelect?.(s)
     setExpandedId(prev => (prev !== null && prev !== s.id ? null : prev))
+    // Clear pair target when switching to a standalone strategy
+    onPairTargetUpdate?.(null)
   }
 
   const activeAccountIds = useMemo(
@@ -683,6 +758,106 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
     if (accountId) return s.account_id === accountId
     return true
   })
+
+  // Вычисляем hedge-флаги один раз для всего списка
+  const hedgeBotIds = useMemo(
+    () => new Set(hedgeBots.filter(b => b.strategyConfig.bot_kind === 'hedge').map(b => b.id)),
+    [hedgeBots],
+  )
+
+  const hedgeInfoMap = useMemo(() => {
+    const map = new Map<string, { hasActiveHedge: boolean; isHedgeItself: boolean }>()
+    for (const s of visibleStrategies) {
+      const isHedgeItself = !!s.bot_id && hedgeBotIds.has(s.bot_id)
+      let hasActiveHedge = false
+      if (!isHedgeItself) {
+        const oppDir = s.direction === 'long' ? 'short' : 'long'
+        hasActiveHedge = strategies.some(h =>
+          !!h.bot_id &&
+          hedgeBotIds.has(h.bot_id) &&
+          h.symbol === s.symbol &&
+          h.account_id === s.account_id &&
+          h.direction === oppDir &&
+          (h.status === 'active' || h.status === 'finishing'),
+        )
+      }
+      map.set(s.id, { hasActiveHedge, isHedgeItself })
+    }
+    return map
+  }, [visibleStrategies, strategies, hedgeBotIds])
+
+  // Group strategies: hedge pairs → HedgePairCard, standalone → StrategyCard
+  const renderItems = useMemo(() => {
+    const sorted = sortStrategies(visibleStrategies)
+    const usedIds = new Set<string>()
+    const items: Array<
+      | { type: 'single'; strategy: typeof sorted[0] }
+      | { type: 'pair'; main: typeof sorted[0]; hedge: typeof sorted[0] }
+    > = []
+
+    for (const s of sorted) {
+      if (usedIds.has(s.id)) continue
+
+      // Method 1: direct link via hedged_strategy_id (most reliable — set by backend)
+      if (s.hedged_strategy_id) {
+        const partner = sorted.find(h => !usedIds.has(h.id) && h.id === s.hedged_strategy_id)
+        if (partner) {
+          usedIds.add(s.id)
+          usedIds.add(partner.id)
+          // Determine roles using isHedgeItself: the hedge-bot-controlled strategy is "hedge"
+          const sIsHedge = !!hedgeInfoMap.get(s.id)?.isHedgeItself
+          const [main, hedge] = sIsHedge ? [partner, s] : [s, partner]
+          items.push({ type: 'pair', main, hedge })
+          continue
+        }
+      }
+
+      // Method 2: hedgeInfoMap-based detection (handles reverse link too)
+      const info = hedgeInfoMap.get(s.id)
+      if (info?.hasActiveHedge || info?.isHedgeItself) {
+        const isMain = !!info.hasActiveHedge
+        const partner = sorted.find(h =>
+          !usedIds.has(h.id) &&
+          h.symbol === s.symbol &&
+          h.account_id === s.account_id &&
+          h.direction !== s.direction &&
+          (isMain
+            ? hedgeInfoMap.get(h.id)?.isHedgeItself
+            : hedgeInfoMap.get(h.id)?.hasActiveHedge),
+        )
+        if (partner) {
+          usedIds.add(s.id)
+          usedIds.add(partner.id)
+          const [main, hedge] = isMain ? [s, partner] : [partner, s]
+          items.push({ type: 'pair', main, hedge })
+          continue
+        }
+      }
+
+      usedIds.add(s.id)
+      // Hedge-bot strategies (isHedgeItself) that couldn't pair are suppressed —
+      // they're managed from HedgePairCard. When bot is detached, bot_id becomes
+      // null → isHedgeItself = false → strategy reappears as a standalone card.
+      if (hedgeInfoMap.get(s.id)?.isHedgeItself) continue
+      items.push({ type: 'single', strategy: s })
+    }
+
+    // Post-filter: suppress stopped standalone strategies whose symbol+account+direction
+    // matches the hedge side of an active pair — these are "ghost" hedges left after a
+    // detach → bot-creates-new-hedge cycle. Active/finishing singles are never suppressed.
+    const hedgeCoveredCombos = new Set<string>()
+    for (const item of items) {
+      if (item.type === 'pair') {
+        hedgeCoveredCombos.add(`${item.hedge.symbol}:${item.hedge.account_id}:${item.hedge.direction}`)
+      }
+    }
+    return items.filter(item => {
+      if (item.type !== 'single') return true
+      const s = item.strategy
+      if (s.status !== 'stopped') return true
+      return !hedgeCoveredCombos.has(`${s.symbol}:${s.account_id}:${s.direction}`)
+    })
+  }, [visibleStrategies, hedgeInfoMap])
 
   return (
     <div className="flex flex-col h-full">
@@ -708,33 +883,59 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
         {!loading && visibleStrategies.length === 0 && (
           <div className="p-8 text-center text-sm text-gray-400">Нет стратегий</div>
         )}
-        {sortStrategies(visibleStrategies).map(s => (
-          <div key={s.id} className="origin-top-left scale-[0.96]">
-            <StrategyCard
-              strategy={s}
-              accounts={accounts}
-              orders={orders}
-              positions={positions}
-              tickerPrices={tickerPrices}
-              onEdit={s => { setEditTarget(s); setModalOpen(true) }}
-              onChanged={load}
-              selected={s.id === selectedId}
-              onSelect={handleSelect}
-              isOpen={s.id === expandedId}
-              liveSignal={signalStates[s.id]}
-              onToggleOpen={() => {
-                const isExpanding = expandedId !== s.id
-                const newExp = isExpanding ? s.id : null
-                setExpandedId(newExp)
-                if (isExpanding) {
-                  setSelectedId(s.id)
-                  localStorage.setItem('t_sel', s.id)
-                  onSymbolChange(s.symbol)
-                }
-              }}
-            />
-          </div>
-        ))}
+        {renderItems.map(item => {
+          if (item.type === 'pair') {
+            return (
+              <div key={`pair-${item.main.id}`} className="origin-top-left scale-[0.96]">
+                <HedgePairCard
+                  main={item.main}
+                  hedge={item.hedge}
+                  accounts={accounts}
+                  orders={orders}
+                  positions={positions}
+                  tickerPrices={tickerPrices}
+                  selectedStrategyId={selectedId}
+                  hedgeBot={hedgeBots.find(b => b.id === item.hedge.bot_id) ?? null}
+                  onEdit={s => { setEditTarget(s); setModalOpen(true) }}
+                  onChanged={load}
+                  onSelect={handleSelect}
+                  onPairTargetUpdate={onPairTargetUpdate}
+                />
+              </div>
+            )
+          }
+          const s = item.strategy
+          return (
+            <div key={s.id} className="origin-top-left scale-[0.96]">
+              <StrategyCard
+                strategy={s}
+                accounts={accounts}
+                orders={orders}
+                positions={positions}
+                tickerPrices={tickerPrices}
+                onEdit={s => { setEditTarget(s); setModalOpen(true) }}
+                onChanged={load}
+                selected={s.id === selectedId}
+                onSelect={handleSelect}
+                isOpen={s.id === expandedId}
+                liveSignal={signalStates[s.id]}
+                hedgeWatcherCount={countHedgeWatchers(s, hedgeBots)}
+                hasActiveHedge={hedgeInfoMap.get(s.id)?.hasActiveHedge}
+                isHedgeItself={hedgeInfoMap.get(s.id)?.isHedgeItself}
+                onToggleOpen={() => {
+                  const isExpanding = expandedId !== s.id
+                  const newExp = isExpanding ? s.id : null
+                  setExpandedId(newExp)
+                  if (isExpanding) {
+                    setSelectedId(s.id)
+                    localStorage.setItem('t_sel', s.id)
+                    onSymbolChange(s.symbol)
+                  }
+                }}
+              />
+            </div>
+          )
+        })}
       </div>
       {modalOpen && (
         <StrategyModal
@@ -754,6 +955,21 @@ export function TerminalPage() {
   const { selectedAccountId } = useSelectedAccount()
   const accountId = selectedAccountId || null
   const [searchParams, setSearchParams] = useSearchParams()
+
+  // Bots state lifted here so it can feed both the bots tab and the hedge overlay.
+  const { mine: myBots, loading: botsLoading, action: botAction } = useBots()
+
+  // Strategies state lifted here so it can feed the hedge overlay regardless of which tab is active.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [_strategies, setStrategies] = useState<Strategy[]>([])
+  useEffect(() => {
+    let cancelled = false
+    const fetchStrategies = () =>
+      listStrategies().then(s => { if (!cancelled) setStrategies(s) }).catch(() => {})
+    fetchStrategies()
+    const t = setInterval(fetchStrategies, 15_000)
+    return () => { cancelled = true; clearInterval(t) }
+  }, [])
 
   const [symbol, setSymbol] = useState(() => searchParams.get('symbol') ?? _cachedSymbol)
   const [tf, setTf] = useState(() => searchParams.get('tf') ?? _cachedTf)
@@ -779,6 +995,9 @@ export function TerminalPage() {
     return DEFAULT_CHART_SETTINGS
   })
   const [selectedStrategy, setSelectedStrategy] = useState<Strategy | null>(null)
+  const [hedgePairTarget, setHedgePairTarget] = useState<number | null>(null)
+  // Clear pair target when switching symbols
+  useEffect(() => { setHedgePairTarget(null) }, [symbol])
   const [strategyCycleNums, setStrategyCycleNums] = useState<Record<string, number>>({})
   const [strategyLevels, setStrategyLevels] = useState<StrategyLevel[]>([])
   const [strategySafeZone, setStrategySafeZone] = useState<{ low: number; high: number } | null>(null)
@@ -894,8 +1113,15 @@ export function TerminalPage() {
 
   const allExecutions = useMemo<ChartExecution[]>(() => {
     const wsIds = new Set(executions.map(e => e.execId))
-    return [...historicalExecs.filter(e => !wsIds.has(e.execId)), ...executions]
-  }, [historicalExecs, executions])
+    // When a strategy is selected, only include its own historical fills to avoid
+    // cross-strategy pollution (multiple strategies on the same symbol all showing at once).
+    // When no strategy is selected (e.g. Bots tab), skip historical entirely — real-time
+    // WS executions still appear as they arrive.
+    const filteredHistorical = stratIdShort
+      ? historicalExecs.filter(e => !wsIds.has(e.execId) && e.orderLinkId?.includes(stratIdShort))
+      : []
+    return [...filteredHistorical, ...executions]
+  }, [historicalExecs, executions, stratIdShort])
 
   const { candles, candleSymbol, lastPrice, priceChange, turnover24h, loadMore } = useCandles(symbol, tf)
   const { bids, asks, spread } = useOrderbook(symbol)
@@ -1014,8 +1240,9 @@ export function TerminalPage() {
         {/* Chart */}
         <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden" style={{ height: '42vh' }}>
           {chartToolbar}
-          <div className="flex-1 min-h-0">
-            <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} />
+          <div className="flex-1 min-h-0 relative">
+            <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} hedgePairTarget={hedgePairTarget} />
+            <HedgeBotOverlay symbol={symbol} positions={positions} bots={myBots} accountId={accountId} tickerPrices={tickerPrices} />
           </div>
         </div>
         {/* Mobile tabs */}
@@ -1040,7 +1267,7 @@ export function TerminalPage() {
           <div className="flex-1 overflow-auto">
             {mobileTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} tickerPrices={tickerPrices} />}
             {mobileTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} onRemoveOrder={removeOrder} strategyLevels={strategyLevels} />}
-            {mobileTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} freeMargin={freeMargin} />}
+            {mobileTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} />}
             {mobileTab === 'trade' && (
               <div className="flex flex-col gap-2 p-2 overflow-y-auto">
                 {accountId ? (
@@ -1099,8 +1326,9 @@ export function TerminalPage() {
               />
             </div>
           </div>
-          <div className="flex-1 min-h-0">
-            <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} />
+          <div className="flex-1 min-h-0 relative">
+            <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} hedgePairTarget={hedgePairTarget} />
+            <HedgeBotOverlay symbol={symbol} positions={positions} bots={myBots} accountId={accountId} tickerPrices={tickerPrices} />
           </div>
         </div>
 
@@ -1202,8 +1430,8 @@ export function TerminalPage() {
               </div>
             </>
           )}
-          {rightTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} freeMargin={freeMargin} />}
-          {rightTab === 'bots' && <TerminalBotsTab onSymbolChange={setSymbol} />}
+          {rightTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} />}
+          {rightTab === 'bots' && <TerminalBotsTab onSymbolChange={setSymbol} mine={myBots} loading={botsLoading} action={botAction} />}
         </div>
 
       </div>{/* /Right panel */}

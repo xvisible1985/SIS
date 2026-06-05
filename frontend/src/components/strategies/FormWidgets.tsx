@@ -356,6 +356,7 @@ export function SignalPickerField({ configs, onChange, onAutoSave, direction, li
                   </button>
                 </div>
 
+                {picked.params.some(p => p.key === 'tf') && (
                 <div>
                   <div className="text-[10px] text-slate-500 mb-1.5">Таймфрейм</div>
                   <div className="flex gap-1 flex-wrap">
@@ -371,6 +372,7 @@ export function SignalPickerField({ configs, onChange, onAutoSave, direction, li
                     ))}
                   </div>
                 </div>
+                )}
 
                 {picked.params.filter(p => p.key !== 'tf').map(p => {
                   const val = params[p.key]

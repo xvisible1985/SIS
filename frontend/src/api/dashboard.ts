@@ -44,6 +44,8 @@ export interface DashboardData {
   daily_pnl: DailyPnL[]
   bot_stats: BotStat[]
   recent_trades: RecentTrade[]
+  /** "day" for all periods except "1d"; "hour" for the 1-day period. */
+  granularity: 'day' | 'hour'
 }
 
 export async function getDashboard(period: '1d' | '7d' | '30d' | '90d' | '1y' | 'all' = '30d'): Promise<DashboardData> {

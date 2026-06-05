@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { Calendar } from 'lucide-react'
+import { Calendar, Shield } from 'lucide-react'
 import { setSignalChartIntent } from '../../stores/signalChartStore'
-import { getStrategyState, getStrategyEvents, setStrategyStatus, deleteStrategy, updateStrategy, detachFromBot } from '../../api/strategies'
+import { getStrategyState, getStrategyEvents, setStrategyStatus, deleteStrategy, updateStrategy, detachFromBot, addBotBlacklist } from '../../api/strategies'
 import { placeOrder } from '../../api/trader'
 import { ClosePositionModal, makeCloseConfirm, type CloseConfirm } from '../common/ClosePositionModal'
 import { useStrategyEventsWs } from '../../hooks/useStrategyEventsWs'
@@ -33,6 +33,9 @@ interface Props {
   isOpen?: boolean
   onToggleOpen?: () => void
   liveSignal?: LiveSignal
+  hedgeWatcherCount?: number
+  hasActiveHedge?: boolean
+  isHedgeItself?: boolean
 }
 
 interface CardState {
@@ -187,23 +190,31 @@ function StatusPicker({ value, acting, onChange, onInteract }: { value: StratSta
 }
 
 // ── bot badge with detach action ──────────────────────────────────────────────
-function BotBadge({ botName, strategyId, onDetached, onInteract }: {
+function BotBadge({ botName, botId, symbol, strategyId, onDetached, onInteract, isHedge }: {
   botName: string
+  botId: string
+  symbol: string
   strategyId: string
   onDetached: () => void
   onInteract?: () => void
+  isHedge?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [menuPos, setMenuPos] = useState({ top: 0, right: 0 })
   const [acting, setActing] = useState(false)
+  // 'menu' | 'confirm-blacklist' — step after detach
+  const [step, setStep] = useState<'menu' | 'confirm-blacklist'>('menu')
   const btnRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!open) return
+    if (!open) { setStep('menu'); return }
     const handler = (e: MouseEvent) => {
       const target = e.target as Node
-      if (!btnRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false)
+      if (!btnRef.current?.contains(target) && !menuRef.current?.contains(target)) {
+        setOpen(false)
+        setStep('menu')
+      }
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -217,16 +228,39 @@ function BotBadge({ botName, strategyId, onDetached, onInteract }: {
     setOpen(o => !o)
   }
 
-  const handleDetach = async () => {
+  const handleDetach = () => {
+    // Show blacklist question first — API call happens in the answer handlers
+    setStep('confirm-blacklist')
+  }
+
+  const handleBlacklistYes = async () => {
     setActing(true)
-    setOpen(false)
+    try {
+      await addBotBlacklist(botId, symbol)
+      window.dispatchEvent(new CustomEvent('bot-updated'))
+    } catch { /* non-fatal */ }
     try {
       await detachFromBot(strategyId)
-      onDetached()
-    } finally {
-      setActing(false)
-    }
+    } catch { /* non-fatal */ }
+    setActing(false)
+    setOpen(false)
+    setStep('menu')
+    onDetached()
   }
+
+  const handleBlacklistNo = async () => {
+    setActing(true)
+    try {
+      await detachFromBot(strategyId)
+    } catch { /* non-fatal */ }
+    setActing(false)
+    setOpen(false)
+    setStep('menu')
+    onDetached()
+  }
+
+  const accent = isHedge ? '#f59e0b' : '#c4b5fd'
+  const dot = isHedge ? '#f59e0b' : '#a78bfa'
 
   return (
     <div className="relative flex-shrink-0" onClick={e => { onInteract?.(); e.stopPropagation() }}>
@@ -235,32 +269,62 @@ function BotBadge({ botName, strategyId, onDetached, onInteract }: {
         type="button"
         disabled={acting}
         onClick={handleToggle}
-        className="h-7 inline-flex items-center gap-1.5 px-2.5 text-[10px] font-bold uppercase tracking-[.5px] rounded-[7px] cursor-pointer leading-none font-sans select-none disabled:opacity-40 transition-colors"
-        style={{ background: '#2d1b6b', border: '1px solid rgba(139,92,246,.50)', color: '#c4b5fd' }}
+        className="inline-flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-[.5px] cursor-pointer leading-none font-sans select-none disabled:opacity-40 transition-opacity bg-transparent border-none p-0"
+        style={{ color: accent }}
       >
-        <span className="w-[5px] h-[5px] rounded-full shrink-0 bg-[#a78bfa]" />
+        <span className="w-[5px] h-[5px] rounded-full shrink-0" style={{ background: dot }} />
         {botName}
-        <IcChev open={open} />
+        <IcChev open={open} s={14} />
       </button>
       {open && createPortal(
         <div
           ref={menuRef}
-          className="fixed z-[9999] min-w-[156px] rounded-[9px] p-1"
+          className="fixed z-[9999] rounded-[9px] p-1"
           style={{
             top: menuPos.top,
             right: menuPos.right,
+            minWidth: step === 'confirm-blacklist' ? 220 : 156,
             background: '#181b28',
             border: '1px solid rgba(255,255,255,.22)',
             boxShadow: '0 8px 32px rgba(0,0,0,.85), 0 0 0 1px rgba(255,255,255,.06)',
           }}
         >
-          <button
-            type="button"
-            onClick={handleDetach}
-            className="flex items-center gap-2 px-[9px] py-[8px] text-[12px] font-semibold text-[#c4b5fd] rounded-[6px] cursor-pointer w-full text-left transition-colors hover:bg-white/[.06]"
-          >
-            открепить от бота
-          </button>
+          {step === 'menu' ? (
+            <button
+              type="button"
+              onClick={handleDetach}
+              disabled={acting}
+              className="flex items-center gap-2 px-[9px] py-[8px] text-[12px] font-semibold rounded-[6px] cursor-pointer w-full text-left transition-colors hover:bg-white/[.06] disabled:opacity-40"
+              style={{ color: accent }}
+            >
+              открепить от бота
+            </button>
+          ) : (
+            <div className="px-[9px] py-[8px]">
+              <p className="text-[11px] text-white/70 mb-2 leading-snug">
+                Добавить <span className="font-bold text-white">{symbol}</span> в блэклист бота <span className="font-bold" style={{ color: accent }}>{botName}</span>?
+              </p>
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleBlacklistYes}
+                  disabled={acting}
+                  className="flex-1 py-[5px] text-[11px] font-semibold rounded-[5px] cursor-pointer transition-colors disabled:opacity-40"
+                  style={{ background: accent + '22', color: accent, border: `1px solid ${accent}44` }}
+                >
+                  {acting ? '…' : 'Да'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleBlacklistNo}
+                  disabled={acting}
+                  className="flex-1 py-[5px] text-[11px] font-semibold rounded-[5px] cursor-pointer transition-colors hover:bg-white/[.06] text-white/50 border border-white/10 disabled:opacity-40"
+                >
+                  {acting ? '…' : 'Нет'}
+                </button>
+              </div>
+            </div>
+          )}
         </div>,
         document.body
       )}
@@ -302,7 +366,7 @@ function logLvlStyle(lvl: string) {
 }
 
 // ── main component ─────────────────────────────────────────────────────────────
-export function StrategyCard({ strategy: s, accounts, orders, positions, tickerPrices, onEdit, onChanged, selected, onSelect, isOpen, onToggleOpen, liveSignal }: Props) {
+export function StrategyCard({ strategy: s, accounts, orders, positions, tickerPrices, onEdit, onChanged, selected, onSelect, isOpen, onToggleOpen, liveSignal, hedgeWatcherCount, hasActiveHedge, isHedgeItself }: Props) {
   const navigate = useNavigate()
   const [cs, setCs] = useState<CardState>({ state: null, events: [], eventTotal: 0, loading: false, acting: false, actionError: null })
   const [localEvents, setLocalEvents] = useState<StrategyEvent[] | null>(null)
@@ -369,6 +433,11 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
       (!s.hedge_mode || p.positionIdx === wantIdx)
     ) ?? null
   }, [positions, s.symbol, s.direction, s.hedge_mode])
+
+  // Dim row-2 metrics only when stopped AND there is no open position.
+  // If a position is still open while stopped, row 2 stays fully coloured;
+  // only row 1 (coin name / direction badge) is greyed out.
+  const stoppedNoPos = s.status === 'stopped' && !stratPosition
 
   const pnlUsdt = useMemo(() => {
     if (!stratPosition) return null
@@ -524,14 +593,14 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
 
 
   function tpPrice() {
-    if (!cs.state || cs.state.avg_entry === 0) return null
+    if (!cs.state || cs.state.avg_entry === 0 || s.tp_pct === null) return null
     return s.direction === 'short'
       ? cs.state.avg_entry * (1 - s.tp_pct / 100)
       : cs.state.avg_entry * (1 + s.tp_pct / 100)
   }
 
   function slPrice() {
-    if (!cs.state || cs.state.start_price === 0 || cs.state.avg_entry === 0) return null
+    if (!cs.state || cs.state.start_price === 0 || cs.state.avg_entry === 0 || s.sl_pct === null) return null
     return s.direction === 'short'
       ? cs.state.start_price * (1 + s.sl_pct / 100)
       : cs.state.start_price * (1 - s.sl_pct / 100)
@@ -624,17 +693,17 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
     }
   }
 
-  // ── card border/bg — matches AccountCard style ───────────────────────────────
+  // ── card border/bg ────────────────────────────────────────────────────────────
   const isActive = s.status === 'active'
-  const baseBg     = isActive ? 'rgba(255,255,255,.05)' : 'rgba(255,255,255,.02)'
-  const hoverBg    = isActive ? 'rgba(255,255,255,.08)' : 'rgba(255,255,255,.045)'
-  const baseBorder = isActive ? 'rgba(255,255,255,.10)' : 'rgba(255,255,255,.06)'
+  // stopped → dim; active → brighter; selected → brightest
   const cardStyle: React.CSSProperties = {
     background: selected
-      ? 'linear-gradient(90deg,rgba(74,125,255,.18),rgba(74,125,255,.04))'
-      : hovered ? hoverBg : baseBg,
-    border: `1px solid ${selected ? 'rgba(74,125,255,.22)' : baseBorder}`,
-    ...(selected ? { boxShadow: 'inset 2px 0 0 #5b8cff' } : {}),
+      ? 'rgba(255,255,255,.12)'
+      : isActive
+        ? hovered ? 'rgba(255,255,255,.09)' : 'rgba(255,255,255,.06)'
+        : hovered ? 'rgba(255,255,255,.045)' : 'rgba(255,255,255,.02)',
+    border: `1px solid ${selected ? 'rgba(255,255,255,.22)' : isActive ? 'rgba(255,255,255,.11)' : 'rgba(255,255,255,.06)'}`,
+    ...(selected ? { boxShadow: 'inset 2px 0 0 rgba(255,255,255,.40)' } : {}),
   }
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -643,29 +712,75 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
 
       {/* ── collapsed header ── */}
       <div
-        className="flex flex-col gap-2 px-3 py-2.5 cursor-pointer"
+        className="flex flex-col gap-2 px-3 py-2.5 cursor-pointer rounded-t-xl"
+        style={{
+          background: selected
+            ? 'linear-gradient(180deg, rgba(255,255,255,0.10) 0%, transparent 100%)'
+            : isActive
+              ? 'linear-gradient(180deg, rgba(255,255,255,0.05) 0%, transparent 100%)'
+              : 'none',
+        }}
         onClick={handleHeaderClick}
       >
         {/* row 1: sym · side tag · account · gear · status */}
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 min-w-0">
           {/* left: symbol + badges */}
-          <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
-            <CoinIcon symbol={s.symbol} className="w-5 h-5" />
-            <span className="font-display font-bold text-[15px] text-[#f2f5fb] tracking-[-0.2px] leading-none">{s.symbol}</span>
-            <span
-              className="inline-flex items-center gap-[3px] px-1.5 py-[2px] rounded-[5px] text-[10px] font-bold uppercase tracking-[.5px] leading-none"
-              style={isLong
-                ? { background: 'rgba(65,210,139,.14)', border: '1px solid rgba(65,210,139,.25)', color: '#5be0a0' }
-                : { background: 'rgba(248,113,113,.14)', border: '1px solid rgba(248,113,113,.40)', color: '#fca5a5' }}
-            >
-              {isLong ? <IcUp s={9} w={2.6} /> : <IcDown s={9} w={2.6} />}
-              <span style={{ transform: 'translateY(-.5px)', display: 'inline-block' }}>{s.direction}</span>
-            </span>
+          <div className="min-w-0 flex-1 flex items-center gap-2 overflow-hidden">
+            <CoinIcon symbol={s.symbol} className="w-5 h-5 shrink-0" />
+            <span className={`font-display font-bold text-[15px] tracking-[-0.2px] leading-none truncate ${s.status === 'stopped' ? 'text-slate-500' : 'text-[#f2f5fb]'}`}>{s.symbol}</span>
+            {s.status === 'stopped' ? (
+              <span
+                className="shrink-0 inline-flex items-center gap-[3px] px-1.5 py-[2px] rounded-[4px] text-[10px] font-bold uppercase tracking-[.5px] leading-none"
+                style={{ background: 'rgba(148,163,184,.12)', color: '#94a3b8' }}
+              >
+                {isLong ? <IcUp s={9} w={2.6} /> : <IcDown s={9} w={2.6} />}
+                <span style={{ transform: 'translateY(-.5px)', display: 'inline-block' }}>
+                  {isLong ? 'Long' : 'Short'}
+                </span>
+              </span>
+            ) : (
+              <span
+                className="shrink-0 inline-flex items-center justify-center w-[18px] h-[18px] rounded-[4px]"
+                style={isLong
+                  ? { background: 'rgba(65,210,139,.18)', color: '#5be0a0' }
+                  : { background: 'rgba(248,113,113,.18)', color: '#fca5a5' }}
+              >
+                {isLong ? <IcUp s={11} w={2.6} /> : <IcDown s={11} w={2.6} />}
+              </span>
+            )}
+            {(() => {
+              // Синий закрашенный: эта позиция стала мэйн — хедж уже открыт
+              const showBlueFilled = !!hasActiveHedge
+              // Оранжевый закрашенный: ЭТА стратегия и есть хедж, и уже взяла позицию
+              const showOrangeFilled = !!(isHedgeItself && s.active_levels > 0)
+              // Синий контур: N штук = количество хедж-ботов, мониторящих эту стратегию (хедж ещё не открыт)
+              const blueOutlineCount = (!hasActiveHedge && !isHedgeItself) ? (hedgeWatcherCount ?? 0) : 0
+              if (blueOutlineCount === 0 && !showBlueFilled && !showOrangeFilled) return null
+              return (
+                <span className="shrink-0 inline-flex items-center gap-[2px]">
+                  {blueOutlineCount > 0 && Array.from({ length: blueOutlineCount }).map((_, i) => (
+                    <span key={i} title={blueOutlineCount > 1 ? `Под мониторингом ${blueOutlineCount} хедж-ботов` : 'Под мониторингом хедж-бота'}>
+                      <Shield size={17} strokeWidth={2} style={{ color: '#3b82f6' }} />
+                    </span>
+                  ))}
+                  {showBlueFilled && (
+                    <span title="Мэйн-позиция — хедж открыт">
+                      <Shield size={17} fill="#3b82f6" stroke="none" />
+                    </span>
+                  )}
+                  {showOrangeFilled && (
+                    <span title="Хедж-стратегия — позиция взята">
+                      <Shield size={17} fill="#f97316" stroke="none" />
+                    </span>
+                  )}
+                </span>
+              )
+            })()}
           </div>
 
           {/* right: status · gear */}
           {s.bot_id
-            ? <BotBadge botName={s.bot_name ?? 'Bot'} strategyId={s.id} onDetached={onChanged} onInteract={() => onSelect?.(s)} />
+            ? <BotBadge botName={s.bot_name ?? 'Bot'} botId={s.bot_id ?? ''} symbol={s.symbol} strategyId={s.id} onDetached={onChanged} onInteract={() => onSelect?.(s)} isHedge={!!isHedgeItself} />
             : (
               <div className="flex flex-col items-end gap-0.5">
                 <StatusPicker value={s.status} acting={cs.acting} onChange={handleStatus} onInteract={() => onSelect?.(s)} />
@@ -744,38 +859,38 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
         </div>
 
         {/* row 2: metrics · chev */}
-        <div className="flex items-center gap-2 overflow-hidden">
-          <div className="flex-1 flex items-center gap-3.5 overflow-hidden">
+        <div className="flex items-center overflow-hidden">
+          <div className="flex-1 flex items-center gap-2 overflow-hidden">
             <div className="relative group/ctip flex items-baseline gap-1.5 shrink-0">
-              <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">
+              <span className={`text-[11px] uppercase tracking-[.8px] font-semibold ${stoppedNoPos ? 'text-slate-600' : 'text-slate-400'}`}>
                 {s.strategy_type === 'matrix' ? 'Matrix' : 'Grid'}
               </span>
-              <span className={`text-[13px] font-semibold ${s.active_levels > 0 ? 'text-slate-200' : 'text-slate-500'}`}>
+              <span className={`text-[13px] font-semibold ${stoppedNoPos ? 'text-slate-600' : s.active_levels > 0 ? 'text-slate-200' : 'text-slate-500'}`}>
                 {s.active_levels}/{s.grid_levels}
               </span>
               <CardTip text={s.strategy_type === 'matrix' ? 'Заполненных слотов матрицы / всего слотов в цикле' : 'Исполненных уровней сетки / всего уровней в текущем цикле'} />
             </div>
             <div className="w-px h-2.5 bg-white/[.08] shrink-0" />
             <div className="relative group/ctip flex items-baseline gap-1.5 shrink-0">
-              <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">Объём</span>
-              <span className={`text-[13px] font-semibold whitespace-nowrap ${(stratPosition?.sizeUsdt ?? 0) > 0 ? 'text-slate-200' : 'text-slate-500'}`}>
+              <span className={`text-[11px] uppercase tracking-[.8px] font-semibold ${stoppedNoPos ? 'text-slate-600' : 'text-slate-400'}`}>Объём</span>
+              <span className={`text-[13px] font-semibold whitespace-nowrap ${stoppedNoPos ? 'text-slate-600' : (stratPosition?.sizeUsdt ?? 0) > 0 ? 'text-slate-200' : 'text-slate-500'}`}>
                 {(stratPosition?.sizeUsdt ?? 0) > 0 ? `${(stratPosition!.sizeUsdt).toFixed(1)}$` : '0$'}
               </span>
               <CardTip text="Реальный объём открытой позиции с биржи (size × mark price)" />
             </div>
             <div className="w-px h-2.5 bg-white/[.08] shrink-0" />
             <div className="relative group/ctip flex items-baseline gap-1.5 shrink-0">
-              <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">Маржа</span>
-              <span className={`text-[13px] font-semibold whitespace-nowrap ${stratPosition?.positionIM ? 'text-slate-200' : 'text-slate-500'}`}>
+              <span className={`text-[11px] uppercase tracking-[.8px] font-semibold ${stoppedNoPos ? 'text-slate-600' : 'text-slate-400'}`}>Маржа</span>
+              <span className={`text-[13px] font-semibold whitespace-nowrap ${stoppedNoPos ? 'text-slate-600' : stratPosition?.positionIM ? 'text-slate-200' : 'text-slate-500'}`}>
                 {stratPosition?.positionIM ? `${stratPosition.positionIM.toFixed(2)}$` : '—'}
               </span>
               <CardTip text="Начальная маржа позиции (из данных биржи)" />
             </div>
             <div className="w-px h-2.5 bg-white/[.08] shrink-0" />
             <div className="relative group/ctip flex items-baseline gap-1.5 shrink-0">
-              <span className="text-[11px] text-slate-400 uppercase tracking-[.8px] font-semibold">P&L</span>
+              <span className={`text-[11px] uppercase tracking-[.8px] font-semibold ${stoppedNoPos ? 'text-slate-600' : 'text-slate-400'}`}>P&L</span>
               <span className={`text-[13px] font-semibold whitespace-nowrap ${
-                pnlUsdt === null ? 'text-slate-500' : pnlUsdt > 0 ? 'text-emerald-300' : pnlUsdt < 0 ? 'text-rose-300' : 'text-slate-500'
+                stoppedNoPos ? 'text-slate-600' : pnlUsdt === null ? 'text-slate-500' : pnlUsdt > 0 ? 'text-emerald-300' : pnlUsdt < 0 ? 'text-rose-300' : 'text-slate-500'
               }`}>
                 {pnlUsdt === null
                   ? '—'
@@ -1023,7 +1138,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
                           <span className="text-[9px] text-slate-500 uppercase tracking-[.6px] font-semibold">{s.sl_type === 'conditional' ? 'cond.' : 'prog.'}</span>
                         </div>
                         <div className="font-display text-[18px] font-bold tracking-[-0.4px] text-rose-300">
-                          {s.sl_pct < 0 ? s.sl_pct : `-${s.sl_pct}`}%
+                          {s.sl_pct !== null ? `${s.sl_pct < 0 ? s.sl_pct : `-${s.sl_pct}`}%` : '—'}
                         </div>
                         <div className="text-[11px] text-slate-500">
                           {slPrice() ? slPrice()!.toFixed(2) + ' от start' : 'от start price'}

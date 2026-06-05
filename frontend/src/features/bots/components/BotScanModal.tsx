@@ -3,6 +3,8 @@ import { Loader2, RefreshCw } from 'lucide-react';
 import { apiClient } from '../../../api/client';
 import type { Bot } from '../types';
 
+// ── Regular scan types ──────────────────────────────────────────────────────
+
 type ScanHit = {
   symbol: string;
   signal_state: 'buy' | 'sell';
@@ -33,28 +35,62 @@ type PreviewCfg = {
   trailing_callback_pct?: number;
 };
 
-type ScanResp = {
+type RegularScanResp = {
+  mode?: undefined;
   results: ScanHit[];
   scanned: number;
   activation_signals: string[];
   preview: PreviewCfg;
 };
 
+// ── Hedge scan types ────────────────────────────────────────────────────────
+
+type HedgeScanPos = {
+  symbol: string;
+  main_dir: 'long' | 'short';
+  hedge_dir: 'long' | 'short';
+  size: number;
+  entry_price: number;
+  mark_price: number;
+  unrealised_pnl: number;
+  metric_label: string;
+  metric_value: number;
+  threshold: number;
+  meets_criteria: boolean;
+  status: 'hedged' | 'ready' | 'monitoring';
+  hedge_strat_id?: string;
+  hedge_pnl?: number;
+  hedge_size?: number;
+};
+
+type HedgeScanResp = {
+  mode: 'hedge';
+  positions: HedgeScanPos[];
+};
+
+type ScanResp = RegularScanResp | HedgeScanResp;
+
+// ── Props ───────────────────────────────────────────────────────────────────
+
 type Props = {
   bot: Bot;
   onClose: () => void;
 };
 
+// ── Component ───────────────────────────────────────────────────────────────
+
 export function BotScanModal({ bot, onClose }: Props) {
   const [data, setData]       = useState<ScanResp | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState<string | null>(null);
-  const [confirm, setConfirm] = useState<ScanHit | null>(null);
+
+  // Regular scan state
+  const [confirm, setConfirm]     = useState<ScanHit | null>(null);
   const [triggering, setTriggering] = useState(false);
   const [triggered, setTriggered]   = useState<Set<string>>(new Set());
 
   // Dragging
-  const [pos, setPos] = useState({ left: Math.max(40, window.innerWidth / 2 - 240), top: 80 });
+  const [pos, setPos] = useState({ left: Math.max(40, window.innerWidth / 2 - 260), top: 80 });
   const drag = useRef<{ mx: number; my: number; left: number; top: number } | null>(null);
 
   useEffect(() => {
@@ -105,26 +141,35 @@ export function BotScanModal({ bot, onClose }: Props) {
     }
   };
 
+  const isHedgeMode = data?.mode === 'hedge';
+  const hedgeData   = isHedgeMode ? (data as HedgeScanResp) : null;
+  const regularData = !isHedgeMode ? (data as RegularScanResp | null) : null;
+
   const activeCount = bot.activeStrategiesCount + triggered.size;
-  const maxStrat = bot.maxStrategies ?? 0;
+  const maxStrat    = bot.maxStrategies ?? 0;
   const limitReached = maxStrat > 0 && activeCount >= maxStrat;
 
-  // Actionable = not blocked, not already open, not yet triggered in this session.
-  // Priority = first N actionable hits the bot would open (N = available slots, or all if unlimited).
-  const actionableHits = data
-    ? data.results.filter(h => !h.dir_blocked && !h.already_open && !triggered.has(`${h.symbol}:${h.direction}`))
+  const actionableHits = regularData
+    ? regularData.results.filter(h => !h.dir_blocked && !h.already_open && !triggered.has(`${h.symbol}:${h.direction}`))
     : [];
   const availableSlots = maxStrat > 0 ? Math.max(0, maxStrat - activeCount) : actionableHits.length;
   const priorityRank = new Map(
     actionableHits.slice(0, availableSlots).map((h, i) => [`${h.symbol}:${h.direction}`, i + 1])
   );
 
-  const cfg = data?.preview;
+  const cfg = regularData?.preview;
+
+  // Hedge counts
+  const hedgedCount    = hedgeData?.positions.filter(p => p.status === 'hedged').length ?? 0;
+  const readyCount     = hedgeData?.positions.filter(p => p.status === 'ready').length ?? 0;
+  const monitoringCount = hedgeData?.positions.filter(p => p.status === 'monitoring').length ?? 0;
+
+  const modalWidth = isHedgeMode ? 560 : 480;
 
   return (
     <div
       className="fixed z-[9999] flex flex-col rounded-xl overflow-hidden shadow-2xl"
-      style={{ left: pos.left, top: pos.top, width: 480, maxHeight: '80vh', background: '#1a1a2e', border: '1px solid #3a3a5c' }}
+      style={{ left: pos.left, top: pos.top, width: modalWidth, maxHeight: '80vh', background: '#1a1a2e', border: '1px solid #3a3a5c' }}
     >
       {/* Header */}
       <div
@@ -134,15 +179,34 @@ export function BotScanModal({ bot, onClose }: Props) {
       >
         <div className="flex items-center gap-3">
           <span className="text-[11px] font-mono font-semibold text-slate-200">
-            ⚡ ТЕСТ БОТА ·{' '}
+            {isHedgeMode ? '🛡 ХЕДЖ-МОНИТОР' : '⚡ ТЕСТ БОТА'} ·{' '}
             <span className="text-[#a78bfa]">{bot.name}</span>
           </span>
-          {data && !loading && (
+          {isHedgeMode && hedgeData && !loading && (
+            <div className="flex items-center gap-1.5">
+              {hedgedCount > 0 && (
+                <span className="text-[10px] font-mono font-semibold text-emerald-400 bg-emerald-500/10 rounded px-1">
+                  ✓ {hedgedCount}
+                </span>
+              )}
+              {readyCount > 0 && (
+                <span className="text-[10px] font-mono font-semibold text-amber-400 bg-amber-500/10 rounded px-1">
+                  ⚡ {readyCount}
+                </span>
+              )}
+              {monitoringCount > 0 && (
+                <span className="text-[10px] font-mono text-slate-500 bg-white/[.04] rounded px-1">
+                  👁 {monitoringCount}
+                </span>
+              )}
+            </div>
+          )}
+          {!isHedgeMode && regularData && !loading && (
             <span className="text-[10px] text-slate-500">
-              просканировано: <span className="text-slate-300">{data.scanned}</span>
+              просканировано: <span className="text-slate-300">{regularData.scanned}</span>
             </span>
           )}
-          {maxStrat > 0 && (
+          {!isHedgeMode && maxStrat > 0 && (
             <span className={`text-[10px] font-mono font-semibold ${limitReached ? 'text-rose-400' : 'text-slate-400'}`}>
               {activeCount}/{maxStrat}
             </span>
@@ -155,10 +219,10 @@ export function BotScanModal({ bot, onClose }: Props) {
             onClick={scan}
             disabled={loading}
             className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold text-slate-300 border border-white/[.10] bg-white/[.04] hover:bg-white/[.10] disabled:opacity-40 transition-colors"
-            title="Проверить рынок"
+            title="Обновить"
           >
             <RefreshCw size={9} className={loading ? 'animate-spin' : ''} />
-            Скан
+            {isHedgeMode ? 'Обновить' : 'Скан'}
           </button>
           <button
             onClick={onClose}
@@ -167,11 +231,11 @@ export function BotScanModal({ bot, onClose }: Props) {
         </div>
       </div>
 
-      {/* Activation signals bar */}
-      {data && data.activation_signals.length > 0 && (
+      {/* Regular bot: activation signals bar */}
+      {!isHedgeMode && regularData && regularData.activation_signals.length > 0 && (
         <div className="shrink-0 px-4 py-1.5 flex items-center gap-2 border-b" style={{ borderColor: '#2e2e48', background: 'rgba(91,58,237,.06)' }}>
           <span className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold shrink-0">Сигналы</span>
-          {data.activation_signals.map(s => (
+          {regularData.activation_signals.map(s => (
             <span key={s} className="font-mono text-[10px] font-semibold text-[#a78bfa] bg-[#5b3aed]/[.15] border border-[#7c3aed]/30 rounded px-1.5 py-px">
               {s}
             </span>
@@ -190,15 +254,44 @@ export function BotScanModal({ bot, onClose }: Props) {
       <div className="flex-1 overflow-auto">
         {!data && !loading && (
           <div className="px-4 py-8 text-center text-[12px] text-slate-500">
-            Нажмите «Скан» чтобы проверить рынок
+            {isHedgeMode ? 'Нажмите «Обновить»' : 'Нажмите «Скан» чтобы проверить рынок'}
           </div>
         )}
         {loading && (
-          <div className="px-4 py-8 text-center text-[12px] text-slate-500">Сканируем символы…</div>
+          <div className="px-4 py-8 text-center text-[12px] text-slate-500">
+            {isHedgeMode ? 'Загружаем позиции…' : 'Сканируем символы…'}
+          </div>
         )}
 
-        {data && !loading && (
-          data.results.length === 0 ? (
+        {/* ── Hedge mode view ── */}
+        {isHedgeMode && hedgeData && !loading && (
+          hedgeData.positions.length === 0 ? (
+            <div className="px-4 py-8 text-center text-[12px] text-slate-500">
+              Нет открытых позиций в зоне мониторинга
+            </div>
+          ) : (
+            <table className="w-full text-[11px] font-mono">
+              <thead>
+                <tr className="text-[10px] text-slate-500 border-b" style={{ borderColor: '#272740' }}>
+                  <th className="px-3 py-1.5 text-left font-normal">Символ</th>
+                  <th className="px-3 py-1.5 text-left font-normal">Позиция</th>
+                  <th className="px-3 py-1.5 text-right font-normal">PnL</th>
+                  <th className="px-3 py-1.5 text-left font-normal">Метрика</th>
+                  <th className="px-3 py-1.5 text-left font-normal">Статус</th>
+                </tr>
+              </thead>
+              <tbody>
+                {hedgeData.positions.map(p => (
+                  <HedgePosRow key={`${p.symbol}:${p.main_dir}`} pos={p} />
+                ))}
+              </tbody>
+            </table>
+          )
+        )}
+
+        {/* ── Regular mode view ── */}
+        {!isHedgeMode && regularData && !loading && (
+          regularData.results.length === 0 ? (
             <div className="px-4 py-8 text-center text-[12px] text-slate-500">
               Нет символов с активными сигналами
             </div>
@@ -227,7 +320,7 @@ export function BotScanModal({ bot, onClose }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {data.results.map(hit => {
+                {regularData.results.map(hit => {
                   const key = `${hit.symbol}:${hit.direction}`;
                   const isDone = triggered.has(key);
                   const isConfirming = confirm?.symbol === hit.symbol && confirm?.direction === hit.direction;
@@ -333,30 +426,27 @@ export function BotScanModal({ bot, onClose }: Props) {
         )}
       </div>
 
-      {/* Confirmation panel */}
-      {confirm && cfg && (
+      {/* Regular mode: Confirmation panel */}
+      {!isHedgeMode && confirm && cfg && (
         <div className="shrink-0 border-t" style={{ borderColor: '#3a3a5c', background: '#202035' }}>
           <div className="px-4 py-2 border-b text-[10px] font-semibold text-slate-400 uppercase tracking-wider" style={{ borderColor: '#2e2e48' }}>
             Подтверждение · {confirm.symbol} {confirm.direction.toUpperCase()}
           </div>
           <div className="px-4 py-2.5">
-            {/* Why */}
             <div className="mb-2.5 text-[11px] text-slate-400">
               <span className="text-slate-500">Почему: </span>
               сигнал{' '}
               <span className={confirm.signal_state === 'buy' ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-semibold'}>
                 {confirm.signal_state.toUpperCase()}
               </span>
-              {data && data.activation_signals.length > 0 && (
-                <span className="text-slate-500"> ({data.activation_signals.join(', ')})</span>
+              {regularData && regularData.activation_signals.length > 0 && (
+                <span className="text-slate-500"> ({regularData.activation_signals.join(', ')})</span>
               )}
               {' → '}
               <span className={confirm.direction === 'long' ? 'text-blue-400 font-semibold' : 'text-orange-400 font-semibold'}>
                 {confirm.direction.toUpperCase()}
               </span>
             </div>
-
-            {/* Strategy preview grid */}
             <div className="grid grid-cols-3 gap-x-4 gap-y-1 mb-3 font-mono text-[10px]">
               <KV k="тип" v={cfg.strategy_type ?? 'grid'} />
               <KV k="плечо" v={`×${cfg.leverage ?? 1}`} />
@@ -370,7 +460,6 @@ export function BotScanModal({ bot, onClose }: Props) {
                 <KV k="трейлинг" v={`${cfg.trailing_activation_pct}% / ${cfg.trailing_callback_pct}%`} />
               )}
             </div>
-
             <div className="flex gap-2">
               <button
                 type="button"
@@ -396,12 +485,130 @@ export function BotScanModal({ bot, onClose }: Props) {
   );
 }
 
+// ── Hedge position row ──────────────────────────────────────────────────────
+
+function HedgePosRow({ pos }: { pos: HedgeScanPos }) {
+  const isHedged    = pos.status === 'hedged';
+  const isReady     = pos.status === 'ready';
+
+  // Row accent color based on status
+  const rowStyle: React.CSSProperties = {
+    borderColor: '#1e1e30',
+    background: isHedged
+      ? 'rgba(52,211,153,.03)'
+      : isReady
+        ? 'rgba(251,191,36,.03)'
+        : undefined,
+    boxShadow: isHedged
+      ? 'inset 3px 0 0 rgba(52,211,153,.5)'
+      : isReady
+        ? 'inset 3px 0 0 rgba(251,191,36,.5)'
+        : undefined,
+  };
+
+  // Metric progress bar
+  const pct = pos.threshold > 0 ? Math.min(100, (pos.metric_value / pos.threshold) * 100) : 0;
+  const barColor = isHedged ? '#34d399' : isReady ? '#fbbf24' : '#6366f1';
+
+  const totalPnl = pos.unrealised_pnl + (isHedged ? (pos.hedge_pnl ?? 0) : 0);
+
+  return (
+    <tr className="border-b hover:bg-white/[.02] transition-colors" style={rowStyle}>
+      {/* Symbol + dirs */}
+      <td className="px-3 py-2 text-slate-100 font-semibold">
+        <div>
+          <span>{pos.symbol.replace(/USDT$/i, '')}<span className="text-slate-600">USDT</span></span>
+        </div>
+        <div className="flex items-center gap-1 mt-0.5">
+          <span className={`text-[9px] font-semibold ${pos.main_dir === 'long' ? 'text-blue-400' : 'text-orange-400'}`}>
+            {pos.main_dir === 'long' ? '▲' : '▼'} {pos.main_dir.toUpperCase()}
+          </span>
+          {isHedged && (
+            <>
+              <span className="text-slate-600 text-[9px]">→</span>
+              <span className={`text-[9px] font-semibold ${pos.hedge_dir === 'long' ? 'text-blue-400' : 'text-orange-400'}`}>
+                {pos.hedge_dir === 'long' ? '▲' : '▼'} хедж
+              </span>
+            </>
+          )}
+        </div>
+      </td>
+
+      {/* Position info */}
+      <td className="px-3 py-2">
+        <div className="text-slate-300 text-[10px]">{pos.size} · ×</div>
+        <div className="text-slate-500 text-[9px]">
+          вход {fmtPrice(pos.entry_price)}
+          {isHedged && pos.hedge_size ? (
+            <span className="ml-1 text-slate-600">/ хедж {pos.hedge_size}</span>
+          ) : null}
+        </div>
+      </td>
+
+      {/* PnL */}
+      <td className="px-3 py-2 text-right">
+        <div className={`text-[11px] font-semibold ${pos.unrealised_pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+          {pos.unrealised_pnl >= 0 ? '+' : ''}{pos.unrealised_pnl.toFixed(2)}$
+        </div>
+        {isHedged && (
+          <div className={`text-[9px] ${totalPnl >= 0 ? 'text-emerald-500' : 'text-rose-500'} opacity-70`}>
+            итого {totalPnl >= 0 ? '+' : ''}{totalPnl.toFixed(2)}$
+          </div>
+        )}
+      </td>
+
+      {/* Metric */}
+      <td className="px-3 py-2" style={{ minWidth: 110 }}>
+        <div className="text-[9px] text-slate-500 mb-0.5">{pos.metric_label}</div>
+        <div className="flex items-center gap-1.5">
+          <span className={`text-[10px] font-semibold tabular-nums ${pos.meets_criteria ? 'text-amber-300' : 'text-slate-300'}`}>
+            {pos.metric_value.toFixed(2)}
+          </span>
+          <span className="text-slate-600 text-[9px]">/ {pos.threshold.toFixed(2)}</span>
+        </div>
+        {/* Progress bar */}
+        <div className="mt-1 h-[3px] rounded-full bg-white/[.06] overflow-hidden" style={{ width: 90 }}>
+          <div
+            className="h-full rounded-full transition-all"
+            style={{ width: `${pct}%`, background: barColor, opacity: 0.7 }}
+          />
+        </div>
+      </td>
+
+      {/* Status badge */}
+      <td className="px-3 py-2">
+        {isHedged ? (
+          <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5">
+            ✓ Хеджируется
+          </span>
+        ) : isReady ? (
+          <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5">
+            ⚡ Условие
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-[9px] text-slate-500 bg-white/[.03] border border-white/[.06] rounded px-1.5 py-0.5">
+            👁 Мониторинг
+          </span>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
 function fmtTTL(sec: number | undefined): string | null {
   if (sec === undefined || sec < 0) return null;
   if (sec === 0) return '0с';
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return m > 0 ? `${m}м ${s}с` : `${s}с`;
+}
+
+function fmtPrice(price: number): string {
+  if (price >= 1000) return price.toFixed(1);
+  if (price >= 1)    return price.toFixed(3);
+  return price.toFixed(6);
 }
 
 function KV({ k, v }: { k: string; v: string }) {

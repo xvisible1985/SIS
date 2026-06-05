@@ -80,14 +80,22 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
   async function handleCreateStrategy(pos: Position) {
     setContextMenu(null)
     const posDir = pos.side === 'Buy' ? 'long' : 'short'
+
+    // Debug: log all strategies for this symbol to console
+    const symStrategies = strategies.filter(s => s.symbol === pos.symbol)
+    console.log(`[createStrategy] ${pos.symbol} ${posDir} — все стратегии по паре:`, symStrategies.map(s => ({ id: s.id, dir: s.direction, status: s.status, bot: s.bot_id })))
+
     const existing = strategies.find(s =>
       s.account_id === accountId &&
       s.symbol === pos.symbol &&
-      (s.direction === posDir || s.direction === 'both')
+      (s.direction === posDir || s.direction === 'both') &&
+      (s.status === 'active' || s.status === 'finishing')
     )
     if (existing) {
-      setFlashMsg({ text: `Стратегия по ${pos.symbol} уже существует`, ok: false })
-      setTimeout(() => setFlashMsg(null), 4000)
+      const msg = `Стратегия по ${pos.symbol} уже существует (id=${existing.id?.slice(0,8)} status=${existing.status} dir=${existing.direction})`
+      console.warn('[createStrategy] blocked by frontend check:', existing)
+      setFlashMsg({ text: msg, ok: false })
+      setTimeout(() => setFlashMsg(null), 10000)
       return
     }
     const key = `${pos.symbol}-${pos.side}`
@@ -123,15 +131,19 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
         matrix_entry_level: { size_pct: 100, stop_pct: null, stop_cond_pct: null, stop_replace_pct: null, tp_pct: 1.5 },
         matrix_rebuild_on_sl: false,
         matrix_rebuild_from_entry: false,
+        size_as_main: false,
       })
       listStrategies().then(setStrategies).catch(() => {})
       window.dispatchEvent(new CustomEvent('strategy-created'))
       setFlashMsg({ text: `Стратегия ${pos.symbol} создана`, ok: true })
+      setTimeout(() => setFlashMsg(null), 4000)
     } catch (e: any) {
-      setFlashMsg({ text: `Ошибка: ${e?.response?.data?.error ?? e?.message ?? 'неизвестная ошибка'}`, ok: false })
+      const errMsg = e?.message ?? e?.response?.data?.error ?? 'неизвестная ошибка'
+      console.error('[createStrategy] API error:', e)
+      setFlashMsg({ text: `Ошибка создания ${pos.symbol}: ${errMsg}`, ok: false })
+      setTimeout(() => setFlashMsg(null), 15000)
     } finally {
       setCreatingFor(null)
-      setTimeout(() => setFlashMsg(null), 4000)
     }
   }
 
@@ -160,18 +172,22 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
       )}
 
       {flashMsg && (
-        <div className={`absolute top-2 left-1/2 -translate-x-1/2 z-50 px-3 py-1.5 rounded text-xs font-medium shadow-lg whitespace-nowrap ${flashMsg.ok ? 'bg-green-900/90 text-green-300 border border-green-700/50' : 'bg-red-900/90 text-red-300 border border-red-700/50'}`}>
+        <div className={`absolute top-2 left-1/2 -translate-x-1/2 z-50 px-3 py-2 rounded text-xs font-medium shadow-lg max-w-[90%] break-words text-center ${flashMsg.ok ? 'bg-green-900/90 text-green-300 border border-green-700/50' : 'bg-red-900/90 text-red-300 border border-red-700/50'}`}>
           {flashMsg.text}
         </div>
       )}
 
       {contextMenu && (() => {
         const cmDir = contextMenu.pos.side === 'Buy' ? 'long' : 'short'
-        const strategyExists = strategies.some(s =>
+        const relatedStrategies = strategies.filter(s =>
           s.account_id === accountId &&
-          s.symbol === contextMenu.pos.symbol &&
-          (s.direction === cmDir || s.direction === 'both')
+          s.symbol === contextMenu.pos.symbol
         )
+        const strategyExists = relatedStrategies.some(s =>
+          (s.direction === cmDir || s.direction === 'both') &&
+          (s.status === 'active' || s.status === 'finishing')
+        )
+        console.log(`[contextMenu] ${contextMenu.pos.symbol} ${cmDir} — strategyExists=${strategyExists}, стратегии:`, relatedStrategies.map(s => ({ id: s.id?.slice(0,8), dir: s.direction, status: s.status })))
         return (
           <div
             ref={menuRef}
@@ -185,7 +201,7 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
               className={`w-full px-3 py-1.5 text-left text-xs transition-colors ${strategyExists ? 'text-gray-500 cursor-not-allowed' : 'text-gray-200 hover:bg-gray-700'}`}
             >
               Создать стратегию
-              {strategyExists && <span className="ml-1.5 text-[10px] text-gray-600">— уже есть</span>}
+              {strategyExists && <span className="ml-1.5 text-[10px] text-gray-600">— заблокировано (см. консоль)</span>}
             </button>
           </div>
         )

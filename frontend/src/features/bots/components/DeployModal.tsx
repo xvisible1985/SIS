@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { X, Rocket, Users } from 'lucide-react';
 import type { Bot } from '../types';
+import { CoinMultiPicker } from '../../../components/common/CoinMultiPicker';
 
 type Props = {
   bot: Bot;
@@ -102,22 +103,22 @@ export function DeployModal({ bot, onDeploy, onClose }: Props) {
             <div className="mb-1 text-[11px] text-slate-500">
               Whitelist — торговать только этими символами (пусто = без ограничений)
             </div>
-            <TagInput
-              tags={whitelist}
-              setTags={setWhitelist}
-              placeholder="BTCUSDT — Enter"
+            <CoinMultiPicker
+              values={whitelist}
+              onChange={setWhitelist}
               color="blue"
+              placeholder="Выбрать монеты для whitelist..."
             />
           </div>
           <div>
             <div className="mb-1 text-[11px] text-slate-500">
               Blacklist — исключить эти символы
             </div>
-            <TagInput
-              tags={blacklist}
-              setTags={setBlacklist}
-              placeholder="DOGEUSDT — Enter"
+            <CoinMultiPicker
+              values={blacklist}
+              onChange={setBlacklist}
               color="red"
+              placeholder="Выбрать монеты для blacklist..."
             />
           </div>
         </div>
@@ -152,72 +153,6 @@ function StatChip({ label, value, color = 'text-slate-200' }: { label: string; v
     <div className="rounded-[8px] border border-white/[.06] bg-white/[.025] px-3 py-2">
       <div className="text-[9px] font-bold uppercase tracking-wider text-slate-400">{label}</div>
       <div className={`mt-0.5 font-display text-[15px] font-bold tracking-tight ${color}`}>{value}</div>
-    </div>
-  );
-}
-
-function TagInput({
-  tags, setTags, placeholder, color,
-}: {
-  tags: string[];
-  setTags: (v: string[]) => void;
-  placeholder: string;
-  color: 'blue' | 'red';
-}) {
-  const [input, setInput] = useState('');
-
-  const add = () => {
-    const val = input.trim().toUpperCase();
-    if (val && !tags.includes(val)) setTags([...tags, val]);
-    setInput('');
-  };
-
-  const remove = (tag: string) => setTags(tags.filter((t) => t !== tag));
-
-  const tagCls = color === 'blue'
-    ? 'border-[#5b8cff]/25 bg-[#5b8cff]/[.12] text-[#a0b8ff]'
-    : 'border-rose-500/25 bg-rose-500/[.12] text-rose-300';
-
-  return (
-    <div className="rounded-lg border border-white/[.08] bg-black/[.2] p-3">
-      {tags.length > 0 && (
-        <div className="mb-2.5 flex flex-wrap gap-1.5">
-          {tags.map((t) => (
-            <span
-              key={t}
-              className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-[11px] font-semibold ${tagCls}`}
-            >
-              {t}
-              <button
-                type="button"
-                onClick={() => remove(t)}
-                className="opacity-60 hover:opacity-100"
-              >
-                <X size={9} />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-      <div className="flex items-center gap-2">
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); add(); }
-          }}
-          placeholder={placeholder}
-          className="flex-1 bg-transparent font-mono text-[12px] text-slate-200 outline-none placeholder:text-slate-500"
-        />
-        <button
-          type="button"
-          onClick={add}
-          className="text-[11px] font-semibold text-[#5b8cff] hover:text-[#7ba0ff]"
-        >
-          Добавить
-        </button>
-      </div>
     </div>
   );
 }

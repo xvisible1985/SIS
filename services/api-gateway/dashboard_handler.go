@@ -13,6 +13,10 @@ type dashboardDayPnL struct {
 	Wins   int     `json:"wins"`
 }
 
+// Granularity controls the time resolution of the DailyPnL buckets.
+// "day"  – one entry per calendar day  (all periods except "1d")
+// "hour" – one entry per hour         (period "1d")
+
 type dashboardBotStat struct {
 	BotID  string  `json:"bot_id"`
 	Name   string  `json:"name"`
@@ -50,6 +54,7 @@ type dashboardResponse struct {
 	DailyPnL     []dashboardDayPnL      `json:"daily_pnl"`
 	BotStats     []dashboardBotStat     `json:"bot_stats"`
 	RecentTrades []dashboardRecentTrade `json:"recent_trades"`
+	Granularity  string                 `json:"granularity"` // "day" | "hour"
 }
 
 // GetDashboard returns aggregated trade stats, daily PnL, bot leaderboard, and recent trades.
@@ -74,9 +79,12 @@ func (s *Server) GetDashboard(w http.ResponseWriter, r *http.Request) {
 	default: // "30d"
 		cutoff = now.AddDate(0, 0, -30)
 	}
-	// Daily chart always uses the same window as the selected period
-	cutoffChart := cutoff
-	cutoff30 := now.AddDate(0, 0, -30)
+
+	// When period is "1d" we use hourly buckets; otherwise daily.
+	granularity := "day"
+	if period == "1d" {
+		granularity = "hour"
+	}
 
 	// ─── Period stats ─────────────────────────────────────────────────────────
 	var stats dashboardPeriodStats
@@ -116,10 +124,18 @@ func (s *Server) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		stats.ProfitFactor = 999 // infinite — no losing trades
 	}
 
-	// ─── Daily PnL (same window as selected period) ──────────────────────────
+	// ─── Periodic PnL buckets (hourly for "1d", daily for all other periods) ────
+	var bucketSQL, dayFmt string
+	if granularity == "hour" {
+		bucketSQL = `DATE_TRUNC('hour', closed_at AT TIME ZONE 'UTC')`
+		dayFmt = "2006-01-02T15" // e.g. "2026-06-03T14" — frontend appends ":00"
+	} else {
+		bucketSQL = `DATE_TRUNC('day', closed_at AT TIME ZONE 'UTC')`
+		dayFmt = "2006-01-02"
+	}
 	dailyRows, err := s.pool.Query(r.Context(), `
 		SELECT
-			DATE_TRUNC('day', closed_at AT TIME ZONE 'UTC')::date AS day,
+			`+bucketSQL+` AS bucket,
 			COALESCE(SUM(pnl), 0),
 			COUNT(*)::int,
 			COUNT(*) FILTER (WHERE result = 'tp')::int
@@ -127,7 +143,7 @@ func (s *Server) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		WHERE owner_id = $1 AND closed_at >= $2
 		GROUP BY 1
 		ORDER BY 1`,
-		userID, cutoffChart,
+		userID, cutoff,
 	)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
@@ -138,18 +154,18 @@ func (s *Server) GetDashboard(w http.ResponseWriter, r *http.Request) {
 	var dailyPnL []dashboardDayPnL
 	for dailyRows.Next() {
 		var d dashboardDayPnL
-		var day time.Time
-		if err := dailyRows.Scan(&day, &d.PnL, &d.Trades, &d.Wins); err != nil {
+		var bucket time.Time
+		if err := dailyRows.Scan(&bucket, &d.PnL, &d.Trades, &d.Wins); err != nil {
 			continue
 		}
-		d.Day = day.Format("2006-01-02")
+		d.Day = bucket.UTC().Format(dayFmt)
 		dailyPnL = append(dailyPnL, d)
 	}
 	if dailyPnL == nil {
 		dailyPnL = []dashboardDayPnL{}
 	}
 
-	// ─── Bot stats (last 30 days) ─────────────────────────────────────────────
+	// ─── Bot stats (same period as selected filter) ───────────────────────────
 	botRows, err := s.pool.Query(r.Context(), `
 		SELECT b.id, b.name, b.status,
 			COUNT(th.id)::int,
@@ -162,7 +178,7 @@ func (s *Server) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		GROUP BY b.id, b.name, b.status
 		ORDER BY COALESCE(SUM(th.pnl), 0) DESC
 		LIMIT 10`,
-		userID, cutoff30,
+		userID, cutoff,
 	)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
@@ -182,16 +198,16 @@ func (s *Server) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		botStats = []dashboardBotStat{}
 	}
 
-	// ─── Recent trades (last 10) ──────────────────────────────────────────────
+	// ─── Recent trades (last 10 within the selected period) ──────────────────
 	recentRows, err := s.pool.Query(r.Context(), `
 		SELECT th.id, th.symbol, th.direction, th.result,
 			b.name, th.pnl, th.pnl_pct, th.closed_at
 		FROM trade_history th
 		LEFT JOIN bots b ON b.id = th.bot_id
-		WHERE th.owner_id = $1
+		WHERE th.owner_id = $1 AND th.closed_at >= $2
 		ORDER BY th.closed_at DESC
 		LIMIT 10`,
-		userID,
+		userID, cutoff,
 	)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
@@ -222,5 +238,6 @@ func (s *Server) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		DailyPnL:     dailyPnL,
 		BotStats:     botStats,
 		RecentTrades: recentTrades,
+		Granularity:  granularity,
 	})
 }

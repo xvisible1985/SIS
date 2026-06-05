@@ -20,6 +20,7 @@ import { TradeHistoryPage } from './pages/TradeHistoryPage'
 import { BalancesPage } from './pages/BalancesPage'
 import { PaymentsPage } from './pages/PaymentsPage'
 import { HelpPage } from './pages/HelpPage'
+import { WelcomePage } from './pages/WelcomePage'
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<AuthPage defaultTab="login" />} />
           <Route path="/register" element={<AuthPage defaultTab="register" />} />
+          {/* /welcome is now inside Layout so the sidebar is always visible */}
           <Route
             path="/*"
             element={
@@ -36,6 +38,7 @@ export default function App() {
                 <Layout>
                   <Routes>
                     <Route path="" element={<DashboardPage />} />
+                    <Route path="welcome" element={<WelcomePage />} />
                     <Route path="signals/new" element={<SignalBuilderPage />} />
                     <Route path="signals/:id/edit" element={<SignalBuilderPage />} />
                     <Route path="signals/:id/backtest" element={<BacktestPage />} />

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -487,6 +488,17 @@ func (s *Server) syncBotStrategies(ctx context.Context, botID string) {
 		}
 	}
 
+	// Matrix params (nil = keep existing when not a matrix bot)
+	matrixLevelsParam := nullableJSONB(cfg.MatrixLevels)
+	matrixEntryParam := nullableJSONB(cfg.MatrixEntryLevel)
+
+	// Hedge-bot strategies must never block cycle-start on a signal:
+	// signal_configs is a pool for per-level use_signal buttons only.
+	syncSignalFilter := cfg.SignalFilter
+	if cfg.BotKind == "hedge" {
+		syncSignalFilter = false
+	}
+
 	// Update all active/finishing strategies belonging to this bot
 	rows, err := s.pool.Query(ctx,
 		`UPDATE strategies SET
@@ -494,14 +506,22 @@ func (s *Server) syncBotStrategies(ctx context.Context, botID string) {
 		   tp_mode = $5, tp_pct = $6, sl_type = $7, sl_pct = $8, signal_filter = $9,
 		   leverage = $10, margin_type = $11, hedge_mode = $12,
 		   signal_configs = $13::jsonb, steps = ($14::text)::jsonb,
-		   trailing_stop_enabled = $15, trailing_activation_pct = $16, trailing_callback_pct = $17
-		 WHERE bot_id = $18 AND status IN ('active','finishing')
+		   trailing_stop_enabled = $15, trailing_activation_pct = $16, trailing_callback_pct = $17,
+		   matrix_levels      = COALESCE(($18::text)::jsonb, matrix_levels),
+		   matrix_entry_level = COALESCE(($19::text)::jsonb, matrix_entry_level),
+		   safe_zone_pct      = CASE WHEN $20::float8 > 0 THEN $20 ELSE safe_zone_pct END,
+		   protected_build    = $21,
+		   matrix_rebuild_on_sl      = $22,
+		   matrix_rebuild_from_entry = $23
+		 WHERE bot_id = $24 AND status IN ('active','finishing')
 		 RETURNING id`,
 		gridLevels, gridActive, gridStep, gridSize,
-		tpMode, tpPct, slType, slPct, cfg.SignalFilter,
+		tpMode, tpPct, slType, slPct, syncSignalFilter,
 		leverage, marginType, cfg.HedgeMode,
 		string(scJSON), stepsParam,
 		cfg.TrailingEnabled, trailingActPct, trailingCallPct,
+		matrixLevelsParam, matrixEntryParam, cfg.SafeZonePct,
+		cfg.ProtectedBuild, cfg.MatrixRebuildOnSL, cfg.MatrixRebuildFromEntry,
 		botID,
 	)
 	if err != nil {
@@ -887,21 +907,188 @@ func (s *Server) ScanSignals(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"results": matches})
 }
 
+// ── Hedge bot scan ────────────────────────────────────────────────────────────
+
+// hedgeScanPos represents a single monitored/hedged position returned by scanHedgeBot.
+type hedgeScanPos struct {
+	Symbol        string  `json:"symbol"`
+	MainDir       string  `json:"main_dir"`
+	HedgeDir      string  `json:"hedge_dir"`
+	Size          float64 `json:"size"`
+	EntryPrice    float64 `json:"entry_price"`
+	MarkPrice     float64 `json:"mark_price"`
+	UnrealisedPnl float64 `json:"unrealised_pnl"`
+	MetricLabel   string  `json:"metric_label"`
+	MetricValue   float64 `json:"metric_value"`
+	Threshold     float64 `json:"threshold"`
+	MeetsCriteria bool    `json:"meets_criteria"`
+	// status: "hedged" | "ready" | "monitoring"
+	Status       string  `json:"status"`
+	HedgeStratID string  `json:"hedge_strat_id,omitempty"`
+	HedgePnl     float64 `json:"hedge_pnl,omitempty"`
+	HedgeSize    float64 `json:"hedge_size,omitempty"`
+}
+
+// calcHedgeMetricValue returns the human-readable label, current metric value, and
+// activation threshold for a position, matching meetsActivationCriteria() semantics.
+func calcHedgeMetricValue(pos hedgePosInfo, cfg botCfgJSON) (label string, current, threshold float64) {
+	threshold = math.Abs(cfg.HedgeActValue)
+	switch cfg.HedgeActType {
+	case 0, 1: // last_order% or drawdown%
+		label = "Просадка"
+		current = hedgeDrawdown(pos)
+	case 2: // pnl$ — show loss as positive number
+		label = "Убыток $"
+		current = -pos.UnrealisedPnl
+	case 3: // roi% — show loss as positive number
+		label = "ROI убыток %"
+		current = -hedgeROI(pos)
+	default:
+		label = "Просадка"
+		current = hedgeDrawdown(pos)
+	}
+	return
+}
+
+// scanHedgeBot fetches open exchange positions and returns which ones the hedge bot
+// is currently monitoring and which are already being hedged.
+func (s *Server) scanHedgeBot(w http.ResponseWriter, ctx context.Context, botID, accountID string, whitelist, blacklist []string, cfg botCfgJSON) {
+	if accountID == "" {
+		writeError(w, http.StatusBadRequest, "бот не привязан к торговому аккаунту")
+		return
+	}
+
+	creds, err := s.loadBotAccountCreds(ctx, accountID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "не удалось загрузить ключи аккаунта")
+		return
+	}
+
+	rawPositions, err := trader.FetchPositions(ctx, creds)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("ошибка получения позиций: %v", err))
+		return
+	}
+
+	posMap := buildHedgePosMap(rawPositions)
+	delistSymbols := s.GetDelistingSymbols()
+
+	var positions []hedgeScanPos
+
+	for _, bySymbol := range posMap {
+		for side, pos := range bySymbol {
+			if !symbolPassesHedgeFilter(pos.Symbol, whitelist, blacklist, delistSymbols) {
+				continue
+			}
+
+			mainDir := hedgeSideToDir(side)
+
+			if !s.positionPassesBotFilter(ctx, accountID, pos.Symbol, mainDir,
+				cfg.HedgeBotWhitelist, cfg.HedgeBotBlacklist) {
+				continue
+			}
+
+			// Direction filter
+			switch cfg.Direction {
+			case "long":
+				if mainDir != "long" {
+					continue
+				}
+			case "short":
+				if mainDir != "short" {
+					continue
+				}
+			}
+
+			hedgeDir := oppositeHedgeDir(mainDir)
+
+			// Check if already hedged by this bot
+			var hedgeStratID string
+			_ = s.pool.QueryRow(ctx,
+				`SELECT id FROM strategies
+				 WHERE bot_id=$1 AND symbol=$2 AND direction=$3
+				   AND status IN ('active','finishing')
+				 LIMIT 1`,
+				botID, pos.Symbol, hedgeDir,
+			).Scan(&hedgeStratID)
+
+			// Get hedge position metrics if hedged
+			var hedgePnl, hedgeSize float64
+			if hedgeStratID != "" {
+				hedgeSide := hedgeDirToSide(hedgeDir)
+				if hPos, ok := posMap[pos.Symbol][hedgeSide]; ok {
+					hedgePnl = hPos.UnrealisedPnl
+					hedgeSize = hPos.Size
+				}
+			}
+
+			label, metricVal, threshold := calcHedgeMetricValue(pos, cfg)
+			meetsCriteria := meetsActivationCriteria(pos, cfg)
+
+			status := "monitoring"
+			if hedgeStratID != "" {
+				status = "hedged"
+			} else if meetsCriteria {
+				status = "ready"
+			}
+
+			positions = append(positions, hedgeScanPos{
+				Symbol:        pos.Symbol,
+				MainDir:       mainDir,
+				HedgeDir:      hedgeDir,
+				Size:          pos.Size,
+				EntryPrice:    pos.EntryPrice,
+				MarkPrice:     pos.MarkPrice,
+				UnrealisedPnl: pos.UnrealisedPnl,
+				MetricLabel:   label,
+				MetricValue:   metricVal,
+				Threshold:     threshold,
+				MeetsCriteria: meetsCriteria,
+				Status:        status,
+				HedgeStratID:  hedgeStratID,
+				HedgePnl:      hedgePnl,
+				HedgeSize:     hedgeSize,
+			})
+		}
+	}
+
+	// Sort: hedged first, then ready (criteria met), then monitoring
+	statusOrder := map[string]int{"hedged": 0, "ready": 1, "monitoring": 2}
+	sort.Slice(positions, func(i, j int) bool {
+		oi, oj := statusOrder[positions[i].Status], statusOrder[positions[j].Status]
+		if oi != oj {
+			return oi < oj
+		}
+		return positions[i].Symbol < positions[j].Symbol
+	})
+
+	if positions == nil {
+		positions = []hedgeScanPos{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mode":      "hedge",
+		"positions": positions,
+	})
+}
+
 // GET /bots/{id}/scan вЂ" run signal scan for this bot and return matching symbols.
+// For hedge bots, returns positions being monitored/hedged instead of signal hits.
 func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 	callerID := UserIDFromCtx(r.Context())
 	botID := chi.URLParam(r, "id")
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	// Fetch bot
+	// Fetch bot (including account_id needed for hedge bots)
 	var ownerID string
+	var accountIDPtr *string
 	var whitelist, blacklist []string
 	var stratCfgBytes []byte
 	if err := s.pool.QueryRow(ctx,
-		`SELECT owner_id, symbol_whitelist, symbol_blacklist, strategy_config
+		`SELECT owner_id, account_id, symbol_whitelist, symbol_blacklist, strategy_config
 		 FROM bots WHERE id = $1`, botID,
-	).Scan(&ownerID, &whitelist, &blacklist, &stratCfgBytes); err != nil {
+	).Scan(&ownerID, &accountIDPtr, &whitelist, &blacklist, &stratCfgBytes); err != nil {
 		writeError(w, http.StatusNotFound, "bot not found")
 		return
 	}
@@ -911,7 +1098,22 @@ func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var cfg botCfgJSON
-	if err := json.Unmarshal(stratCfgBytes, &cfg); err != nil || len(cfg.ActivationSignals) == 0 {
+	if err := json.Unmarshal(stratCfgBytes, &cfg); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid bot config")
+		return
+	}
+
+	// Hedge bots: show monitored/hedged positions instead of signal scan
+	if cfg.BotKind == "hedge" {
+		accountID := ""
+		if accountIDPtr != nil {
+			accountID = *accountIDPtr
+		}
+		s.scanHedgeBot(w, ctx, botID, accountID, whitelist, blacklist, cfg)
+		return
+	}
+
+	if len(cfg.ActivationSignals) == 0 {
 		writeError(w, http.StatusBadRequest, "bot has no activation signals configured")
 		return
 	}
@@ -1198,6 +1400,38 @@ func sortHits(hits []scanHit) {
 }
 
 // в"Ђв"Ђ Admin handlers в"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђ
+
+// AddBotBlacklist adds a symbol to the bot's symbol_blacklist.
+// POST /bots/{id}/blacklist-add  Body: {"symbol":"BTCUSDT"}
+func (s *Server) AddBotBlacklist(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	botID := chi.URLParam(r, "id")
+
+	var req struct {
+		Symbol string `json:"symbol"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Symbol == "" {
+		writeError(w, http.StatusBadRequest, "symbol required")
+		return
+	}
+
+	tag, err := s.pool.Exec(r.Context(),
+		`UPDATE bots
+		 SET symbol_blacklist = array_append(symbol_blacklist, $1)
+		 WHERE id = $2 AND owner_id = $3
+		   AND NOT ($1 = ANY(symbol_blacklist))`,
+		req.Symbol, botID, userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	added := tag.RowsAffected() > 0
+	if added {
+		s.logBotEvent(r.Context(), botID,
+			fmt.Sprintf("Символ %s добавлен в блэклист пользователем", req.Symbol), "info", "user")
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "added": added})
+}
 
 // GET /admin/bots вЂ" list all bots (admin only)
 func (s *Server) ListAdminBots(w http.ResponseWriter, r *http.Request) {

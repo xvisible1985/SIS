@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, type CSSProperties } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { getDashboard, type DashboardData, type DailyPnL } from '../api/dashboard'
 import { getAccountBalance, getAccountPositions, listAccounts } from '../api/accounts'
 import { useSelectedAccount } from '../contexts/AccountContext'
@@ -42,6 +43,18 @@ function fmtPrice(v: number): string {
 function fmtDay(iso: string): string {
   const [y, m, d] = iso.split('-')
   return `${d}.${m}.${y}`
+}
+/** Short x-axis label: "06.03" for day, "14:00" for hour. */
+function periodShortLabel(day: string, granularity: 'day' | 'hour'): string {
+  if (granularity === 'hour') return day.slice(11) + ':00'
+  // "2026-06-03" → "06.03"
+  const parts = day.split('-')
+  return `${parts[1]}.${parts[2]}`
+}
+/** Full label for date-range headers: "03.06.2026" for day, "14:00" for hour. */
+function periodFullLabel(day: string, granularity: 'day' | 'hour'): string {
+  if (granularity === 'hour') return day.slice(11) + ':00'
+  return fmtDay(day)
 }
 
 // ─── Catmull-Rom → cubic Bezier ───────────────────────────────────────────────
@@ -438,7 +451,7 @@ function HeroCard({ data, period, equity, equityChange }: {
           <Lbl>Кривая P&L</Lbl>
           {daily_pnl.length > 0 && (
             <span style={{ ...mono, fontSize: 11, color: T.dim }}>
-              {fmtDay(daily_pnl[0].day)} — {fmtDay(daily_pnl[daily_pnl.length - 1].day)}
+              {periodFullLabel(daily_pnl[0].day, data.granularity)} — {periodFullLabel(daily_pnl[daily_pnl.length - 1].day, data.granularity)}
             </span>
           )}
         </div>
@@ -468,9 +481,11 @@ function HeroCard({ data, period, equity, equityChange }: {
   )
 }
 
-// ─── Daily Stats Strip ────────────────────────────────────────────────────────
+// ─── Daily / Hourly Stats Strip ───────────────────────────────────────────────
 function DailyStatsStrip({ data }: { data: DashboardData }) {
   const { daily_pnl } = data
+  const granularity = data.granularity
+  const unit = granularity === 'hour' ? 'ч.' : 'дн.'
 
   const s = useMemo(() => {
     if (daily_pnl.length === 0) return null
@@ -479,7 +494,7 @@ function DailyStatsStrip({ data }: { data: DashboardData }) {
     const avg   = daily_pnl.reduce((sum, d) => sum + d.pnl, 0) / daily_pnl.length
     const posCount = daily_pnl.filter(d => d.pnl > 0).length
     const posPct   = (posCount / daily_pnl.length) * 100
-    // Current streak (backwards from last day)
+    // Current streak (backwards from last bucket)
     let streak = 0, streakUp: boolean | null = null
     for (let i = daily_pnl.length - 1; i >= 0; i--) {
       const up = daily_pnl[i].pnl >= 0
@@ -487,7 +502,7 @@ function DailyStatsStrip({ data }: { data: DashboardData }) {
       else if (up === streakUp) streak++
       else break
     }
-    // Max consecutive green days
+    // Max consecutive green buckets
     let maxWin = 0, cur = 0
     for (const d of daily_pnl) {
       if (d.pnl >= 0) { cur++; if (cur > maxWin) maxWin = cur } else cur = 0
@@ -497,38 +512,38 @@ function DailyStatsStrip({ data }: { data: DashboardData }) {
 
   const items = !s ? [] : [
     {
-      label: 'Лучший день',
+      label: granularity === 'hour' ? 'Лучший час' : 'Лучший день',
       value: fmt$(s.best.pnl),
       accent: T.green,
-      sub: s.best.day.slice(5),
+      sub: periodShortLabel(s.best.day, granularity),
     },
     {
-      label: 'Худший день',
+      label: granularity === 'hour' ? 'Худший час' : 'Худший день',
       value: fmt$(s.worst.pnl),
       accent: T.red,
-      sub: s.worst.day.slice(5),
+      sub: periodShortLabel(s.worst.day, granularity),
     },
     {
-      label: 'Ср. P&L в день',
+      label: granularity === 'hour' ? 'Ср. P&L в час' : 'Ср. P&L в день',
       value: fmt$(s.avg),
       accent: s.avg >= 0 ? T.green : T.red,
-      sub: `за ${daily_pnl.length} дн.`,
+      sub: `за ${daily_pnl.length} ${unit}`,
     },
     {
-      label: 'Зелёных дней',
+      label: granularity === 'hour' ? 'Зелёных часов' : 'Зелёных дней',
       value: `${s.posPct.toFixed(0)}%`,
       accent: s.posPct >= 60 ? T.green : s.posPct >= 45 ? T.orange : T.red,
       sub: `${s.posCount} из ${daily_pnl.length}`,
     },
     {
       label: 'Текущий стрик',
-      value: s.streak > 0 && s.streakUp !== null ? `${s.streakUp ? '+' : '−'}${s.streak} дн.` : '—',
+      value: s.streak > 0 && s.streakUp !== null ? `${s.streakUp ? '+' : '−'}${s.streak} ${unit}` : '—',
       accent: s.streakUp === true ? T.green : s.streakUp === false ? T.red : T.dim,
       sub: s.streakUp === true ? 'подряд зелёных' : 'подряд красных',
     },
     {
       label: 'Макс. стрик',
-      value: s.maxWin > 0 ? `${s.maxWin} дн.` : '—',
+      value: s.maxWin > 0 ? `${s.maxWin} ${unit}` : '—',
       accent: T.blue,
       sub: 'лучшая серия побед',
     },
@@ -567,8 +582,8 @@ function PnLCurveCard({ data, period }: { data: DashboardData; period: Period })
     if (daily_pnl.length === 0) return []
     const n = daily_pnl.length
     const idxs = [0, Math.floor(n * 0.25), Math.floor(n * 0.5), Math.floor(n * 0.75), n - 1]
-    return [...new Set(idxs)].map(i => daily_pnl[i]?.day.slice(5) ?? '')
-  }, [daily_pnl])
+    return [...new Set(idxs)].map(i => periodShortLabel(daily_pnl[i]?.day ?? '', data.granularity))
+  }, [daily_pnl, data.granularity])
 
   const W = 1400, H = 260
   const pad = { t: 18, r: 18, b: 30, l: 64 }
@@ -599,7 +614,7 @@ function PnLCurveCard({ data, period }: { data: DashboardData; period: Period })
         </Pill>
         <div style={{ flex: 1 }} />
         <span style={{ ...mono, fontSize: 11, color: T.dim }}>
-          за {pLabel}{daily_pnl.length > 0 ? ` · ${daily_pnl.length} дн. данных` : ''}
+          за {pLabel}{daily_pnl.length > 0 ? ` · ${daily_pnl.length} ${data.granularity === 'hour' ? 'ч.' : 'дн.'} данных` : ''}
         </span>
       </div>
       {cumSeries.length >= 2 ? (
@@ -665,20 +680,23 @@ function PnLCurveCard({ data, period }: { data: DashboardData; period: Period })
   )
 }
 
-// ─── Daily PnL card ───────────────────────────────────────────────────────────
+// ─── Daily / Hourly PnL card ──────────────────────────────────────────────────
 function DailyBarsCard({ data }: { data: DashboardData }) {
   const { daily_pnl } = data
+  const granularity = data.granularity
   const greenCnt = daily_pnl.filter(d => d.pnl >= 0).length
   const redCnt   = daily_pnl.filter(d => d.pnl < 0).length
   const xLabels  = useMemo(() => {
     if (daily_pnl.length === 0) return []
     const n = daily_pnl.length
     return [0, Math.floor(n * 0.33), Math.floor(n * 0.66), n - 1]
-      .map(i => daily_pnl[i]?.day.slice(5) ?? '')
-  }, [daily_pnl])
+      .map(i => periodShortLabel(daily_pnl[i]?.day ?? '', granularity))
+  }, [daily_pnl, granularity])
   return (
     <Card pad="16px 18px">
-      <SHead title="P&L по дням" sub="по периоду"
+      <SHead
+        title={granularity === 'hour' ? 'P&L по часам' : 'P&L по дням'}
+        sub="по периоду"
         right={<div style={{ display: 'flex', gap: 6 }}>
           <Pill c={T.green} bg={T.greenSoft} bd={T.greenBd}>● {greenCnt}</Pill>
           <Pill c={T.red}   bg={T.redSoft}   bd={T.redBd}>● {redCnt}</Pill>
@@ -953,6 +971,7 @@ function BotsCard({ data, period }: { data: DashboardData; period: Period }) {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 export function DashboardPage() {
+  const navigate = useNavigate()
   const { selectedAccountId } = useSelectedAccount()
   const [period, setPeriod] = useState<Period>('30d')
   const [animKey, setAnimKey] = useState(0)
@@ -1004,7 +1023,10 @@ export function DashboardPage() {
     setLoading(true)
     Promise.all([
       loadDash(period),
-      listAccounts().then(a => setAccounts(a.filter(x => x.is_active))).catch(() => {}),
+      listAccounts().then(a => {
+        if (a.length === 0 && !localStorage.getItem('sis_onboarding_done')) { navigate('/welcome', { replace: true }); return }
+        setAccounts(a.filter(x => x.is_active))
+      }).catch(() => {}),
     ]).finally(() => setLoading(false))
   }, [])
 

@@ -280,10 +280,10 @@ export const SIGNALS: SignalDef<any>[] = [
   {
     id: 'bybit-news', abbr: 'BN', name: 'Bybit News Listing', cat: 'fundamental', state: 'buy' as const,
     desc: 'Автоматический запуск по листингам Bybit',
-    about: 'Сканирует анонсы Bybit о новых листингах. При появлении новости создаёт grid-стратегию для указанного символа с плечом из анонса. Только long.',
-    defaults: { tf: '1m' },
+    about: 'Сканирует анонсы Bybit о новых листингах. При появлении новости создаёт стратегию для указанного символа с плечом из анонса. Только long.\n\nВремя жизни — сколько минут после анонса бот может открыть стратегию. После истечения окна повторный вход невозможен даже если стратегия уже закрылась по TP/SL.',
+    defaults: { lifetime_minutes: 60 },
     params: [
-      { kind: 'segmented', key: 'tf', label: 'Таймфрейм', hint: 'Техническое поле, не влияет на логику', options: ['1m', '5m', '15m'] },
+      { kind: 'number', key: 'lifetime_minutes', label: 'Время жизни, мин', hint: 'Окно от анонса, в течение которого можно открыть стратегию. После закрытия TP/SL повторный вход заблокирован до конца окна.', min: 1, max: 1440 },
     ],
     formula: () => <>{name('Bybit News Listing')}</>,
     compute: () => 'neutral' as const,
