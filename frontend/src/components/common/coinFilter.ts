@@ -25,7 +25,7 @@ export function checkCoinFlagged(
   turnover: number,
   settings: CoinFilterSettings,
 ): { flagged: boolean; reason: string } {
-  if (settings.blacklist.includes(symbol)) {
+  if ((settings.blacklist ?? []).includes(symbol)) {
     return { flagged: true, reason: 'В чёрном списке' }
   }
   if (settings.min_turnover_usdt > 0 && turnover < settings.min_turnover_usdt) {
