@@ -1,18 +1,34 @@
 import { useState } from 'react';
-import { Plus } from 'lucide-react';
+import { Plus, TrendingUp, Search, Shield } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useAdminBots } from './api';
 import { BotForm } from '../bots/components/BotForm';
 import { AdminBotCard } from './AdminBotCard';
-import type { Bot as BotType, CreateBotInput } from '../bots/types';
+import { getBotKindMeta } from '../bots/botKindMeta';
+import type { Bot as BotType, BotKind, CreateBotInput } from '../bots/types';
+
+const KIND_ICONS: Record<BotKind, LucideIcon> = {
+  signal: TrendingUp,
+  parser: Search,
+  hedge:  Shield,
+};
+
+const KIND_GROUPS: { kind: BotKind; label: string }[] = [
+  { kind: 'signal', label: 'Signal Bots' },
+  { kind: 'parser', label: 'Parser Bots' },
+  { kind: 'hedge',  label: 'Hedge Bots'  },
+];
 
 export function AdminBotsTab() {
   const { bots, loading, create, remove, togglePublic, update, approve, reject } = useAdminBots();
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating]     = useState(false);
   const [editingBot, setEditingBot] = useState<BotType | null>(null);
 
   const pendingBots  = bots.filter(b => b.approvalStatus === 'pending');
-  const officialBots = bots.filter(b => b.isOfficial && b.approvalStatus !== 'pending');
-  const userBots     = bots.filter(b => !b.isOfficial && b.approvalStatus !== 'pending');
+  const restBots     = bots.filter(b => b.approvalStatus !== 'pending');
+
+  const getBotsByKind = (kind: BotKind) =>
+    restBots.filter(b => (b.strategyConfig?.bot_kind ?? 'signal') === kind);
 
   async function handleCreate(data: CreateBotInput) {
     await create(data);
@@ -24,6 +40,9 @@ export function AdminBotsTab() {
     setEditingBot(null);
   }
 
+  const officialCount = restBots.filter(b => b.isOfficial).length;
+  const userCount     = restBots.filter(b => !b.isOfficial).length;
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {/* Header */}
@@ -31,7 +50,7 @@ export function AdminBotsTab() {
         <div className="flex items-baseline gap-3">
           <h2 className="m-0 text-sm font-semibold text-slate-100">Библиотека ботов</h2>
           <span className="text-[11px] text-slate-400">
-            {officialBots.length} NovaBot · {userBots.length} пользовательских
+            {officialCount} NovaBot · {userCount} пользовательских
             {pendingBots.length > 0 && (
               <span className="ml-2 rounded-full bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-300">
                 {pendingBots.length} на согласовании
@@ -49,7 +68,7 @@ export function AdminBotsTab() {
         </button>
       </div>
 
-      {/* Create / Edit modal */}
+      {/* Модалки */}
       {creating && (
         <BotForm mode="admin" onSubmit={handleCreate} onClose={() => setCreating(false)} />
       )}
@@ -62,59 +81,109 @@ export function AdminBotsTab() {
         />
       )}
 
-      {/* Cards grid */}
-      <div className="flex-1 overflow-auto px-5 py-3 space-y-6">
+      {/* Контент */}
+      <div className="flex-1 overflow-auto px-5 py-4 space-y-7">
         {loading ? (
           <div className="py-12 text-center text-sm text-slate-500">Загрузка…</div>
+        ) : bots.length === 0 ? (
+          <div className="py-12 text-center text-sm text-slate-500">Нет ботов</div>
         ) : (
           <>
-            {/* ── Pending approval section ────────────────────────────────── */}
+            {/* ── На согласовании ──────────────────────────────────────── */}
             {pendingBots.length > 0 && (
-              <div>
-                <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-amber-400">
-                  На согласовании ({pendingBots.length})
-                </h3>
-                <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
-                  {pendingBots.map(bot => (
-                    <AdminBotCard
-                      key={bot.id}
-                      bot={bot}
-                      onApprove={() => approve(bot.id)}
-                      onReject={() => { if (window.confirm(`Отклонить заявку бота «${bot.name}»?`)) reject(bot.id); }}
-                      onDelete={() => { if (window.confirm('Удалить бота?')) remove(bot.id); }}
-                    />
-                  ))}
-                </div>
-              </div>
+              <Section
+                label={`На согласовании (${pendingBots.length})`}
+                labelColor="text-amber-400"
+              >
+                {pendingBots.map(bot => (
+                  <AdminBotCard
+                    key={bot.id}
+                    bot={bot}
+                    onApprove={() => approve(bot.id)}
+                    onReject={() => {
+                      if (window.confirm(`Отклонить заявку бота «${bot.name}»?`)) reject(bot.id);
+                    }}
+                    onDelete={() => {
+                      if (window.confirm('Удалить бота?')) remove(bot.id);
+                    }}
+                  />
+                ))}
+              </Section>
             )}
 
-            {/* ── All other bots ──────────────────────────────────────────── */}
-            {(officialBots.length > 0 || userBots.length > 0) && (
-              <div>
-                {pendingBots.length > 0 && (
-                  <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-400">
-                    Все боты
-                  </h3>
-                )}
-                <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
-                  {[...officialBots, ...userBots].map(bot => (
+            {/* ── Группы по типу бота ──────────────────────────────────── */}
+            {KIND_GROUPS.map(({ kind, label }) => {
+              const group = getBotsByKind(kind);
+              if (group.length === 0) return null;
+              const km   = getBotKindMeta(kind);
+              const Icon = KIND_ICONS[kind];
+              return (
+                <Section
+                  key={kind}
+                  label={label}
+                  count={group.length}
+                  icon={<Icon size={13} strokeWidth={2} style={{ color: km.color }} />}
+                  labelColor="text-slate-200"
+                  accentColor={km.color}
+                >
+                  {group.map(bot => (
                     <AdminBotCard
                       key={bot.id}
                       bot={bot}
                       onEdit={bot.isOfficial ? () => setEditingBot(bot) : undefined}
                       onTogglePublic={() => togglePublic(bot.id, !bot.isPublic)}
-                      onDelete={() => { if (window.confirm('Удалить бота?')) remove(bot.id); }}
+                      onDelete={() => {
+                        if (window.confirm('Удалить бота?')) remove(bot.id);
+                      }}
                     />
                   ))}
-                </div>
-              </div>
-            )}
-
-            {bots.length === 0 && (
-              <div className="py-12 text-center text-sm text-slate-500">Нет ботов</div>
-            )}
+                </Section>
+              );
+            })}
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Section header + grid ────────────────────────────────────────────── */
+function Section({
+  label,
+  count,
+  icon,
+  labelColor,
+  accentColor,
+  children,
+}: {
+  label: string;
+  count?: number;
+  icon?: React.ReactNode;
+  labelColor: string;
+  accentColor?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div className="mb-3 flex items-center gap-2">
+        {icon}
+        <h3 className={`text-xs font-bold uppercase tracking-wider ${labelColor}`}>
+          {label}
+        </h3>
+        {count !== undefined && accentColor && (
+          <span
+            className="rounded-full px-1.5 py-0.5 text-[10px] font-bold"
+            style={{
+              background: `${accentColor}22`,
+              color:      accentColor,
+            }}
+          >
+            {count}
+          </span>
+        )}
+      </div>
+      <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
+        {children}
       </div>
     </div>
   );
