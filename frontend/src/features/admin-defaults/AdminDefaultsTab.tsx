@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { apiClient } from '../../api/client'
-import { updateStrategyDefaults, invalidateStrategyDefaultsCache } from './api'
-import type { GridDefaults, MatrixDefaults, GridStep, AllStrategyDefaults } from './types'
+import { updateStrategyDefaults, invalidateStrategyDefaultsCache, updateCoinFilter, getCoinFilter } from './api'
+import type { GridDefaults, MatrixDefaults, GridStep, AllStrategyDefaults, CoinFilterSettings } from './types'
 
 // ── Local numeric input (text-based, decimal) ─────────────────────────────────
 
@@ -291,19 +291,140 @@ function MatrixSection({
   )
 }
 
+// ── Coin filter section ───────────────────────────────────────────────────────
+
+function CoinFilterSection({
+  initial,
+  onSaved,
+}: {
+  initial: CoinFilterSettings
+  onSaved: () => void
+}) {
+  const [d, setD]                     = useState<CoinFilterSettings>(initial)
+  const [blacklistInput, setInput]    = useState('')
+  const [saving, setSaving]           = useState(false)
+  const [saved, setSaved]             = useState(false)
+  const [error, setError]             = useState<string | null>(null)
+
+  useEffect(() => { setD(initial) }, [initial])
+
+  function addToBlacklist() {
+    const sym = blacklistInput.trim().toUpperCase()
+    if (!sym || d.blacklist.includes(sym)) { setInput(''); return }
+    setD(p => ({ ...p, blacklist: [...p.blacklist, sym] }))
+    setInput('')
+  }
+
+  function removeFromBlacklist(sym: string) {
+    setD(p => ({ ...p, blacklist: p.blacklist.filter(s => s !== sym) }))
+  }
+
+  async function handleSave() {
+    setSaving(true); setError(null)
+    try {
+      await updateCoinFilter(d)
+      setSaved(true); onSaved()
+      setTimeout(() => setSaved(false), 2000)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-5 lg:col-span-2">
+      <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-slate-300">
+        Фильтр монет
+      </h3>
+
+      <div className="space-y-4">
+        <Field label="Мин. объём 24ч (USDT)">
+          <NumInput
+            value={d.min_turnover_usdt}
+            onChange={v => setD(p => ({ ...p, min_turnover_usdt: v }))}
+          />
+        </Field>
+
+        <div>
+          <label className="mb-2 block text-sm text-slate-400">Чёрный список</label>
+          <div className="flex gap-2 mb-2">
+            <input
+              type="text"
+              value={blacklistInput}
+              onChange={e => setInput(e.target.value.toUpperCase())}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addToBlacklist() } }}
+              placeholder="PEPEUSDT"
+              className="flex-1 rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-200 placeholder-slate-600"
+            />
+            <button
+              type="button"
+              onClick={addToBlacklist}
+              className="rounded bg-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-600"
+            >
+              + Добавить
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-1.5 min-h-[1.75rem]">
+            {d.blacklist.map(sym => (
+              <span
+                key={sym}
+                className="inline-flex items-center gap-1 rounded border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-xs font-mono text-rose-300"
+              >
+                {sym}
+                <button
+                  type="button"
+                  onClick={() => removeFromBlacklist(sym)}
+                  className="text-rose-400 hover:text-rose-200 leading-none"
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+            {d.blacklist.length === 0 && (
+              <span className="text-xs text-slate-600 leading-[1.75rem]">Пусто</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {error && (
+        <div className="mt-3 rounded border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-400">
+          {error}
+        </div>
+      )}
+
+      <div className="mt-4 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={saving}
+          className="rounded bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+        >
+          {saving ? 'Сохранение…' : 'Сохранить'}
+        </button>
+        {saved && <span className="text-sm text-emerald-400">Сохранено ✓</span>}
+      </div>
+    </div>
+  )
+}
+
 // ── Main tab component ────────────────────────────────────────────────────────
 
 export function AdminDefaultsTab() {
   const [defaults, setDefaults] = useState<AllStrategyDefaults | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [coinFilter, setCoinFilter] = useState<CoinFilterSettings | null>(null)
 
   async function load() {
     setLoading(true)
     setError(null)
     try {
-      const res = await apiClient.get<AllStrategyDefaults>('/admin/strategy-defaults')
-      setDefaults(res.data ?? {})
+      const [defaultsRes, filterRes] = await Promise.all([
+        apiClient.get<AllStrategyDefaults>('/admin/strategy-defaults'),
+        getCoinFilter(),
+      ])
+      setDefaults(defaultsRes.data ?? {})
+      setCoinFilter(filterRes)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
       setError(msg)
@@ -359,6 +480,9 @@ export function AdminDefaultsTab() {
             initial={defaults.matrix ?? {}}
             onSaved={handleSaved}
           />
+          {coinFilter && (
+            <CoinFilterSection initial={coinFilter} onSaved={handleSaved} />
+          )}
         </div>
       )}
     </div>
