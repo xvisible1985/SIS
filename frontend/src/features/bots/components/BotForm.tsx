@@ -145,6 +145,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
   const [showCoinFilterConfirm, setShowCoinFilterConfirm] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const bypassCoinFilterRef = useRef(false)
 
   useEffect(() => {
     const fn = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -350,6 +351,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
   };
 
   const handleSubmit = async () => {
+    if (showCoinFilterConfirm) return;
     if (!name.trim()) return;
 
     // For signal bots: if the symbol is flagged and the user hasn't opted out,
@@ -360,10 +362,11 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
       // Pass turnover=Infinity so only blacklist check fires (turnover requires
       // the ticker cache which isn't accessible here).
       const { flagged } = checkCoinFlagged(symbol, Infinity, coinFilterSettings)
-      if (flagged && !showCoinFilterConfirm) {
+      if (flagged && !bypassCoinFilterRef.current) {
         setShowCoinFilterConfirm(true)
         return
       }
+      bypassCoinFilterRef.current = false
     }
     setShowCoinFilterConfirm(false)
 
@@ -1624,7 +1627,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={!name.trim() || submitting}
+              disabled={!name.trim() || submitting || showCoinFilterConfirm}
               className="inline-flex items-center gap-1.5 rounded-lg bg-[linear-gradient(180deg,#4a7dff,#3a67e6)] px-4 py-2 text-xs font-semibold text-white shadow-[inset_0_1px_0_rgba(255,255,255,.18),0_4px_12px_-6px_rgba(74,125,255,.6)] disabled:cursor-not-allowed disabled:opacity-40"
             >
               {submitting ? 'Сохранение...' : (bot ? 'Сохранить' : 'Создать')}
@@ -1648,7 +1651,11 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => { setShowCoinFilterConfirm(false); void handleSubmit() }}
+                onClick={() => {
+                  bypassCoinFilterRef.current = true
+                  setShowCoinFilterConfirm(false)
+                  void handleSubmit()
+                }}
                 className="flex-1 rounded bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-500"
               >
                 Создать всё равно
