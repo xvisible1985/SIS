@@ -50,6 +50,9 @@ type botResp struct {
 	AccountID             *string         `json:"accountId"`
 	AutoMode              bool            `json:"autoMode"`
 	IgnoreCoinFilter      bool            `json:"ignoreCoinFilter"`
+	ActiveSecondsAcc      int64           `json:"activeSecondsAcc"`
+	ActiveSince           *time.Time      `json:"activeSince"`
+	ApprovalStatus        *string         `json:"approvalStatus"`
 }
 
 type listBotsResp struct {
@@ -77,7 +80,8 @@ const botCols = `b.id, b.name, b.description, b.full_description, b.avatar_url, 
 	b.max_strategies, b.max_margin_usdt,
 	(SELECT COUNT(*) FROM strategies s WHERE s.bot_id = b.id AND s.status = 'active') AS active_strategies_count,
 	b.account_id, b.auto_mode, b.max_long_strategies, b.max_short_strategies, b.max_sym_consecutive_runs,
-	b.ignore_coin_filter`
+	b.ignore_coin_filter,
+	b.active_seconds_acc, b.active_since, b.approval_status`
 
 const botFrom = ` FROM bots b JOIN users u ON u.id = b.owner_id `
 
@@ -96,6 +100,7 @@ func collectBots(rows pgx.Rows, callerID string) ([]botResp, error) {
 			&b.MaxStrategies, &b.MaxMarginUsdt, &b.ActiveStrategiesCount,
 			&b.AccountID, &b.AutoMode, &b.MaxLongStrategies, &b.MaxShortStrategies, &b.MaxSymConsecutiveRuns,
 			&b.IgnoreCoinFilter,
+			&b.ActiveSecondsAcc, &b.ActiveSince, &b.ApprovalStatus,
 		); err != nil {
 			return nil, err
 		}
