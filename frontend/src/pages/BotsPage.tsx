@@ -159,6 +159,7 @@ export function BotsPage() {
         }
         onEditBot={handleEditBot}
         onDeleteBot={(id) => action({ type: 'delete', botId: id })}
+        onRequestApproval={(id) => action({ type: 'request-approval', botId: id })}
         onLaunchTpl={handleLaunchTpl}
         onConfigureTpl={handleLaunchTpl}
         onCloneTpl={(tplId) => action({ type: 'fork', botId: tplId })}

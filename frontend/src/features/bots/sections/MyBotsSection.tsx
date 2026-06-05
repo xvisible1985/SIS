@@ -1,6 +1,8 @@
+import { useState, useEffect } from 'react';
 import { Plus, Download, Bot as BotIcon } from 'lucide-react';
 import type { MyBot, RunStatus } from '../ui-types';
 import { MyBotCard } from '../components/MyBotCard';
+import { getCoinFilter } from '../../admin-defaults/api';
 
 type Props = {
   bots: MyBot[];
@@ -9,10 +11,15 @@ type Props = {
   onToggle:     (botId: string, next: 'running' | 'paused') => void;
   onEdit:       (botId: string) => void;
   onDelete:     (botId: string) => void;
+  onRequestApproval: (botId: string) => void;
 };
 
 /** Секция «Мои боты» — заголовок + сетка карточек или empty state */
-export function MyBotsSection({ bots, onCreate, onExport, onToggle, onEdit, onDelete }: Props) {
+export function MyBotsSection({ bots, onCreate, onExport, onToggle, onEdit, onDelete, onRequestApproval }: Props) {
+  const [minPublishDays, setMinPublishDays] = useState(15)
+  useEffect(() => {
+    getCoinFilter().then(s => setMinPublishDays(s.min_publish_days ?? 15)).catch(() => {})
+  }, [])
   return (
     <section className="mx-auto max-w-[1400px] px-8 pt-6">
       <div className="mb-3.5 flex items-baseline gap-3 border-b border-white/[.06] pb-3.5">
@@ -43,9 +50,11 @@ export function MyBotsSection({ bots, onCreate, onExport, onToggle, onEdit, onDe
             <MyBotCard
               key={b.id}
               bot={b}
+              minPublishDays={minPublishDays}
               onToggle={(next: RunStatus | 'paused') => onToggle(b.id, next as 'running' | 'paused')}
               onEdit={() => onEdit(b.id)}
               onDelete={() => onDelete(b.id)}
+              onRequestApproval={() => onRequestApproval(b.id)}
             />
           ))}
         </div>

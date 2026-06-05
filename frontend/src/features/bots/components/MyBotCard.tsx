@@ -13,13 +13,15 @@ const KIND_ICONS: Record<BotKind, LucideIcon> = {
 
 type Props = {
   bot: MyBot;
+  minPublishDays?: number;
   onToggle: (next: 'running' | 'paused') => void;
   onEdit:  () => void;
   onDelete: () => void;
+  onRequestApproval?: () => void;
 };
 
 /** Карточка бота пользователя — в секции «Мои боты» */
-export function MyBotCard({ bot, onToggle, onEdit, onDelete }: Props) {
+export function MyBotCard({ bot, minPublishDays = 15, onToggle, onEdit, onDelete, onRequestApproval }: Props) {
   const [optimisticRunning, setOptimisticRunning] = useState(bot.status === 'running');
   const running = optimisticRunning;
 

@@ -12,6 +12,7 @@ type Props = {
   onToggleBot:    (botId: string, next: 'running' | 'paused') => void;
   onEditBot:      (botId: string) => void;
   onDeleteBot:    (botId: string) => void;
+  onRequestApproval: (botId: string) => void;
 
   /** Библиотека */
   onLaunchTpl:    (tplId: string) => void;
@@ -22,6 +23,7 @@ type Props = {
 export function BotsPage({
   myBots, featured,
   onCreateBot, onExportBots, onToggleBot, onEditBot, onDeleteBot,
+  onRequestApproval,
   onLaunchTpl, onConfigureTpl, onCloneTpl,
 }: Props) {
   const runningCount = myBots.filter((b) => b.status === 'running').length;
@@ -54,6 +56,7 @@ export function BotsPage({
         onToggle={onToggleBot}
         onEdit={onEditBot}
         onDelete={onDeleteBot}
+        onRequestApproval={onRequestApproval}
       />
 
       <LibrarySection
