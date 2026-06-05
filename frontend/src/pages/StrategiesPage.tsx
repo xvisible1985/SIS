@@ -139,7 +139,9 @@ export function StrategiesPage() {
       // Method 1: direct link via hedged_strategy_id
       if (s.hedged_strategy_id) {
         const partner = sorted.find(h => !usedIds.has(h.id) && h.id === s.hedged_strategy_id)
-        if (partner) {
+        // Skip stopped-stopped pairs — they are stale historical records from old hedge
+        // activation cycles. At least one side must be active/finishing to render a pair card.
+        if (partner && !(s.status === 'stopped' && partner.status === 'stopped')) {
           usedIds.add(s.id)
           usedIds.add(partner.id)
           const sIsHedge = !!hedgeInfoMap.get(s.id)?.isHedgeItself
