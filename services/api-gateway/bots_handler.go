@@ -704,12 +704,57 @@ func (s *Server) StartBot(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.setBotStatus(w, r, "active")
+	// Atomically start the timer and set status = active.
+	// COALESCE keeps the existing active_since if the bot was already running (double-click idempotency).
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE bots
+		 SET active_since   = COALESCE(active_since, NOW()),
+		     status         = 'active',
+		     updated_at     = NOW()
+		 WHERE id = $1 AND owner_id = $2`,
+		botID, callerID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "bot not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // POST /bots/{id}/stop
 func (s *Server) StopBot(w http.ResponseWriter, r *http.Request) {
-	s.setBotStatus(w, r, "stopped")
+	callerID := UserIDFromCtx(r.Context())
+	botID := chi.URLParam(r, "id")
+	ctx := r.Context()
+
+	// Atomically accumulate active seconds and set status = stopped.
+	// CASE guard ensures we only add elapsed time when the timer was actually running.
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE bots
+		 SET active_seconds_acc = active_seconds_acc
+		       + CASE WHEN active_since IS NOT NULL
+		              THEN EXTRACT(EPOCH FROM NOW() - active_since)::BIGINT
+		              ELSE 0
+		         END,
+		     active_since  = NULL,
+		     status        = 'stopped',
+		     updated_at    = NOW()
+		 WHERE id = $1 AND owner_id = $2`,
+		botID, callerID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "bot not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) setBotStatus(w http.ResponseWriter, r *http.Request, status string) {
