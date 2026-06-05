@@ -32,6 +32,9 @@ function parseBot(raw: RawBot): Bot {
     activeStrategiesCount: (raw.activeStrategiesCount as number) ?? 0,
     accountId:             (raw.accountId as string | null) ?? null,
     autoMode:              (raw.autoMode as boolean) ?? false,
+    activeSecondsAcc:      (raw.activeSecondsAcc as number) ?? 0,
+    activeSince:           (raw.activeSince as string) ?? null,
+    approvalStatus:        (raw.approvalStatus as Bot['approvalStatus']) ?? null,
   };
 }
 

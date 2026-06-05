@@ -112,6 +112,9 @@ export type Bot = {
   accountId: string | null;
   autoMode: boolean;
   ignoreCoinFilter?: boolean;
+  activeSecondsAcc: number;
+  activeSince: string | null;
+  approvalStatus: 'pending' | 'approved' | 'rejected' | null;
   custom?: boolean;
 };
 
@@ -147,6 +150,7 @@ export type BotAction =
   | { type: 'deploy';  botId: string; symbolWhitelist?: string[]; symbolBlacklist?: string[] }
   | { type: 'fork';    botId: string }
   | { type: 'publish'; botId: string }
+  | { type: 'request-approval'; botId: string }
   | { type: 'update';  botId: string; data: Partial<CreateBotInput> }
   | { type: 'delete';  botId: string }
   | { type: 'create';  data: CreateBotInput };

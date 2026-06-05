@@ -39,6 +39,9 @@ function toMyBot(b: Bot, sc: BotSignalCount | undefined): MyBot {
     symbolsWithSignal: sc ? String(sc.signalCount) : '—',
     symbolsLimit:      '—',
     custom:            !b.sourceBotId,
+    approvalStatus:    b.approvalStatus,
+    activeSecondsAcc:  b.activeSecondsAcc,
+    activeSince:       b.activeSince,
     config:            b.strategyConfig as Record<string, unknown>,
   };
 }

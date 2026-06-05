@@ -73,6 +73,9 @@ export type MyBot = {
   symbolsLimit: string;
   /** Кастомный бот (созданный с нуля) */
   custom?: boolean;
+  approvalStatus: 'pending' | 'approved' | 'rejected' | null;
+  activeSecondsAcc: number;
+  activeSince: string | null;
   /** Произвольный конфиг — структура зависит от strategy */
   config: Record<string, unknown>;
 };

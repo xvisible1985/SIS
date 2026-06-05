@@ -33,6 +33,9 @@ function parseBot(raw: RawBot): Bot {
     activeStrategiesCount: (raw.activeStrategiesCount as number) ?? 0,
     accountId:             (raw.accountId as string | null) ?? null,
     autoMode:              (raw.autoMode as boolean) ?? false,
+    activeSecondsAcc:      (raw.activeSecondsAcc as number) ?? 0,
+    activeSince:           (raw.activeSince as string) ?? null,
+    approvalStatus:        (raw.approvalStatus as Bot['approvalStatus']) ?? null,
   };
 }
 
@@ -76,6 +79,7 @@ export function useBots() {
         }); break;
         case 'fork':    await apiClient.post(`/bots/${a.botId}/fork`); break;
         case 'publish': await apiClient.post(`/bots/${a.botId}/publish`); break;
+        case 'request-approval': await apiClient.post(`/bots/${a.botId}/request-approval`); break;
         case 'update':  await apiClient.patch(`/bots/${a.botId}`, a.data); break;
         case 'delete':  await apiClient.delete(`/bots/${a.botId}`); break;
         case 'create':  await apiClient.post('/bots', a.data); break;
