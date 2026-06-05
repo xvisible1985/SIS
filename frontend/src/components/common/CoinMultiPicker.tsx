@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { X, Search, Save, Trash2, Asterisk, Plus, ChevronRight } from 'lucide-react'
 import { CoinIcon } from './CoinIcon'
+import { getCoinFilter, checkCoinFlagged } from './coinFilter'
+import type { CoinFilterSettings } from './coinFilter'
 
 // ─── Ticker cache ─────────────────────────────────────────────────────────────
 
@@ -154,6 +156,7 @@ export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder 
   const [chipFilter, setChipFilter] = useState('')
   const [savedLists, setSavedLists] = useState<SavedList[]>([])
   const [activeTab, setActiveTab]   = useState<TabId>('all')
+  const [coinFilterSettings, setCoinFilterSettings] = useState<CoinFilterSettings | null>(null)
 
   // Save current selection as list
   const [saveMode, setSaveMode]   = useState(false)
@@ -178,6 +181,8 @@ export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder 
 
   useEffect(() => {
     if (!open) return
+    loadTickers().then(() => setRows([..._tickers]))
+    getCoinFilter().then(setCoinFilterSettings).catch(() => {})
     const h = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setOpen(false); setQuery(''); setSaveMode(false)
@@ -197,6 +202,16 @@ export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder 
       { name: 'Топ-50', symbols: rows.slice(0, 50).map(r => r.symbol) },
     ]
   }, [rows])
+
+  const flaggedMap = useMemo((): Map<string, string> => {
+    if (!coinFilterSettings) return new Map()
+    const map = new Map<string, string>()
+    for (const r of rows) {
+      const { flagged, reason } = checkCoinFlagged(r.symbol, r.turnover, coinFilterSettings)
+      if (flagged) map.set(r.symbol, reason)
+    }
+    return map
+  }, [rows, coinFilterSettings])
 
   // Resolve list from include/exclude patterns for the create form
   const resolvedCreate = useMemo(() => {
@@ -337,6 +352,9 @@ export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder 
                 onClick={e => e.stopPropagation()}>
                 {isPattern(val) ? <Asterisk size={9} className="opacity-70" /> : <CoinIcon symbol={val} className="w-3 h-3" />}
                 {val.replace(/USDT$/i, '')}
+                {!isPattern(val) && flaggedMap.has(val) && (
+                  <span title={flaggedMap.get(val)} className="text-amber-400 text-[9px] cursor-help">⚠️</span>
+                )}
                 <button type="button" onClick={() => remove(val)} className="opacity-60 hover:opacity-100"><X size={9} /></button>
               </span>
             ))}
@@ -605,6 +623,9 @@ export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder 
                       <span className="flex-1 text-left">
                         <span className="text-[12px] font-semibold text-slate-200">{base}</span>
                         <span className="ml-1 text-[10px] text-slate-500">USDT</span>
+                        {flaggedMap.has(row.symbol) && (
+                          <span title={flaggedMap.get(row.symbol)} className="ml-1 text-amber-400 text-[10px] cursor-help">⚠️</span>
+                        )}
                       </span>
                       <span className={`text-[10px] font-mono ${pos ? 'text-emerald-400' : 'text-rose-400'}`}>
                         {pos ? '+' : ''}{row.change.toFixed(2)}%
