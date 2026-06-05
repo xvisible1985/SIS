@@ -819,6 +819,7 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 		"safe_zone":     safeZone,
 		"signal_state":  s.engine.GetSignalState(id),
 		"signal_values": s.engine.GetSignalValues(id),
+		"tp_halted":     s.engine.GetTPHalted(id),
 	})
 }
 

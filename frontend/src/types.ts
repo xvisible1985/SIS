@@ -330,6 +330,7 @@ export interface StrategyState {
   signal_state?: 'buy' | 'sell' | 'neutral' | ''
   signal_values?: Record<string, number>
   safe_zone?: { low: number; high: number } | null
+  tp_halted?: boolean
 }
 
 export interface HedgeSession {

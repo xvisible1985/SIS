@@ -294,6 +294,26 @@ func (e *Engine) UpdateTPSL(ctx context.Context, strategyID string) {
 	}
 }
 
+// GetTPHalted returns true when the TP circuit breaker has fired for a strategy
+// (tpCancelStreak >= 5), meaning the engine stopped re-placing the TP order after
+// repeated exchange cancellations (e.g. tokenized stock outside market hours).
+func (e *Engine) GetTPHalted(strategyID string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, runner := range e.runners {
+		runner.mu.RLock()
+		sr, ok := runner.strategies[strategyID]
+		runner.mu.RUnlock()
+		if ok {
+			sr.mu.Lock()
+			halted := sr.tpCancelStreak >= 5
+			sr.mu.Unlock()
+			return halted
+		}
+	}
+	return false
+}
+
 // GetSignalState returns the current signal state string for a running strategy:
 // "buy", "sell", "neutral", or "" (no signal filter / unknown).
 func (e *Engine) GetSignalState(strategyID string) string {
