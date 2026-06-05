@@ -114,6 +114,9 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
   const [outerTab, setOuterTab]   = useState<OuterTab>('basic');
   const [stratTab, setStratTab]   = useState<StrategySubTab>('entry');
 
+  // Editing strategy_config is blocked while the bot is active (server enforces this too).
+  const strategyLocked = bot?.status === 'active' && !bot?.isOfficial
+
   const [name,        setName]        = useState(bot?.name        ?? '');
   const [description, setDescription] = useState(bot?.description ?? '');
   const [fullDescription, setFullDescription] = useState(bot?.fullDescription ?? '');
@@ -703,7 +706,16 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
           )}
 
           {outerTab === 'strategy' && (
-            <div className="flex flex-col gap-4">
+            <div className="relative">
+              {strategyLocked && (
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 rounded-lg bg-slate-900/85 backdrop-blur-sm">
+                  <span className="text-3xl">🔒</span>
+                  <span className="text-sm font-semibold text-slate-200">Стратегия заблокирована</span>
+                  <span className="text-xs text-slate-400">Остановите бота, чтобы изменить стратегию</span>
+                  <span className="mt-1 text-[10px] text-slate-500">Изменение стратегии сбросит таймер активности</span>
+                </div>
+              )}
+              <div className="flex flex-col gap-4">
               {bot && (
                 <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/[.08] px-3 py-2.5 text-[11.5px] text-amber-300 leading-relaxed">
                   <span className="mt-px shrink-0 text-amber-400">⚠</span>
@@ -1422,6 +1434,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
 
                 </div>
               )}
+              </div>
             </div>
           )}
 
