@@ -23,3 +23,8 @@ export interface AllStrategyDefaults {
   grid?: GridDefaults
   matrix?: MatrixDefaults
 }
+
+export interface CoinFilterSettings {
+  min_turnover_usdt: number
+  blacklist: string[]
+}

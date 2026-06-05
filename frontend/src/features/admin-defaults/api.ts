@@ -1,5 +1,5 @@
 import { apiClient } from '../../api/client'
-import type { AllStrategyDefaults, GridDefaults, MatrixDefaults } from './types'
+import type { AllStrategyDefaults, GridDefaults, MatrixDefaults, CoinFilterSettings } from './types'
 
 let _cache: AllStrategyDefaults | null = null
 
@@ -20,4 +20,22 @@ export async function updateStrategyDefaults(
 ): Promise<void> {
   await apiClient.put(`/admin/strategy-defaults/${type}`, config)
   invalidateStrategyDefaultsCache()
+}
+
+let _coinFilterCache: CoinFilterSettings | null = null
+
+export async function getCoinFilter(): Promise<CoinFilterSettings> {
+  if (_coinFilterCache) return _coinFilterCache
+  const res = await apiClient.get<CoinFilterSettings>('/coin-filter')
+  _coinFilterCache = res.data ?? { min_turnover_usdt: 500000, blacklist: [] }
+  return _coinFilterCache
+}
+
+export function invalidateCoinFilterCache(): void {
+  _coinFilterCache = null
+}
+
+export async function updateCoinFilter(settings: CoinFilterSettings): Promise<void> {
+  await apiClient.put('/admin/coin-filter', settings)
+  invalidateCoinFilterCache()
 }
