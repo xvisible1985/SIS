@@ -130,7 +130,7 @@ export function AdminBotsTab() {
                     <AdminBotCard
                       key={bot.id}
                       bot={bot}
-                      onEdit={bot.isOfficial ? () => setEditingBot(bot) : undefined}
+                      onEdit={() => setEditingBot(bot)}
                       onTogglePublic={() => togglePublic(bot.id, !bot.isPublic)}
                       onDelete={() => {
                         if (window.confirm('Удалить бота?')) remove(bot.id);
