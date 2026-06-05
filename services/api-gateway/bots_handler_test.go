@@ -441,3 +441,80 @@ func TestStartBot_CoinFilterBlocked(t *testing.T) {
 		t.Errorf("expected 204 (override enabled), got %d: %s", rec2.Code, rec2.Body.String())
 	}
 }
+
+func TestPatchBot_StrategyLockWhileActive(t *testing.T) {
+	s := newTestServer(t)
+	userID := createAdminTestUser(t, s, "strategy_lock@example.com", "pass1234", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", userID)
+
+	botID := createTestBot(t, s, userID, "Lock Test Bot", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1", botID)
+
+	// Manually set bot to active (skip coin filter logic)
+	s.pool.Exec(context.Background(),
+		`UPDATE bots SET status = 'active', active_since = NOW() WHERE id = $1`, botID)
+	defer s.pool.Exec(context.Background(),
+		`UPDATE bots SET status = 'stopped', active_since = NULL WHERE id = $1`, botID)
+
+	// Attempt to change strategyConfig while active — should be 422
+	body := `{"strategyConfig":{"strategy_type":"grid","direction":"long","leverage":5}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/bots/"+botID, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withUserID(req, userID)
+	req = addChiParams(req, map[string]string{"id": botID})
+	s.PatchBot(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422 when changing strategy while active, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Changing a non-strategy field (name) while active should still work (200)
+	body2 := `{"name":"Updated Name"}`
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPatch, "/bots/"+botID, bytes.NewBufferString(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	req2 = withUserID(req2, userID)
+	req2 = addChiParams(req2, map[string]string{"id": botID})
+	s.PatchBot(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Errorf("expected 200 for non-strategy patch while active, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+}
+
+func TestPatchBot_StrategyResetTimer(t *testing.T) {
+	s := newTestServer(t)
+	userID := createAdminTestUser(t, s, "strategy_reset@example.com", "pass1234", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", userID)
+
+	botID := createTestBot(t, s, userID, "Timer Reset Bot", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1", botID)
+
+	// Give the bot an accumulated timer
+	s.pool.Exec(context.Background(),
+		`UPDATE bots SET active_seconds_acc = 10*86400, status = 'stopped' WHERE id = $1`, botID)
+
+	// Patch strategyConfig while stopped — should reset timer
+	body := `{"strategyConfig":{"strategy_type":"grid","direction":"long","leverage":5}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/bots/"+botID, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withUserID(req, userID)
+	req = addChiParams(req, map[string]string{"id": botID})
+	s.PatchBot(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var accSecs int64
+	var activeSince *interface{}
+	s.pool.QueryRow(context.Background(),
+		`SELECT active_seconds_acc, active_since FROM bots WHERE id = $1`, botID,
+	).Scan(&accSecs, &activeSince)
+
+	if accSecs != 0 {
+		t.Errorf("expected active_seconds_acc=0 after strategy change, got %d", accSecs)
+	}
+	if activeSince != nil {
+		t.Error("expected active_since=NULL after strategy change")
+	}
+}

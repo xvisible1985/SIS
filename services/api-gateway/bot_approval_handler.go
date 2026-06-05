@@ -29,9 +29,12 @@ func (s *Server) RequestBotApproval(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Include current active session in effective total.
+	// Guard against negative delta from clock skew or time adjustments.
 	effectiveSecs := accSecs
 	if activeSince != nil {
-		effectiveSecs += int64(time.Since(*activeSince).Seconds())
+		if delta := int64(time.Since(*activeSince).Seconds()); delta > 0 {
+			effectiveSecs += delta
+		}
 	}
 
 	// Load threshold from platform settings.
@@ -65,14 +68,15 @@ func (s *Server) RequestBotApproval(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ApproveBotPublication(w http.ResponseWriter, r *http.Request) {
 	botID := chi.URLParam(r, "id")
 	tag, err := s.pool.Exec(r.Context(),
-		`UPDATE bots SET approval_status = 'approved', updated_at = NOW() WHERE id = $1`,
+		`UPDATE bots SET approval_status = 'approved', updated_at = NOW()
+		 WHERE id = $1 AND approval_status = 'pending'`,
 		botID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 	if tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "bot not found")
+		writeError(w, http.StatusNotFound, "bot not found or not pending")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

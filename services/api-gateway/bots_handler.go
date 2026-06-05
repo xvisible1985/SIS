@@ -751,7 +751,7 @@ func (s *Server) StopBot(w http.ResponseWriter, r *http.Request) {
 		`UPDATE bots
 		 SET active_seconds_acc = active_seconds_acc
 		       + CASE WHEN active_since IS NOT NULL
-		              THEN EXTRACT(EPOCH FROM NOW() - active_since)::BIGINT
+		              THEN GREATEST(0, EXTRACT(EPOCH FROM NOW() - active_since)::BIGINT)
 		              ELSE 0
 		         END,
 		     active_since  = NULL,
