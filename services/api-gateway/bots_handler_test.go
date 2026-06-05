@@ -280,3 +280,48 @@ func TestDeleteBot(t *testing.T) {
 		t.Error("bot should have been deleted")
 	}
 }
+
+func TestStartBot_CoinFilterBlocked(t *testing.T) {
+	s := newTestServer(t)
+	userID := createAdminTestUser(t, s, "coinfilter@example.com", "pass1234", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", userID)
+
+	botID := createTestBot(t, s, userID, "Filter Test", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1", botID)
+
+	// Make it a signal bot with a symbol we will blacklist
+	s.pool.Exec(context.Background(),
+		`UPDATE bots SET strategy_config = $1 WHERE id = $2`,
+		`{"bot_kind":"signal","symbol":"TRASHUSDT"}`, botID)
+
+	// Add to blacklist
+	s.pool.Exec(context.Background(),
+		`UPDATE coin_filter_settings SET blacklist = ARRAY['TRASHUSDT'] WHERE id = 1`)
+	defer s.pool.Exec(context.Background(),
+		`UPDATE coin_filter_settings SET blacklist = '{}' WHERE id = 1`)
+
+	// Should be blocked — expect 422
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bots/"+botID+"/start", nil)
+	req = withUserID(req, userID)
+	req = addChiParams(req, map[string]string{"id": botID})
+	s.StartBot(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422 (blocked by blacklist), got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Enable override — should succeed (204)
+	s.pool.Exec(context.Background(),
+		`UPDATE bots SET ignore_coin_filter = true WHERE id = $1`, botID)
+	defer s.pool.Exec(context.Background(),
+		`UPDATE bots SET status = 'stopped' WHERE id = $1`, botID)
+
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/bots/"+botID+"/start", nil)
+	req2 = withUserID(req2, userID)
+	req2 = addChiParams(req2, map[string]string{"id": botID})
+	s.StartBot(rec2, req2)
+	if rec2.Code != http.StatusNoContent {
+		t.Errorf("expected 204 (override enabled), got %d: %s", rec2.Code, rec2.Body.String())
+	}
+}
