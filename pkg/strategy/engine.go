@@ -595,9 +595,12 @@ type AccountRunner struct {
 	// positions caches the latest position size (in coins) from private WS events.
 	// posAvgEntry caches the exchange avg entry price for the same position.
 	// Key for both: "SYMBOL:positionIdx" (e.g. "BTCUSDT:1").
-	posMu       sync.RWMutex
-	positions   map[string]float64
-	posAvgEntry map[string]float64
+	// discrepancyLoggedAt tracks when a position discrepancy was last logged per symbol
+	// to prevent log spam when Bybit sends high-frequency position snapshots.
+	posMu                sync.RWMutex
+	positions            map[string]float64
+	posAvgEntry          map[string]float64
+	discrepancyLoggedAt  map[string]time.Time
 }
 
 func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trader.Credentials, pool *pgxpool.Pool, signalEngine *signal.Engine, cancel context.CancelFunc) *AccountRunner {
@@ -612,8 +615,9 @@ func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trade
 		orderIndex:    make(map[string]orderRef),
 		tradeStream:   trader.NewTradeStream(creds),
 		cancel:        cancel,
-		positions:     make(map[string]float64),
-		posAvgEntry:   make(map[string]float64),
+		positions:           make(map[string]float64),
+		posAvgEntry:         make(map[string]float64),
+		discrepancyLoggedAt: make(map[string]time.Time),
 	}
 }
 
@@ -884,7 +888,10 @@ func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
 		}
 	}
 	// Discrepancy check: if position is larger than our recorded fills, trigger reconcile.
+	// Rate-limited to once per 60 s per symbol to prevent log spam when Bybit sends
+	// high-frequency position snapshots during an unresolved discrepancy.
 	if size > 0 && len(matched) > 0 {
+		symbol := ev.Symbol
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -900,8 +907,18 @@ func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
 			}
 			const eps = 0.000001
 			if size-filledQty > eps {
-				log.Printf("strategy: position discrepancy symbol=%s pos=%.6f fills=%.6f — triggering reconcile", ev.Symbol, size, filledQty)
-				ar.tryReconcile(context.Background())
+				const cooldown = 60 * time.Second
+				ar.posMu.Lock()
+				lastLogged := ar.discrepancyLoggedAt[symbol]
+				shouldLog := time.Since(lastLogged) >= cooldown
+				if shouldLog {
+					ar.discrepancyLoggedAt[symbol] = time.Now()
+				}
+				ar.posMu.Unlock()
+				if shouldLog {
+					log.Printf("strategy: position discrepancy symbol=%s pos=%.6f fills=%.6f — triggering reconcile", symbol, size, filledQty)
+					ar.tryReconcile(context.Background())
+				}
 			}
 		}()
 	}
