@@ -144,6 +144,10 @@ export interface Position {
   positionIdx: number
   category: string
   positionIM?: number
+  // Trailing stop fields (populated from Bybit WS when trailing stop is active)
+  trailingStop?: string  // callback distance in price units; "0" or "" = not set
+  activePrice?: string   // price at which trailing activates; "0" or "" = not set
+  stopLoss?: string      // current trailing stop level once activated; "0" or "" = not set
 }
 
 export interface ActiveOrder {
@@ -281,9 +285,9 @@ export interface Strategy {
   trailing_stop_enabled: boolean
   trailing_activation_pct: number | null
   trailing_callback_pct: number | null
-  tp_signal_name?: string | null
+  tp_signal_configs?: SignalConfig[] | null
   tp_signal_dir?: 'buy' | 'sell' | null
-  sl_signal_name?: string | null
+  sl_signal_configs?: SignalConfig[] | null
   sl_signal_dir?: 'buy' | 'sell' | null
   created_at: string
   updated_at: string
@@ -403,9 +407,9 @@ export interface StrategyFormData {
   trailing_stop_enabled: boolean
   trailing_activation_pct: number
   trailing_callback_pct: number
-  tp_signal_name?: string | null
+  tp_signal_configs?: SignalConfig[] | null
   tp_signal_dir?: 'buy' | 'sell' | null
-  sl_signal_name?: string | null
+  sl_signal_configs?: SignalConfig[] | null
   sl_signal_dir?: 'buy' | 'sell' | null
   matrix_levels: MatrixLevel[]
   safe_zone_pct: number
@@ -455,4 +459,17 @@ export interface CycleAuditData {
   levels?: CycleAuditLevel[]
   tp?: CycleAuditTPSL | null
   sl?: CycleAuditTPSL | null
+}
+
+export interface SystemHealthSnapshot {
+  cpu_pct: number
+  ram_used_mb: number
+  ram_total_mb: number
+  ram_pct: number
+  disk_used_gb: number
+  disk_total_gb: number
+  disk_pct: number
+  db_ok: boolean
+  db_size_mb: number
+  db_growth_mb_per_day: number
 }
