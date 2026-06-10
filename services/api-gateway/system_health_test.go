@@ -57,7 +57,7 @@ func TestCalcGrowthMBPerDay(t *testing.T) {
 		{t: now, bytes: 1_100_000_000},                      // 1.1 GB now → +100 MB/day
 	}
 	got := calcGrowthMBPerDay(samples)
-	want := 95.37  // 100 MB (decimal) / 1048576 (binary MB)
+	want := 95.37 // 100 MB (decimal) / 1048576 (binary MB)
 	if got < want-2.0 || got > want+2.0 {
 		t.Errorf("growth: got %.2f MB/day, want ~%.2f", got, want)
 	}
