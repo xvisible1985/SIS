@@ -80,6 +80,9 @@ func main() {
 	s := NewServer(ctx, pool, rdb, jwtSecret, encKey, botSecret, tronAddr, adminEmails, pm, ns)
 	bootstrapAdmins(ctx, pool, adminEmails)
 
+	// Start system health monitor (CPU sampler every 10 s, DB size tracker every 5 min).
+	StartSystemHealthMonitor(ctx, pool)
+
 	// Start strategy engine
 	go s.engine.Start(ctx)
 
@@ -282,6 +285,8 @@ func main() {
 			r.Post("/admin/bots", s.CreateOfficialBot)
 			r.Post("/admin/bots/{id}/approve", s.ApproveBotPublication)
 			r.Post("/admin/bots/{id}/reject",  s.RejectBotPublication)
+			r.Post("/admin/bots/{id}/publish-to-catalog", s.PublishBotToCatalog)
+			r.Delete("/admin/bots/{id}", s.DeleteAdminBot)
 			// Admin: signal and indicator types management
 			r.Get("/admin/signal-types", s.ListSignalTypes)
 			r.Patch("/admin/signal-types/{id}", s.ToggleSignalType)
@@ -315,6 +320,9 @@ func main() {
 			r.Get("/admin/log-visualizer/events",     s.LVGetEvents)
 			r.Get("/admin/log-visualizer/levels",     s.LVGetLevels)
 			r.Get("/admin/log-visualizer/klines",     s.LVGetKlines)
+
+			// Admin: system health
+			r.Get("/admin/system-health", s.GetSystemHealth)
 
 				// Admin: sign Bybit trading agreement (disabled — requires master API key permissions)
 				// r.Post("/admin/accounts/{id}/sign-agreement", s.AdminSignAgreement)

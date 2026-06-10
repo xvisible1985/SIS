@@ -78,6 +78,12 @@ func (s *Server) GetAdminMetrics(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GetSystemHealth returns a live server-health snapshot (CPU, RAM, Disk, DB).
+// GET /admin/system-health
+func (s *Server) GetSystemHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, LatestSystemHealth())
+}
+
 /*
 // AdminSignAgreement manually signs the Bybit trading agreement for an exchange account.
 // POST /admin/accounts/{id}/sign-agreement  body: {"categoryV2": 0} (optional)
