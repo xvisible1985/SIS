@@ -24,6 +24,7 @@ import { HedgePairCard } from '../components/strategies/HedgePairCard'
 import { StrategyModal } from '../components/strategies/StrategyModal'
 import { useBots } from '../features/bots/api'
 import { useAuth } from '../hooks/useAuth'
+import { useSystemHealth } from '../hooks/useSystemHealth'
 import { useAdminUsers } from '../features/admin-users/api'
 import type { AdminUser } from '../features/admin-users/types'
 import { useBotSignalCounts } from '../hooks/useBotSignalCounts'
@@ -956,6 +957,23 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
 
 // ── Admin user picker bar ────────────────────────────────────────────────────
 
+function metricColor(pct: number): string {
+  if (pct < 60) return 'text-emerald-400'
+  if (pct < 80) return 'text-amber-400'
+  return 'text-rose-400'
+}
+
+function SystemMetricChip({ label, pct }: { label: string; pct: number }) {
+  return (
+    <span className="hidden md:flex items-baseline gap-[3px]">
+      <span className="text-[9px] font-bold uppercase tracking-[0.8px] text-slate-600">{label}</span>
+      <span className={`text-[11px] font-semibold tabular-nums ${metricColor(pct)}`}>
+        {Math.round(pct)}%
+      </span>
+    </span>
+  )
+}
+
 function AdminUserPickerBar({
   selectedUser,
   selectedAccountId: selectedAccId,
@@ -971,6 +989,7 @@ function AdminUserPickerBar({
   const [search, setSearch] = useState('')
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
+  const health = useSystemHealth()
 
   useEffect(() => {
     if (!open) return
@@ -1032,7 +1051,30 @@ function AdminUserPickerBar({
         </>
       )}
 
-      <div className="flex-1" />
+      {/* System health chips */}
+      <div className="flex flex-1 items-center justify-center gap-3 min-w-0 overflow-hidden px-2">
+        {health && (
+          <>
+            <SystemMetricChip label="CPU"  pct={health.cpu_pct} />
+            <SystemMetricChip label="RAM"  pct={health.ram_pct} />
+            <SystemMetricChip label="Disk" pct={health.disk_pct} />
+            {/* DB chip */}
+            <span className="hidden md:flex items-baseline gap-[3px]">
+              <span className="text-[9px] font-bold uppercase tracking-[0.8px] text-slate-600">DB</span>
+              <span className={`text-[11px] font-semibold ${health.db_ok ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {health.db_ok
+                  ? `✓${(health.db_size_mb / 1024).toFixed(1)}G`
+                  : '✗'}
+              </span>
+              {health.db_ok && health.db_growth_mb_per_day >= 50 && (
+                <span className="text-[10px] text-slate-500">
+                  +{Math.round(health.db_growth_mb_per_day)}M/д
+                </span>
+              )}
+            </span>
+          </>
+        )}
+      </div>
 
       {/* User search picker */}
       <div className="relative" ref={wrapRef}>
