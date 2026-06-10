@@ -78,14 +78,22 @@ func readDiskInfo(path string) (totalGB, usedGB, pct float64) {
 
 // ── Background goroutines ─────────────────────────────────────────────────────
 
-func cpuSamplerLoop() {
+func cpuSamplerLoop(ctx context.Context) {
 	for {
 		idle1, total1, err := readCPUStat()
 		if err != nil || total1 == 0 {
-			time.Sleep(10 * time.Second)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(10 * time.Second):
+			}
 			continue
 		}
-		time.Sleep(time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
 		idle2, total2, err2 := readCPUStat()
 		if err2 == nil && total2 > total1 {
 			deltaTotal := total2 - total1
@@ -95,7 +103,11 @@ func cpuSamplerLoop() {
 			shmCpuPct = usage
 			shmMu.Unlock()
 		}
-		time.Sleep(9 * time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(9 * time.Second):
+		}
 	}
 }
 
@@ -142,7 +154,7 @@ func StartSystemHealthMonitor(ctx context.Context, pool *pgxpool.Pool) {
 	shmMu.Lock()
 	shmPool = pool
 	shmMu.Unlock()
-	go cpuSamplerLoop()
+	go cpuSamplerLoop(ctx)
 	go dbSamplerLoop(ctx)
 }
 
