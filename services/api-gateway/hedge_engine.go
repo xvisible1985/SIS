@@ -135,15 +135,6 @@ func (s *Server) processHedgeBot(ctx context.Context, botID, ownerID, accountID 
 
 	posMap := buildHedgePosMap(rawPositions)
 
-	// Diagnostic: log raw positions that were filtered out by parseHedgePos so we
-	// can see if HOME/other symbols are returned but have bad field values.
-	if len(rawPositions) > 0 && len(posMap) == 0 {
-		for _, p := range rawPositions {
-			log.Printf("hedge engine [%s]: позиция отфильтрована parseHedgePos — symbol=%s side=%s size=%s avgPrice=%s markPrice=%s",
-				botID[:8], p.Symbol, p.Side, p.Size, p.EntryPrice, p.MarkPrice)
-		}
-	}
-
 	s.checkHedgeDeactivation(ctx, botID, accountID, cfg, posMap)
 	s.checkHedgeActivation(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, creds, posMap, watches)
 }
@@ -168,6 +159,13 @@ func buildHedgePosMap(positions []trader.Position) map[string]map[string]hedgePo
 	for _, raw := range positions {
 		p, ok := parseHedgePos(raw)
 		if !ok {
+			// Log every filtered position so we can see bad field values.
+			size, _ := strconv.ParseFloat(raw.Size, 64)
+			if size > 0 {
+				// Size is valid but entry or mark price is bad — worth logging.
+				log.Printf("hedge buildPosMap: отфильтрован %s %s size=%s avgPrice=%s markPrice=%s",
+					raw.Symbol, raw.Side, raw.Size, raw.EntryPrice, raw.MarkPrice)
+			}
 			continue
 		}
 		if m[p.Symbol] == nil {
