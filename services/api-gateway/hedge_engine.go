@@ -115,6 +115,8 @@ func (s *Server) hedgeEngineTick(ctx context.Context) {
 //  2. Checks existing hedges for deactivation.
 //  3. Checks unhedged positions for activation.
 func (s *Server) processHedgeBot(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, watches map[string]hedgeWatchEntry) {
+	s.logBotEvent(ctx, botID, "Хедж: тик", "info", "system")
+
 	creds, err := s.loadBotAccountCreds(ctx, accountID)
 	if err != nil {
 		s.logBotEvent(ctx, botID,
