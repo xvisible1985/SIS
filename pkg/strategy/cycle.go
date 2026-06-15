@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"sis/pkg/signal"
 	"sis/pkg/trader"
 )
@@ -42,12 +41,15 @@ type StrategyRunner struct {
 	lastTPSLAvg             float64   // avg entry that TP/SL were last placed for
 	lastTPPrice             float64   // TP price at last placement — changes when tp_pct changes
 	lastSLPrice             float64   // SL trigger price at last placement
+	lastTrailingAvg         float64   // avg entry when trailing stop was last set — skip if unchanged
 	positionModeVerified    bool      // true after ensurePositionMode succeeded for current HedgeMode value
 	lastVerifiedHedge       bool      // HedgeMode value at the time positionModeVerified was set
 	gridChangedWhileStopped bool      // restartCycle called while stopped; apply on next loadOrStart
 	signalSubID             string    // non-empty while waiting for signal before starting a new cycle
 	signalMonitorID         string    // non-empty while continuously monitoring signal during active cycle
 	currentSignalState      string    // last observed signal state: "buy","sell","neutral","" (no filter)
+	exitTPSignalSubID       string    // non-empty while exit TP signal gate is active
+	exitSLSignalSubID       string    // non-empty while exit SL signal gate is active
 
 	// Matrix strategy runtime state
 	matrixMonitorStop   context.CancelFunc
@@ -187,6 +189,18 @@ func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 	status := sr.strategy.Status
 	sr.mu.Unlock()
 	if status == StatusStopped {
+		sr.mu.Lock()
+		hasAdopt := sr.strategy.AdoptPositionData != nil
+		sr.mu.Unlock()
+		if !hasAdopt {
+			return
+		}
+		// Adopt path: existing position needs TP/SL even while stopped.
+		sr.startMu.Lock()
+		if err := sr.startCycleByType(ctx); err != nil {
+			log.Printf("strategy %s: adopt while stopped: %v", sr.strategy.ID, err)
+		}
+		sr.startMu.Unlock()
 		return
 	}
 	sr.mu.Lock()
@@ -229,6 +243,7 @@ func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 		if err2 != nil {
 			log.Printf("strategy %s: start cycle: %v", sr.strategy.ID, err2)
 		}
+		sr.launchExitSignalMonitors(ctx)
 		return
 	}
 
@@ -380,6 +395,7 @@ func (sr *StrategyRunner) resumeGridCycle(ctx context.Context) {
 			if curState != want {
 				// Signal is neutral — keep cancelled levels as-is, subscribe to monitor.
 				sr.launchSignalMonitor(ctx)
+				sr.launchExitSignalMonitors(ctx)
 				return
 			}
 		}
@@ -520,6 +536,7 @@ func (sr *StrategyRunner) resumeGridCycle(ctx context.Context) {
 		go sr.launchGridVirtualMonitor()
 	}
 	sr.mu.Unlock()
+	sr.launchExitSignalMonitors(ctx)
 }
 
 // checkPositionGone checks if there are filled levels in the current cycle but no
@@ -607,26 +624,6 @@ func (sr *StrategyRunner) checkPositionGone(ctx context.Context) bool {
 
 	sr.warn(ctx, fmt.Sprintf("Позиция не найдена на бирже при запуске, цикл %d очищен", sr.cycle.CycleNum))
 
-	// Capture entry data BEFORE cancelling filled levels: avgEntry() reads LevelFilled status
-	// and closeCycle() nils out sr.cycle/sr.levels — all must be read before both calls.
-	avg, posQty := sr.avgEntry()
-	closeSnap := externalCloseSnap{
-		strategyID:     sr.strategy.ID,
-		stratID8:       sr.strategy.ID[:8],
-		botID:          sr.strategy.BotID,
-		ownerID:        sr.strategy.OwnerID,
-		accountID:      sr.strategy.AccountID,
-		symbol:         sr.strategy.Symbol,
-		category:       sr.strategy.Category,
-		direction:      string(sr.strategy.Direction),
-		cycleNum:       sr.cycle.CycleNum,
-		cycleID:        sr.cycle.ID,
-		cycleStartedAt: sr.cycle.StartedAt,
-		avgEntry:       avg,
-		posQty:         posQty,
-		creds:          sr.runner.creds,
-	}
-
 	sr.cancelPlacedLevels(ctx)
 	cycleID := sr.cycle.ID
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
@@ -637,15 +634,6 @@ func (sr *StrategyRunner) checkPositionGone(ctx context.Context) bool {
 		}
 	}
 	sr.closeCycle(ctx, "position_gone")
-
-	// Write trade_history for the cycle that was silently closed while the server was down.
-	// resolveExternalClose queries trader_executions / Bybit API to find the real exit price
-	// and result (TP/SL/manual). Without this call the cycle would be lost from history.
-	if posQty > 0 {
-		log.Printf("strategy %s: цикл %d — позиция закрылась пока сервер был выключен, определяем результат...",
-			closeSnap.stratID8, closeSnap.cycleNum)
-		go resolveExternalClose(sr.runner.pool, closeSnap)
-	}
 	return true
 }
 
@@ -1156,11 +1144,9 @@ func (sr *StrategyRunner) cancelAllStrategyOrders(ctx context.Context) {
 }
 
 // closePositionAtMarket places a market close order for the full position and closes the cycle.
-// approxExitPrice is used to record the trade in trade_history (mark price or trigger price);
-// pass 0 to skip the trade record.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) closePositionAtMarket(ctx context.Context, reason string, approxExitPrice float64) {
-	avg, totalQty := sr.avgEntry()
+	_, totalQty := sr.avgEntry()
 	if totalQty == 0 {
 		return
 	}
@@ -1181,15 +1167,6 @@ func (sr *StrategyRunner) closePositionAtMarket(ctx context.Context, reason stri
 	if err != nil {
 		sr.errlog(ctx, fmt.Sprintf("closePositionAtMarket: %v", err))
 		return
-	}
-	// Write trade record before closeCycle zeros sr.cycle.
-	if approxExitPrice > 0 && avg > 0 && (reason == "tp" || reason == "sl") {
-		pnl := (approxExitPrice - avg) * totalQty
-		if sr.strategy.Direction == DirectionShort {
-			pnl = (avg - approxExitPrice) * totalQty
-		}
-		pnlPct := pnl / (avg * totalQty) * 100
-		sr.writeTrade(ctx, reason, avg, approxExitPrice, totalQty, pnl, pnlPct)
 	}
 	sr.closedBySelf = true
 	sr.closedByReason = reason
@@ -1494,7 +1471,7 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
-	if sr.strategy.Status == StatusStopped {
+	if sr.strategy.Status == StatusStopped && sr.strategy.AdoptPositionData == nil {
 		return nil
 	}
 
@@ -1524,6 +1501,7 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 
 	sides := sidesForDirection(sr.strategy.Direction)
 	levelIdx := 1
+	var adoptedLevel bool
 
 	if len(sr.strategy.Steps) > 0 {
 		for _, side := range sides {
@@ -1560,6 +1538,43 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 				// Positive price_move_pct = with direction = virtual (tracks momentum)
 				// Negative price_move_pct = against direction = exchange limit (passive, waits for price)
 				forceVirtual := step.OrderType == "virtual" || step.PriceMovePct > 0
+
+				// Adopt path: absorb existing exchange position as pre-filled L1
+				// instead of placing a new market order.
+				if sr.strategy.AdoptPositionData != nil && levelIdx == 1 && targetPrice == 0 {
+					adopt := sr.strategy.AdoptPositionData
+					fillPrice, _ := strconv.ParseFloat(adopt.EntryPrice, 64)
+					if fillPrice <= 0 {
+						fillPrice = price
+					}
+					fillQty := adopt.Size
+					if fillQty == "" {
+						fillQty = qty
+					}
+					var levelID string
+					if err := sr.runner.pool.QueryRow(ctx,
+						`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, status, filled_price, filled_at)
+						 VALUES ($1,$2,$3,$4,$5,$6,$7,'filled',$8,NOW()) RETURNING id`,
+						sr.strategy.ID, cycleID, levelIdx, side, targetPrice, sizeUSDT, fillQty, fillPrice,
+					).Scan(&levelID); err != nil {
+						log.Printf("strategy %s: adopt insert level 1: %v", sr.strategy.ID, err)
+						levelIdx++
+						continue
+					}
+					sr.runner.pool.Exec(ctx, //nolint:errcheck
+						`UPDATE strategies SET adopt_position_data=NULL, updated_at=NOW() WHERE id=$1`, sr.strategy.ID)
+					sr.strategy.AdoptPositionData = nil
+					sr.levels = append(sr.levels, GridLevel{
+						ID: levelID, LevelIdx: levelIdx, Side: side,
+						TargetPrice: targetPrice, SizeUSDT: sizeUSDT, Qty: fillQty,
+						Status: LevelFilled, FilledPrice: fillPrice,
+					})
+					sr.info(ctx, fmt.Sprintf("Adopt L1 %s: поглощена позиция @ %.4f qty=%s", side, fillPrice, fillQty))
+					levelIdx++
+					adoptedLevel = true
+					continue
+				}
+
 				var levelID string
 				if err := sr.runner.pool.QueryRow(ctx,
 					`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, force_virtual)
@@ -1613,6 +1628,16 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 				sr.strategy.Symbol, string(sr.strategy.Direction), sr.cycle.CycleNum, price))
 	}
 	sr.clearManualAlert(ctx)
+	// Adopted level: place TP/SL immediately based on position's entry price.
+	// placeNextLevels below skips DCA orders in stopped mode on its own.
+	if adoptedLevel {
+		if err := sr.updateTP(ctx); err != nil {
+			sr.errlog(ctx, fmt.Sprintf("adopt updateTP: %v", err))
+		}
+		if err := sr.updateSL(ctx); err != nil {
+			sr.errlog(ctx, fmt.Sprintf("adopt updateSL: %v", err))
+		}
+	}
 	if err := sr.placeNextLevels(ctx); err != nil {
 		return err
 	}
@@ -2063,9 +2088,81 @@ func (sr *StrategyRunner) handleLevelFill(ctx context.Context, levelID string, f
 	}
 }
 
+// updateTrailingStop sets Bybit's native trailing stop on the current position.
+// Uses sr.strategy.TrailingActivationPct (when to start trailing) and
+// TrailingCallbackPct (how far price can pull back before close).
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) updateTrailingStop(ctx context.Context) error {
+	if !sr.strategy.TrailingStopEnabled {
+		return nil
+	}
+	if sr.strategy.TrailingActivationPct <= 0 || sr.strategy.TrailingCallbackPct <= 0 {
+		sr.warn(ctx, "updateTrailingStop: trailing_activation_pct и trailing_callback_pct должны быть > 0")
+		return nil
+	}
+	if sr.instr.TickSize == 0 {
+		sr.warn(ctx, "updateTrailingStop: инструмент не загружен (TickSize=0) — пропускаем")
+		return nil
+	}
+
+	avg, totalQty := sr.avgEntry()
+	if totalQty == 0 || avg == 0 {
+		return nil
+	}
+
+	// Prefer WS-cached exchange entry price.
+	wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
+	if wsAvg := sr.runner.GetPositionAvgEntry(sr.strategy.Symbol, wantIdx); wsAvg > 0 {
+		avg = wsAvg
+	}
+
+	// Skip if avg entry hasn't changed since last set (avoid redundant API calls).
+	if avg == sr.lastTrailingAvg {
+		return nil
+	}
+
+	// Activation price — price at which trailing begins following.
+	var activePrice float64
+	if sr.strategy.Direction == DirectionLong {
+		activePrice = avg * (1 + sr.strategy.TrailingActivationPct/100)
+	} else {
+		activePrice = avg * (1 - sr.strategy.TrailingActivationPct/100)
+	}
+
+	// Callback distance in price units (how far price can reverse from peak before close).
+	callbackDist := activePrice * (sr.strategy.TrailingCallbackPct / 100)
+
+	activePriceStr := trader.FormatPrice(activePrice, sr.instr.TickSize)
+	callbackStr := trader.FormatPrice(callbackDist, sr.instr.TickSize)
+
+	if err := trader.SetTradingStop(ctx, sr.runner.creds, trader.TradingStopRequest{
+		Category:     sr.strategy.Category,
+		Symbol:       sr.strategy.Symbol,
+		TrailingStop: callbackStr,
+		ActivePrice:  activePriceStr,
+		PositionIdx:  wantIdx,
+	}); err != nil {
+		return fmt.Errorf("updateTrailingStop: %w", err)
+	}
+
+	sr.lastTrailingAvg = avg
+	sr.info(ctx, fmt.Sprintf(
+		"Trailing stop установлен: активация=%.6f (%.1f%%), отступ=%.6f (%.1f%%)",
+		activePrice, sr.strategy.TrailingActivationPct,
+		callbackDist, sr.strategy.TrailingCallbackPct,
+	))
+	return nil
+}
+
 // updateTP cancels the existing TP order (if any) and places a new one for the full position.
+// When TrailingStopEnabled=true, delegates to updateTrailingStop instead of placing a limit order.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) updateTP(ctx context.Context) error {
+	// Trailing stop mode — use Bybit's native trailing stop instead of a TP limit order.
+	if sr.strategy.TrailingStopEnabled {
+		return sr.updateTrailingStop(ctx)
+	}
+
 	// TP suppressed by active hedge — do not place/re-place TP.
 	if sr.strategy.HedgeTpSuppressed {
 		return nil
@@ -2096,14 +2193,21 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 		return nil
 	}
 
-	// Prefer the WS-cached exchange avg entry (updated by OnPositionEvent) over the
-	// internally calculated avg. Falls back to avgEntry() if no WS data received yet
-	// (e.g. first fill before the position event arrives, or after service restart).
+	// Prefer the WS-cached exchange position data over our internally calculated values.
+	// Falls back to avgEntry() values if no WS data received yet (e.g. first fill before
+	// the position event arrives, or after service restart).
 	{
 		wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
 		if wsAvg := sr.runner.GetPositionAvgEntry(sr.strategy.Symbol, wantIdx); wsAvg > 0 {
 			sr.info(ctx, fmt.Sprintf("updateTP: ТВХ биржи %.4f (расчётная %.4f)", wsAvg, avg))
 			avg = wsAvg
+		}
+		// Use the actual exchange position size for TP qty to handle partial closes and
+		// rounding differences. Only override when wsQty is smaller — a larger wsQty means
+		// there is an orphan position from a deleted strategy that must not inflate the TP
+		// beyond what this strategy actually owns.
+		if wsQty := sr.runner.GetPositionSizeCoins(sr.strategy.Symbol, wantIdx); wsQty > 0 && wsQty <= totalQty {
+			totalQty = wsQty
 		}
 	}
 
@@ -2122,6 +2226,8 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 	// Skip if TP is already placed with the same qty, avg entry, and price.
 	// Must be checked BEFORE cancelling the existing order.
 	if sr.tpOrderID != "" && sr.lastTPSLQty == totalQty && sr.lastTPSLAvg == avg && sr.lastTPPrice == tpPrice {
+		log.Printf("strategy %s: updateTP: TP уже выставлен (id=%s, qty=%.6f, avg=%.4f, price=%.4f) — пропуск",
+			sr.strategy.ID[:8], sr.tpOrderID, totalQty, avg, tpPrice)
 		return nil
 	}
 
@@ -2155,6 +2261,10 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 		return nil
 	}
 	linkID := fmt.Sprintf("SIS_STR-%s-tp-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, sr.tpPlaceSeq)
+	// Register linkId BEFORE the REST call so the global reconcile orphan guard
+	// (which checks the live orderIndex) never cancels a freshly-placed TP.
+	tpRef := orderRef{strategyID: sr.strategy.ID, refType: "tp"}
+	sr.runner.RegisterOrder(linkID, tpRef)
 	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:      sr.strategy.Symbol,
 		Category:    sr.strategy.Category,
@@ -2169,9 +2279,13 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 	})
 	if err != nil {
 		if isDuplicateLinkId(err) {
+			// Order already exists on the exchange with this linkId — keep the pre-registered
+			// linkId in orderIndex (protects it from orphan detection) while we recover.
 			sr.recoverDuplicateTP(ctx, linkID)
 			return nil
 		}
+		// PlaceOrder failed without creating an order — safe to remove the pre-registered linkId.
+		sr.runner.UnregisterOrder(linkID)
 		if isTruncatedToZero(err) {
 			return sr.retryTPAfterCancelStale(ctx, tpSide, tpQty, linkID, tpPrice, totalQty, avg)
 		}
@@ -2181,7 +2295,7 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 	sr.lastTPSLQty = totalQty
 	sr.lastTPSLAvg = avg
 	sr.lastTPPrice = tpPrice
-	sr.runner.RegisterOrder(result.OrderId, orderRef{strategyID: sr.strategy.ID, refType: "tp"})
+	sr.runner.RegisterOrder(result.OrderId, tpRef)
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
 		`UPDATE strategy_cycles SET tp_order_id=$1 WHERE id=$2`, result.OrderId, sr.cycle.ID)
 	sr.info(ctx, fmt.Sprintf("TP выставлен @ %.4f qty=%s (ТВХ=%.4f +%.2f%%)", tpPrice, tpQty, avg, sr.strategy.TPPct))
@@ -2241,6 +2355,11 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 	if sr.strategy.SLType != SLTypeConditional || sr.strategy.SLPct >= 0 {
 		return nil
 	}
+	// slPct must be in (-100, 0) for LONG: avg*(1+slPct/100) must be positive.
+	// Values ≤ -100 (e.g. -500%) are treated as "SL disabled" — silently skip.
+	if sr.strategy.SLPct <= -100 {
+		return nil
+	}
 
 	// Check instrument trading session (same guard as updateTP).
 	if status, err := trader.GetInstrumentStatus(ctx, sr.strategy.Category, sr.strategy.Symbol); err == nil && status != "Trading" {
@@ -2261,6 +2380,18 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 		return nil
 	}
 
+	// Use the actual exchange position size for SL qty so that rounding differences
+	// between our calculated qty and the real fill qty don't leave a dust хвостик.
+	// Safety: only override with WS qty if it is ≥ our calculated qty.
+	// If WS shows less (stale data — position event not yet received after a rapid fill),
+	// keep the avgEntry() value to avoid under-sizing the SL and leaving a хвостик.
+	{
+		wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
+		if wsQty := sr.runner.GetPositionSizeCoins(sr.strategy.Symbol, wantIdx); wsQty >= totalQty {
+			totalQty = wsQty
+		}
+	}
+
 	// SL is anchored to the deepest grid level so all levels are reachable before
 	// the stop fires. Falls back to actual avg entry if no level target prices exist.
 	slAvg := sr.lastGridLevelPrice()
@@ -2270,6 +2401,17 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 
 	slSide, slTrigger, trigDir := slParams(sr.strategy.Direction, slAvg, sr.strategy.SLPct)
 	if slSide == "" {
+		return nil
+	}
+
+	// Safety: slTrigger must be a positive, finite price. A non-positive or
+	// non-finite value indicates corrupted inputs (wrong slAvg or slPct in DB).
+	// Log full diagnostic context and skip placement to avoid an invalid-order error.
+	if slTrigger <= 0 || math.IsNaN(slTrigger) || math.IsInf(slTrigger, 0) {
+		sr.errlog(ctx, fmt.Sprintf(
+			"updateSL: недопустимый triggerPrice=%.8f (slAvg=%.8f slPct=%.4f dir=%s actualAvg=%.8f) — SL не выставлен",
+			slTrigger, slAvg, sr.strategy.SLPct, sr.strategy.Direction, actualAvg,
+		))
 		return nil
 	}
 
@@ -2304,6 +2446,10 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 		return nil
 	}
 	linkID := fmt.Sprintf("SIS_STR-%s-sl-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, sr.slPlaceSeq)
+	// Register linkId BEFORE the REST call so the global reconcile orphan guard never
+	// cancels a freshly-placed SL.
+	slRef := orderRef{strategyID: sr.strategy.ID, refType: "sl"}
+	sr.runner.RegisterOrder(linkID, slRef)
 	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:           sr.strategy.Symbol,
 		Category:         sr.strategy.Category,
@@ -2320,9 +2466,11 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 	})
 	if err != nil {
 		if isDuplicateLinkId(err) {
+			// Order already exists on the exchange — keep linkId registered during recovery.
 			sr.recoverDuplicateSL(ctx, linkID)
 			return nil
 		}
+		sr.runner.UnregisterOrder(linkID)
 		// 110093: trigger ≥ current price — price already passed the SL level while all
 		// levels were filling. Close at market immediately (programmatic SL execution).
 		if strings.Contains(err.Error(), "110093") {
@@ -2336,7 +2484,7 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 	sr.lastTPSLQty = totalQty
 	sr.lastTPSLAvg = actualAvg
 	sr.lastSLPrice = slTrigger
-	sr.runner.RegisterOrder(result.OrderId, orderRef{strategyID: sr.strategy.ID, refType: "sl"})
+	sr.runner.RegisterOrder(result.OrderId, slRef)
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
 		`UPDATE strategy_cycles SET sl_order_id=$1 WHERE id=$2`, result.OrderId, sr.cycle.ID)
 	sr.info(ctx, fmt.Sprintf("SL выставлен @ %.4f qty=%s (от посл. уровня %.4f)", slTrigger, slQty, slAvg))
@@ -2368,39 +2516,6 @@ func (sr *StrategyRunner) logBotTrade(ctx context.Context, msg string) {
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
 		`INSERT INTO bot_events (bot_id, message, level, category) VALUES ($1, $2, 'info', 'trade')`,
 		*sr.strategy.BotID, msg)
-}
-
-// writeTrade records the closed cycle to trade_history.
-// Must be called with sr.mu held (reads sr.strategy and sr.cycle).
-func (sr *StrategyRunner) writeTrade(ctx context.Context, result string, avgEntry, exitPrice, qty, pnl, pnlPct float64) {
-	volumeUSDT := avgEntry * qty
-
-	// Query exchange fees and funding payments accumulated during this cycle.
-	// We sum trader_executions for account+symbol within the cycle's time window.
-	// Note: if trader_executions syncer is slightly behind, some tail fees may be 0.
-	var fees, funding float64
-	sr.runner.pool.QueryRow(ctx, //nolint:errcheck
-		`SELECT
-		   COALESCE(SUM(exec_fee) FILTER (WHERE exec_type = 'Trade'),   0),
-		   COALESCE(SUM(exec_fee) FILTER (WHERE exec_type = 'Funding'), 0)
-		 FROM trader_executions
-		 WHERE account_id = $1 AND symbol = $2 AND exec_time BETWEEN $3 AND NOW()`,
-		sr.strategy.AccountID, sr.strategy.Symbol, sr.cycle.StartedAt,
-	).Scan(&fees, &funding) //nolint:errcheck
-
-	netPnl := pnl - fees - funding
-
-	sr.runner.pool.Exec(ctx, //nolint:errcheck
-		`INSERT INTO trade_history
-		  (strategy_id, bot_id, account_id, owner_id, symbol, category, direction,
-		   cycle_num, result, avg_entry, exit_price, qty, volume_usdt, pnl, pnl_pct,
-		   fees, funding, net_pnl, opened_at, closed_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())`,
-		sr.strategy.ID, sr.strategy.BotID, sr.strategy.AccountID, sr.strategy.OwnerID,
-		sr.strategy.Symbol, sr.strategy.Category, string(sr.strategy.Direction),
-		sr.cycle.CycleNum, result, avgEntry, exitPrice, qty, volumeUSDT, pnl, pnlPct,
-		fees, funding, netPnl, sr.cycle.StartedAt,
-	)
 }
 
 // logBotStrategy writes a strategy lifecycle event to bot_events if this strategy is bot-managed.
@@ -2450,7 +2565,6 @@ func (sr *StrategyRunner) handleTPFill(ctx context.Context, fillPrice, fillQty f
 		sr.strategy.Symbol, string(sr.strategy.Direction), avg, fillPrice, fillQty, pnl, pnlPct))
 	sr.logBotStrategy(ctx, fmt.Sprintf("Стратегия закрыта по TP: %s %s | цикл %d | PnL +%.2f USDT (+%.2f%%)",
 		sr.strategy.Symbol, string(sr.strategy.Direction), sr.cycle.CycleNum, pnl, pnlPct))
-	sr.writeTrade(ctx, "tp", avg, fillPrice, fillQty, pnl, pnlPct)
 	sr.closedBySelf = true // suppress the position-close WS event that follows TP fill
 	sr.closedByReason = "TP"
 	sr.tpOrderID = "" // already filled — closeCycle must not try to cancel it
@@ -2489,7 +2603,6 @@ func (sr *StrategyRunner) handleSLFill(ctx context.Context, fillPrice, fillQty f
 		sr.strategy.Symbol, string(sr.strategy.Direction), avg, fillPrice, fillQty, pnl, pnlPct))
 	sr.logBotStrategy(ctx, fmt.Sprintf("Стратегия закрыта по SL: %s %s | цикл %d | PnL %.2f USDT (%.2f%%)",
 		sr.strategy.Symbol, string(sr.strategy.Direction), sr.cycle.CycleNum, pnl, pnlPct))
-	sr.writeTrade(ctx, "sl", avg, fillPrice, fillQty, pnl, pnlPct)
 	sr.closedBySelf = true // suppress the position-close WS event that follows SL fill
 	sr.closedByReason = "SL"
 	sr.slOrderID = "" // already filled — closeCycle must not try to cancel it
@@ -2544,6 +2657,20 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 	if sr.cycle == nil {
 		return
 	}
+	// Capture cycle state before it is cleared — needed for async trade recording.
+	recInput := TradeRecordInput{
+		Strategy:  sr.strategy,
+		CycleID:   sr.cycle.ID,
+		CycleNum:  sr.cycle.CycleNum,
+		StartedAt: sr.cycle.StartedAt,
+		Result:    result,
+		TPOrderID: sr.tpOrderID,
+		SLOrderID: sr.slOrderID,
+	}
+	// Clear partial-close tracking: after a cycle ends any previously tracked
+	// partial size is stale — subsequent WS position events belong to a new cycle
+	// or to the remnant-close path (handlePartialPositionChange with cycle==nil).
+	sr.partialCloseQty = 0
 	sr.clearManualAlert(ctx)
 	// Increment cycle_count for natural cycle completions.
 	if result == "tp" || result == "sl" || result == "ghost_close" || result == "position_gone" {
@@ -2632,6 +2759,7 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 	sr.partialCloseQty = 0
 	sr.lastTPSLQty = 0
 	sr.lastTPSLAvg = 0
+	sr.lastTrailingAvg = 0
 	sr.tpCancelStreak = 0
 	// Stop continuous signal monitor — the next cycle will start its own.
 	if sr.signalMonitorID != "" {
@@ -2641,6 +2769,21 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 		sr.signalMonitorID = ""
 	}
 	sr.currentSignalState = ""
+	// Stop exit signal gate monitors.
+	if sr.exitTPSignalSubID != "" {
+		if sr.runner.signalEngine != nil {
+			sr.runner.signalEngine.Unsubscribe(sr.exitTPSignalSubID)
+		}
+		sr.exitTPSignalSubID = ""
+	}
+	if sr.exitSLSignalSubID != "" {
+		if sr.runner.signalEngine != nil {
+			sr.runner.signalEngine.Unsubscribe(sr.exitSLSignalSubID)
+		}
+		sr.exitSLSignalSubID = ""
+	}
+	// Async: write trade_history after Bybit processes the close.
+	go RecordStrategyTrade(sr.runner.pool, sr.runner.creds, recInput)
 }
 
 // cancelPlacedLevels cancels only the grid-level orders belonging to this strategy,
@@ -2815,6 +2958,7 @@ func (sr *StrategyRunner) awaitSignal(ctx context.Context) {
 			}
 			sr.startMu.Unlock()
 			sr.launchSignalMonitor(ctx)
+			sr.launchExitSignalMonitors(ctx)
 		})
 	})
 	if err != nil {
@@ -2863,6 +3007,7 @@ func (sr *StrategyRunner) awaitSignal(ctx context.Context) {
 				}
 				sr.startMu.Unlock()
 				sr.launchSignalMonitor(ctx)
+				sr.launchExitSignalMonitors(ctx)
 			}
 		}
 	}
@@ -2930,6 +3075,7 @@ func (sr *StrategyRunner) handleSignalConfigUpdate(ctx context.Context) {
 			sr.info(ctx, "Сигнал изменён — позиция открыта, текущий цикл продолжается")
 			// Restart monitor with updated configs even with open position.
 			sr.launchSignalMonitor(ctx)
+			sr.launchExitSignalMonitors(ctx)
 			return
 		}
 		if !sf || len(configs) == 0 {
@@ -2962,6 +3108,7 @@ func (sr *StrategyRunner) handleSignalConfigUpdate(ctx context.Context) {
 		} else {
 			sr.info(ctx, "Конфигурация сигнала изменена — состояние сигнала неизвестно, сетка продолжает работать")
 			sr.launchSignalMonitor(ctx)
+			sr.launchExitSignalMonitors(ctx)
 		}
 		return
 	}
@@ -2989,6 +3136,7 @@ func (sr *StrategyRunner) handleSignalConfigUpdate(ctx context.Context) {
 		sr.currentSignalState = string(state)
 		sr.mu.Unlock()
 		sr.launchSignalMonitor(ctx)
+		sr.launchExitSignalMonitors(ctx)
 		return
 	}
 
@@ -3085,6 +3233,7 @@ func (sr *StrategyRunner) awaitSignalResumeCycle(ctx context.Context) {
 			sr.resumeCycleAfterSignalByType(ctx)
 			sr.startMu.Unlock()
 			sr.launchSignalMonitor(ctx)
+			sr.launchExitSignalMonitors(ctx)
 		})
 	})
 	if err != nil {
@@ -3218,6 +3367,132 @@ func (sr *StrategyRunner) launchSignalMonitor(ctx context.Context) {
 	}
 }
 
+// launchExitSignalMonitor subscribes to the signal engine for TP (isTP=true) or SL
+// exit gating. When all configured signals fire in the required direction the position
+// is closed at market. The subscription stays alive until closeCycle removes it.
+// Must be called WITHOUT sr.mu or sr.startMu held.
+func (sr *StrategyRunner) launchExitSignalMonitor(ctx context.Context, isTP bool) {
+	sr.mu.Lock()
+	var configs []SignalConfig
+	var exitDir string
+	if isTP {
+		configs = sr.strategy.TPSignalConfigs
+		exitDir = sr.strategy.TPSignalDir
+		if sr.exitTPSignalSubID != "" && sr.runner.signalEngine != nil {
+			sr.runner.signalEngine.Unsubscribe(sr.exitTPSignalSubID)
+			sr.exitTPSignalSubID = ""
+		}
+	} else {
+		configs = sr.strategy.SLSignalConfigs
+		exitDir = sr.strategy.SLSignalDir
+		if sr.exitSLSignalSubID != "" && sr.runner.signalEngine != nil {
+			sr.runner.signalEngine.Unsubscribe(sr.exitSLSignalSubID)
+			sr.exitSLSignalSubID = ""
+		}
+	}
+	symbol := sr.strategy.Symbol
+	stratID := sr.strategy.ID
+	stratDir := sr.strategy.Direction
+	signalEngine := sr.runner.signalEngine
+	sr.mu.Unlock()
+
+	if len(configs) == 0 || signalEngine == nil {
+		return
+	}
+
+	tf := "1h"
+	if v, ok := configs[0].Params["tf"]; ok {
+		if s, ok2 := v.(string); ok2 && s != "" {
+			tf = s
+		}
+	}
+	sigConfigs := make([]signal.Config, len(configs))
+	sigParts := make([]string, len(configs))
+	for i, sc := range configs {
+		sigConfigs[i] = signal.Config{Name: sc.Name, Params: sc.Params}
+		sigParts[i] = sc.Name
+	}
+
+	prefix := "tp"
+	if !isTP {
+		prefix = "sl"
+	}
+	monitorID := stratID + ":" + prefix + "_exit"
+
+	// Determine expected signal direction.
+	// exitDir="" means auto: long→sell, short→buy.
+	effectiveDir := exitDir
+	if effectiveDir == "" {
+		if stratDir == DirectionLong {
+			effectiveDir = "sell"
+		} else {
+			effectiveDir = "buy"
+		}
+	}
+	var wantState signal.State
+	if effectiveDir == "buy" {
+		wantState = signal.Buy
+	} else {
+		wantState = signal.Sell
+	}
+
+	sr.mu.Lock()
+	if isTP {
+		sr.exitTPSignalSubID = monitorID
+	} else {
+		sr.exitSLSignalSubID = monitorID
+	}
+	sr.mu.Unlock()
+
+	sigLabel := strings.Join(sigParts, "+")
+	exitReason := prefix + "-signal"
+
+	err := signalEngine.Subscribe(monitorID, symbol, tf, sigConfigs, func(state signal.State) {
+		sr.mu.Lock()
+		status := sr.strategy.Status
+		hasCycle := sr.cycle != nil
+		var curSubID string
+		if isTP {
+			curSubID = sr.exitTPSignalSubID
+		} else {
+			curSubID = sr.exitSLSignalSubID
+		}
+		sr.mu.Unlock()
+
+		if status != StatusActive || curSubID != monitorID || !hasCycle {
+			return
+		}
+		if state != wantState {
+			return
+		}
+
+		sr.info(context.Background(), fmt.Sprintf("Сигнал [%s]: %s — закрываю позицию (%s)", sigLabel, string(state), exitReason))
+		sr.submit(func(ctx context.Context) {
+			sr.mu.Lock()
+			defer sr.mu.Unlock()
+			sr.closePositionAtMarket(ctx, exitReason, 0)
+		})
+	})
+
+	if err != nil {
+		log.Printf("strategy %s: exit signal monitor subscribe: %v", stratID, err)
+		sr.mu.Lock()
+		if isTP {
+			sr.exitTPSignalSubID = ""
+		} else {
+			sr.exitSLSignalSubID = ""
+		}
+		sr.mu.Unlock()
+	}
+}
+
+// launchExitSignalMonitors launches both TP and SL exit signal gate monitors.
+// Must be called WITHOUT sr.mu or sr.startMu held.
+func (sr *StrategyRunner) launchExitSignalMonitors(ctx context.Context) {
+	sr.launchExitSignalMonitor(ctx, true)
+	sr.launchExitSignalMonitor(ctx, false)
+}
+
 // resumeGridAfterSignal resumes the current cycle after the signal arrived while
 // the grid was paused. Levels that were cancelled are reset to pending; any level
 // whose target price has already been passed by the market is filled immediately
@@ -3319,6 +3594,19 @@ func (sr *StrategyRunner) handleStopRequest(ctx context.Context) {
 		}
 		sr.signalMonitorID = ""
 		sr.currentSignalState = ""
+	}
+	// Cancel exit signal gate monitors if active.
+	if sr.exitTPSignalSubID != "" {
+		if sr.runner.signalEngine != nil {
+			sr.runner.signalEngine.Unsubscribe(sr.exitTPSignalSubID)
+		}
+		sr.exitTPSignalSubID = ""
+	}
+	if sr.exitSLSignalSubID != "" {
+		if sr.runner.signalEngine != nil {
+			sr.runner.signalEngine.Unsubscribe(sr.exitSLSignalSubID)
+		}
+		sr.exitSLSignalSubID = ""
 	}
 
 	// Cancel any pending signal subscription (awaiting first signal before cycle start).
@@ -3824,6 +4112,17 @@ func (sr *StrategyRunner) handlePositionClose(ctx context.Context) {
 		return
 	}
 
+	// Bybit WS does not guarantee that the TP/SL fill event arrives before the
+	// position-size-0 event. If our TP or SL order is still registered, defer
+	// once — handleTPFill/handleSLFill will clear tpOrderID/slOrderID and set
+	// closedBySelf=true, which makes the retry exit silently at cycle==nil.
+	// handlePositionCloseRetry proceeds unconditionally if no fill event arrives,
+	// so a genuine manual close is never silently swallowed.
+	if sr.tpOrderID != "" || sr.slOrderID != "" {
+		sr.submit(func(ctx context.Context) { sr.handlePositionCloseRetry(ctx) })
+		return
+	}
+
 	// Matrix: the position-zero WS event can arrive before the per-level SL fill event
 	// (both come from the same WS stream but ordering is not guaranteed by Bybit).
 	// If any LevelFilled level still has an active per-level SL order registered,
@@ -3842,9 +4141,10 @@ func (sr *StrategyRunner) handlePositionClose(ctx context.Context) {
 	sr.closeManualPosition(ctx)
 }
 
-// handlePositionCloseRetry is queued by handlePositionClose when a matrix per-level SL
-// race is suspected. By the time it runs, handleMatrixSLFill has had a chance to update
-// level statuses. If position is now accounted for, return silently; otherwise close.
+// handlePositionCloseRetry is queued by handlePositionClose when a TP/SL fill race
+// is suspected (WS position event arrived before the order fill event). By the time
+// it runs, handleTPFill/handleSLFill/handleMatrixSLFill has had a chance to process
+// the fill. If position is now accounted for (cycle==nil), return silently; otherwise close.
 func (sr *StrategyRunner) handlePositionCloseRetry(ctx context.Context) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
@@ -3880,35 +4180,14 @@ func (sr *StrategyRunner) closeManualPosition(ctx context.Context) {
 // "биржей при отмене TP". Must be called with sr.mu held.
 func (sr *StrategyRunner) closePositionExternal(ctx context.Context, source string) {
 	avg, posQty := sr.avgEntry()
-	sr.warn(ctx, fmt.Sprintf("Позиция закрыта %s — цикл %d | avg=%.4f | qty=%.4f | определяем результат...",
+	sr.warn(ctx, fmt.Sprintf("Позиция закрыта %s — цикл %d | avg=%.4f | qty=%.4f",
 		source, sr.cycle.CycleNum, avg, posQty))
 
-	// Capture immutable data before releasing the lock (goroutine runs outside mu).
-	pool := sr.runner.pool
-	stratID8 := sr.strategy.ID[:8]
-	snap := externalCloseSnap{
-		strategyID:     sr.strategy.ID,
-		stratID8:       stratID8,
-		botID:          sr.strategy.BotID,
-		ownerID:        sr.strategy.OwnerID,
-		accountID:      sr.strategy.AccountID,
-		symbol:         sr.strategy.Symbol,
-		category:       sr.strategy.Category,
-		direction:      string(sr.strategy.Direction),
-		cycleNum:       sr.cycle.CycleNum,
-		cycleID:        sr.cycle.ID,
-		cycleStartedAt: sr.cycle.StartedAt,
-		avgEntry:       avg,
-		posQty:         posQty,
-		creds:          sr.runner.creds,
-	}
-
-	// NOTE: writeTrade is intentionally deferred to resolveExternalClose below.
-	// We wait for trader_executions to sync so we can:
-	//   a) detect whether it was our strategy's TP/SL order that filled (not a manual close)
-	//   b) use actual exit price and P&L instead of dummy avg/0 values.
-
 	sr.cancelPlacedLevels(ctx)
+	// closeCycle must run BEFORE filled levels are marked cancelled in DB.
+	// RecordStrategyTrade (spawned by closeCycle) queries strategy_levels WHERE status='filled'
+	// after an 8-second sleep; marking them cancelled first yields zero rows → zero avg/qty in trade_history.
+	sr.closeCycle(ctx, "manual_close")
 	cycleID := sr.cycle.ID
 	if _, err := sr.runner.pool.Exec(ctx,
 		`UPDATE strategy_levels SET status='cancelled' WHERE cycle_id=$1 AND status='filled'`, cycleID,
@@ -3920,246 +4199,12 @@ func (sr *StrategyRunner) closePositionExternal(ctx context.Context, source stri
 			sr.levels[i].Status = LevelCancelled
 		}
 	}
-	sr.closeCycle(ctx, "manual_close")
 	sr.strategy.Status = StatusStopped
 	if _, err := sr.runner.pool.Exec(ctx,
 		`UPDATE strategies SET status='stopped', updated_at=NOW() WHERE id=$1`, sr.strategy.ID,
 	); err != nil {
 		sr.errlog(ctx, fmt.Sprintf("closePositionExternal: DB update status→stopped: %v", err))
 	}
-
-	if posQty > 0 {
-		go resolveExternalClose(pool, snap)
-	}
-}
-
-// externalCloseSnap holds all data from sr needed by resolveExternalClose (runs outside mu).
-type externalCloseSnap struct {
-	strategyID     string
-	stratID8       string
-	botID          *string
-	ownerID        string
-	accountID      string
-	symbol         string
-	category       string
-	direction      string // "long" | "short"
-	cycleNum       int
-	cycleID        string
-	cycleStartedAt time.Time
-	avgEntry       float64
-	posQty         float64
-	creds          trader.Credentials // for direct Bybit API fallback
-}
-
-// resolveExternalClose runs in a goroutine after closePositionExternal.
-// Retries with increasing delays until closing executions appear in trader_executions,
-// then determines whether this was our TP/SL or a genuine manual close and writes
-// the correct trade_history record.
-// Retry schedule: 4s → 6s → 10s → 15s (max ~35s total).
-func resolveExternalClose(pool *pgxpool.Pool, snap externalCloseSnap) {
-	ctx := context.Background()
-
-	tpPrefix := fmt.Sprintf("SIS_STR-%s-tp-%d-", snap.stratID8, snap.cycleNum)
-	slPrefix := fmt.Sprintf("SIS_STR-%s-sl-%d-", snap.stratID8, snap.cycleNum)
-	openPrefix := fmt.Sprintf("SIS_STR-%s-%d-", snap.stratID8, snap.cycleNum)
-	closingSide := "Sell"
-	if snap.direction == "short" {
-		closingSide = "Buy"
-	}
-
-	type execRow struct {
-		linkID string
-		val    float64
-		qty    float64
-	}
-
-	// queryTPSL returns fills for our TP or SL orders.
-	queryTPSL := func() (rows []execRow, firstLink string) {
-		r, err := pool.Query(ctx, `
-			SELECT COALESCE(order_link_id, ''),
-			       COALESCE(exec_value, 0),
-			       COALESCE(qty, 0)
-			FROM trader_executions
-			WHERE account_id = $1 AND symbol = $2
-			  AND exec_type = 'Trade'
-			  AND exec_time >= $3
-			  AND (order_link_id LIKE $4 OR order_link_id LIKE $5)
-			ORDER BY exec_time`,
-			snap.accountID, snap.symbol, snap.cycleStartedAt, tpPrefix+"%", slPrefix+"%")
-		if err != nil {
-			return
-		}
-		defer r.Close()
-		for r.Next() {
-			var row execRow
-			if r.Scan(&row.linkID, &row.val, &row.qty) == nil && row.qty > 0 {
-				rows = append(rows, row)
-				if firstLink == "" {
-					firstLink = row.linkID
-				}
-			}
-		}
-		return
-	}
-
-	// queryAnyClose returns total value and qty of closing (non-strategy) executions.
-	queryAnyClose := func() (val, qty float64) {
-		pool.QueryRow(ctx, `
-			SELECT COALESCE(SUM(exec_value), 0), COALESCE(SUM(qty), 0)
-			FROM trader_executions
-			WHERE account_id = $1 AND symbol = $2
-			  AND exec_type = 'Trade' AND side = $3
-			  AND exec_time >= $4
-			  AND (order_link_id IS NULL OR order_link_id NOT LIKE $5)`,
-			snap.accountID, snap.symbol, closingSide, snap.cycleStartedAt, openPrefix+"%",
-		).Scan(&val, &qty) //nolint:errcheck
-		return
-	}
-
-	// Retry loop: wait, then check. Stop as soon as any execution is found,
-	// or after the last attempt (write best-effort fallback).
-	retryDelays := []time.Duration{4, 6, 10, 15}
-	result := "manual"
-	exitPrice := snap.avgEntry
-	exitQty := snap.posQty
-	var firstLinkID string
-	found := false
-
-	for attempt, delay := range retryDelays {
-		time.Sleep(delay * time.Second)
-
-		// Check our TP/SL orders first.
-		tpslRows, link := queryTPSL()
-		if len(tpslRows) > 0 {
-			var totalVal, totalQty float64
-			for _, r := range tpslRows {
-				totalVal += r.val
-				totalQty += r.qty
-			}
-			exitPrice = totalVal / totalQty
-			exitQty = totalQty
-			firstLinkID = link
-			if strings.HasPrefix(link, tpPrefix) {
-				result = "tp"
-			} else {
-				result = "sl"
-			}
-			found = true
-			break
-		}
-
-		// Check any closing execution (manual close with real price).
-		anyVal, anyQty := queryAnyClose()
-		if anyQty > 0 {
-			exitPrice = anyVal / anyQty
-			exitQty = anyQty
-			found = true
-			break
-		}
-
-		isLast := attempt == len(retryDelays)-1
-		if !isLast {
-			log.Printf("strategy %s: цикл %d — executions ещё не синхронизированы (попытка %d/%d), повтор...",
-				snap.stratID8, snap.cycleNum, attempt+1, len(retryDelays))
-		} else {
-			log.Printf("strategy %s: цикл %d — executions не найдены в DB за %ds, пробуем Bybit API напрямую...",
-				snap.stratID8, snap.cycleNum, int((4+6+10+15)))
-		}
-	}
-
-	// Last-resort fallback: DB syncer runs every 60s but we only waited ~35s.
-	// Query Bybit closed PnL API directly to get the real exit price.
-	if !found {
-		if pnls, _, err := trader.FetchClosedPnl(ctx, snap.creds, snap.category, ""); err == nil {
-			for _, p := range pnls {
-				if p.Symbol != snap.symbol {
-					continue
-				}
-				// Match by creation time: must be after cycle started.
-				createdMs, _ := strconv.ParseInt(p.CreatedTime, 10, 64)
-				if createdMs == 0 {
-					continue
-				}
-				createdAt := time.UnixMilli(createdMs)
-				if createdAt.Before(snap.cycleStartedAt) {
-					continue
-				}
-				// Match by entry price (within 0.5% tolerance for rounding).
-				apiEntry, _ := strconv.ParseFloat(p.AvgEntryPrice, 64)
-				if apiEntry > 0 && math.Abs(apiEntry-snap.avgEntry)/snap.avgEntry > 0.005 {
-					continue
-				}
-				// Found a matching closed position record.
-				exitPrice, _ = strconv.ParseFloat(p.AvgExitPrice, 64)
-				exitQty, _ = strconv.ParseFloat(p.Qty, 64)
-				// Use Bybit's PnL directly — most accurate.
-				bybitPnl, _ := strconv.ParseFloat(p.ClosedPnl, 64)
-				if exitQty > 0 && exitQty < snap.posQty*1.01 {
-					// bybitPnl is gross (before funding). Use it for pnl; fees come from trader_executions.
-					exitQty = snap.posQty // use our recorded qty for consistency
-					_ = bybitPnl         // will be recalculated below from exit price
-				}
-				found = true
-				log.Printf("strategy %s: цикл %d — exit price получен из Bybit API | exit=%.4f qty=%.4f",
-					snap.stratID8, snap.cycleNum, exitPrice, exitQty)
-				break
-			}
-		} else {
-			log.Printf("strategy %s: цикл %d — Bybit API fallback failed: %v — пишем с avg как fallback",
-				snap.stratID8, snap.cycleNum, err)
-		}
-	}
-
-	// Calculate P&L.
-	pnl, pnlPct := 0.0, 0.0
-	if exitPrice > 0 && snap.avgEntry > 0 && exitQty > 0 {
-		if snap.direction == "long" {
-			pnl = (exitPrice - snap.avgEntry) * exitQty
-		} else {
-			pnl = (snap.avgEntry - exitPrice) * exitQty
-		}
-		if denom := snap.avgEntry * exitQty; denom > 0 {
-			pnlPct = pnl / denom * 100
-		}
-	}
-
-	// Fees and funding for the full cycle window.
-	var fees, funding float64
-	pool.QueryRow(ctx, `
-		SELECT
-		  COALESCE(SUM(exec_fee) FILTER (WHERE exec_type = 'Trade'),   0),
-		  COALESCE(SUM(exec_fee) FILTER (WHERE exec_type = 'Funding'), 0)
-		FROM trader_executions
-		WHERE account_id = $1 AND symbol = $2 AND exec_time BETWEEN $3 AND NOW()`,
-		snap.accountID, snap.symbol, snap.cycleStartedAt,
-	).Scan(&fees, &funding) //nolint:errcheck
-	netPnl := pnl - fees - funding
-
-	// Write trade_history.
-	pool.Exec(ctx, `
-		INSERT INTO trade_history
-		  (strategy_id, bot_id, account_id, owner_id, symbol, category, direction,
-		   cycle_num, result, avg_entry, exit_price, qty, volume_usdt, pnl, pnl_pct,
-		   fees, funding, net_pnl, opened_at, closed_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())`, //nolint:errcheck
-		snap.strategyID, snap.botID, snap.accountID, snap.ownerID,
-		snap.symbol, snap.category, snap.direction,
-		snap.cycleNum, result,
-		snap.avgEntry, exitPrice, exitQty, snap.avgEntry*exitQty,
-		pnl, pnlPct, fees, funding, netPnl, snap.cycleStartedAt)
-
-	// If it was our TP/SL, correct the cycle result in DB.
-	if result == "tp" || result == "sl" {
-		pool.Exec(ctx, //nolint:errcheck
-			`UPDATE strategy_cycles SET result=$1 WHERE id=$2`, result, snap.cycleID)
-		log.Printf("strategy %s: цикл %d — определён как %s (linkId=%s) | exit=%.4f | PnL=%.2f USDT",
-			snap.stratID8, snap.cycleNum, result, firstLinkID, exitPrice, pnl)
-	} else if found {
-		log.Printf("strategy %s: цикл %d — закрыт вручную | exit=%.4f | PnL=%.2f USDT",
-			snap.stratID8, snap.cycleNum, exitPrice, pnl)
-	}
-	// If !found, the retry-loop already logged the fallback message.
-	_ = found
 }
 
 // positionIdxForOpen returns the Bybit positionIdx for an opening order.
@@ -4541,22 +4586,10 @@ func (sr *StrategyRunner) recoverDuplicateTP(ctx context.Context, linkID string)
 	}
 	if existing.OrderStatus == "Filled" {
 		sr.info(ctx, "TP (linkId дубль) уже исполнен — обрабатывается как TP fill")
-		avg, posQty := sr.avgEntry()
-		fillPrice, _ := strconv.ParseFloat(existing.AvgPrice, 64)
-		if fillPrice == 0 {
-			fillPrice, _ = strconv.ParseFloat(existing.Price, 64)
-		}
+		_, posQty := sr.avgEntry()
 		fillQty, _ := strconv.ParseFloat(existing.CumExecQty, 64)
 		if fillQty == 0 {
 			fillQty = posQty
-		}
-		if avg > 0 && fillPrice > 0 && fillQty > 0 {
-			pnl := (fillPrice - avg) * fillQty
-			if sr.strategy.Direction == DirectionShort {
-				pnl = (avg - fillPrice) * fillQty
-			}
-			pnlPct := pnl / (avg * fillQty) * 100
-			sr.writeTrade(ctx, "tp", avg, fillPrice, fillQty, pnl, pnlPct)
 		}
 		sr.tpOrderID = ""
 		sr.cancelPlacedLevels(ctx)
@@ -4655,22 +4688,10 @@ func (sr *StrategyRunner) recoverDuplicateSL(ctx context.Context, linkID string)
 	}
 	if existing.OrderStatus == "Filled" {
 		sr.info(ctx, "SL (linkId дубль) уже исполнен — обрабатывается как SL fill")
-		avg, posQty := sr.avgEntry()
-		fillPrice, _ := strconv.ParseFloat(existing.AvgPrice, 64)
-		if fillPrice == 0 {
-			fillPrice, _ = strconv.ParseFloat(existing.Price, 64)
-		}
+		_, posQty := sr.avgEntry()
 		fillQty, _ := strconv.ParseFloat(existing.CumExecQty, 64)
 		if fillQty == 0 {
 			fillQty = posQty
-		}
-		if avg > 0 && fillPrice > 0 && fillQty > 0 {
-			pnl := (fillPrice - avg) * fillQty
-			if sr.strategy.Direction == DirectionShort {
-				pnl = (avg - fillPrice) * fillQty
-			}
-			pnlPct := pnl / (avg * fillQty) * 100
-			sr.writeTrade(ctx, "sl", avg, fillPrice, fillQty, pnl, pnlPct)
 		}
 		sr.slOrderID = ""
 		sr.cancelPlacedLevels(ctx)
@@ -4769,6 +4790,47 @@ func (sr *StrategyRunner) handlePartialPositionChange(ctx context.Context, excha
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	if sr.cycle == nil {
+		// Cycle is already closed, but if we just closed it via TP/SL and the exchange
+		// still reports a non-zero position, there is dust (e.g. from a previous cycle
+		// that wasn't fully cleaned up). Close it at market so it doesn't orphan.
+		if sr.closedBySelf && exchangeSize > 0 {
+			reason := sr.closedByReason
+			if reason == "" {
+				reason = "системой"
+			}
+			sr.closedBySelf = false
+			sr.closedByReason = ""
+			// Dedup: skip if we already issued a close for this exact size.
+			if sr.partialCloseQty > 0 && math.Abs(exchangeSize-sr.partialCloseQty) < exchangeSize*0.01 {
+				return
+			}
+			sr.partialCloseQty = exchangeSize
+			closeSide := "Sell"
+			if sr.strategy.Direction == DirectionShort {
+				closeSide = "Buy"
+			}
+			qty := trader.FormatQty(exchangeSize, sr.instr.QtyStep, sr.instr.MinQty)
+			if qty != "" && qty != "0" {
+				sr.warn(ctx, fmt.Sprintf(
+					"Остаток позиции %.6f лот после %s — закрываю маркетом",
+					exchangeSize, reason,
+				))
+				if _, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+					Symbol:      sr.strategy.Symbol,
+					Category:    sr.strategy.Category,
+					Side:        closeSide,
+					OrderType:   "Market",
+					Qty:         qty,
+					ReduceOnly:  !sr.strategy.HedgeMode,
+					PositionIdx: positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
+				}); err != nil {
+					sr.errlog(ctx, fmt.Sprintf("closeRemnantPosition after %s: %v", reason, err))
+				} else {
+					sr.closedBySelf = true // suppress the position-zero event that follows
+					sr.closedByReason = "remnant_close"
+				}
+			}
+		}
 		return
 	}
 	avg, ourQty := sr.avgEntry()
@@ -4779,6 +4841,12 @@ func (sr *StrategyRunner) handlePartialPositionChange(ctx context.Context, excha
 		// For all other strategies, treat it as a ghost position and close the cycle.
 		if exchangeSize > 0 {
 			if sr.strategy.StrategyType == "matrix" {
+				// Guard: only close a tail when WE previously closed (TP/SL sets closedBySelf=true).
+				// If closedBySelf=false the position event raced ahead of the entry fill event —
+				// ourQty will be updated when the fill event arrives; close nothing now.
+				if !sr.closedBySelf {
+					return
+				}
 				// Dedup: Bybit sends position snapshots on every order event; don't
 				// issue a second tail-close for the same size we already handled.
 				if sr.partialCloseQty > 0 && math.Abs(exchangeSize-sr.partialCloseQty) < exchangeSize*0.01 {
@@ -4927,9 +4995,9 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 				cancelTypeInfo = fmt.Sprintf(" (cancelType=%s)", cancelType)
 			}
 			sr.errlog(ctx, fmt.Sprintf(
-				"TP отменён Bybit %d раз подряд без исполнения%s — прекращаем попытки. "+
-					"Проверьте позицию и TP вручную или дождитесь сверки при переподключении WS.",
+				"TP отменён Bybit %d раз подряд без исполнения%s — проверяем позицию на бирже.",
 				sr.tpCancelStreak, cancelTypeInfo))
+			sr.submit(func(ctx context.Context) { sr.checkPositionAfterTPCircuitBreaker(ctx) })
 			return
 		}
 		if err := sr.updateTPByType(ctx); err != nil {
@@ -5214,4 +5282,76 @@ func (sr *StrategyRunner) gridVirtualPriceTick(ctx context.Context, price float6
 		sr.info(ctx, fmt.Sprintf("Виртуальный L%d %s: маркет @ %.4f (цена достигла %.4f)", l.LevelIdx, l.Side, price, l.TargetPrice))
 	}
 	sr.lastVirtualPrice = price
+}
+
+// checkPositionAfterTPCircuitBreaker runs after the TP circuit breaker fires.
+// It fetches the actual exchange position to determine the correct next action:
+//   - position gone → close the cycle
+//   - position exists, price already passed TP → close at market
+//   - position exists, price not yet at TP → reset circuit breaker and re-place TP
+//
+// Must NOT be called with sr.mu held.
+func (sr *StrategyRunner) checkPositionAfterTPCircuitBreaker(ctx context.Context) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+
+	if sr.cycle == nil || sr.strategy.Status == StatusStopped {
+		return
+	}
+
+	avg, ourQty := sr.avgEntry()
+	if avg <= 0 || ourQty <= 0 {
+		return
+	}
+
+	positions, err := trader.FetchPositionBySymbol(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	if err != nil {
+		sr.errlog(ctx, fmt.Sprintf("TP circuit breaker: ошибка получения позиции: %v", err))
+		return
+	}
+
+	wantSide := "Buy"
+	if sr.strategy.Direction == DirectionShort {
+		wantSide = "Sell"
+	}
+
+	var exchangeSize float64
+	for _, p := range positions {
+		if p.Side == wantSide {
+			exchangeSize, _ = strconv.ParseFloat(p.Size, 64)
+			break
+		}
+	}
+
+	if exchangeSize <= 0 {
+		sr.info(ctx, "TP circuit breaker: позиция на бирже закрыта — закрываю цикл")
+		sr.closePositionExternal(ctx, "позиция закрыта на бирже")
+		return
+	}
+
+	markPrice, err := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	if err != nil || markPrice <= 0 {
+		sr.info(ctx, fmt.Sprintf("TP circuit breaker: позиция %.4f есть, сбрасываю circuit breaker и выставляю TP", exchangeSize))
+		sr.tpCancelStreak = 0
+		if tpErr := sr.updateTPByType(ctx); tpErr != nil {
+			sr.errlog(ctx, fmt.Sprintf("TP circuit breaker: ошибка выставления TP: %v", tpErr))
+		}
+		return
+	}
+
+	_, tpPrice := tpParams(sr.strategy.Direction, avg, sr.strategy.TPPct)
+	tpPassed := (sr.strategy.Direction == DirectionLong && markPrice >= tpPrice) ||
+		(sr.strategy.Direction == DirectionShort && markPrice <= tpPrice)
+
+	if tpPassed {
+		sr.info(ctx, fmt.Sprintf("TP circuit breaker: цена %.8f прошла TP %.8f — закрываю позицию маркетом", markPrice, tpPrice))
+		sr.closePositionAtMarket(ctx, "tp", tpPrice)
+		return
+	}
+
+	sr.info(ctx, fmt.Sprintf("TP circuit breaker: позиция %.4f на бирже, цена %.8f не достигла TP %.8f — сбрасываю circuit breaker, выставляю TP", exchangeSize, markPrice, tpPrice))
+	sr.tpCancelStreak = 0
+	if tpErr := sr.updateTPByType(ctx); tpErr != nil {
+		sr.errlog(ctx, fmt.Sprintf("TP circuit breaker: ошибка выставления TP: %v", tpErr))
+	}
 }

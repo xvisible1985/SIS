@@ -32,6 +32,52 @@ func (ar *AccountRunner) startReconcileLoop(ctx context.Context) {
 // Only covers Grid strategies — other types have their own reconcile logic.
 // Silent when everything matches; logs only when anomalies are found and fixed.
 func (ar *AccountRunner) reconcile(ctx context.Context) {
+	// --- 0. Kill zombie runners — in-memory strategies no longer active in DB ---
+	// Covers the case where GoncharBot (or any client) deletes a strategy from the DB
+	// while its runner is still live in memory (e.g. after a restart or a race with ForceRemoveStrategy).
+	ar.mu.RLock()
+	inMemIDs := make([]string, 0, len(ar.strategies))
+	for id := range ar.strategies {
+		inMemIDs = append(inMemIDs, id)
+	}
+	ar.mu.RUnlock()
+	if len(inMemIDs) > 0 {
+		activeRows, err := ar.pool.Query(ctx,
+			`SELECT id::text FROM strategies WHERE id = ANY($1::uuid[]) AND status IN ('active','finishing')`,
+			inMemIDs,
+		)
+		if err == nil {
+			activeInDB := make(map[string]bool, len(inMemIDs))
+			for activeRows.Next() {
+				var id string
+				if activeRows.Scan(&id) == nil {
+					activeInDB[id] = true
+				}
+			}
+			activeRows.Close()
+			for _, id := range inMemIDs {
+				if activeInDB[id] {
+					continue
+				}
+				ar.mu.RLock()
+				sr, ok := ar.strategies[id]
+				ar.mu.RUnlock()
+				if !ok {
+					continue
+				}
+				id8 := id
+				if len(id8) > 8 {
+					id8 = id8[:8]
+				}
+				log.Printf("strategy reconcile: zombie runner %s (не активна в БД) — отменяю ордера и останавливаю", id8)
+				go func(sr *StrategyRunner, stratID string) {
+					sr.cancelAllStrategyOrders(ctx)
+					ar.removeStrategy(stratID)
+				}(sr, id)
+			}
+		}
+	}
+
 	// --- 1. Query placed grid levels ---
 	rows, err := ar.pool.Query(ctx,
 		`SELECT sl.id, sl.exchange_order_id, sl.strategy_id, s.symbol, s.category
@@ -439,6 +485,8 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 		id8 := parts[1]
 
 		// Check if this id8 belongs to any of our Grid strategies on this account.
+		// Orders that have SIS_STR- prefix but don't match any known strategy (even stopped ones)
+		// belong to deleted strategies — they are unconditional orphans.
 		matchedPrefix := false
 		for prefix := range allStratPrefixes {
 			if strings.HasPrefix(o.OrderLinkId, prefix) {
@@ -446,16 +494,17 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 				break
 			}
 		}
-		if !matchedPrefix {
-			continue
-		}
 
 		snap, isRunning := stratByID8[id8]
 
 		isOrphan := false
 		var reason string
 
-		if !isRunning {
+		if !matchedPrefix {
+			// Strategy was deleted from DB but its exchange orders are still live.
+			isOrphan = true
+			reason = fmt.Sprintf("стратегия %s удалена из БД", id8)
+		} else if !isRunning {
 			// Strategy is stopped / not loaded — any order with its prefix is orphaned.
 			isOrphan = true
 			reason = "стратегия не запущена"
@@ -479,7 +528,7 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 			} else if linkCycleNum != snap.cycleNum {
 				isOrphan = true
 				reason = fmt.Sprintf("цикл %d != активный %d", linkCycleNum, snap.cycleNum)
-			} else if !known[o.OrderId] {
+			} else if !known[o.OrderId] && !known[o.OrderLinkId] {
 				isOrphan = true
 				reason = "не отслеживается в orderIndex"
 			}
@@ -488,8 +537,18 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 		// Guard: orderIndex is the ground truth. The cycle-number snapshot (step 4) is taken
 		// before exchange orders are fetched (step 5), so a new cycle that starts in between
 		// will appear mismatched but its orders ARE tracked in orderIndex. Tracked = not orphan.
-		if isOrphan && known[o.OrderId] {
-			isOrphan = false
+		// Also guard by LinkId: order placement registers linkId BEFORE the REST call and
+		// orderId AFTER, so there is a window where linkId is known but orderId is not yet.
+		// We check the LIVE orderIndex (not the stale snapshot) to catch orders placed between
+		// the snapshot and the orphan check — otherwise they appear as orphans and get cancelled.
+		if isOrphan {
+			ar.mu.RLock()
+			_, hasID := ar.orderIndex[o.OrderId]
+			_, hasLink := ar.orderIndex[o.OrderLinkId]
+			ar.mu.RUnlock()
+			if hasID || hasLink {
+				isOrphan = false
+			}
 		}
 
 		if !isOrphan {
