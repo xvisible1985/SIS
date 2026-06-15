@@ -133,7 +133,14 @@ func (s *Server) processHedgeBot(ctx context.Context, botID, ownerID, accountID 
 			"Хедж: FetchPositions вернул 0 позиций (биржа не видит ни одной открытой позиции на аккаунте)", "warn", "system")
 	}
 
-	posMap := buildHedgePosMap(rawPositions)
+	posMap, badPositions := buildHedgePosMap(rawPositions)
+
+	for _, p := range badPositions {
+		s.logBotEvent(ctx, botID,
+			fmt.Sprintf("Хедж: позиция %s %s (size=%s) отфильтрована — невалидный avgPrice=%q или markPrice=%q",
+				p.Symbol, p.Side, p.Size, p.EntryPrice, p.MarkPrice),
+			"warn", "system")
+	}
 
 	s.checkHedgeDeactivation(ctx, botID, accountID, cfg, posMap)
 	s.checkHedgeActivation(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, creds, posMap, watches)
@@ -154,17 +161,17 @@ type hedgePosInfo struct {
 
 // buildHedgePosMap indexes positions by symbol → exchange-side → hedgePosInfo.
 // Positions with zero size are excluded.
-func buildHedgePosMap(positions []trader.Position) map[string]map[string]hedgePosInfo {
+// Returns the posMap and a slice of raw positions that had size>0 but were
+// filtered due to invalid avgPrice or markPrice (for diagnostic logging).
+func buildHedgePosMap(positions []trader.Position) (map[string]map[string]hedgePosInfo, []trader.Position) {
 	m := make(map[string]map[string]hedgePosInfo)
+	var filtered []trader.Position
 	for _, raw := range positions {
 		p, ok := parseHedgePos(raw)
 		if !ok {
-			// Log every filtered position so we can see bad field values.
 			size, _ := strconv.ParseFloat(raw.Size, 64)
 			if size > 0 {
-				// Size is valid but entry or mark price is bad — worth logging.
-				log.Printf("hedge buildPosMap: отфильтрован %s %s size=%s avgPrice=%s markPrice=%s",
-					raw.Symbol, raw.Side, raw.Size, raw.EntryPrice, raw.MarkPrice)
+				filtered = append(filtered, raw)
 			}
 			continue
 		}
@@ -173,7 +180,7 @@ func buildHedgePosMap(positions []trader.Position) map[string]map[string]hedgePo
 		}
 		m[p.Symbol][p.Side] = p
 	}
-	return m
+	return m, filtered
 }
 
 // parseHedgePos parses a raw trader.Position into hedgePosInfo.

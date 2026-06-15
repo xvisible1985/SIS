@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,6 +54,13 @@ type botResp struct {
 	ActiveSecondsAcc      int64           `json:"activeSecondsAcc"`
 	ActiveSince           *time.Time      `json:"activeSince"`
 	ApprovalStatus        *string         `json:"approvalStatus"`
+	Price                 float64         `json:"price"`
+	Spark                 []float64       `json:"spark"`
+	ActiveUsersCount      int             `json:"activeUsersCount"`
+	TradesTotal           int             `json:"tradesTotal"`
+	TradesWin             int             `json:"tradesWin"`
+	NetPnlTotal           float64         `json:"netPnlTotal"`
+	SourceAuthor          string          `json:"sourceAuthor"`
 }
 
 type listBotsResp struct {
@@ -73,7 +81,7 @@ type scanHit struct {
 
 // в"Ђв"Ђ Helpers в"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђ
 
-const botCols = `b.id, b.name, b.description, b.full_description, b.avatar_url, b.owner_id, u.email,
+const botCols = `b.id, b.name, b.description, b.full_description, b.avatar_url, b.owner_id, COALESCE(u.username, u.email),
 	b.is_public, b.is_official, b.status, b.source_bot_id, b.is_fork,
 	b.symbol_whitelist, b.symbol_blacklist,
 	b.triggers, b.strategy_config, b.deploy_count, b.created_at,
@@ -81,9 +89,30 @@ const botCols = `b.id, b.name, b.description, b.full_description, b.avatar_url, 
 	(SELECT COUNT(*) FROM strategies s WHERE s.bot_id = b.id AND s.status = 'active') AS active_strategies_count,
 	b.account_id, b.auto_mode, b.max_long_strategies, b.max_short_strategies, b.max_sym_consecutive_runs,
 	b.ignore_coin_filter,
-	b.active_seconds_acc, b.active_since, b.approval_status`
+	b.active_seconds_acc, b.active_since, b.approval_status,
+	b.price_usd_month,
+	ARRAY[]::float8[] AS spark,
+	(SELECT COUNT(DISTINCT b2.owner_id)
+	 FROM bots b2
+	 WHERE b2.source_bot_id = b.id
+	   AND b2.status = 'active') AS active_users_count`
 
 const botFrom = ` FROM bots b JOIN users u ON u.id = b.owner_id `
+
+// mineStatsCols — нули для статистики сделок (trade_history удалена, будет пересоздана)
+const mineStatsCols = `,
+	0::int AS trades_total,
+	0::int AS trades_win,
+	0::float8 AS net_pnl_total,
+	COALESCE(
+		(SELECT CASE WHEN b2.is_official THEN 'NovaBot' ELSE COALESCE(u2.username, u2.email) END
+		 FROM bots b2 JOIN users u2 ON u2.id = b2.owner_id
+		 WHERE b2.id = b.source_bot_id),
+		''
+	) AS source_author`
+
+// zeroStatsCols — нули/пустые значения для запросов без контекста пользователя
+const zeroStatsCols = `, 0::int AS trades_total, 0::int AS trades_win, 0::float8 AS net_pnl_total, '' AS source_author`
 
 // collectBots scans all rows into []botResp and closes rows.
 func collectBots(rows pgx.Rows, callerID string) ([]botResp, error) {
@@ -101,6 +130,8 @@ func collectBots(rows pgx.Rows, callerID string) ([]botResp, error) {
 			&b.AccountID, &b.AutoMode, &b.MaxLongStrategies, &b.MaxShortStrategies, &b.MaxSymConsecutiveRuns,
 			&b.IgnoreCoinFilter,
 			&b.ActiveSecondsAcc, &b.ActiveSince, &b.ApprovalStatus,
+			&b.Price, &b.Spark, &b.ActiveUsersCount,
+			&b.TradesTotal, &b.TradesWin, &b.NetPnlTotal, &b.SourceAuthor,
 		); err != nil {
 			return nil, err
 		}
@@ -120,7 +151,7 @@ func collectBots(rows pgx.Rows, callerID string) ([]botResp, error) {
 
 // fetchBot fetches a single bot by id.
 func fetchBot(s *Server, r *http.Request, botID, callerID string) (botResp, bool) {
-	rows, err := s.pool.Query(r.Context(), `SELECT `+botCols+botFrom+`WHERE b.id = $1`, botID)
+	rows, err := s.pool.Query(r.Context(), `SELECT `+botCols+zeroStatsCols+botFrom+`WHERE b.id = $1`, botID)
 	if err != nil {
 		return botResp{}, false
 	}
@@ -145,7 +176,7 @@ func (s *Server) ListBots(w http.ResponseWriter, r *http.Request) {
 		orderBy = "b.deploy_count DESC"
 	}
 
-	catalogSQL := `SELECT ` + botCols + botFrom + `
+	catalogSQL := `SELECT ` + botCols + zeroStatsCols + botFrom + `
 		WHERE b.is_public = true
 		  AND ($1 = '' OR b.name ILIKE '%' || $1 || '%')
 		  AND ($2 = '' OR b.strategy_config->>'direction' = $2)
@@ -166,7 +197,7 @@ func (s *Server) ListBots(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mineRows, err := s.pool.Query(ctx,
-		`SELECT `+botCols+botFrom+`WHERE b.owner_id = $1 ORDER BY b.created_at DESC`,
+		`SELECT `+botCols+mineStatsCols+botFrom+`WHERE b.owner_id = $1 ORDER BY b.created_at DESC`,
 		callerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
@@ -301,12 +332,24 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Block strategy_config changes on active non-official bots.
-	if _, changingStrategy := body["strategyConfig"]; changingStrategy && !isOfficial {
-		if botStatus == "active" {
-			writeError(w, http.StatusUnprocessableEntity,
-				"Нельзя изменить стратегию активного бота. Сначала остановите бота.")
-			return
+	// Block only strategy_type changes when active strategies exist (different engine, incompatible state).
+	if rawCfg, changingStrategy := body["strategyConfig"]; changingStrategy && !isOfficial {
+		var newCfg botCfgJSON
+		if json.Unmarshal(rawCfg, &newCfg) == nil && newCfg.StrategyType != "" {
+			var oldStratCfgBytes []byte
+			var oldCfg botCfgJSON
+			if s.pool.QueryRow(ctx, `SELECT strategy_config FROM bots WHERE id = $1`, botID).Scan(&oldStratCfgBytes) == nil &&
+				json.Unmarshal(oldStratCfgBytes, &oldCfg) == nil &&
+				newCfg.StrategyType != oldCfg.StrategyType {
+				var hotCount int
+				if s.pool.QueryRow(ctx,
+					`SELECT COUNT(*) FROM strategies WHERE bot_id=$1 AND status IN ('active','finishing')`,
+					botID).Scan(&hotCount); hotCount > 0 {
+					writeError(w, http.StatusUnprocessableEntity,
+						"Нельзя менять тип стратегии при наличии активных стратегий. Дождитесь их завершения.")
+					return
+				}
+			}
 		}
 	}
 
@@ -394,9 +437,11 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 	addFloat("maxMarginUsdt", "max_margin_usdt")
 	addInt("maxSymConsecutiveRuns", "max_sym_consecutive_runs")
 
-	// Reset approval timer when strategy_config changes on a non-official user bot.
-	if _, changingStrategy := body["strategyConfig"]; changingStrategy && !isOfficial {
+	// Reset approval timer + stats when strategy_config changes on a non-official user bot.
+	changingStrategy := false
+	if _, ok := body["strategyConfig"]; ok && !isOfficial {
 		sets = append(sets, "active_seconds_acc = 0", "active_since = NULL")
+		changingStrategy = true
 	}
 
 	if len(sets) == 0 {
@@ -417,8 +462,24 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logBotEvent(ctx, botID, "Настройки бота изменены пользователем", "info", "user")
 
-	// If strategyConfig changed, sync params to all active bot strategies and notify the engine.
-	if _, cfgChanged := body["strategyConfig"]; cfgChanged {
+	// If strategyConfig changed: reset trade stats, update in-memory snapshot, and sync active strategies.
+	if changingStrategy {
+		if _, err := s.pool.Exec(ctx,
+			`DELETE FROM trade_history WHERE bot_id = $1 AND owner_id = $2`,
+			botID, callerID,
+		); err != nil {
+			_ = err
+		}
+		// Immediately update in-memory bot snapshot so reactive signals use the new config
+		// without waiting up to 30 seconds for the next periodic tick.
+		if rawCfg, ok := body["strategyConfig"]; ok {
+			var newCfg botCfgJSON
+			if json.Unmarshal(rawCfg, &newCfg) == nil {
+				s.botSnapshotMu.Lock()
+				s.botSnapshotCfgs[botID] = newCfg
+				s.botSnapshotMu.Unlock()
+			}
+		}
 		go s.syncBotStrategies(context.Background(), botID)
 	}
 
@@ -478,13 +539,19 @@ func (s *Server) syncBotStrategies(ctx context.Context, botID string) {
 	if gridSize == 0 {
 		gridSize = 100
 	}
-	tpPct := cfg.TPPct
-	if tpPct == 0 {
-		tpPct = 2.0
+	tpPct := 2.0 // default
+	if cfg.TPPct != nil {
+		tpPct = *cfg.TPPct
 	}
-	slPct := cfg.SLPct
-	if slPct == 0 {
-		slPct = 5.0
+	slPct := -5.0 // default
+	if cfg.SLPct != nil {
+		slPct = *cfg.SLPct
+		if slPct > 0 {
+			slPct = -slPct
+		}
+		if slPct <= -100 {
+			slPct = 0
+		}
 	}
 
 	scJSON, _ := json.Marshal(cfg.SignalConfigs)
@@ -601,6 +668,17 @@ func (s *Server) DeployBot(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isPublic {
 		writeError(w, http.StatusForbidden, "bot is not public")
+		return
+	}
+
+	// Prevent deploying the same template twice (even if the subscription was later edited/forked).
+	var existingID string
+	dupErr := s.pool.QueryRow(ctx,
+		`SELECT id FROM bots WHERE owner_id = $1 AND source_bot_id = $2 LIMIT 1`,
+		callerID, sourceID,
+	).Scan(&existingID)
+	if dupErr == nil {
+		writeError(w, http.StatusConflict, "already deployed")
 		return
 	}
 
@@ -848,16 +926,35 @@ func (s *Server) GetBotEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	category := r.URL.Query().Get("category")
+
+	// before: load events older than this timestamp (for "load more" pagination).
+	// Defaults to a slight future offset so the first call returns the latest events.
+	before := time.Now().Add(time.Second)
+	if bs := r.URL.Query().Get("before"); bs != "" {
+		if t, err := time.Parse(time.RFC3339Nano, bs); err == nil {
+			before = t
+		}
+	}
+
+	limit := 100
+	if ls := r.URL.Query().Get("limit"); ls != "" {
+		if n, err := strconv.Atoi(ls); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+
 	var queryErr error
 	var rows pgx.Rows
 	if category != "" {
 		rows, queryErr = s.pool.Query(r.Context(),
 			`SELECT message, level, category, created_at FROM bot_events
-			 WHERE bot_id=$1 AND category=$2 ORDER BY created_at DESC LIMIT 200`, botID, category)
+			 WHERE bot_id=$1 AND created_at < $2 AND category=$3
+			 ORDER BY created_at DESC LIMIT $4`, botID, before, category, limit)
 	} else {
 		rows, queryErr = s.pool.Query(r.Context(),
 			`SELECT message, level, category, created_at FROM bot_events
-			 WHERE bot_id=$1 ORDER BY created_at DESC LIMIT 200`, botID)
+			 WHERE bot_id=$1 AND created_at < $2
+			 ORDER BY created_at DESC LIMIT $3`, botID, before, limit)
 	}
 	if queryErr != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
@@ -997,9 +1094,9 @@ func (s *Server) ScanSignals(w http.ResponseWriter, r *http.Request) {
 				return
 			default:
 			}
-			// ComputeStateForce always produces a fresh result for uncached symbols,
-			// unlike QueryState which returns Neutral for unsubscribed units.
-			st := s.signalEngine.ComputeStateForce(sym, req.Interval, req.SignalConfigs)
+			// ComputeMultiTFState evaluates each signal on its own TF snapshot,
+			// so mixed-TF configs (e.g. ST 5m + ADX 1h) work correctly.
+			st := s.signalEngine.ComputeMultiTFState(sym, req.SignalConfigs)
 			if st == signal.Neutral {
 				return
 			}
@@ -1096,7 +1193,7 @@ func (s *Server) scanHedgeBot(w http.ResponseWriter, ctx context.Context, botID,
 		return
 	}
 
-	posMap := buildHedgePosMap(rawPositions)
+	posMap, _ := buildHedgePosMap(rawPositions)
 	delistSymbols := s.GetDelistingSymbols()
 
 	var positions []hedgeScanPos
@@ -1301,7 +1398,7 @@ func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 				return
 			default:
 			}
-			st := s.signalEngine.ComputeStateForce(sym, interval, sigCfgs)
+			st := s.signalEngine.ComputeMultiTFState(sym, sigCfgs)
 			if st == signal.Neutral {
 				return
 			}
@@ -1491,7 +1588,7 @@ func (s *Server) TriggerBot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.createBotStrategy(ctx, b, cfg, req.Symbol, req.Direction, 0, ""); err != nil {
+	if _, err := s.createBotStrategy(ctx, b, cfg, req.Symbol, req.Direction, 0, "", nil); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1563,7 +1660,7 @@ func (s *Server) AddBotBlacklist(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ListAdminBots(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+botCols+botFrom+`ORDER BY b.is_official DESC, b.created_at DESC`)
+		`SELECT `+botCols+zeroStatsCols+botFrom+`ORDER BY b.is_official DESC, b.created_at DESC`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -1574,6 +1671,85 @@ func (s *Server) ListAdminBots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, bots)
+}
+
+// POST /admin/bots/{id}/publish-to-catalog (RequireAdmin)
+// Publishes any bot instance to the public library.
+// Body: { name, isOfficial, price }
+// Checks for duplicate names among public bots (case-insensitive).
+func (s *Server) PublishBotToCatalog(w http.ResponseWriter, r *http.Request) {
+	botID := chi.URLParam(r, "id")
+	ctx := r.Context()
+
+	var req struct {
+		Name       string  `json:"name"`
+		IsOfficial bool    `json:"isOfficial"`
+		Price      float64 `json:"price"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name required")
+		return
+	}
+	if req.Price < 0 {
+		req.Price = 0
+	}
+
+	// Duplicate name check among public bots (excluding this bot itself)
+	var dupCount int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM bots WHERE LOWER(name) = LOWER($1) AND is_public = true AND id != $2`,
+		req.Name, botID,
+	).Scan(&dupCount); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if dupCount > 0 {
+		writeError(w, http.StatusConflict, "Бот с таким именем уже существует в библиотеке")
+		return
+	}
+
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE bots SET name = $1, is_official = $2, price_usd_month = $3, is_public = true, updated_at = NOW()
+		 WHERE id = $4`,
+		req.Name, req.IsOfficial, req.Price, botID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "bot not found")
+		return
+	}
+
+	callerID := UserIDFromCtx(ctx)
+	bot, ok := fetchBot(s, r, botID, callerID)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeJSON(w, http.StatusOK, bot)
+}
+
+// DELETE /admin/bots/{id} (RequireAdmin)
+// Admin-only: delete any bot regardless of ownership.
+func (s *Server) DeleteAdminBot(w http.ResponseWriter, r *http.Request) {
+	botID := chi.URLParam(r, "id")
+	tag, err := s.pool.Exec(r.Context(), `DELETE FROM bots WHERE id = $1`, botID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "bot not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // POST /admin/bots вЂ" create an official NovaBot (admin only)
