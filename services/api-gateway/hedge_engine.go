@@ -17,23 +17,50 @@ import (
 
 const hedgeEngineInterval = 30 * time.Second
 
+// hedgeWatchEntry holds the WS activation threshold for a single symbol.
+// When markPrice crosses threshold in the loss direction, an immediate tick fires.
+type hedgeWatchEntry struct {
+	threshold float64
+	isLong    bool // true: trigger when markPrice <= threshold; false: >= threshold
+}
+
 // runHedgeEngine runs the hedge bot automation loop every 30 s.
-// It is launched as a goroutine alongside RunBotEngine.
+// Also reacts immediately when a WS price callback crosses an activation threshold.
 func (s *Server) runHedgeEngine(ctx context.Context) {
 	ticker := time.NewTicker(hedgeEngineInterval)
 	defer ticker.Stop()
+	defer func() {
+		s.hedgeWatchMu.Lock()
+		old := s.hedgeUnsubs
+		s.hedgeUnsubs = nil
+		s.hedgeWatches = make(map[string]hedgeWatchEntry)
+		s.hedgeWatchMu.Unlock()
+		for _, u := range old {
+			u()
+		}
+	}()
+
 	s.hedgeEngineTick(ctx)
+	lastTick := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			lastTick = time.Now()
+			s.hedgeEngineTick(ctx)
+		case <-s.hedgeTriggerCh:
+			if time.Since(lastTick) < 2*time.Second {
+				continue
+			}
+			lastTick = time.Now()
+			log.Printf("hedge engine: WS price trigger → немедленная проверка хеджей")
 			s.hedgeEngineTick(ctx)
 		}
 	}
 }
 
-// hedgeEngineTick loads all active hedge bots and processes each one.
+// hedgeEngineTick loads all active hedge and matrix bots and processes each one.
 func (s *Server) hedgeEngineTick(ctx context.Context) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, owner_id, account_id,
@@ -42,7 +69,7 @@ func (s *Server) hedgeEngineTick(ctx context.Context) {
 		FROM bots
 		WHERE status = 'active'
 		  AND account_id IS NOT NULL
-		  AND strategy_config->>'bot_kind' = 'hedge'`)
+		  AND strategy_config->>'bot_kind' IN ('hedge', 'matrix')`)
 	if err != nil {
 		log.Printf("hedge engine tick: %v", err)
 		return
@@ -67,20 +94,27 @@ func (s *Server) hedgeEngineTick(ctx context.Context) {
 	}
 	rows.Close()
 
+	newWatches := make(map[string]hedgeWatchEntry)
 	for _, b := range bots {
 		var cfg botCfgJSON
 		if err := json.Unmarshal(b.stratCfg, &cfg); err != nil {
 			continue
 		}
-		s.processHedgeBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg)
+		switch cfg.BotKind {
+		case "hedge":
+			s.processHedgeBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg, newWatches)
+		case "matrix":
+			s.processMatrixBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg)
+		}
 	}
+	s.applyHedgeWatches(newWatches)
 }
 
 // processHedgeBot processes a single hedge bot for one tick:
 //  1. Fetches open exchange positions.
 //  2. Checks existing hedges for deactivation.
 //  3. Checks unhedged positions for activation.
-func (s *Server) processHedgeBot(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON) {
+func (s *Server) processHedgeBot(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, watches map[string]hedgeWatchEntry) {
 	creds, err := s.loadBotAccountCreds(ctx, accountID)
 	if err != nil {
 		s.logBotEvent(ctx, botID,
@@ -94,11 +128,24 @@ func (s *Server) processHedgeBot(ctx context.Context, botID, ownerID, accountID 
 			fmt.Sprintf("Хедж: ошибка получения позиций: %v", err), "error", "system")
 		return
 	}
+	if len(rawPositions) == 0 {
+		s.logBotEvent(ctx, botID,
+			"Хедж: FetchPositions вернул 0 позиций (биржа не видит ни одной открытой позиции на аккаунте)", "warn", "system")
+	}
 
 	posMap := buildHedgePosMap(rawPositions)
 
+	// Diagnostic: log raw positions that were filtered out by parseHedgePos so we
+	// can see if HOME/other symbols are returned but have bad field values.
+	if len(rawPositions) > 0 && len(posMap) == 0 {
+		for _, p := range rawPositions {
+			log.Printf("hedge engine [%s]: позиция отфильтрована parseHedgePos — symbol=%s side=%s size=%s avgPrice=%s markPrice=%s",
+				botID[:8], p.Symbol, p.Side, p.Size, p.EntryPrice, p.MarkPrice)
+		}
+	}
+
 	s.checkHedgeDeactivation(ctx, botID, accountID, cfg, posMap)
-	s.checkHedgeActivation(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, creds, posMap)
+	s.checkHedgeActivation(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, creds, posMap, watches)
 }
 
 // ── Data types ────────────────────────────────────────────────────────────────
@@ -208,18 +255,35 @@ func hedgeROI(p hedgePosInfo) float64 {
 // ── Criteria checkers ─────────────────────────────────────────────────────────
 
 // meetsActivationCriteria returns true when the main position should trigger a hedge.
+//
+// Sign convention for threshold:
+//   negative → activate when position is LOSING by |threshold| (drawdown trigger)
+//   positive → activate when position is PROFITABLE by threshold (buffer/profit trigger)
 func meetsActivationCriteria(p hedgePosInfo, cfg botCfgJSON) bool {
 	threshold := cfg.HedgeActValue
 	switch cfg.HedgeActType {
-	case 0: // last_order% — user stores threshold as negative (e.g. -4 means 4% against position).
-		// Use math.Abs so both -4 and 4 correctly require 4% drawdown.
-		return hedgeDrawdown(p) >= math.Abs(threshold)
-	case 1: // drawdown% — threshold stored as positive (e.g. 5 means 5% drawdown).
-		return hedgeDrawdown(p) >= math.Abs(threshold)
-	case 2: // pnl$ (position is losing, so pnl is negative)
-		return p.UnrealisedPnl <= -math.Abs(threshold)
-	case 3: // roi% (negative = loss)
-		return hedgeROI(p) <= -math.Abs(threshold)
+	case 0, 1: // last_order% / drawdown% — hedgeDrawdown: positive=losing, negative=profitable
+		if threshold < 0 {
+			return hedgeDrawdown(p) >= -threshold // drawdown >= |threshold|
+		} else if threshold > 0 {
+			return hedgeDrawdown(p) <= -threshold // profitable by >= threshold%
+		}
+		return false
+	case 2: // pnl$
+		if threshold < 0 {
+			return p.UnrealisedPnl <= threshold // pnl ≤ threshold (loss)
+		} else if threshold > 0 {
+			return p.UnrealisedPnl >= threshold // pnl ≥ threshold (gain)
+		}
+		return false
+	case 3: // roi%
+		roi := hedgeROI(p)
+		if threshold < 0 {
+			return roi <= threshold // roi ≤ threshold (loss)
+		} else if threshold > 0 {
+			return roi >= threshold // roi ≥ threshold (gain)
+		}
+		return false
 	}
 	return false
 }
@@ -270,10 +334,13 @@ func meetsPairedCloseCriteria(mainPos, hPos hedgePosInfo, cfg botCfgJSON) bool {
 // accountID is allowed by the hedge bot's bot whitelist/blacklist.
 //
 // Logic:
-//   - Queries which bots (if any) own active strategies for this symbol+direction+account.
-//   - If the position has no bot (manual trading) it is treated as bot_id = "".
-//   - Blacklist takes priority: if ANY matching bot is blacklisted → false.
-//   - Whitelist (non-empty): at LEAST ONE matching bot must be whitelisted → true.
+//   - Finds the MOST RELEVANT strategy for this symbol+direction+account
+//     (priority: active > finishing > stopped, then most recently created).
+//     Only the top-priority strategy is checked to avoid false whitelist matches
+//     from old stopped strategies of another bot.
+//   - If no strategy is found (manual trade): whitelist rejects, blacklist-only allows.
+//   - Blacklist takes priority: if the strategy's bot is blacklisted → false.
+//   - Whitelist (non-empty): the strategy's bot must be whitelisted → true.
 //   - Empty whitelist + empty blacklist → always true.
 func (s *Server) positionPassesBotFilter(
 	ctx context.Context,
@@ -284,47 +351,48 @@ func (s *Server) positionPassesBotFilter(
 		return true
 	}
 
-	// Find all bot_ids of strategies for this symbol+direction+account.
-	// Include 'stopped' so that a stopped strategy still counts for whitelist/blacklist
-	// matching — the exchange position may still be open even if the strategy is stopped.
-	// NULL bot_id (manual strategy) is coalesced to empty string "".
-	rows, err := s.pool.Query(ctx,
+	// Find the most relevant strategy for this symbol+direction+account.
+	// Priority: active first, then finishing, then stopped; most recently created within
+	// each status. This prevents a stale stopped strategy from a whitelisted bot from
+	// granting access to a position that is currently owned by a different (non-whitelisted) bot.
+	var botID string
+	err := s.pool.QueryRow(ctx,
 		`SELECT COALESCE(bot_id, '') AS bot_id
 		 FROM strategies
 		 WHERE account_id = $1
 		   AND symbol     = $2
 		   AND direction  = $3
-		   AND status IN ('active', 'finishing', 'stopped')`,
-		accountID, symbol, mainDir)
+		   AND status IN ('active', 'finishing', 'stopped')
+		 ORDER BY CASE status
+		          WHEN 'active'    THEN 0
+		          WHEN 'finishing' THEN 1
+		          ELSE 2 END,
+		          created_at DESC
+		 LIMIT 1`,
+		accountID, symbol, mainDir,
+	).Scan(&botID)
 	if err != nil {
-		return true // on DB error, don't block
+		// No strategy found — position has no DB owner (manual trade or fully deleted strategy).
+		// With a whitelist we cannot verify ownership → reject.
+		// With only a blacklist there's nothing to blacklist → allow.
+		if len(whitelist) > 0 {
+			return false
+		}
+		return true
 	}
-	defer rows.Close()
 
-	var botIDs []string
-	for rows.Next() {
-		var id string
-		if rows.Scan(&id) == nil {
-			botIDs = append(botIDs, id)
+	// Blacklist check.
+	for _, bl := range blacklist {
+		if botID == bl {
+			return false
 		}
 	}
 
-	// Blacklist check — any match → reject.
-	for _, bid := range botIDs {
-		for _, bl := range blacklist {
-			if bid == bl {
-				return false
-			}
-		}
-	}
-
-	// Whitelist check — must match at least one.
+	// Whitelist check.
 	if len(whitelist) > 0 {
-		for _, bid := range botIDs {
-			for _, wl := range whitelist {
-				if bid == wl {
-					return true
-				}
+		for _, wl := range whitelist {
+			if botID == wl {
+				return true
 			}
 		}
 		return false
@@ -364,21 +432,44 @@ func symbolPassesHedgeFilter(symbol string, whitelist, blacklist, delistSymbols 
 
 // checkHedgeActivation iterates over open exchange positions and creates hedge
 // strategies for those that meet the activation criteria and have no active hedge yet.
-func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, creds trader.Credentials, posMap map[string]map[string]hedgePosInfo) {
+func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, creds trader.Credentials, posMap map[string]map[string]hedgePosInfo, watches map[string]hedgeWatchEntry) {
 	delistSymbols := s.GetDelistingSymbols()
 
 	for _, bySymbol := range posMap {
 		for side, pos := range bySymbol {
-			if !symbolPassesHedgeFilter(pos.Symbol, whitelist, blacklist, delistSymbols) {
+			// Blacklists always block regardless of whitelist logic.
+			if !symbolPassesHedgeFilter(pos.Symbol, nil, blacklist, delistSymbols) {
 				continue
 			}
 
 			mainDir := hedgeSideToDir(side)
 
-			// Bot whitelist/blacklist filter — skip positions not owned by allowed bots.
 			if !s.positionPassesBotFilter(ctx, accountID, pos.Symbol, mainDir,
-				cfg.HedgeBotWhitelist, cfg.HedgeBotBlacklist) {
+				nil, cfg.HedgeBotBlacklist) {
 				continue
+			}
+
+			// Whitelist logic: OR when both are non-empty, otherwise normal AND.
+			// OR means: hedge activates if position matches EITHER the symbol whitelist
+			// OR the bot whitelist (useful to hedge "all positions from bot X" plus
+			// "any position in symbol Y regardless of which bot opened it").
+			symbolWL := len(whitelist) > 0
+			botWL := len(cfg.HedgeBotWhitelist) > 0
+			switch {
+			case symbolWL && botWL:
+				symbolOK := symbolPassesHedgeFilter(pos.Symbol, whitelist, nil, nil)
+				botOK := s.positionPassesBotFilter(ctx, accountID, pos.Symbol, mainDir, cfg.HedgeBotWhitelist, nil)
+				if !symbolOK && !botOK {
+					continue
+				}
+			case symbolWL:
+				if !symbolPassesHedgeFilter(pos.Symbol, whitelist, nil, nil) {
+					continue
+				}
+			case botWL:
+				if !s.positionPassesBotFilter(ctx, accountID, pos.Symbol, mainDir, cfg.HedgeBotWhitelist, nil) {
+					continue
+				}
 			}
 
 			// Direction filter
@@ -480,8 +571,29 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 				}
 			}
 
-			// Check activation criteria
-			if !meetsActivationCriteria(evalPos, cfg) {
+			// Check activation criteria (skipped when force activation is enabled).
+			if !cfg.HedgeForceActivation && !meetsActivationCriteria(evalPos, cfg) {
+				// Cache WS threshold so price callback can trigger an immediate check
+				// the moment the price crosses into activation territory.
+				// Only for drawdown-based types (0/1) where threshold is a price level.
+				if watches != nil && (cfg.HedgeActType == 0 || cfg.HedgeActType == 1) && cfg.HedgeActValue < 0 {
+					pct := -cfg.HedgeActValue / 100
+					isLong := mainDir == "long"
+					var threshold float64
+					if isLong {
+						threshold = evalPos.EntryPrice * (1 - pct)
+					} else {
+						threshold = evalPos.EntryPrice * (1 + pct)
+					}
+					// Keep most aggressive threshold (triggers earliest) when multiple bots watch same symbol.
+					if e, ok := watches[pos.Symbol]; !ok {
+						watches[pos.Symbol] = hedgeWatchEntry{threshold: threshold, isLong: isLong}
+					} else if isLong && threshold > e.threshold {
+						watches[pos.Symbol] = hedgeWatchEntry{threshold: threshold, isLong: isLong}
+					} else if !isLong && threshold < e.threshold {
+						watches[pos.Symbol] = hedgeWatchEntry{threshold: threshold, isLong: isLong}
+					}
+				}
 				continue
 			}
 
@@ -546,7 +658,7 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 				whitelist: whitelist,
 				blacklist: blacklist,
 			}
-			hedgeStrategyID, err := s.createBotStrategy(ctx, b, cfg, pos.Symbol, hedgeDir, 0, mainStrategyID)
+			hedgeStrategyID, err := s.createBotStrategy(ctx, b, cfg, pos.Symbol, hedgeDir, 0, mainStrategyID, nil)
 			if err != nil {
 				s.logBotEvent(ctx, botID,
 					fmt.Sprintf("Хедж: ошибка создания %s %s: %v", pos.Symbol, hedgeDir, err),
@@ -598,6 +710,79 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 							"warn", "hedge")
 					}
 				}
+			}
+		}
+	}
+
+	// Standalone force-activation: create hedge strategies for whitelisted symbols
+	// even when no main position exists on the exchange.
+	if cfg.HedgeForceActivation && len(whitelist) > 0 {
+		s.checkHedgeForceStandaloneActivation(ctx, botID, ownerID, accountID, whitelist, blacklist, delistSymbols, cfg, creds)
+	}
+}
+
+// checkHedgeForceStandaloneActivation creates hedge strategies for symbols in the whitelist
+// without requiring a corresponding main position on the exchange. Used when HedgeForceActivation=true.
+// The hedge direction is the opposite of cfg.Direction ("long" cfg → short hedge, "short" cfg → long hedge).
+// cfg.Direction="both" is skipped — direction is ambiguous without a main position.
+func (s *Server) checkHedgeForceStandaloneActivation(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist, delistSymbols []string, cfg botCfgJSON, creds trader.Credentials) {
+	var hedgeDir string
+	switch cfg.Direction {
+	case "long":
+		hedgeDir = "short"
+	case "short":
+		hedgeDir = "long"
+	default:
+		return // "both" — ambiguous without a main position to define the hedge side
+	}
+
+	for _, symbol := range whitelist {
+		if !symbolPassesHedgeFilter(symbol, nil, blacklist, delistSymbols) {
+			continue
+		}
+
+		// Skip if this bot already has an active hedge for this symbol+direction.
+		var existingID string
+		if err := s.pool.QueryRow(ctx,
+			`SELECT id FROM strategies
+			 WHERE bot_id=$1 AND symbol=$2 AND direction=$3
+			   AND status IN ('active','finishing')
+			 LIMIT 1`,
+			botID, symbol, hedgeDir).Scan(&existingID); err == nil {
+			continue
+		}
+
+		s.cleanupStoppedHedgeCards(ctx, botID, symbol, hedgeDir)
+
+		b := botEngineRow{
+			id:        botID,
+			ownerID:   ownerID,
+			accountID: accountID,
+			whitelist: whitelist,
+			blacklist: blacklist,
+		}
+		// Pass empty mainStrategyID — no main to link to (standalone).
+		hedgeStrategyID, err := s.createBotStrategy(ctx, b, cfg, symbol, hedgeDir, 0, "", nil)
+		if err != nil {
+			s.logBotEvent(ctx, botID,
+				fmt.Sprintf("Хедж: принуд. %s %s: ошибка создания: %v", symbol, hedgeDir, err),
+				"error", "hedge")
+			continue
+		}
+		s.logBotEvent(ctx, botID,
+			fmt.Sprintf("Хедж: принуд. активирован %s %s (без мейн позиции)", symbol, hedgeDir),
+			"info", "hedge")
+
+		if hedgeStrategyID != "" {
+			if _, sessErr := s.pool.Exec(ctx,
+				`INSERT INTO hedge_sessions (bot_id, main_strategy_id, hedge_strategy_id, main_entry_at_start)
+				 VALUES ($1, NULL, $2, NULL)
+				 ON CONFLICT (hedge_strategy_id) WHERE ended_at IS NULL DO NOTHING`,
+				botID, hedgeStrategyID,
+			); sessErr != nil {
+				s.logBotEvent(ctx, botID,
+					fmt.Sprintf("Хедж: ошибка записи сессии принуд. активации: %v", sessErr),
+					"warn", "hedge")
 			}
 		}
 	}
@@ -1021,21 +1206,36 @@ func (s *Server) hedgeHasOpenFilledLevels(ctx context.Context, strategyID string
 	return err == nil && count > 0
 }
 
+// hedgeHasPendingOrders returns true if the hedge strategy has placed/pending orders
+// in an open cycle. Used for standalone force-activated hedges: when no exchange
+// position is visible yet, pending orders mean the entry order hasn't filled — wait.
+func (s *Server) hedgeHasPendingOrders(ctx context.Context, strategyID string) bool {
+	var count int
+	s.pool.QueryRow(ctx, //nolint:errcheck
+		`SELECT COUNT(*) FROM strategy_levels sl
+		 JOIN strategy_cycles sc ON sl.cycle_id = sc.id
+		 WHERE sc.strategy_id = $1 AND sc.ended_at IS NULL
+		   AND sl.status IN ('placed','pending')`,
+		strategyID,
+	).Scan(&count)
+	return count > 0
+}
+
 // checkHedgeDeactivation inspects all active hedge strategies for this bot and
 // stops them when deactivation or paired-close conditions are met.
 func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID string, cfg botCfgJSON, posMap map[string]map[string]hedgePosInfo) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, symbol, direction FROM strategies
+		`SELECT id, symbol, direction, COALESCE(hedged_strategy_id::text,'') FROM strategies
 		 WHERE bot_id=$1 AND status IN ('active','finishing')`,
 		botID)
 	if err != nil {
 		return
 	}
-	type activeHedge struct{ id, symbol, dir string }
+	type activeHedge struct{ id, symbol, dir, linkedMainID string }
 	var hedges []activeHedge
 	for rows.Next() {
 		var h activeHedge
-		if rows.Scan(&h.id, &h.symbol, &h.dir) == nil {
+		if rows.Scan(&h.id, &h.symbol, &h.dir, &h.linkedMainID) == nil {
 			hedges = append(hedges, h)
 		}
 	}
@@ -1050,6 +1250,10 @@ func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID st
 		mainSide := hedgeDirToSide(mainDir)
 		hedgeSide := hedgeDirToSide(h.dir)
 
+		// Standalone: force-activated hedge with no linked main strategy.
+		// In this mode the hedge runs independently — absence of a main position is expected.
+		isStandalone := cfg.HedgeForceActivation && h.linkedMainID == ""
+
 		bySymbol, hasSymbol := posMap[h.symbol]
 		if !hasSymbol {
 			// No positions for this symbol at all.
@@ -1062,23 +1266,36 @@ func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID st
 					"warn", "hedge")
 				continue
 			}
-			s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "нет позиций на бирже")
+			if isStandalone && s.hedgeHasPendingOrders(ctx, h.id) {
+				// Entry order placed but not filled yet — exchange position will appear soon.
+				continue
+			}
+			if isStandalone {
+				s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "хедж-позиция закрыта")
+			} else {
+				s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "нет позиций на бирже")
+			}
 			continue
 		}
 
 		mainPos, hasMain := bySymbol[mainSide]
 		if !hasMain {
-			// Main position gone. Same guard: if the hedge still has an open cycle with
-			// filled levels, be conservative and skip rather than risk a false stop.
-			if s.hedgeHasOpenFilledLevels(ctx, h.id) {
-				s.logBotEvent(ctx, botID,
-					fmt.Sprintf("Хедж: основная позиция %s не найдена, но хедж имеет заполненные уровни — пропускаем тик", h.symbol),
-					"warn", "hedge")
+			if isStandalone {
+				// Main position is not required for standalone hedges — fall through to
+				// deact/paired-close checks below (which are gated on hasMain).
+			} else {
+				// Main position gone. Same guard: if the hedge still has an open cycle with
+				// filled levels, be conservative and skip rather than risk a false stop.
+				if s.hedgeHasOpenFilledLevels(ctx, h.id) {
+					s.logBotEvent(ctx, botID,
+						fmt.Sprintf("Хедж: основная позиция %s не найдена, но хедж имеет заполненные уровни — пропускаем тик", h.symbol),
+						"warn", "hedge")
+					continue
+				}
+				// Main position gone — no reason to keep hedge.
+				s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "основная позиция закрыта")
 				continue
 			}
-			// Main position gone — no reason to keep hedge.
-			s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "основная позиция закрыта")
-			continue
 		}
 
 		hedgePos, hasHedge := bySymbol[hedgeSide]
@@ -1100,16 +1317,16 @@ func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID st
 				hedgePos.EntryPrice, h.id)
 		}
 
-		// Deactivation: main position recovered.
-		if cfg.HedgeDeactType != 4 && meetsDeactivationCriteria(mainPos, cfg) {
+		// Deactivation: main position recovered (only checked when main position exists).
+		if hasMain && cfg.HedgeDeactType != 4 && meetsDeactivationCriteria(mainPos, cfg) {
 			s.stopHedgeStrategy(ctx, botID, h.id, h.symbol,
 				fmt.Sprintf("деактивация: основная позиция восстановилась (тип=%d, порог=%.4g)",
 					cfg.HedgeDeactType, cfg.HedgeDeactValue))
 			continue
 		}
 
-		// Paired close: combined P&L condition.
-		if hasHedge && meetsPairedCloseCriteria(mainPos, hedgePos, cfg) {
+		// Paired close: combined P&L condition (requires both positions).
+		if hasMain && hasHedge && meetsPairedCloseCriteria(mainPos, hedgePos, cfg) {
 			combined := mainPos.UnrealisedPnl + hedgePos.UnrealisedPnl
 			s.stopHedgeStrategy(ctx, botID, h.id, h.symbol,
 				fmt.Sprintf("парное закрытие: суммарный PnL %.4g (тип=%d, порог=%.4g)",
@@ -1167,4 +1384,60 @@ func (s *Server) stopHedgeStrategy(ctx context.Context, botID, strategyID, symbo
 	s.logBotEvent(ctx, botID,
 		fmt.Sprintf("Хедж: %s — стратегия остановлена (%s)", symbol, reason),
 		"info", "hedge")
+}
+
+// ── WS price watcher ─────────────────────────────────────────────────────────
+
+// applyHedgeWatches replaces the current set of TickerHub subscriptions with
+// newWatches, subscribing to symbols that weren't watched before and unsubscribing
+// those that are no longer needed.
+func (s *Server) applyHedgeWatches(newWatches map[string]hedgeWatchEntry) {
+	s.hedgeWatchMu.Lock()
+	old := s.hedgeUnsubs
+	s.hedgeUnsubs = nil
+	s.hedgeWatches = newWatches
+	s.hedgeWatchMu.Unlock()
+
+	for _, u := range old {
+		u()
+	}
+
+	hub := s.signalEngine.PriceHub()
+	for sym := range newWatches {
+		sym := sym
+		u := hub.Subscribe(sym, func(mp float64) {
+			s.hedgePriceCallback(sym, mp)
+		})
+		s.hedgeWatchMu.Lock()
+		s.hedgeUnsubs = append(s.hedgeUnsubs, u)
+		s.hedgeWatchMu.Unlock()
+	}
+
+	if len(newWatches) > 0 {
+		syms := make([]string, 0, len(newWatches))
+		for sym := range newWatches {
+			syms = append(syms, sym)
+		}
+		log.Printf("hedge engine: WS наблюдение за %d символами: %v", len(syms), syms)
+	}
+}
+
+// hedgePriceCallback is called by TickerHub on each markPrice update.
+// If the price crosses the activation threshold, it sends a non-blocking trigger
+// to run an immediate hedge engine tick.
+func (s *Server) hedgePriceCallback(symbol string, markPrice float64) {
+	s.hedgeWatchMu.RLock()
+	entry, ok := s.hedgeWatches[symbol]
+	s.hedgeWatchMu.RUnlock()
+	if !ok || entry.threshold <= 0 {
+		return
+	}
+	crossed := (entry.isLong && markPrice <= entry.threshold) ||
+		(!entry.isLong && markPrice >= entry.threshold)
+	if crossed {
+		select {
+		case s.hedgeTriggerCh <- struct{}{}:
+		default: // already pending, skip
+		}
+	}
 }

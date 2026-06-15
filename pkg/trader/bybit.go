@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -394,6 +395,16 @@ func SetLeverage(ctx context.Context, creds Credentials, req LeverageRequest) er
 	return checkRetCode(data)
 }
 
+// SetTradingStop sets or clears Bybit's native trailing stop on an open position.
+// To remove an existing trailing stop, pass TrailingStop="0".
+func SetTradingStop(ctx context.Context, creds Credentials, req TradingStopRequest) error {
+	data, err := doSignedPOST(ctx, creds, "/v5/position/set-trading-stop", req)
+	if err != nil {
+		return err
+	}
+	return checkRetCode(data)
+}
+
 func FetchPositions(ctx context.Context, creds Credentials) ([]Position, error) {
 	type req struct {
 		category string
@@ -405,6 +416,7 @@ func FetchPositions(ctx context.Context, creds Credentials) ([]Position, error) 
 		{"inverse", ""},
 	}
 	var all []Position
+	var errs []string
 	for _, r := range reqs {
 		q := "category=" + r.category + "&limit=200"
 		if r.extra != "" {
@@ -412,6 +424,11 @@ func FetchPositions(ctx context.Context, creds Credentials) ([]Position, error) 
 		}
 		data, err := doSignedGET(ctx, creds, "/v5/position/list", q)
 		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s(%s): %v", r.category, r.extra, err))
+			continue
+		}
+		if err := checkRetCode(data); err != nil {
+			errs = append(errs, fmt.Sprintf("%s(%s): %v", r.category, r.extra, err))
 			continue
 		}
 		var resp struct {
@@ -425,6 +442,11 @@ func FetchPositions(ctx context.Context, creds Credentials) ([]Position, error) 
 				all = append(all, p)
 			}
 		}
+	}
+	// Return error only when ALL three categories failed (partial failures are normal
+	// for accounts that don't trade inverse or USDC, where Bybit may return auth errors).
+	if len(errs) == len(reqs) {
+		return nil, fmt.Errorf("FetchPositions: all categories failed: %s", strings.Join(errs, "; "))
 	}
 	return all, nil
 }
@@ -736,6 +758,73 @@ func FetchClosedPnl(ctx context.Context, creds Credentials, category, cursor str
 		resp.Result.List[i].Category = category
 	}
 	return resp.Result.List, resp.Result.NextPageCursor, nil
+}
+
+// FetchRecentClosedPnl fetches all closed PnL records since `since` for a given category.
+// Pages through cursor until items become older than `since`.
+func FetchRecentClosedPnl(ctx context.Context, creds Credentials, category string, since time.Time) ([]ClosedPnl, error) {
+	startMs := strconv.FormatInt(since.UnixMilli(), 10)
+	var all []ClosedPnl
+	cursor := ""
+	for {
+		q := "category=" + category + "&limit=50&startTime=" + startMs
+		if cursor != "" {
+			q += "&cursor=" + url.QueryEscape(cursor)
+		}
+		data, err := doSignedGET(ctx, creds, "/v5/position/closed-pnl", q)
+		if err != nil {
+			return all, err
+		}
+		if err := checkRetCode(data); err != nil {
+			return all, err
+		}
+		var resp struct {
+			Result struct {
+				List           []ClosedPnl `json:"list"`
+				NextPageCursor string      `json:"nextPageCursor"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(data, &resp); err != nil {
+			return all, err
+		}
+		for i := range resp.Result.List {
+			resp.Result.List[i].Category = category
+		}
+		all = append(all, resp.Result.List...)
+		if resp.Result.NextPageCursor == "" {
+			break
+		}
+		cursor = resp.Result.NextPageCursor
+	}
+	return all, nil
+}
+
+// FetchClosedPnlForSymbol fetches the most recent closed PnL records for a specific symbol.
+// Used by the trade recorder to find the Bybit-authoritative PnL right after a cycle closes.
+func FetchClosedPnlForSymbol(ctx context.Context, creds Credentials, category, symbol string, limit int) ([]ClosedPnl, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	q := "category=" + category + "&symbol=" + symbol + "&limit=" + strconv.Itoa(limit)
+	data, err := doSignedGET(ctx, creds, "/v5/position/closed-pnl", q)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkRetCode(data); err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Result struct {
+			List []ClosedPnl `json:"list"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	for i := range resp.Result.List {
+		resp.Result.List[i].Category = category
+	}
+	return resp.Result.List, nil
 }
 
 // GetWalletBalance returns total equity and available balance in USDT.
