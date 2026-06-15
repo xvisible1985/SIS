@@ -580,6 +580,11 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 
 			// Check activation criteria (skipped when force activation is enabled).
 			if !cfg.HedgeForceActivation && !meetsActivationCriteria(evalPos, cfg) {
+				s.logBotEvent(ctx, botID, fmt.Sprintf(
+					"Хедж: %s %s — критерий не выполнен (evalEntry=%.8f markPrice=%.8f drawdown=%.2f%% порог=%.2f%%)",
+					pos.Symbol, mainDir, evalPos.EntryPrice, evalPos.MarkPrice,
+					hedgeDrawdown(evalPos), -cfg.HedgeActValue,
+				), "info", "system")
 				// Cache WS threshold so price callback can trigger an immediate check
 				// the moment the price crosses into activation territory.
 				// Only for drawdown-based types (0/1) where threshold is a price level.
