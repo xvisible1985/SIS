@@ -1212,7 +1212,7 @@ func (s *Server) scanHedgeBot(w http.ResponseWriter, ctx context.Context, botID,
 			mainDir := hedgeSideToDir(side)
 
 			if !s.positionPassesBotFilter(ctx, accountID, pos.Symbol, mainDir,
-				cfg.HedgeBotWhitelist, cfg.HedgeBotBlacklist) {
+				cfg.HedgeBotWhitelist, cfg.HedgeBotBlacklist, "") {
 				continue
 			}
 
