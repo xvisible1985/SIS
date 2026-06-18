@@ -631,8 +631,16 @@ func (sr *StrategyRunner) loadMatrixCycle(ctx context.Context) error {
 	if err := sr.loadActiveCycle(ctx); err != nil {
 		return err
 	}
+	// Fetch mark price before taking lock — used for retroactive stop-cond check below.
+	price, err := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	if err != nil {
+		log.Printf("strategy %s: loadMatrixCycle: fetch price for stop-cond check: %v", sr.strategy.ID, err)
+	}
 	sr.mu.Lock()
 	sr.restoreMatrixWaitingSlots()
+	if price > 0 {
+		sr.matrixApplyStopCondSLs(ctx, price)
+	}
 	sr.mu.Unlock()
 	// Trigger virtual L0 immediately if it's still pending — the price-cross condition
 	// is already satisfied for the entry slot, and the price monitor won't fire it
