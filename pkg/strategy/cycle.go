@@ -390,6 +390,9 @@ func (sr *StrategyRunner) resumeMatrixCycle(ctx context.Context) {
 				}
 			}
 		}
+		// Step 4: Retroactively place stop-cond SLs for levels whose threshold was
+		// crossed while the server was stopped.
+		sr.matrixApplyStopCondSLs(ctx, resumePrice)
 		// Seed lastMatrixPrice so the first level fill immediately triggers virtual
 		// levels via matrixPriceTick instead of waiting up to minutes for the next tick.
 		sr.lastMatrixPrice = resumePrice
