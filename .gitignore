@@ -3,3 +3,4 @@ bin/
 *.exe
 vendor/
 .worktrees/
+frontend/tsconfig.tsbuildinfo
