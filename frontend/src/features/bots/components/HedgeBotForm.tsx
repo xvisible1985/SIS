@@ -210,13 +210,20 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
         apiClient
           .get<{ catalog: Record<string, unknown>[]; mine: Record<string, unknown>[] }>('/bots')
           .then(res => {
-            const list: BotOption[] = res.data.mine
-              .map(b => ({
-                id:       b.id       as string,
-                name:     b.name     as string,
-                avatarUrl: (b.avatarUrl as string) || undefined,
-              }))
-              .filter(b => b.id !== bot?.id); // exclude self
+            const toOption = (b: Record<string, unknown>): BotOption => ({
+              id:        b.id        as string,
+              name:      b.name      as string,
+              avatarUrl: (b.avatarUrl as string) || undefined,
+            });
+            // Include both mine and catalog so that whitelist tags can resolve
+            // bot names even when the bot belongs to a different user.
+            const seen = new Set<string>();
+            const list: BotOption[] = [];
+            for (const b of [...res.data.mine, ...res.data.catalog].map(toOption)) {
+              if (b.id === bot?.id || seen.has(b.id)) continue;
+              seen.add(b.id);
+              list.push(b);
+            }
             setAvailableBots(list);
           })
           .catch(() => {});
