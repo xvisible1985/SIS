@@ -31,6 +31,10 @@ type Engine struct {
 	mu           sync.RWMutex
 	runners      map[string]*AccountRunner // accountID → runner
 	signalEngine *signal.Engine
+
+	// OnMainTpClosed is called when a strategy cycle closes at TP.
+	// Injected by the hedge engine to trigger flip logic.
+	OnMainTpClosed func(ctx context.Context, strategyID string)
 }
 
 // SetSignalEngine wires the signal engine into the strategy engine so runners
@@ -141,7 +145,7 @@ func (e *Engine) loadStrategy(ctx context.Context, s Strategy) {
 			return
 		}
 		runCtx, cancel := context.WithCancel(context.Background())
-		runner = newAccountRunner(s.AccountID, info.accountLabel, info.ownerUsername, info.creds, e.pool, e.signalEngine, cancel)
+		runner = newAccountRunner(s.AccountID, info.accountLabel, info.ownerUsername, info.creds, e.pool, e.signalEngine, e, cancel)
 		e.runners[s.AccountID] = runner
 		e.mu.Unlock()
 		go runner.run(runCtx)
@@ -660,6 +664,7 @@ type AccountRunner struct {
 	creds         trader.Credentials
 	pool          *pgxpool.Pool
 	signalEngine  *signal.Engine
+	engine        *Engine
 	mu            sync.RWMutex
 	strategies    map[string]*StrategyRunner
 	orderIndex    map[string]orderRef // exchangeOrderID → ref
@@ -678,7 +683,7 @@ type AccountRunner struct {
 	discrepancyLoggedAt  map[string]time.Time
 }
 
-func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trader.Credentials, pool *pgxpool.Pool, signalEngine *signal.Engine, cancel context.CancelFunc) *AccountRunner {
+func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trader.Credentials, pool *pgxpool.Pool, signalEngine *signal.Engine, eng *Engine, cancel context.CancelFunc) *AccountRunner {
 	return &AccountRunner{
 		accountID:     accountID,
 		accountLabel:  accountLabel,
@@ -686,6 +691,7 @@ func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trade
 		creds:         creds,
 		pool:          pool,
 		signalEngine:  signalEngine,
+		engine:        eng,
 		strategies:    make(map[string]*StrategyRunner),
 		orderIndex:    make(map[string]orderRef),
 		tradeStream:   trader.NewTradeStream(creds),

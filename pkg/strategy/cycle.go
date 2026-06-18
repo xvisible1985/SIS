@@ -2899,6 +2899,10 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 	}
 	// Async: write trade_history after Bybit processes the close.
 	go RecordStrategyTrade(sr.runner.pool, sr.runner.creds, recInput)
+
+	if result == "tp" && sr.runner.engine != nil && sr.runner.engine.OnMainTpClosed != nil {
+		sr.runner.engine.OnMainTpClosed(ctx, sr.strategy.ID)
+	}
 }
 
 // cancelPlacedLevels cancels only the grid-level orders belonging to this strategy,

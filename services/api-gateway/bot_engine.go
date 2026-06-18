@@ -809,9 +809,12 @@ type botCfgJSON struct {
 	SizeAsMain bool `json:"size_as_main"`
 
 	// Hedge → Main control actions (hedge bots only).
-	HedgeCancelMainTp bool `json:"hedge_cancel_main_tp"` // cancel TP on main at hedge activation
-	HedgeCancelMainSl bool `json:"hedge_cancel_main_sl"` // cancel all SL on main at hedge activation
-	HedgeStopMain     bool `json:"hedge_stop_main"`      // hard-stop main at hedge activation
+	HedgeCancelMainTp bool   `json:"hedge_cancel_main_tp"` // cancel TP on main at hedge activation
+	HedgeCancelMainSl bool   `json:"hedge_cancel_main_sl"` // cancel all SL on main at hedge activation
+	HedgeStopMain     bool   `json:"hedge_stop_main"`      // hard-stop main at hedge activation
+	// HedgeTpMainMode controls what happens when main closes at TP while hedge is active.
+	// "cancel" (default) = suppress TP on main; "flip" = TP fires, hedge promoted to main.
+	HedgeTpMainMode string `json:"hedge_tp_main_mode"`
 
 	// HedgeForceActivation bypasses activation criteria: hedge is created immediately
 	// for every qualifying position (filters and direction rules still apply).

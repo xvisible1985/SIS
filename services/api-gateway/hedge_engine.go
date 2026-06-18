@@ -56,6 +56,8 @@ func (s *Server) runHedgeEngine(ctx context.Context) {
 			lastTick = time.Now()
 			log.Printf("hedge engine: WS price trigger → немедленная проверка хеджей")
 			s.hedgeEngineTick(ctx)
+		case mainID := <-s.flipChan:
+			s.handleMainTpFlip(ctx, mainID)
 		}
 	}
 }
@@ -802,11 +804,20 @@ func (s *Server) applyHedgeMainControls(ctx context.Context, botID, mainStrategy
 	if mainStrategyID == "" {
 		return
 	}
-	if !cfg.HedgeCancelMainTp && !cfg.HedgeCancelMainSl && !cfg.HedgeStopMain {
+	// Derive hedgeCancelTp from HedgeTpMainMode when set; fall back to legacy bool.
+	hedgeCancelTp := cfg.HedgeCancelMainTp
+	switch cfg.HedgeTpMainMode {
+	case "flip":
+		hedgeCancelTp = false // TP fires normally; flip handler will promote hedge
+	case "cancel":
+		hedgeCancelTp = true
+	}
+
+	if !hedgeCancelTp && !cfg.HedgeCancelMainSl && !cfg.HedgeStopMain {
 		return
 	}
 
-	tpSuppressed := cfg.HedgeCancelMainTp || cfg.HedgeStopMain
+	tpSuppressed := hedgeCancelTp || cfg.HedgeStopMain
 	slSuppressed := cfg.HedgeCancelMainSl || cfg.HedgeStopMain
 
 	var err error
@@ -1432,6 +1443,75 @@ func (s *Server) releaseHedgeToGrid(ctx context.Context, botID, strategyID, symb
 	s.logBotEvent(ctx, botID,
 		fmt.Sprintf("Хедж: %s — позиция передана в грид (TP=0.5%%, без СЛ): %s", symbol, reason),
 		"info", "hedge")
+}
+
+// handleMainTpFlip is called when a main strategy closes at TP.
+// If the associated hedge bot is configured with hedge_tp_main_mode="flip" and
+// the hedge has an open filled position, the hedge is promoted to standalone main
+// via releaseHedgeToGrid (TP=0.5%, no SL).
+func (s *Server) handleMainTpFlip(ctx context.Context, mainStrategyID string) {
+	// Find the active hedge strategy linked to this main.
+	var hedgeID, botID, symbol, direction string
+	err := s.pool.QueryRow(ctx, `
+		SELECT s.id, s.bot_id, s.symbol, s.direction
+		FROM strategies s
+		WHERE s.hedged_strategy_id = $1
+		  AND s.status IN ('active', 'finishing')
+		LIMIT 1`,
+		mainStrategyID,
+	).Scan(&hedgeID, &botID, &symbol, &direction)
+	if err != nil {
+		return // no active hedge for this main — nothing to flip
+	}
+
+	// Load the bot's strategy config to check the mode.
+	var cfgRaw []byte
+	if err := s.pool.QueryRow(ctx,
+		`SELECT strategy_config FROM bots WHERE id = $1`, botID,
+	).Scan(&cfgRaw); err != nil {
+		return
+	}
+	var cfg botCfgJSON
+	if err := json.Unmarshal(cfgRaw, &cfg); err != nil {
+		return
+	}
+	if cfg.HedgeTpMainMode != "flip" {
+		return
+	}
+
+	// Require at least one filled level on the hedge.
+	if !s.hedgeHasOpenFilledLevels(ctx, hedgeID) {
+		return
+	}
+
+	// Compute total filled size and weighted-average entry from DB.
+	var hedgeSize, hedgeEntry float64
+	s.pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(sl.filled_qty), 0),
+		       COALESCE(SUM(sl.filled_qty * sl.fill_price) / NULLIF(SUM(sl.filled_qty), 0), 0)
+		FROM strategy_levels sl
+		JOIN strategy_cycles sc ON sl.cycle_id = sc.id
+		WHERE sc.strategy_id = $1
+		  AND sc.ended_at IS NULL
+		  AND sl.status = 'filled'`,
+		hedgeID,
+	).Scan(&hedgeSize, &hedgeEntry) //nolint:errcheck
+
+	if hedgeSize <= 0 {
+		return
+	}
+
+	side := "Sell"
+	if direction == "long" {
+		side = "Buy"
+	}
+
+	s.releaseHedgeToGrid(ctx, botID, hedgeID, symbol, hedgePosInfo{
+		Symbol:     symbol,
+		Side:       side,
+		Size:       hedgeSize,
+		EntryPrice: hedgeEntry,
+	}, "переворот: мейн закрылся по TP")
 }
 
 // stopHedgeStrategy sets a hedge strategy to 'stopped' and notifies the engine.

@@ -83,6 +83,14 @@ func main() {
 	// Start system health monitor (CPU sampler every 10 s, DB size tracker every 5 min).
 	StartSystemHealthMonitor(ctx, pool)
 
+	// Wire hedge flip callback: when a main closes at TP, notify hedge engine instantly.
+	s.engine.OnMainTpClosed = func(ctx context.Context, strategyID string) {
+		select {
+		case s.flipChan <- strategyID:
+		default:
+		}
+	}
+
 	// Start strategy engine
 	go s.engine.Start(ctx)
 

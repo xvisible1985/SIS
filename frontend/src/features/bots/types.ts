@@ -83,6 +83,8 @@ export type StrategyConfig = {
   hedge_cancel_main_tp?: boolean;   // cancel TP orders on main bot when hedge activates
   hedge_cancel_main_sl?: boolean;   // cancel SL orders on main bot when hedge activates
   hedge_stop_main?: boolean;        // move main bot to "stopped" state and cancel all orders
+  // "cancel" = suppress TP on main while hedge active; "flip" = TP fires, hedge promoted to main.
+  hedge_tp_main_mode?: 'cancel' | 'flip';
   // Force activation: (1) bypass activation criteria for positions in posMap,
   // (2) create standalone hedge on whitelisted symbols even without a main position.
   // Standalone hedges are not tied to any main strategy and deactivate via paired-close only.

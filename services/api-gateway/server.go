@@ -65,6 +65,7 @@ type Server struct {
 	hedgeWatches   map[string]hedgeWatchEntry // symbol → cached threshold
 	hedgeUnsubs    []func()                   // TickerHub unsubscribe funcs
 	hedgeTriggerCh chan struct{}               // buffered(1): WS price crossed threshold
+	flipChan       chan string                 // buffered(16): main strategy IDs closed at TP
 }
 
 // NewServer creates a Server.
@@ -96,6 +97,7 @@ func NewServer(ctx context.Context, pool *pgxpool.Pool, rdb *redis.Client, jwtSe
 	s.engine.SetSignalEngine(se)
 	s.hedgeWatches = make(map[string]hedgeWatchEntry)
 	s.hedgeTriggerCh = make(chan struct{}, 1)
+	s.flipChan = make(chan string, 16)
 	go s.refreshDelistCache(ctx)
 	return s
 }

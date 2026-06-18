@@ -623,9 +623,9 @@ placed:
 
 // loadMatrixCycle loads an existing cycle when startMatrixCycle detects
 // active levels already in DB (the guard path). It calls loadActiveCycle
-// to read levels, restores waiting-slot state, and re-launches the price monitor.
-// Service-restart resumption goes through loadOrStart → directly calls
-// restoreMatrixWaitingSlots + launchMatrixPriceMonitor.
+// to read levels, restores waiting-slot state, applies retroactive stop-cond SLs,
+// and re-launches the price monitor.
+// Primary service-restart path goes through loadOrStart → resumeMatrixCycle (cycle.go).
 // Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) loadMatrixCycle(ctx context.Context) error {
 	if err := sr.loadActiveCycle(ctx); err != nil {

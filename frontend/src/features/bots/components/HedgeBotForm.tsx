@@ -1509,16 +1509,49 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className={labelCls}>
-                          Отменять ТП на Main
-                          <Tip text="При активации хеджа — отменяет все ТП-ордера основного бота." />
-                        </label>
-                        <Toggle
-                          options={[{ label: 'Выкл', value: 'false' }, { label: 'Вкл', value: 'true' }]}
-                          value={String(config.hedge_cancel_main_tp ?? false)}
-                          onChange={v => patch({ hedge_cancel_main_tp: v === 'true' })}
-                          optionColors={{ true: 'bg-rose-700 text-white' }}
-                        />
+                        <label className={labelCls}>ТП на Main</label>
+                        <div className="grid grid-cols-2 gap-1">
+                          {/* Отменять */}
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => patch({ hedge_tp_main_mode: 'cancel' })}
+                              className={`flex-1 py-[7px] px-1 rounded-md text-[11px] font-semibold border transition-colors ${
+                                (config.hedge_tp_main_mode ?? 'cancel') === 'cancel'
+                                  ? 'bg-blue-700 border-blue-600 text-white'
+                                  : 'bg-transparent border-gray-700 text-gray-500 hover:border-gray-600'
+                              }`}
+                            >
+                              Отменять
+                            </button>
+                            <div className="relative group/tpcancel flex-shrink-0">
+                              <span className="flex items-center justify-center w-[15px] h-[15px] rounded-full border border-gray-700 text-gray-500 text-[9px] cursor-help select-none">?</span>
+                              <div className="pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 -translate-x-1/2 hidden group-hover/tpcancel:block z-50 w-52 bg-[#1e293b] border border-[#334155] rounded-md p-2 text-[10px] text-slate-300 leading-relaxed shadow-xl whitespace-normal">
+                                ТП мейна снимается, пока хедж активен. Бот ждёт парного закрытия в направлении хеджа.
+                              </div>
+                            </div>
+                          </div>
+                          {/* Переворот */}
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => patch({ hedge_tp_main_mode: 'flip' })}
+                              className={`flex-1 py-[7px] px-1 rounded-md text-[11px] font-semibold border transition-colors ${
+                                config.hedge_tp_main_mode === 'flip'
+                                  ? 'bg-blue-700 border-blue-600 text-white'
+                                  : 'bg-transparent border-gray-700 text-gray-500 hover:border-gray-600'
+                              }`}
+                            >
+                              🔄 Переворот
+                            </button>
+                            <div className="relative group/tpflip flex-shrink-0">
+                              <span className="flex items-center justify-center w-[15px] h-[15px] rounded-full border border-gray-700 text-gray-500 text-[9px] cursor-help select-none">?</span>
+                              <div className="pointer-events-none absolute bottom-[calc(100%+6px)] right-0 hidden group-hover/tpflip:block z-50 w-56 bg-[#1e293b] border border-[#334155] rounded-md p-2 text-[10px] text-slate-300 leading-relaxed shadow-xl whitespace-normal">
+                                ТП мейна не снимается. При срабатывании — хедж-позиция становится новым мейном, выставляется TP <strong className="text-amber-400">+0.5%</strong>, без SL. Бот продолжает мониторинг.
+                              </div>
+                            </div>
+                          </div>
+                        </div>
                       </div>
                       <div>
                         <label className={labelCls}>
