@@ -2334,7 +2334,8 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 
 	// Skip if TP is already placed with the same qty, avg entry, and price.
 	// Must be checked BEFORE cancelling the existing order.
-	if sr.tpOrderID != "" && sr.lastTPSLQty == totalQty && sr.lastTPSLAvg == avg && sr.lastTPPrice == tpPrice {
+	if sr.tpOrderID != "" && sr.lastTPSLQty == totalQty && sr.lastTPSLAvg == avg &&
+		trader.FormatPrice(sr.lastTPPrice, sr.instr.TickSize) == trader.FormatPrice(tpPrice, sr.instr.TickSize) {
 		log.Printf("strategy %s: updateTP: TP уже выставлен (id=%s, qty=%.6f, avg=%.4f, price=%.4f) — пропуск",
 			sr.strategy.ID[:8], sr.tpOrderID, totalQty, avg, tpPrice)
 		return nil
@@ -2538,7 +2539,8 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 	// Skip if SL is already placed with the same qty and trigger price.
 	// Trigger price encodes both projected avg and sl_pct, so it's the sole dedup key.
 	// Must be checked BEFORE cancelling the existing order.
-	if sr.slOrderID != "" && sr.lastTPSLQty == totalQty && sr.lastSLPrice == slTrigger {
+	if sr.slOrderID != "" && sr.lastTPSLQty == totalQty &&
+		trader.FormatPrice(sr.lastSLPrice, sr.instr.TickSize) == trader.FormatPrice(slTrigger, sr.instr.TickSize) {
 		return nil
 	}
 
