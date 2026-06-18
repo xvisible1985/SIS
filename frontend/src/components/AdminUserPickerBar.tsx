@@ -155,6 +155,7 @@ export function AdminUserPickerBar() {
               <div className="border-b border-white/[.07] p-2">
                 <input
                   autoFocus
+                  autoComplete="off"
                   value={search}
                   onChange={e => setSearch(e.target.value)}
                   placeholder="Имя, email или ID..."
