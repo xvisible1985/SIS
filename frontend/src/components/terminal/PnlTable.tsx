@@ -46,9 +46,10 @@ export function PnlTable({ accountId }: Props) {
   }
 
   function calcFee(item: ClosedPnlItem) {
+    // item.side = closing order side: Buy = Short position closed, Sell = Long position closed
     const gross = item.side === 'Buy'
-      ? (parseFloat(item.avgExitPrice) - parseFloat(item.avgEntryPrice)) * parseFloat(item.qty)
-      : (parseFloat(item.avgEntryPrice) - parseFloat(item.avgExitPrice)) * parseFloat(item.qty)
+      ? (parseFloat(item.avgEntryPrice) - parseFloat(item.avgExitPrice)) * parseFloat(item.qty)  // Short: profit when entry > exit
+      : (parseFloat(item.avgExitPrice) - parseFloat(item.avgEntryPrice)) * parseFloat(item.qty)  // Long:  profit when exit > entry
     return gross - parseFloat(item.closedPnl)
   }
 

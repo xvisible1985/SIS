@@ -1,5 +1,5 @@
 import { apiClient } from '../../api/client'
-import type { AllStrategyDefaults, GridDefaults, MatrixDefaults, CoinFilterSettings } from './types'
+import type { AllStrategyDefaults, GridDefaults, MatrixDefaults, HedgeBotDefaults, MatrixBotDefaults, CoinFilterSettings } from './types'
 
 let _cache: AllStrategyDefaults | null = null
 
@@ -15,8 +15,8 @@ export function invalidateStrategyDefaultsCache(): void {
 }
 
 export async function updateStrategyDefaults(
-  type: 'grid' | 'matrix',
-  config: GridDefaults | MatrixDefaults
+  type: 'grid' | 'matrix' | 'bot_hedge' | 'bot_matrix',
+  config: GridDefaults | MatrixDefaults | HedgeBotDefaults | MatrixBotDefaults
 ): Promise<void> {
   await apiClient.put(`/admin/strategy-defaults/${type}`, config)
   invalidateStrategyDefaultsCache()

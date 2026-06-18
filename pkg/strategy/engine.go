@@ -47,6 +47,9 @@ func New(pool *pgxpool.Pool, encKey string) *Engine {
 }
 
 // Start loads all active/finishing strategies from DB and launches account runners.
+// After loading, reconcileStoppedCycles runs once in the background to close any
+// strategy_cycles that were left open when their strategy was stopped while the
+// position had already disappeared on Bybit.
 func (e *Engine) Start(ctx context.Context) {
 	rows, err := e.pool.Query(ctx,
 		`SELECT id, owner_id, account_id, symbol, category, direction, status,
@@ -64,8 +67,18 @@ func (e *Engine) Start(ctx context.Context) {
 		        COALESCE(hedge_tp_suppressed,false),
 		        COALESCE(hedge_sl_suppressed,false),
 		        hedge_stopped_by::text,
-		        COALESCE(adopt_position_data::text,'')
-		 FROM strategies WHERE status IN ('active','finishing')`)
+		        COALESCE(adopt_position_data::text,''),
+		        tp_signal_dir,
+		        sl_signal_dir,
+		        tp_signal_configs::text,
+		        sl_signal_configs::text
+		 FROM strategies
+		 WHERE status IN ('active','finishing')
+		    OR (status = 'stopped' AND EXISTS (
+		            SELECT 1 FROM strategy_cycles
+		            WHERE strategy_id = strategies.id AND ended_at IS NULL
+		        ))
+		`)
 	if err != nil {
 		log.Printf("strategy engine: load: %v", err)
 		return
@@ -77,6 +90,12 @@ func (e *Engine) Start(ctx context.Context) {
 			e.loadStrategy(ctx, s)
 		}
 	}
+
+	// Close orphaned cycles for stopped strategies whose Bybit position is gone.
+	go e.reconcileStoppedCycles(ctx)
+	// Load stopped strategies (no active cycle) that have a real open position
+	// and TP/SL configured — one FetchPositions call per account, done in background.
+	go e.reconcileStoppedNoCycle(ctx)
 }
 
 // Notify reloads a strategy from DB after a REST update (status change or param edit).
@@ -98,7 +117,11 @@ func (e *Engine) Notify(ctx context.Context, strategyID string) {
 		        COALESCE(hedge_tp_suppressed,false),
 		        COALESCE(hedge_sl_suppressed,false),
 		        hedge_stopped_by::text,
-		        COALESCE(adopt_position_data::text,'')
+		        COALESCE(adopt_position_data::text,''),
+		        tp_signal_dir,
+		        sl_signal_dir,
+		        tp_signal_configs::text,
+		        sl_signal_configs::text
 		 FROM strategies WHERE id=$1`, strategyID)
 	if err := scanStrategyRow(row, &s); err != nil {
 		log.Printf("strategy engine: notify %s: %v", strategyID, err)
@@ -552,6 +575,8 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 	var dir, stat, tpm, slt, stepsJSON, signalConfigsJSON, matrixJSON, entryLevelJSON, adoptJSON string
 	var sf, hm bool
 	var stoppedByStr *string
+	var tpSignalDir, slSignalDir *string
+	var tpSigCfgJSON, slSigCfgJSON *string
 	err := rows.Scan(
 		&s.ID, &s.OwnerID, &s.AccountID, &s.Symbol, &s.Category,
 		&dir, &stat,
@@ -569,6 +594,10 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 		&s.HedgeSlSuppressed,
 		&stoppedByStr,
 		&adoptJSON,
+		&tpSignalDir,
+		&slSignalDir,
+		&tpSigCfgJSON,
+		&slSigCfgJSON,
 	)
 	if err != nil {
 		return err
@@ -580,6 +609,12 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 	s.SignalFilter = sf
 	s.HedgeMode = hm
 	s.HedgeStoppedBy = stoppedByStr
+	if tpSignalDir != nil {
+		s.TPSignalDir = *tpSignalDir
+	}
+	if slSignalDir != nil {
+		s.SLSignalDir = *slSignalDir
+	}
 	if adoptJSON != "" && adoptJSON != "null" {
 		var apd AdoptPositionData
 		if err := json.Unmarshal([]byte(adoptJSON), &apd); err == nil && apd.EntryPrice != "" {
@@ -600,6 +635,12 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 		if json.Unmarshal([]byte(entryLevelJSON), &el) == nil {
 			s.MatrixEntryLevel = &el
 		}
+	}
+	if tpSigCfgJSON != nil && *tpSigCfgJSON != "" && *tpSigCfgJSON != "[]" && *tpSigCfgJSON != "null" {
+		_ = json.Unmarshal([]byte(*tpSigCfgJSON), &s.TPSignalConfigs)
+	}
+	if slSigCfgJSON != nil && *slSigCfgJSON != "" && *slSigCfgJSON != "[]" && *slSigCfgJSON != "null" {
+		_ = json.Unmarshal([]byte(*slSigCfgJSON), &s.SLSignalConfigs)
 	}
 	return nil
 }
@@ -908,6 +949,9 @@ func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
 		// When the exchange avg entry changed (new fill or averaging), re-place TP
 		// with the accurate WS price. This runs after handleLevelFill (which uses the
 		// internal avgEntry fallback) and corrects the TP to the real exchange value.
+		// Also re-place SL: if handleLevelFill ran before this position event arrived,
+		// the SL may have been placed with stale (smaller) WS qty. Re-running updateSL
+		// now — with the freshly-updated position cache — corrects the SL qty.
 		if avgChanged {
 			sr.submit(func(ctx context.Context) {
 				sr.mu.Lock()
@@ -917,6 +961,9 @@ func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
 				}
 				if err := sr.updateTPByType(ctx); err != nil {
 					sr.warn(ctx, fmt.Sprintf("position avg update: TP: %v", err))
+				}
+				if err := sr.updateSL(ctx); err != nil {
+					sr.warn(ctx, fmt.Sprintf("position avg update: SL: %v", err))
 				}
 			})
 		}

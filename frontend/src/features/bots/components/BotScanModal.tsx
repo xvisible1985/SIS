@@ -25,6 +25,7 @@ type PreviewCfg = {
   grid_size_usdt?: number;
   grid_levels?: number;
   grid_active?: number;
+  max_stop_active?: number;
   grid_step_pct?: number;
   tp_pct?: number;
   tp_mode?: string;
@@ -456,6 +457,12 @@ export function BotScanModal({ bot, onClose }: Props) {
               <KV k="шаг %" v={String(cfg.grid_step_pct ?? '—')} />
               <KV k="TP %" v={`${cfg.tp_pct ?? '—'} (${cfg.tp_mode ?? '—'})`} />
               <KV k="SL %" v={`${cfg.sl_pct ?? '—'} (${cfg.sl_type ?? '—'})`} />
+              {(cfg.grid_active ?? 0) > 0 && (
+                <KV k="акт. ордеров" v={String(cfg.grid_active)} />
+              )}
+              {(cfg.max_stop_active ?? 0) > 0 && (
+                <KV k="усл. стопов" v={String(cfg.max_stop_active)} />
+              )}
               {cfg.trailing_stop_enabled && (
                 <KV k="трейлинг" v={`${cfg.trailing_activation_pct}% / ${cfg.trailing_callback_pct}%`} />
               )}

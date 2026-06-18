@@ -34,8 +34,9 @@ func (s *Server) GetStrategyDefaults(w http.ResponseWriter, r *http.Request) {
 // PUT /admin/strategy-defaults/{type}
 func (s *Server) UpdateStrategyDefaults(w http.ResponseWriter, r *http.Request) {
 	stratType := chi.URLParam(r, "type")
-	if stratType != "grid" && stratType != "matrix" {
-		writeError(w, http.StatusBadRequest, "invalid strategy type: must be 'grid' or 'matrix'")
+	allowed := map[string]bool{"grid": true, "matrix": true, "bot_hedge": true, "bot_matrix": true}
+	if !allowed[stratType] {
+		writeError(w, http.StatusBadRequest, "invalid strategy type")
 		return
 	}
 	var body json.RawMessage

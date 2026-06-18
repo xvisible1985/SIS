@@ -126,6 +126,13 @@ type Strategy struct {
 	HedgeTpSuppressed bool    // do not place/re-place TP orders while true
 	HedgeSlSuppressed bool    // do not place/re-place SL orders while true
 	HedgeStoppedBy    *string // ID of the hedge strategy that stopped this main; nil if not stopped by hedge
+
+	// Signal-gated exit: position closes when all signals fire in the required direction.
+	// dir="" means auto (long→sell, short→buy). Multiple configs use AND logic.
+	TPSignalConfigs []SignalConfig
+	TPSignalDir     string // "buy" | "sell" | "" (auto)
+	SLSignalConfigs []SignalConfig
+	SLSignalDir     string // "buy" | "sell" | "" (auto)
 }
 
 type Cycle struct {

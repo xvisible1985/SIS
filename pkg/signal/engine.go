@@ -269,6 +269,40 @@ func (e *Engine) ForceRecompute(signalName string) {
 	}
 }
 
+// ComputeMultiTFState evaluates configs with AND logic where each signal uses
+// the snapshot for its own "tf" param instead of a shared interval.
+// This allows mixing signals from different timeframes (e.g. ST 5m + ADX 1h).
+// All signals must agree (all Buy or all Sell) — otherwise returns Neutral.
+func (e *Engine) ComputeMultiTFState(symbol string, configs []Config) State {
+	if len(configs) == 0 {
+		return Neutral
+	}
+	var combined State
+	first := true
+	for _, cfg := range configs {
+		tf := cfg.Str("tf", "15")
+		snap := e.hub.SnapshotOrFetch(symbol, tf)
+		sig, err := Build(cfg)
+		if err != nil {
+			return Neutral
+		}
+		st := sig.Compute(snap)
+		if st == Neutral {
+			return Neutral
+		}
+		if first {
+			combined = st
+			first = false
+		} else if st != combined {
+			return Neutral // timeframes disagree on direction
+		}
+	}
+	if first {
+		return Neutral
+	}
+	return combined
+}
+
 // ComputeStateForce evaluates the combined signal state without the usual
 // "need at least 2 candles" guard. Override-aware signals (e.g. rsiTest) work
 // with an empty snapshot; other signals return Neutral when data is absent.

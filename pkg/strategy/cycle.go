@@ -183,7 +183,9 @@ func calculateGridLevels(basePrice, stepPct float64, count int, side string) []f
 }
 
 // loadOrStart resumes an existing active cycle from DB or starts a fresh one.
-// Returns immediately for stopped strategies — they are managed via handleStopRequest.
+// For stopped strategies with an open cycle (position still on exchange): restores
+// TP/SL monitoring without placing new L-orders. New L-orders are always skipped for
+// stopped strategies by placeNextLevels.
 func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 	sr.mu.Lock()
 	status := sr.strategy.Status
@@ -192,15 +194,61 @@ func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 		sr.mu.Lock()
 		hasAdopt := sr.strategy.AdoptPositionData != nil
 		sr.mu.Unlock()
-		if !hasAdopt {
+		if hasAdopt {
+			// Adopt path: existing position needs TP/SL even while stopped.
+			sr.startMu.Lock()
+			if err := sr.startCycleByType(ctx); err != nil {
+				log.Printf("strategy %s: adopt while stopped: %v", sr.strategy.ID, err)
+			}
+			sr.startMu.Unlock()
 			return
 		}
-		// Adopt path: existing position needs TP/SL even while stopped.
-		sr.startMu.Lock()
-		if err := sr.startCycleByType(ctx); err != nil {
-			log.Printf("strategy %s: adopt while stopped: %v", sr.strategy.ID, err)
+		// No adopt data. Two sub-cases:
+		// 1. Active cycle exists (stopped while position open) → restore TP/SL via reconcile.
+		// 2. No active cycle but position exists on exchange + TP/SL configured → adopt it.
+		if sr.loadActiveCycle(ctx) == nil {
+			// Sub-case 1: cycle found — reconcile TP/SL, skip L-orders.
+			if !sr.checkPositionGone(ctx) {
+				sr.reconcileOrders(ctx)
+				// After reconcile, re-evaluate TP/SL: the order may be missing (server restart,
+				// external cancel) or the settings may have changed (tp_pct/sl_pct edited).
+				// updateTP/updateSL handle dedup internally (skip if price+qty unchanged).
+				sr.mu.Lock()
+				hasTP := sr.strategy.TPPct > 0
+				hasSL := sr.strategy.SLPct < 0
+				sr.mu.Unlock()
+				if hasTP || hasSL {
+					// Instrument info is only loaded for active strategies above; load it now.
+					if sr.instr.QtyStep == 0 {
+						if instr, err := trader.GetInstrumentInfo(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol); err == nil {
+							sr.mu.Lock()
+							sr.instr = instr
+							sr.instrFetchedAt = time.Now()
+							sr.mu.Unlock()
+						}
+					}
+					if hasTP {
+						if err := sr.updateTP(ctx); err != nil {
+							sr.errlog(ctx, fmt.Sprintf("stopped reconcile: updateTP: %v", err))
+						}
+					}
+					if hasSL {
+						if err := sr.updateSL(ctx); err != nil {
+							sr.errlog(ctx, fmt.Sprintf("stopped reconcile: updateSL: %v", err))
+						}
+					}
+				}
+			}
+			return
 		}
-		sr.startMu.Unlock()
+		// Sub-case 2: no cycle. Check if a real position exists that needs TP/SL protection.
+		sr.mu.Lock()
+		hasTp := sr.strategy.TPPct > 0
+		hasSl := sr.strategy.SLPct < 0
+		sr.mu.Unlock()
+		if hasTp || hasSl {
+			sr.adoptPositionIfOpen(ctx)
+		}
 		return
 	}
 	sr.mu.Lock()
@@ -635,6 +683,57 @@ func (sr *StrategyRunner) checkPositionGone(ctx context.Context) bool {
 	}
 	sr.closeCycle(ctx, "position_gone")
 	return true
+}
+
+// adoptPositionIfOpen fetches the exchange position for this strategy's symbol and,
+// if found, builds AdoptPositionData and starts an adopt cycle so that TP/SL are placed.
+// Called for stopped strategies that have no active cycle but may still hold a position.
+// Must NOT be called with sr.mu held.
+func (sr *StrategyRunner) adoptPositionIfOpen(ctx context.Context) {
+	positions, err := trader.FetchPositions(ctx, sr.runner.creds)
+	if err != nil {
+		log.Printf("strategy %s: adoptPositionIfOpen: fetch positions: %v", sr.strategy.ID, err)
+		return
+	}
+	wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
+	for _, p := range positions {
+		size, _ := strconv.ParseFloat(p.Size, 64)
+		if p.Symbol != sr.strategy.Symbol || size == 0 {
+			continue
+		}
+		if sr.strategy.HedgeMode && p.PositionIdx != wantIdx {
+			continue
+		}
+		if p.EntryPrice == "" || p.EntryPrice == "0" {
+			break
+		}
+		adopt := &AdoptPositionData{Size: p.Size, EntryPrice: p.EntryPrice}
+		sr.mu.Lock()
+		sr.strategy.AdoptPositionData = adopt
+		sr.mu.Unlock()
+		adoptJSON := fmt.Sprintf(`{"size":%q,"entry_price":%q}`, p.Size, p.EntryPrice)
+		sr.runner.pool.Exec(ctx, //nolint:errcheck
+			`UPDATE strategies SET adopt_position_data=$1::jsonb WHERE id=$2`,
+			adoptJSON, sr.strategy.ID)
+		sr.info(ctx, fmt.Sprintf("stopped: позиция %s %s @ %s — запускаю adopt-цикл для TP/SL",
+			p.Size, sr.strategy.Symbol, p.EntryPrice))
+		// Instrument info is required by updateTP/updateSL (QtyStep, MinQty).
+		// For stopped strategies it's never loaded by loadOrStart, so load it here.
+		if sr.instr.QtyStep == 0 {
+			if instr, err2 := trader.GetInstrumentInfo(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol); err2 == nil {
+				sr.mu.Lock()
+				sr.instr = instr
+				sr.instrFetchedAt = time.Now()
+				sr.mu.Unlock()
+			}
+		}
+		sr.startMu.Lock()
+		if err2 := sr.startCycleByType(ctx); err2 != nil {
+			log.Printf("strategy %s: adoptPositionIfOpen: start cycle: %v", sr.strategy.ID, err2)
+		}
+		sr.startMu.Unlock()
+		return
+	}
 }
 
 // closeDustPosition attempts to close a sub-minQty position fragment that may have been
@@ -1539,9 +1638,10 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 				// Negative price_move_pct = against direction = exchange limit (passive, waits for price)
 				forceVirtual := step.OrderType == "virtual" || step.PriceMovePct > 0
 
-				// Adopt path: absorb existing exchange position as pre-filled L1
-				// instead of placing a new market order.
-				if sr.strategy.AdoptPositionData != nil && levelIdx == 1 && targetPrice == 0 {
+				// Adopt path: absorb existing exchange position as pre-filled L1.
+				// Works for both market-entry (targetPrice==0) and limit-entry grids:
+				// the real entry price from the exchange overrides the grid target price.
+				if sr.strategy.AdoptPositionData != nil && levelIdx == 1 {
 					adopt := sr.strategy.AdoptPositionData
 					fillPrice, _ := strconv.ParseFloat(adopt.EntryPrice, 64)
 					if fillPrice <= 0 {
@@ -2185,6 +2285,12 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 	}
 
 	if sr.instr.QtyStep == 0 {
+		if instr, err := trader.GetInstrumentInfo(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol); err == nil {
+			sr.instr = instr
+			sr.instrFetchedAt = time.Now()
+		}
+	}
+	if sr.instr.QtyStep == 0 {
 		sr.warn(ctx, "updateTP: инструмент не загружен (QtyStep=0) — TP не выставлен, повтор при следующем событии")
 		return nil
 	}
@@ -2370,6 +2476,12 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 		sr.tpCancelStreak = 0
 	}
 
+	if sr.instr.QtyStep == 0 {
+		if instr, err := trader.GetInstrumentInfo(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol); err == nil {
+			sr.instr = instr
+			sr.instrFetchedAt = time.Now()
+		}
+	}
 	if sr.instr.QtyStep == 0 {
 		sr.warn(ctx, "updateSL: инструмент не загружен (QtyStep=0) — SL не выставлен, повтор при следующем событии")
 		return nil

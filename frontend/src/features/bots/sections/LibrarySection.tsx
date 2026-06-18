@@ -6,11 +6,7 @@ import { FeaturedBotModal } from '../components/FeaturedBotModal';
 
 type Props = {
   bots: FeaturedBot[];
-  /** Callback при «Запустить с дефолтами» — обычно навигация на /bots/launch?tpl=ID */
-  onLaunch: (botId: string) => void;
-  /** Открыть мастер настройки */
-  onConfigure: (botId: string) => void;
-  /** Клонировать шаблон как кастомного бота */
+  ownedTplIds?: Set<string>;
   onClone: (botId: string) => void;
 };
 
@@ -20,7 +16,7 @@ const DEFAULTS: BotFilters = {
 };
 
 /** Секция «Библиотека ботов» — фильтры + сетка карточек + модалка */
-export function LibrarySection({ bots, onLaunch, onConfigure, onClone }: Props) {
+export function LibrarySection({ bots, ownedTplIds, onClone }: Props) {
   const [filters, setFilters] = useState<BotFilters>(DEFAULTS);
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -63,8 +59,9 @@ export function LibrarySection({ bots, onLaunch, onConfigure, onClone }: Props) 
               <FeaturedBotCard
                 key={b.id}
                 bot={b}
+                alreadyOwned={ownedTplIds?.has(b.id) ?? false}
                 onOpen={() => setOpenId(b.id)}
-                onLaunch={() => onLaunch(b.id)}
+                onAdd={() => onClone(b.id)}
               />
             ))}
           </div>
@@ -74,9 +71,8 @@ export function LibrarySection({ bots, onLaunch, onConfigure, onClone }: Props) 
       {open && (
         <FeaturedBotModal
           bot={open}
+          alreadyOwned={ownedTplIds?.has(open.id) ?? false}
           onClose={() => setOpenId(null)}
-          onLaunchDefault={() => { onLaunch(open.id); setOpenId(null); }}
-          onConfigure={() => { onConfigure(open.id); setOpenId(null); }}
           onClone={() => { onClone(open.id); setOpenId(null); }}
         />
       )}

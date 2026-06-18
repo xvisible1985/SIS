@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { Shield } from 'lucide-react'
 import type { Bot } from '../../features/bots/types'
-import type { Position } from '../../types'
+import type { Position, Strategy } from '../../types'
 
 // ── Label helpers ─────────────────────────────────────────────────────────────
 
@@ -22,9 +22,13 @@ function actUnit(type: number)  { return ACT_UNITS[type]  ?? '' }
  *   type 3 (roi%):        raw roi% (negative = losing).
  *
  * Uses tickerPrice (real-time) when available; falls back to pos.markPrice.
+ * For type 0 (last_order%), uses lastFilledPrice when provided (matches backend logic).
  */
-function currentMetric(pos: Position, actType: number, tickerPrice?: number): number {
-  const entry = parseFloat(pos.entryPrice)
+function currentMetric(pos: Position, actType: number, tickerPrice?: number, lastFilledPrice?: number): number {
+  // type 0: backend measures from last filled grid level, not avg entry
+  const entry = (actType === 0 && lastFilledPrice && lastFilledPrice > 0)
+    ? lastFilledPrice
+    : parseFloat(pos.entryPrice)
   const mark  = tickerPrice && tickerPrice > 0 ? tickerPrice : parseFloat(pos.markPrice)
   const pnl   = parseFloat(pos.unrealisedPnl)
   const lev   = parseFloat(pos.leverage) || 1
@@ -52,13 +56,6 @@ function currentMetric(pos: Position, actType: number, tickerPrice?: number): nu
   }
 }
 
-/** Returns true if the symbol passes a hedge bot's whitelist/blacklist. */
-function symbolPassesFilter(symbol: string, whitelist: string[], blacklist: string[]): boolean {
-  if (blacklist.includes(symbol)) return false
-  if (whitelist.length === 0) return true
-  return whitelist.includes(symbol)
-}
-
 // ── Component ─────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -67,19 +64,44 @@ interface Props {
   bots:         Bot[]
   accountId:    string | null
   tickerPrices: Map<string, number>
+  strategies:   Strategy[]
 }
 
-export function HedgeBotOverlay({ symbol, positions, bots, accountId, tickerPrices }: Props) {
+export function HedgeBotOverlay({ symbol, positions, bots, accountId, tickerPrices, strategies }: Props) {
   const items = useMemo(() => {
     if (!accountId) return []
 
-    // Active hedge bots linked to the current account
-    const hedgeBots = bots.filter(b =>
-      b.status === 'active' &&
-      b.accountId === accountId &&
-      b.strategyConfig.bot_kind === 'hedge' &&
-      symbolPassesFilter(symbol, b.symbolWhitelist, b.symbolBlacklist),
+    // Find bot_id of the strategy currently managing this symbol on this account
+    const currentStrategy = strategies.find(s =>
+      s.symbol === symbol && s.account_id === accountId,
     )
+    const stratBotId = currentStrategy?.bot_id ?? null
+
+    // Active hedge bots linked to the current account that are allowed to monitor this strategy.
+    // Blacklists always block; whitelists use OR when both are non-empty.
+    const hedgeBots = bots.filter(b => {
+      if (b.status !== 'active' || b.accountId !== accountId || b.strategyConfig.bot_kind !== 'hedge') return false
+      const symBL = b.symbolBlacklist
+      const symWL = b.symbolWhitelist
+      const botBL = b.strategyConfig.hedge_bot_blacklist ?? []
+      const botWL = b.strategyConfig.hedge_bot_whitelist ?? []
+
+      // Blacklists always block
+      if (symBL.includes(symbol)) return false
+      if (stratBotId && botBL.includes(stratBotId)) return false
+
+      // Whitelist OR logic
+      const hasSymWL = symWL.length > 0
+      const hasBotWL = botWL.length > 0
+      if (hasSymWL && hasBotWL) {
+        const symOK = symWL.includes(symbol)
+        const botOK = stratBotId != null && botWL.includes(stratBotId)
+        return symOK || botOK
+      }
+      if (hasSymWL) return symWL.includes(symbol)
+      if (hasBotWL) return stratBotId != null && botWL.includes(stratBotId)
+      return true
+    })
     if (hedgeBots.length === 0) return []
 
     // Positions for current symbol (exclude zero-size)
@@ -94,6 +116,8 @@ export function HedgeBotOverlay({ symbol, positions, bots, accountId, tickerPric
       const actValue = cfg.hedge_act_value ?? 0
       const tickerPrice = tickerPrices.get(symbol)
 
+      const lastFilledPrice = currentStrategy?.last_filled_price
+
       const posRows = symPositions
         .filter(p => {
           const dir = p.side === 'Buy' ? 'long' : 'short'
@@ -101,24 +125,28 @@ export function HedgeBotOverlay({ symbol, positions, bots, accountId, tickerPric
           return botDir === 'both' || botDir === dir
         })
         .map(p => {
-          const value = currentMetric(p, actType, tickerPrice)
+          const value = currentMetric(p, actType, tickerPrice, lastFilledPrice)
 
-          // Triggered logic per type:
-          //   type 0 (last_order%): value is negative when against position;
-          //     actValue stored as negative (e.g. -4). Trigger when |value| >= |actValue|.
-          //   type 1 (drawdown%):   value is positive when losing;
-          //     actValue stored as positive (e.g. 5). Trigger when value >= actValue.
-          //   type 2 (pnl$) / type 3 (roi%): trigger when value <= -|actValue|.
+          // Sign convention: negative threshold = drawdown trigger, positive = profit/buffer trigger.
+          //
+          // type 0 (last_order%): value negative when losing, positive when profitable.
+          //   threshold < 0 → trigger when value ≤ threshold (lost enough against position)
+          //   threshold > 0 → trigger when value ≥ threshold (gained enough)
+          //
+          // type 1 (drawdown%): value positive when losing, negative when profitable.
+          //   threshold < 0 → trigger when value ≥ -threshold (drawdown ≥ |threshold|)
+          //   threshold > 0 → trigger when value ≤ -threshold (profitable by threshold%)
+          //
+          // type 2/3 (pnl$/roi%): raw value.
+          //   threshold < 0 → trigger when value ≤ threshold (loss)
+          //   threshold > 0 → trigger when value ≥ threshold (gain)
           let triggered: boolean
-          if (actType === 2 || actType === 3) {
-            triggered = value <= -Math.abs(actValue)
-          } else if (actType === 0) {
-            // Negative convention: both value and threshold are negative when bad.
-            // Triggered when value crosses threshold (value <= actValue, both negative).
-            triggered = value <= actValue
+          if (actType === 0) {
+            triggered = actValue < 0 ? value <= actValue : value >= actValue
+          } else if (actType === 1) {
+            triggered = actValue < 0 ? value >= -actValue : value <= -actValue
           } else {
-            // type 1: positive convention.
-            triggered = value >= Math.abs(actValue)
+            triggered = actValue < 0 ? value <= actValue : value >= actValue
           }
 
           return { pos: p, value, triggered }
@@ -130,18 +158,17 @@ export function HedgeBotOverlay({ symbol, positions, bots, accountId, tickerPric
 
   if (items.length === 0) return null
 
-  // right-[68px]: keeps the panel left of the price-scale column (~60 px wide)
   return (
-    <div className="absolute top-2 right-[68px] z-20 flex flex-col gap-1.5 pointer-events-none select-none">
+    <div className="absolute top-0 right-[68px] z-20 flex flex-col pointer-events-none select-none">
       {items.map(({ bot, actType, actValue, posRows }) => {
         const anyTriggered = posRows.some(r => r.triggered)
         return (
           <div
             key={bot.id}
-            className="rounded-[10px] border px-2.5 py-2 shadow-[0_4px_16px_-4px_rgba(0,0,0,.6)] backdrop-blur-[4px] min-w-[180px]"
+            className="border px-2.5 py-2 min-w-[180px] rounded-[6px]"
             style={{
-              background:   anyTriggered ? 'rgba(90,38,8,0.46)' : 'rgba(6,6,12,0.50)',
-              borderColor:  anyTriggered ? 'rgba(251,146,60,0.38)' : 'rgba(245,158,11,0.18)',
+              background:  anyTriggered ? 'rgba(90,38,8,0.88)' : 'rgba(6,6,12,0.88)',
+              borderColor: anyTriggered ? 'rgba(251,146,60,0.45)' : 'rgba(245,158,11,0.22)',
             }}
           >
             {/* Header */}
@@ -172,7 +199,6 @@ export function HedgeBotOverlay({ symbol, positions, bots, accountId, tickerPric
             {posRows.map(({ pos, value, triggered }) => {
               const isLong = pos.side === 'Buy'
               const unit   = actUnit(actType)
-              // Format with sign: show + for positive, − for negative (explicit).
               const fmtVal = unit === ' USDT'
                 ? `${value >= 0 ? '+' : ''}${value.toFixed(2)} USDT`
                 : `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
@@ -203,7 +229,7 @@ export function HedgeBotOverlay({ symbol, positions, bots, accountId, tickerPric
                   </span>
 
                   {/* Threshold */}
-                  <span className="shrink-0 text-[10px] text-slate-600">
+                  <span className="shrink-0 text-[10px] text-slate-400">
                     /&nbsp;{actValue}{unit}
                   </span>
                 </div>

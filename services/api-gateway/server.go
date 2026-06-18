@@ -54,6 +54,17 @@ type Server struct {
 	delistSymbols   []string
 	delistUpdatedAt time.Time
 
+	// cleanupWaiters tracks when each stopped strategy first entered "waiting for position close"
+	// state. Key: strategyID string → time.Time (first wait time). Used to enforce a max wait
+	// timeout in cleanupStoppedBotStrategies.
+	cleanupWaiters sync.Map
+
+	// Hedge WS price watcher: subscribes to TickerHub for symbols near the activation
+	// threshold and triggers an immediate hedge engine tick when price crosses it.
+	hedgeWatchMu   sync.RWMutex
+	hedgeWatches   map[string]hedgeWatchEntry // symbol → cached threshold
+	hedgeUnsubs    []func()                   // TickerHub unsubscribe funcs
+	hedgeTriggerCh chan struct{}               // buffered(1): WS price crossed threshold
 }
 
 // NewServer creates a Server.
@@ -83,6 +94,8 @@ func NewServer(ctx context.Context, pool *pgxpool.Pool, rdb *redis.Client, jwtSe
 	}
 	s.engine = strategy.New(pool, encKey)
 	s.engine.SetSignalEngine(se)
+	s.hedgeWatches = make(map[string]hedgeWatchEntry)
+	s.hedgeTriggerCh = make(chan struct{}, 1)
 	go s.refreshDelistCache(ctx)
 	return s
 }

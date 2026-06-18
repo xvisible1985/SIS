@@ -1,4 +1,4 @@
-import { TrendingUp, Search, Shield, Settings, Trash2, Eye, EyeOff, Bot } from 'lucide-react';
+import { TrendingUp, Search, Shield, Layers, Settings, Trash2, Eye, EyeOff, Bot, Library } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Bot as BotType, BotKind } from '../bots/types';
 import { getBotKindMeta } from '../bots/botKindMeta';
@@ -7,6 +7,7 @@ const KIND_ICONS: Record<BotKind, LucideIcon> = {
   signal: TrendingUp,
   parser: Search,
   hedge:  Shield,
+  matrix: Layers,
 };
 
 type Props = {
@@ -16,9 +17,10 @@ type Props = {
   onDelete?: () => void;
   onApprove?: () => void;
   onReject?: () => void;
+  onPublishToLibrary?: () => void;
 };
 
-export function AdminBotCard({ bot, onEdit, onTogglePublic, onDelete, onApprove, onReject }: Props) {
+export function AdminBotCard({ bot, onEdit, onTogglePublic, onDelete, onApprove, onReject, onPublishToLibrary }: Props) {
   const botKind = (bot.strategyConfig?.bot_kind ?? 'signal') as BotKind;
   const km      = getBotKindMeta(botKind);
   const Icon    = KIND_ICONS[botKind] ?? KIND_ICONS.signal;
@@ -118,10 +120,11 @@ export function AdminBotCard({ bot, onEdit, onTogglePublic, onDelete, onApprove,
         </div>
 
         {/* мини-статистика */}
-        <div className="mb-3 grid grid-cols-3 border-y border-white/[.05] py-2">
+        <div className="mb-3 grid grid-cols-4 border-y border-white/[.05] py-2">
           <Stat label="Деплоев"   value={String(bot.deployCount)} />
           <Stat label="Тип"       value={bot.isOfficial ? 'Official' : 'Custom'} />
           <Stat label="Публичный" value={bot.isPublic ? 'Да' : 'Нет'} />
+          <Stat label="Цена"      value={bot.price ? `$${bot.price}/мес` : 'Free'} />
         </div>
 
         {/* кнопки действий */}
@@ -158,6 +161,18 @@ export function AdminBotCard({ bot, onEdit, onTogglePublic, onDelete, onApprove,
               }`}
             >
               {bot.isPublic ? <><Eye size={12} />Скрыть</> : <><EyeOff size={12} />Опубликовать</>}
+            </button>
+          )}
+
+          {/* опубликовать в библиотеку */}
+          {onPublishToLibrary && !onApprove && (
+            <button
+              type="button"
+              onClick={onPublishToLibrary}
+              title="Опубликовать в библиотеку"
+              className="flex h-[34px] w-[34px] items-center justify-center rounded-md border border-[#4a7dff]/30 bg-[#4a7dff]/[.08] text-[#7ba4ff] hover:bg-[#4a7dff]/[.16] transition-colors"
+            >
+              <Library size={13} />
             </button>
           )}
 

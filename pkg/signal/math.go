@@ -246,6 +246,97 @@ func wilderATR(high, low, close []float64, period int) []float64 {
 	return out
 }
 
+// ── ADX (Average Directional Index, Wilder) ──────────────────────────────
+
+type adxPoint struct {
+	ADX float64
+	PDI float64 // +DI
+	MDI float64 // -DI
+}
+
+// adxCalc computes ADX/+DI/-DI matching the technicalindicators library.
+func adxCalc(high, low, close []float64, period int) []adxPoint {
+	n := len(close)
+	if n < period*2+1 {
+		return nil
+	}
+	plusDM := make([]float64, n-1)
+	minusDM := make([]float64, n-1)
+	tr := make([]float64, n-1)
+	for i := 1; i < n; i++ {
+		upMove := high[i] - high[i-1]
+		downMove := low[i-1] - low[i]
+		if upMove > downMove && upMove > 0 {
+			plusDM[i-1] = upMove
+		}
+		if downMove > upMove && downMove > 0 {
+			minusDM[i-1] = downMove
+		}
+		hl := high[i] - low[i]
+		hpc := math.Abs(high[i] - close[i-1])
+		lpc := math.Abs(low[i] - close[i-1])
+		tr[i-1] = math.Max(hl, math.Max(hpc, lpc))
+	}
+
+	// Wilder cumulative smoothing: seed = sum of first period values
+	wilderCum := func(vals []float64) []float64 {
+		if len(vals) < period {
+			return nil
+		}
+		sum := 0.0
+		for i := 0; i < period; i++ {
+			sum += vals[i]
+		}
+		out := make([]float64, 0, len(vals)-period+1)
+		out = append(out, sum)
+		for i := period; i < len(vals); i++ {
+			sum = sum - sum/float64(period) + vals[i]
+			out = append(out, sum)
+		}
+		return out
+	}
+
+	smTR := wilderCum(tr)
+	smPDM := wilderCum(plusDM)
+	smMDM := wilderCum(minusDM)
+	if smTR == nil {
+		return nil
+	}
+
+	m := len(smTR)
+	dxVals := make([]float64, m)
+	diPts := make([]adxPoint, m)
+	for i := 0; i < m; i++ {
+		pdi, mdi := 0.0, 0.0
+		if smTR[i] > 0 {
+			pdi = smPDM[i] / smTR[i] * 100
+			mdi = smMDM[i] / smTR[i] * 100
+		}
+		diPts[i].PDI = pdi
+		diPts[i].MDI = mdi
+		if s := pdi + mdi; s > 0 {
+			dxVals[i] = math.Abs(pdi-mdi) / s * 100
+		}
+	}
+
+	// ADX = SMA seed then Wilder smooth of DX values
+	if m < period {
+		return nil
+	}
+	adxSum := 0.0
+	for i := 0; i < period; i++ {
+		adxSum += dxVals[i]
+	}
+	adxPrev := adxSum / float64(period)
+	result := make([]adxPoint, 0, m-period+1)
+	result = append(result, adxPoint{ADX: adxPrev, PDI: diPts[period-1].PDI, MDI: diPts[period-1].MDI})
+	for i := period; i < m; i++ {
+		adxPrev = (adxPrev*float64(period-1) + dxVals[i]) / float64(period)
+		result = append(result, adxPoint{ADX: adxPrev, PDI: diPts[i].PDI, MDI: diPts[i].MDI})
+	}
+	return result
+}
+
 // last returns the last element or zero if empty.
 func lastF(s []float64) (float64, bool) {
 	if len(s) == 0 {

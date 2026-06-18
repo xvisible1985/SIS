@@ -1,43 +1,36 @@
 import { useState } from 'react';
-import { Play, Pause, Settings, Trash2, TrendingUp, Search, Shield } from 'lucide-react';
+import { Play, Pause, Settings, Trash2, TrendingUp, Search, Shield, Layers } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { MyBot } from '../ui-types';
 import type { BotKind } from '../types';
-import { getBotKindMeta, BOT_KIND_META } from '../botKindMeta';
+import { getBotKindMeta } from '../botKindMeta';
 import { StatusPill } from './StatusPill';
+
 const KIND_ICONS: Record<BotKind, LucideIcon> = {
   signal: TrendingUp,
   parser: Search,
   hedge:  Shield,
+  matrix: Layers,
 }
 
 type Props = {
   bot: MyBot;
-  minPublishDays?: number;
   onToggle: (next: 'running' | 'paused') => void;
   onEdit:  () => void;
   onDelete: () => void;
-  onRequestApproval?: () => void;
 };
 
 /** Карточка бота пользователя — в секции «Мои боты» */
-export function MyBotCard({ bot, minPublishDays = 15, onToggle, onEdit, onDelete, onRequestApproval }: Props) {
+export function MyBotCard({ bot, onToggle, onEdit, onDelete }: Props) {
   const [optimisticRunning, setOptimisticRunning] = useState(bot.status === 'running');
   const running = optimisticRunning;
 
-  const effectiveSecs = bot.activeSecondsAcc
-    + (bot.activeSince && !isNaN(new Date(bot.activeSince).getTime())
-        ? (Date.now() - new Date(bot.activeSince).getTime()) / 1000
-        : 0)
-  const thresholdSecs = minPublishDays * 86400
-  const progressPct   = Math.min(100, (effectiveSecs / thresholdSecs) * 100)
-  const daysActive    = Math.floor(effectiveSecs / 86400)
-  const thresholdReached = effectiveSecs >= thresholdSecs
-  const isApproved    = bot.approvalStatus === 'approved'
-  const showApprovalFlow = !bot.isOfficial   // approval flow only for user-created bots
-
   const km   = getBotKindMeta(bot.botKind)
   const Icon = bot.botKind ? KIND_ICONS[bot.botKind] : KIND_ICONS.signal
+
+  const winRate = bot.tradesTotal > 0
+    ? Math.round((bot.tradesWin / bot.tradesTotal) * 100)
+    : null;
 
   const flip = () => {
     const next = running ? 'paused' : 'running';
@@ -47,18 +40,15 @@ export function MyBotCard({ bot, minPublishDays = 15, onToggle, onEdit, onDelete
 
   return (
     <div
-      className="relative overflow-hidden rounded-[14px] border"
+      className="relative flex flex-col overflow-hidden rounded-[14px] border"
       style={{
-        borderColor: running ? km.border : 'rgba(255,255,255,0.06)',
-        background:  'rgba(255,255,255,0.015)',
+        borderColor: running ? km.border : 'rgba(255,255,255,0.08)',
+        background:  'rgba(255,255,255,0.04)',
         boxShadow:   running ? `0 12px 28px -16px ${km.border}` : 'none',
       }}
     >
       {/* ── цветная шапка ────────────────────────────────────────────── */}
-      <div
-        className="px-3.5 pt-3.5 pb-3"
-        style={{ background: km.bgHeader }}
-      >
+      <div className="px-3.5 pt-3.5 pb-3" style={{ background: km.bgHeader }}>
         <div className="flex items-start gap-2.5">
           {/* аватар / иконка */}
           <div className="relative h-9 w-9 shrink-0">
@@ -91,11 +81,7 @@ export function MyBotCard({ bot, minPublishDays = 15, onToggle, onEdit, onDelete
             )}
             <div
               className="h-9 w-9 overflow-hidden rounded-[9px] border flex items-center justify-center"
-              style={{
-                background:  km.iconBg,
-                borderColor: km.border,
-                color:       km.color,
-              }}
+              style={{ background: km.iconBg, borderColor: km.border, color: km.color }}
             >
               {bot.avatarUrl
                 ? <img src={bot.avatarUrl} alt="" className="h-full w-full object-cover" />
@@ -116,24 +102,19 @@ export function MyBotCard({ bot, minPublishDays = 15, onToggle, onEdit, onDelete
                 </span>
               )}
             </div>
-            {/* тип бота вместо "bybit · ×1 futures" */}
             <div className="mt-0.5 flex items-center gap-1.5 text-[11px]">
               <span
                 className="rounded-[4px] px-1.5 py-px font-semibold"
-                style={{
-                  background:  km.iconBg,
-                  color:       km.color,
-                  border:      `1px solid ${km.border}`,
-                  fontSize:    10,
-                  lineHeight:  '1.5',
-                }}
+                style={{ background: km.iconBg, color: km.color, border: `1px solid ${km.border}`, fontSize: 10, lineHeight: '1.5' }}
               >
                 {km.label}
               </span>
-              {bot.pair && (
+              {bot.sourceAuthor && (
                 <>
                   <span className="text-slate-600">·</span>
-                  <span className="font-mono font-semibold text-slate-400">{bot.pair}</span>
+                  <span className="text-[11px] text-slate-400">
+                    от <span className="font-semibold text-slate-300">{bot.sourceAuthor}</span>
+                  </span>
                 </>
               )}
             </div>
@@ -144,70 +125,42 @@ export function MyBotCard({ bot, minPublishDays = 15, onToggle, onEdit, onDelete
       </div>
 
       {/* ── тело карточки ────────────────────────────────────────────── */}
-      <div className="px-3.5 pb-3.5">
-        {/* description */}
-        <div className="mb-3 mt-2.5 min-h-[44px]">
+      <div className="flex flex-1 flex-col px-3.5 pb-3.5">
+
+        {/* description — 3 строки фиксированно */}
+        <div className="mb-3 mt-2.5 h-[54px] overflow-hidden">
           {bot.description
-            ? <p className="text-[12px] leading-relaxed text-slate-400 line-clamp-3">{bot.description}</p>
+            ? <p className="line-clamp-3 text-[12px] leading-[1.5] text-slate-400">{bot.description}</p>
             : <p className="text-[12px] italic text-slate-600">Описание не указано</p>
           }
         </div>
 
-        {/* row stats */}
+        {/* монеты */}
         <div className="mb-3 grid grid-cols-3 border-y border-white/[.05] py-2">
           <Stat label="Монет"  value={bot.symbolsTotal} />
           <Stat label="Сигнал" value={bot.symbolsWithSignal} />
           <Stat label="Лимит"  value={bot.symbolsLimit} />
         </div>
 
-        {/* ── Approval progress (only for user-created bots) ──────────────── */}
-        {showApprovalFlow && !isApproved && (
-          <div className="mb-3 border-t border-white/[.05] pt-2.5">
-            <div className="mb-1 flex items-center justify-between text-[10px] text-slate-400">
-              <span>Активность</span>
-              <span className="font-mono">{daysActive} / {minPublishDays} дн.</span>
-            </div>
-            <div className="h-1 overflow-hidden rounded-full bg-white/[.06]">
-              <div
-                className="h-1 rounded-full bg-blue-500 transition-all duration-500"
-                style={{ width: `${progressPct}%` }}
-              />
-            </div>
-            <div className="mt-2">
-              {bot.approvalStatus === null && thresholdReached && (
-                <button
-                  type="button"
-                  onClick={onRequestApproval}
-                  className="w-full rounded-lg border border-blue-400/30 bg-blue-400/[.12] px-3 py-1.5 text-xs font-semibold text-blue-300 hover:bg-blue-400/[.18]"
-                >
-                  Отправить на согласование
-                </button>
-              )}
-              {bot.approvalStatus === 'pending' && (
-                <div className="flex items-center gap-1.5 rounded-lg bg-amber-400/[.08] px-3 py-1.5 text-xs text-amber-300">
-                  <span>🕐</span> На рассмотрении
-                </div>
-              )}
-              {bot.approvalStatus === 'rejected' && (
-                <button
-                  type="button"
-                  onClick={onRequestApproval}
-                  className="w-full rounded-lg border border-rose-400/30 bg-rose-400/[.10] px-3 py-1.5 text-xs font-semibold text-rose-300 hover:bg-rose-400/[.18]"
-                >
-                  ✕ Отклонён — переотправить
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-        {showApprovalFlow && isApproved && (
-          <div className="mb-3 flex items-center gap-1.5 border-t border-white/[.05] pt-2.5 text-xs text-emerald-400">
-            <span>✓</span> Одобрен — можно опубликовать
-          </div>
-        )}
+        {/* trade stats */}
+        <div className="mb-3 grid grid-cols-3 border-b border-white/[.05] pb-2">
+          <Stat label="Сделок" value={bot.tradesTotal > 0 ? String(bot.tradesTotal) : '—'} />
+          <Stat
+            label="Профит"
+            value={bot.netPnlTotal !== 0
+              ? `${bot.netPnlTotal >= 0 ? '+' : ''}${bot.netPnlTotal.toFixed(2)}$`
+              : '—'}
+            color={bot.netPnlTotal > 0 ? 'text-emerald-300' : bot.netPnlTotal < 0 ? 'text-rose-300' : undefined}
+          />
+          <Stat
+            label="Win"
+            value={winRate !== null ? `${winRate}%` : '—'}
+            color={winRate !== null && winRate >= 50 ? 'text-emerald-300' : winRate !== null ? 'text-rose-300' : undefined}
+          />
+        </div>
 
         {/* actions */}
-        <div className="flex gap-1.5">
+        <div className="mt-auto flex gap-1.5">
           <button
             type="button"
             onClick={flip}
@@ -229,9 +182,7 @@ export function MyBotCard({ bot, minPublishDays = 15, onToggle, onEdit, onDelete
           </button>
           <button
             type="button"
-            onClick={() => {
-              if (confirm(`Удалить бота «${bot.name}»?`)) onDelete();
-            }}
+            onClick={() => { if (confirm(`Удалить бота «${bot.name}»?`)) onDelete(); }}
             className="flex h-[34px] w-[34px] items-center justify-center rounded-md border border-white/[.08] bg-white/[.04] text-rose-300 hover:bg-rose-400/[.12] hover:text-rose-200"
           >
             <Trash2 size={14} />
@@ -242,11 +193,11 @@ export function MyBotCard({ bot, minPublishDays = 15, onToggle, onEdit, onDelete
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
     <div>
       <div className="mb-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">{label}</div>
-      <div className="font-mono text-[13px] font-semibold text-slate-50">{value}</div>
+      <div className={`font-mono text-[13px] font-semibold ${color ?? 'text-slate-50'}`}>{value}</div>
     </div>
   );
 }

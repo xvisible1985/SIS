@@ -29,7 +29,12 @@ interface Props {
   onEdit: (s: Strategy, filledCount: number) => void
   onChanged: () => void
   selected?: boolean
-  onSelect?: (s: Strategy) => void
+  onSelect?: (s: Strategy, e?: React.MouseEvent) => void
+  bulkMode?: boolean
+  selectedCount?: number
+  onBulkStatus?: (status: 'active' | 'finishing' | 'stopped') => void
+  onBulkDelete?: () => void
+  onBulkClose?: () => void
   isOpen?: boolean
   onToggleOpen?: () => void
   liveSignal?: LiveSignal
@@ -366,7 +371,7 @@ function logLvlStyle(lvl: string) {
 }
 
 // ── main component ─────────────────────────────────────────────────────────────
-export function StrategyCard({ strategy: s, accounts, orders, positions, tickerPrices, onEdit, onChanged, selected, onSelect, isOpen, onToggleOpen, liveSignal, hedgeWatcherCount, hasActiveHedge, isHedgeItself }: Props) {
+export function StrategyCard({ strategy: s, accounts, orders, positions, tickerPrices, onEdit, onChanged, selected, onSelect, bulkMode, selectedCount, onBulkStatus, onBulkDelete, onBulkClose, isOpen, onToggleOpen, liveSignal, hedgeWatcherCount, hasActiveHedge, isHedgeItself }: Props) {
   const navigate = useNavigate()
   const [cs, setCs] = useState<CardState>({ state: null, events: [], eventTotal: 0, loading: false, acting: false, actionError: null })
   const [localEvents, setLocalEvents] = useState<StrategyEvent[] | null>(null)
@@ -541,6 +546,10 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
 
   // ── actions ──────────────────────────────────────────────────────────────────
   async function handleStatus(status: StratStatus) {
+    if (bulkMode && selected && onBulkStatus) {
+      onBulkStatus(status)
+      return
+    }
     setCs(p => ({ ...p, acting: true, actionError: null }))
     try {
       await setStrategyStatus(s.id, status)
@@ -627,7 +636,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
 
   function handleMenuToggle(e: React.MouseEvent) {
     e.stopPropagation()
-    onSelect?.(s)
+    if (!bulkMode) onSelect?.(s)
     if (!menuOpen && menuBtnRef.current) {
       const r = menuBtnRef.current.getBoundingClientRect()
       setMenuPos({ top: r.bottom + 4, right: window.innerWidth - r.right })
@@ -635,8 +644,9 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
     setMenuOpen(o => !o)
   }
 
-  function handleHeaderClick() {
-    onSelect?.(s)
+  function handleHeaderClick(e: React.MouseEvent) {
+    if (e.shiftKey || e.ctrlKey || e.metaKey) e.preventDefault()
+    onSelect?.(s, e)
   }
 
   const displayEvents = localEvents ?? cs.events
@@ -703,15 +713,19 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
 
   // ── card border/bg ────────────────────────────────────────────────────────────
   const isActive = s.status === 'active'
-  // stopped → dim; active → brighter; selected → brightest
+  const isBulkSelected = !!bulkMode && !!selected
   const cardStyle: React.CSSProperties = {
-    background: selected
-      ? 'rgba(255,255,255,.12)'
-      : isActive
-        ? hovered ? 'rgba(255,255,255,.09)' : 'rgba(255,255,255,.06)'
-        : hovered ? 'rgba(255,255,255,.045)' : 'rgba(255,255,255,.02)',
-    border: `1px solid ${selected ? 'rgba(255,255,255,.22)' : isActive ? 'rgba(255,255,255,.11)' : 'rgba(255,255,255,.06)'}`,
-    ...(selected ? { boxShadow: 'inset 2px 0 0 rgba(255,255,255,.40)' } : {}),
+    background: isBulkSelected
+      ? 'rgba(59,130,246,.10)'
+      : selected
+        ? 'rgba(255,255,255,.12)'
+        : isActive
+          ? hovered ? 'rgba(255,255,255,.09)' : 'rgba(255,255,255,.06)'
+          : hovered ? 'rgba(255,255,255,.045)' : 'rgba(255,255,255,.02)',
+    border: `1px solid ${isBulkSelected ? 'rgba(59,130,246,.55)' : selected ? 'rgba(255,255,255,.22)' : isActive ? 'rgba(255,255,255,.11)' : 'rgba(255,255,255,.06)'}`,
+    ...(isBulkSelected
+      ? { boxShadow: 'inset 2px 0 0 rgba(59,130,246,.75)' }
+      : selected ? { boxShadow: 'inset 2px 0 0 rgba(255,255,255,.40)' } : {}),
   }
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -720,7 +734,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
 
       {/* ── collapsed header ── */}
       <div
-        className="flex flex-col gap-2 px-3 py-2.5 cursor-pointer rounded-t-xl"
+        className="flex flex-col gap-2 px-3 py-2.5 cursor-pointer rounded-t-xl select-none"
         style={{
           background: selected
             ? 'linear-gradient(180deg, rgba(255,255,255,0.10) 0%, transparent 100%)'
@@ -734,6 +748,22 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
         <div className="flex items-center gap-2 min-w-0">
           {/* left: symbol + badges */}
           <div className="min-w-0 flex-1 flex items-center gap-2 overflow-hidden">
+            {bulkMode && (
+              <span
+                onClick={e => { e.stopPropagation(); onSelect?.(s) }}
+                className={`shrink-0 w-4 h-4 rounded border-2 flex items-center justify-center transition-all ${
+                  isBulkSelected
+                    ? 'bg-blue-500 border-blue-500'
+                    : 'border-slate-500 hover:border-blue-400'
+                }`}
+              >
+                {isBulkSelected && (
+                  <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M2 6l3 3 5-5"/>
+                  </svg>
+                )}
+              </span>
+            )}
             <CoinIcon symbol={s.symbol} className="w-5 h-5 shrink-0" />
             <span className={`font-display font-bold text-[15px] tracking-[-0.2px] leading-none truncate ${s.status === 'stopped' ? 'text-slate-500' : 'text-[#f2f5fb]'}`}>{s.symbol}</span>
             {s.status === 'stopped' ? (
@@ -788,10 +818,10 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
 
           {/* right: status · gear */}
           {s.bot_id
-            ? <BotBadge botName={s.bot_name ?? 'Bot'} botId={s.bot_id ?? ''} symbol={s.symbol} strategyId={s.id} onDetached={onChanged} onInteract={() => onSelect?.(s)} isHedge={!!isHedgeItself} />
+            ? <BotBadge botName={s.bot_name ?? 'Bot'} botId={s.bot_id ?? ''} symbol={s.symbol} strategyId={s.id} onDetached={onChanged} onInteract={() => { if (!bulkMode) onSelect?.(s) }} isHedge={!!isHedgeItself} />
             : (
               <div className="flex flex-col items-end gap-0.5">
-                <StatusPicker value={s.status} acting={cs.acting} onChange={handleStatus} onInteract={() => onSelect?.(s)} />
+                <StatusPicker value={s.status} acting={cs.acting} onChange={handleStatus} onInteract={() => { if (!bulkMode) onSelect?.(s) }} />
                 {cs.actionError && (
                   <span className="text-[9px] text-red-400 max-w-[140px] text-right leading-tight">{cs.actionError}</span>
                 )}
@@ -861,6 +891,29 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
                   {item.label}
                 </button>
               ))}
+              <div className="h-px bg-white/[.08] my-0.5" />
+              <button
+                type="button"
+                disabled={cs.acting || !stratPosition}
+                onClick={() => { setMenuOpen(false); if (bulkMode && selected && onBulkClose) { onBulkClose() } else { handleCloseClick() } }}
+                className="flex items-center gap-2.5 px-[9px] py-[8px] text-[12px] font-semibold rounded-[6px] w-full text-left transition-colors hover:bg-amber-400/[.08] text-amber-300 disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <span className="text-amber-500">
+                  <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/>
+                  </svg>
+                </span>
+                Закрыть позицию
+              </button>
+              <button
+                type="button"
+                disabled={cs.acting}
+                onClick={() => { setMenuOpen(false); if (bulkMode && selected && onBulkDelete) { onBulkDelete() } else { handleDelete() } }}
+                className="flex items-center gap-2.5 px-[9px] py-[8px] text-[12px] font-semibold rounded-[6px] w-full text-left transition-colors hover:bg-rose-400/[.08] text-rose-300 disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <span className="text-rose-500"><IcTrash s={13} w={1.6} /></span>
+                Удалить
+              </button>
             </div>,
             document.body
           )}
@@ -1276,26 +1329,6 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
                 Настроить
                 <CardTip text="Открыть настройки стратегии — изменить сетку, TP/SL, плечо и параметры входа" />
               </button>
-              <button
-                type="button"
-                disabled={cs.acting || !stratPosition}
-                onClick={e => { e.stopPropagation(); handleCloseClick() }}
-                className="relative group/ctip flex-1 py-1.5 text-[11px] font-semibold rounded-[8px] border text-amber-300 hover:text-amber-200 transition-colors disabled:opacity-40"
-                style={{ background: 'rgba(247,166,0,.07)', borderColor: 'rgba(247,166,0,.25)' }}
-              >
-                Закрыть
-                <CardTip text={stratPosition ? 'Закрыть открытую позицию рыночным ордером прямо сейчас. Все L-ордера отменяются, цикл завершается.' : 'Нет открытой позиции — кнопка недоступна'} />
-              </button>
-              <button
-                type="button"
-                disabled={cs.acting}
-                onClick={e => { e.stopPropagation(); handleDelete() }}
-                className="relative group/ctip flex-1 py-1.5 text-[11px] font-semibold rounded-[8px] border text-rose-300 hover:text-rose-200 transition-colors disabled:opacity-40"
-                style={{ background: 'rgba(248,113,113,.07)', borderColor: 'rgba(248,113,113,.25)' }}
-              >
-                Удалить
-                <CardTip text="Удалить стратегию из системы. Ордера отменятся, позиция на бирже останется открытой." />
-              </button>
             </div>
 
           </div>
@@ -1350,6 +1383,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
         <CycleAuditModal strategyId={s.id} strategySymbol={s.symbol} onClose={() => setAuditOpen(false)} />,
         document.body
       )}
+
     </div>
   )
 }

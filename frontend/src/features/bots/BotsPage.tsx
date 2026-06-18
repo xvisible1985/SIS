@@ -15,16 +15,14 @@ type Props = {
   onRequestApproval: (botId: string) => void;
 
   /** Библиотека */
-  onLaunchTpl:    (tplId: string) => void;
-  onConfigureTpl: (tplId: string) => void;
-  onCloneTpl:     (tplId: string) => void;
+  onCloneTpl: (tplId: string) => void;
 };
 
 export function BotsPage({
   myBots, featured,
   onCreateBot, onExportBots, onToggleBot, onEditBot, onDeleteBot,
   onRequestApproval,
-  onLaunchTpl, onConfigureTpl, onCloneTpl,
+  onCloneTpl,
 }: Props) {
   const runningCount = myBots.filter((b) => b.status === 'running').length;
 
@@ -61,8 +59,7 @@ export function BotsPage({
 
       <LibrarySection
         bots={featured}
-        onLaunch={onLaunchTpl}
-        onConfigure={onConfigureTpl}
+        ownedTplIds={new Set(myBots.map((b) => b.tplId).filter(Boolean) as string[])}
         onClone={onCloneTpl}
       />
     </div>

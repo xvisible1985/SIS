@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { Shield } from 'lucide-react'
 import {
   getStrategyState, getStrategyEvents,
-  setStrategyStatus, detachWithAction, getHedgeSession,
+  setStrategyStatus, detachWithAction, getHedgeSession, deleteStrategy,
   type DetachPositionData,
 } from '../../api/strategies'
 import { placeOrder } from '../../api/trader'
@@ -330,6 +330,22 @@ export function HedgePairCard({
       onChanged()
     } finally {
       setActing(false)
+    }
+  }
+
+  // ── delete pair ──────────────────────────────────────────────────────────
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
+  const [deleting, setDeleting]           = useState(false)
+
+  async function handleDeletePair() {
+    if (!deleteConfirm) { setDeleteConfirm(true); return }
+    setDeleteConfirm(false)
+    setDeleting(true)
+    try {
+      await Promise.all([deleteStrategy(main.id), deleteStrategy(hedge.id)])
+      onChanged()
+    } catch {
+      setDeleting(false)
     }
   }
 
@@ -798,6 +814,21 @@ export function HedgePairCard({
               style={{ background: 'rgba(96,165,250,.07)', borderColor: 'rgba(96,165,250,.25)' }}
             >
               Закрыть Мэйн
+            </button>
+            {/* Удалить пару — всегда доступна (позиций может не быть) */}
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={handleDeletePair}
+              className={`py-1.5 px-3 text-[11px] font-semibold rounded-[8px] border transition-colors disabled:opacity-40 ${
+                deleteConfirm
+                  ? 'flex-1 text-white bg-rose-600/80 border-rose-500/60 hover:bg-rose-600'
+                  : 'text-rose-400 hover:text-rose-200'
+              }`}
+              style={deleteConfirm ? {} : { background: 'rgba(248,113,113,.07)', borderColor: 'rgba(248,113,113,.25)' }}
+              title="Удалить обе стратегии пары"
+            >
+              {deleting ? '…' : deleteConfirm ? '⚠ Подтвердить удаление' : 'Удалить пару'}
             </button>
           </div>
         </div>

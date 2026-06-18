@@ -35,6 +35,7 @@ function parseBot(raw: RawBot): Bot {
     activeSecondsAcc:      (raw.activeSecondsAcc as number) ?? 0,
     activeSince:           (raw.activeSince as string) ?? null,
     approvalStatus:        (raw.approvalStatus as Bot['approvalStatus']) ?? null,
+    price:                 (raw.price as number) ?? 0,
   };
 }
 
@@ -84,5 +85,18 @@ export function useAdminBots() {
     await load();
   }, [load]);
 
-  return { bots, loading, create, remove, togglePublic, update, approve, reject, refresh: load };
+  const publishToCatalog = useCallback(async (
+    botId: string,
+    payload: { name: string; isOfficial: boolean; price: number },
+  ) => {
+    await apiClient.post(`/admin/bots/${botId}/publish-to-catalog`, payload);
+    await load();
+  }, [load]);
+
+  const adminDelete = useCallback(async (botId: string) => {
+    await apiClient.delete(`/admin/bots/${botId}`);
+    await load();
+  }, [load]);
+
+  return { bots, loading, create, remove, togglePublic, update, approve, reject, publishToCatalog, adminDelete, refresh: load };
 }

@@ -11,9 +11,15 @@ import (
 	"sis/pkg/trader"
 )
 
-// startReconcileLoop runs reconcile() immediately on startup, then every 60 seconds.
+// startReconcileLoop runs reconcile() after a brief startup delay, then every 20 seconds.
+// The delay lets loadOrStart goroutines populate orderIndex before the first orphan scan —
+// without it, all exchange orders look like orphans and get cancelled immediately on restart.
 func (ar *AccountRunner) startReconcileLoop(ctx context.Context) {
-	// Run once right away to catch orphans left from previous run.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(5 * time.Second):
+	}
 	ar.tryReconcile(ctx)
 
 	ticker := time.NewTicker(20 * time.Second)
@@ -32,9 +38,11 @@ func (ar *AccountRunner) startReconcileLoop(ctx context.Context) {
 // Only covers Grid strategies — other types have their own reconcile logic.
 // Silent when everything matches; logs only when anomalies are found and fixed.
 func (ar *AccountRunner) reconcile(ctx context.Context) {
-	// --- 0. Kill zombie runners — in-memory strategies no longer active in DB ---
-	// Covers the case where GoncharBot (or any client) deletes a strategy from the DB
-	// while its runner is still live in memory (e.g. after a restart or a race with ForceRemoveStrategy).
+	// --- 0. Kill zombie runners — in-memory strategies deleted from DB ---
+	// Covers the case where a client deletes a strategy from the DB while its runner is
+	// still live in memory (e.g. after a restart or a race with ForceRemoveStrategy).
+	// NOTE: stopped strategies are kept in memory intentionally — they manage TP/SL for
+	// open positions. Only strategies that no longer EXIST in DB are treated as zombies.
 	ar.mu.RLock()
 	inMemIDs := make([]string, 0, len(ar.strategies))
 	for id := range ar.strategies {
@@ -42,21 +50,21 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 	}
 	ar.mu.RUnlock()
 	if len(inMemIDs) > 0 {
-		activeRows, err := ar.pool.Query(ctx,
-			`SELECT id::text FROM strategies WHERE id = ANY($1::uuid[]) AND status IN ('active','finishing')`,
+		existsRows, err := ar.pool.Query(ctx,
+			`SELECT id::text FROM strategies WHERE id = ANY($1::uuid[])`,
 			inMemIDs,
 		)
 		if err == nil {
-			activeInDB := make(map[string]bool, len(inMemIDs))
-			for activeRows.Next() {
+			existsInDB := make(map[string]bool, len(inMemIDs))
+			for existsRows.Next() {
 				var id string
-				if activeRows.Scan(&id) == nil {
-					activeInDB[id] = true
+				if existsRows.Scan(&id) == nil {
+					existsInDB[id] = true
 				}
 			}
-			activeRows.Close()
+			existsRows.Close()
 			for _, id := range inMemIDs {
-				if activeInDB[id] {
+				if existsInDB[id] {
 					continue
 				}
 				ar.mu.RLock()
@@ -69,7 +77,7 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 				if len(id8) > 8 {
 					id8 = id8[:8]
 				}
-				log.Printf("strategy reconcile: zombie runner %s (не активна в БД) — отменяю ордера и останавливаю", id8)
+				log.Printf("strategy reconcile: zombie runner %s (удалена из БД) — отменяю ордера и останавливаю", id8)
 				go func(sr *StrategyRunner, stratID string) {
 					sr.cancelAllStrategyOrders(ctx)
 					ar.removeStrategy(stratID)

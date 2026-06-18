@@ -600,6 +600,46 @@ func volumes(c []Candle) []float64 {
 	return out
 }
 
+// ── ADX Signal ────────────────────────────────────────────────────────────
+
+type adxSignal struct {
+	period    int
+	threshold float64
+	mode      string // "trend" (default) | "flat"
+}
+
+func (s *adxSignal) Compute(c []Candle) State {
+	if len(c) < s.period*2+1 {
+		return Neutral
+	}
+	pts := adxCalc(highs(c), lows(c), closes(c), s.period)
+	if len(pts) == 0 {
+		return Neutral
+	}
+	last := pts[len(pts)-1]
+
+	if s.mode == "flat" || s.mode == "боковик" || s.mode == "sideways" {
+		// Flat mode: fire when ADX < threshold (no strong trend = sideways)
+		// Direction is still determined by DI dominance so AND-logic works.
+		if last.ADX >= s.threshold {
+			return Neutral
+		}
+		if last.PDI > last.MDI {
+			return Buy
+		}
+		return Sell
+	}
+
+	// Trend mode (default): fire when ADX >= threshold
+	if last.ADX < s.threshold {
+		return Neutral
+	}
+	if last.PDI > last.MDI {
+		return Buy
+	}
+	return Sell
+}
+
 // ensure math is imported (used by bollingerBands indirectly)
 var _ = math.Sqrt
 

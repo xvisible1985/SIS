@@ -1,7 +1,7 @@
+// services/api-gateway/trade_history_handler.go
 package main
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -18,6 +18,7 @@ type tradeHistoryRow struct {
 	Direction  string   `json:"direction"`
 	CycleNum   int      `json:"cycle_num"`
 	Result     string   `json:"result"`
+	Source     string   `json:"source"` // "strategy" | "manual"
 	AvgEntry   *float64 `json:"avg_entry"`
 	ExitPrice  *float64 `json:"exit_price"`
 	Qty        *float64 `json:"qty"`
@@ -54,19 +55,21 @@ type tradeHistoryResponse struct {
 }
 
 // GetTradeHistory returns paginated trade history with aggregate stats.
-// Rows are grouped by (strategy_id, cycle_num) so each matrix cycle appears
-// as one row with summed PnL — intermediate mini-TP/SL entries are rolled up.
-// GET /api/trade-history?bot_id=&strategy_id=&from=&to=&result=&limit=&offset=
+// One row per closed cycle (strategy) or per closed position (manual).
+// GET /trade-history?bot_id=&strategy_id=&symbol=&source=&result=&from=&to=&limit=&offset=&sort_by=&sort_dir=
 func (s *Server) GetTradeHistory(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	q := r.URL.Query()
 
 	botID := q.Get("bot_id")
 	strategyID := q.Get("strategy_id")
+	accountID := q.Get("account_id")
 	symbol := q.Get("symbol")
-	result := q.Get("result") // "tp" | "sl" | "manual" | ""
+	source := q.Get("source")       // "strategy" | "manual" | ""
+	result := q.Get("result")       // "tp" | "sl" | "manual" | ""
 	fromStr := q.Get("from")
 	toStr := q.Get("to")
+
 	limit := 50
 	offset := 0
 	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= 200 {
@@ -76,24 +79,22 @@ func (s *Server) GetTradeHistory(w http.ResponseWriter, r *http.Request) {
 		offset = v
 	}
 
-	// Sort — whitelist to prevent SQL injection.
-	// All expressions reference the outer "g" alias (post-grouping CTE).
-	validCols := map[string]string{
-		"symbol":      "g.symbol",
-		"direction":   "g.direction",
-		"result":      "g.result",
-		"bot_name":    "b.name",
-		"volume_usdt": "g.volume_usdt",
-		"pnl":         "g.net_pnl",
-		"pnl_gross":   "g.pnl",
-		"fees":        "g.fees",
-		"funding":     "g.funding",
-		"closed_at":   "g.closed_at",
-		"duration":    "(g.closed_at - g.opened_at)",
+	validSorts := map[string]string{
+		"symbol":    "th.symbol",
+		"direction": "th.direction",
+		"result":    "th.result",
+		"bot_name":  "b.name",
+		"volume":    "th.volume_usdt",
+		"pnl":       "th.net_pnl",
+		"pnl_gross": "th.pnl",
+		"fees":      "th.fees",
+		"funding":   "th.funding",
+		"closed_at": "th.closed_at",
+		"duration":  "(th.closed_at - th.opened_at)",
 	}
-	sortColExpr := "g.closed_at"
-	if expr, ok := validCols[q.Get("sort_by")]; ok {
-		sortColExpr = expr
+	sortExpr := "th.closed_at"
+	if expr, ok := validSorts[q.Get("sort_by")]; ok {
+		sortExpr = expr
 	}
 	sortDir := "DESC"
 	if q.Get("sort_dir") == "asc" {
@@ -101,25 +102,19 @@ func (s *Server) GetTradeHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var fromTime, toTime *time.Time
-	if fromStr != "" {
-		if t, err := time.Parse(time.RFC3339, fromStr); err == nil {
-			fromTime = &t
-		}
+	if t, err := time.Parse(time.RFC3339, fromStr); err == nil {
+		fromTime = &t
 	}
-	if toStr != "" {
-		if t, err := time.Parse(time.RFC3339, toStr); err == nil {
-			toTime = &t
-		}
+	if t, err := time.Parse(time.RFC3339, toStr); err == nil {
+		toTime = &t
 	}
 
-	// ── Inner WHERE (applied before grouping) ────────────────────────────────
-	// result filter is excluded here — it is applied AFTER grouping so that
-	// the final cycle result (not intermediate entries) is matched.
-	innerWhere := "WHERE th.owner_id = $1"
+	// Build WHERE clause.
+	where := "WHERE th.owner_id = $1"
 	args := []any{userID}
 	n := 2
 	addArg := func(cond string, val any) {
-		innerWhere += " AND " + cond + " $" + strconv.Itoa(n)
+		where += " AND " + cond + " $" + strconv.Itoa(n)
 		args = append(args, val)
 		n++
 	}
@@ -129,8 +124,17 @@ func (s *Server) GetTradeHistory(w http.ResponseWriter, r *http.Request) {
 	if strategyID != "" {
 		addArg("th.strategy_id =", strategyID)
 	}
+	if accountID != "" {
+		addArg("th.account_id =", accountID)
+	}
 	if symbol != "" {
 		addArg("th.symbol =", symbol)
+	}
+	if source != "" {
+		addArg("th.source =", source)
+	}
+	if result != "" {
+		addArg("th.result =", result)
 	}
 	if fromTime != nil {
 		addArg("th.closed_at >=", *fromTime)
@@ -139,77 +143,30 @@ func (s *Server) GetTradeHistory(w http.ResponseWriter, r *http.Request) {
 		addArg("th.closed_at <=", *toTime)
 	}
 
-	// ── Outer WHERE (applied after grouping, on final cycle result) ───────────
-	outerWhere := ""
-	outerArgs := append([]any{}, args...)
-	if result != "" {
-		outerWhere = " WHERE g.result = $" + strconv.Itoa(n)
-		outerArgs = append(outerArgs, result)
-		n++
-	}
-	_ = n // may be unused if no result filter
-
-	// ── CTE: group individual trade_history rows into one row per cycle ───────
-	// The last result (by closed_at DESC) is used as the cycle outcome.
-	// avg_entry and exit_price come from the most recent entry in the cycle.
-	// volume_usdt, pnl, fees, funding, net_pnl are summed across all entries.
-	groupCTE := `
-		WITH raw AS (
-			SELECT th.* FROM trade_history th ` + innerWhere + `
-		),
-		grouped AS (
-			SELECT
-				COALESCE(th.strategy_id::text, th.bot_id::text, th.account_id::text) || '-' || th.cycle_num::text AS id,
-				th.strategy_id,
-				th.bot_id,
-				th.owner_id,
-				th.account_id,
-				th.symbol,
-				th.category,
-				th.direction,
-				th.cycle_num,
-				(array_agg(th.result      ORDER BY th.closed_at DESC))[1]     AS result,
-				(array_agg(th.avg_entry   ORDER BY th.closed_at DESC))[1]     AS avg_entry,
-				(array_agg(th.exit_price  ORDER BY th.closed_at DESC))[1]     AS exit_price,
-				SUM(COALESCE(th.qty, 0))                                       AS qty,
-				SUM(COALESCE(th.volume_usdt, 0))                               AS volume_usdt,
-				SUM(COALESCE(th.pnl, 0))                                       AS pnl,
-				CASE WHEN SUM(COALESCE(th.volume_usdt, 0)) > 0
-				     THEN SUM(COALESCE(th.pnl, 0)) / SUM(COALESCE(th.volume_usdt, 0)) * 100
-				     ELSE 0 END                                                AS pnl_pct,
-				SUM(th.fees)                                                   AS fees,
-				SUM(th.funding)                                                AS funding,
-				SUM(th.net_pnl)                                                AS net_pnl,
-				MIN(th.opened_at)                                              AS opened_at,
-				MAX(th.closed_at)                                              AS closed_at
-			FROM raw th
-			GROUP BY th.strategy_id, th.cycle_num, th.bot_id, th.owner_id,
-			         th.account_id, th.symbol, th.category, th.direction
-		)`
-
-	// ── Stats (counts cycles, not individual entries) ─────────────────────────
-	statsSQL := groupCTE + `
+	// Stats.
+	statsSQL := `
 		SELECT
 			COUNT(*)::int,
-			COUNT(*) FILTER (WHERE g.net_pnl > 0)::int,
-			COUNT(*) FILTER (WHERE g.net_pnl < 0)::int,
-			COALESCE(SUM(g.pnl), 0),
-			COALESCE(SUM(g.net_pnl), 0),
-			COALESCE(AVG(g.pnl), 0),
-			MAX(g.net_pnl),
-			MIN(g.net_pnl),
-			COALESCE(SUM(g.fees), 0),
-			COALESCE(SUM(g.funding), 0)
-		FROM grouped g` + outerWhere
+			COUNT(*) FILTER (WHERE th.net_pnl > 0)::int,
+			COUNT(*) FILTER (WHERE th.net_pnl < 0)::int,
+			COALESCE(SUM(th.pnl), 0),
+			COALESCE(SUM(th.net_pnl), 0),
+			COALESCE(AVG(th.pnl), 0),
+			MAX(th.net_pnl),
+			MIN(th.net_pnl),
+			COALESCE(SUM(th.fees), 0),
+			COALESCE(SUM(th.funding), 0)
+		FROM trade_history th ` + where
 
 	var stats tradeHistoryStats
 	var best, worst *float64
-	if err := s.pool.QueryRow(r.Context(), statsSQL, outerArgs...).Scan(
+	if err := s.pool.QueryRow(r.Context(), statsSQL, args...).Scan(
 		&stats.Total, &stats.Wins, &stats.Losses,
-		&stats.TotalPnL, &stats.TotalNetPnL, &stats.AvgPnL, &best, &worst,
+		&stats.TotalPnL, &stats.TotalNetPnL, &stats.AvgPnL,
+		&best, &worst,
 		&stats.TotalFees, &stats.TotalFunding,
 	); err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 	if stats.Total > 0 {
@@ -218,42 +175,43 @@ func (s *Server) GetTradeHistory(w http.ResponseWriter, r *http.Request) {
 	stats.BestTrade = best
 	stats.WorstTrade = worst
 
-	// ── Count for pagination ──────────────────────────────────────────────────
-	countSQL := groupCTE + `
-		SELECT COUNT(*)::int FROM grouped g` + outerWhere
+	// Total count for pagination.
 	var totalRows int
-	s.pool.QueryRow(r.Context(), countSQL, outerArgs...).Scan(&totalRows) //nolint:errcheck
+	s.pool.QueryRow(r.Context(), //nolint:errcheck
+		`SELECT COUNT(*)::int FROM trade_history th `+where, args...,
+	).Scan(&totalRows)
 
-	// ── Paginated rows ────────────────────────────────────────────────────────
-	rowsSQL := groupCTE + `
+	// Paginated rows.
+	limitN := strconv.Itoa(limit)
+	offsetN := strconv.Itoa(offset)
+	rowsSQL := `
 		SELECT
-			g.id, g.strategy_id, g.bot_id, b.name,
-			g.account_id, g.symbol, g.category, g.direction,
-			g.cycle_num, g.result,
-			g.avg_entry, g.exit_price, g.qty, g.volume_usdt,
-			g.pnl, g.pnl_pct, g.fees, g.funding, g.net_pnl,
-			g.opened_at, g.closed_at
-		FROM grouped g
-		LEFT JOIN bots b ON b.id = g.bot_id` +
-		outerWhere + `
-		ORDER BY ` + sortColExpr + ` ` + sortDir + `, g.id ` + sortDir + `
-		LIMIT ` + strconv.Itoa(limit) + ` OFFSET ` + strconv.Itoa(offset)
+			th.id, th.strategy_id, th.bot_id, b.name,
+			th.account_id, th.symbol, th.category, th.direction,
+			th.cycle_num, th.result, COALESCE(th.source, 'strategy'),
+			th.avg_entry, th.exit_price, th.qty, th.volume_usdt,
+			th.pnl, th.pnl_pct, th.fees, th.funding, th.net_pnl,
+			th.opened_at, th.closed_at
+		FROM trade_history th
+		LEFT JOIN bots b ON b.id = th.bot_id ` +
+		where + ` ORDER BY ` + sortExpr + ` ` + sortDir +
+		` LIMIT ` + limitN + ` OFFSET ` + offsetN
 
-	rows, err := s.pool.Query(r.Context(), rowsSQL, outerArgs...)
+	dbRows, err := s.pool.Query(r.Context(), rowsSQL, args...)
 	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	defer rows.Close()
+	defer dbRows.Close()
 
-	var trades []tradeHistoryRow
-	for rows.Next() {
+	trades := []tradeHistoryRow{}
+	for dbRows.Next() {
 		var t tradeHistoryRow
 		var openedAt, closedAt time.Time
-		if err := rows.Scan(
+		if err := dbRows.Scan(
 			&t.ID, &t.StrategyID, &t.BotID, &t.BotName,
 			&t.AccountID, &t.Symbol, &t.Category, &t.Direction,
-			&t.CycleNum, &t.Result,
+			&t.CycleNum, &t.Result, &t.Source,
 			&t.AvgEntry, &t.ExitPrice, &t.Qty, &t.VolumeUSDT,
 			&t.PnL, &t.PnLPct, &t.Fees, &t.Funding, &t.NetPnL,
 			&openedAt, &closedAt,
@@ -264,12 +222,8 @@ func (s *Server) GetTradeHistory(w http.ResponseWriter, r *http.Request) {
 		t.ClosedAt = closedAt.UTC().Format(time.RFC3339)
 		trades = append(trades, t)
 	}
-	if trades == nil {
-		trades = []tradeHistoryRow{}
-	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(tradeHistoryResponse{
+	writeJSON(w, http.StatusOK, tradeHistoryResponse{
 		Stats:  stats,
 		Trades: trades,
 		Total:  totalRows,
@@ -279,21 +233,17 @@ func (s *Server) GetTradeHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetTradeHistorySymbols returns distinct symbols that have trade history for the user.
-// GET /api/trade-history/symbols
-// Response: ["BTCUSDT", "ETHUSDT", ...]
+// GET /trade-history/symbols
 func (s *Server) GetTradeHistorySymbols(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
-
 	rows, err := s.pool.Query(r.Context(),
 		`SELECT DISTINCT symbol FROM trade_history WHERE owner_id = $1 ORDER BY symbol`,
-		userID,
-	)
+		userID)
 	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 	defer rows.Close()
-
 	symbols := []string{}
 	for rows.Next() {
 		var sym string
@@ -301,7 +251,5 @@ func (s *Server) GetTradeHistorySymbols(w http.ResponseWriter, r *http.Request) 
 			symbols = append(symbols, sym)
 		}
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(symbols)
+	writeJSON(w, http.StatusOK, symbols)
 }

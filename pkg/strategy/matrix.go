@@ -229,7 +229,8 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 		`UPDATE strategy_cycles SET ended_at=NOW(), result='orphan'
 		 WHERE strategy_id=$1 AND ended_at IS NULL`, sr.strategy.ID)
 
-	// Apply configured leverage.
+	// Apply configured leverage. If the exchange rejects the value (max exceeded),
+	// query the instrument's max and retry with the capped value.
 	lev := sr.strategy.Leverage
 	if lev <= 0 {
 		lev = 1
@@ -241,7 +242,23 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 		BuyLeverage:  levStr,
 		SellLeverage: levStr,
 	}); lerr != nil && !strings.Contains(lerr.Error(), "110043") {
-		log.Printf("strategy %s: set leverage %d: %v", sr.strategy.ID, lev, lerr)
+		log.Printf("strategy %s: matrix: set leverage %d: %v — querying exchange max", sr.strategy.ID, lev, lerr)
+		if info, ierr := trader.GetPublicInstrumentInfo(ctx, sr.strategy.Category, sr.strategy.Symbol); ierr == nil && info.MaxLeverage > 0 {
+			cappedLev := int(info.MaxLeverage)
+			if cappedLev < lev {
+				cappedStr := strconv.Itoa(cappedLev)
+				if lerr2 := trader.SetLeverage(ctx, sr.runner.creds, trader.LeverageRequest{
+					Symbol:       sr.strategy.Symbol,
+					Category:     sr.strategy.Category,
+					BuyLeverage:  cappedStr,
+					SellLeverage: cappedStr,
+				}); lerr2 != nil && !strings.Contains(lerr2.Error(), "110043") {
+					log.Printf("strategy %s: matrix: set leverage capped to %d: %v", sr.strategy.ID, cappedLev, lerr2)
+				} else {
+					sr.info(ctx, fmt.Sprintf("Матрикс: плечо ограничено биржей: запрошено %dx, установлено %dx", lev, cappedLev))
+				}
+			}
+		}
 	}
 
 	// Ensure position mode BEFORE taking the lock.
@@ -945,7 +962,12 @@ func (sr *StrategyRunner) matrixTriggerVirtualLevel(ctx context.Context, l *Grid
 	})
 	if err != nil {
 		sr.runner.UnregisterOrder(linkID)
-		sr.errlog(ctx, fmt.Sprintf("Matrix virtual %s: %v", slotLabel(l.Slot), err))
+		if isMinOrderValue(err) {
+			sr.warn(ctx, fmt.Sprintf("Matrix virtual %s: объём ордера слишком мал (qty=%s) — слот пропущен", slotLabel(l.Slot), l.Qty))
+			l.Status = LevelCancelled
+		} else {
+			sr.errlog(ctx, fmt.Sprintf("Matrix virtual %s: %v", slotLabel(l.Slot), err))
+		}
 		return
 	}
 	l.Status = LevelPlaced
@@ -1339,6 +1361,18 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	if activeQty == 0 {
 		return
 	}
+	// Clamp to actual exchange position size — prevents a too-large TP qty from
+	// creating a reverse position when the exchange has fewer coins than our internal
+	// accounting (e.g. after partial liquidation or rounding differences).
+	{
+		wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
+		if wsQty := sr.runner.GetPositionSizeCoins(sr.strategy.Symbol, wantIdx); wsQty > 0 && wsQty < activeQty {
+			activeQty = wsQty
+		}
+	}
+	if sr.partialCloseQty > 0 && sr.partialCloseQty < activeQty {
+		activeQty = sr.partialCloseQty
+	}
 	tpQty := trader.FormatQty(activeQty, sr.instr.QtyStep, sr.instr.MinQty)
 	if tpQty == "0" || tpQty == "" {
 		return
@@ -1658,7 +1692,6 @@ func (sr *StrategyRunner) handleMatrixTPFill(ctx context.Context, fillPrice, fil
 
 	sr.info(ctx, fmt.Sprintf("✅ Matrix TP исполнен @ %.4f | qty=%.4f | PnL +%.2f USDT (+%.2f%%)",
 		fillPrice, fillQty, pnl, pnlPct))
-	sr.writeTrade(ctx, "tp", avg, fillPrice, fillQty, pnl, pnlPct)
 
 	// 1. Cancel all per-level SL orders — position closed by global TP.
 	sr.matrixCancelPerLevelSLs(ctx)

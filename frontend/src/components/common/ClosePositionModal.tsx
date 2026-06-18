@@ -5,14 +5,16 @@ export const TAKER_FEE = 0.00055 // Bybit linear taker fee
 export interface CloseConfirm {
   pos: Position
   accountId: string
-  fee: number
+  openFee: number
+  closeFee: number
   netPnl: number
 }
 
 export function makeCloseConfirm(pos: Position, accountId: string): CloseConfirm {
-  const fee = pos.sizeUsdt * TAKER_FEE
-  const netPnl = parseFloat(pos.unrealisedPnl) - fee
-  return { pos, accountId, fee, netPnl }
+  const openFee = parseFloat(pos.size) * parseFloat(pos.entryPrice) * TAKER_FEE
+  const closeFee = pos.sizeUsdt * TAKER_FEE
+  const netPnl = parseFloat(pos.unrealisedPnl) - openFee - closeFee
+  return { pos, accountId, openFee, closeFee, netPnl }
 }
 
 export function ClosePositionModal({ confirm, onConfirm, onCancel, closing }: {
@@ -21,7 +23,7 @@ export function ClosePositionModal({ confirm, onConfirm, onCancel, closing }: {
   onCancel: () => void
   closing: boolean
 }) {
-  const { pos, fee, netPnl } = confirm
+  const { pos, openFee, closeFee, netPnl } = confirm
   const pnl = parseFloat(pos.unrealisedPnl)
   const isLong = pos.side === 'Buy'
 
@@ -60,8 +62,12 @@ export function ClosePositionModal({ confirm, onConfirm, onCancel, closing }: {
               </span>
             </div>
             <div className="flex justify-between">
+              <span className="text-gray-500 dark:text-gray-400">Комиссия открытия (0.055%)</span>
+              <span className="font-mono text-red-400">−{openFee.toFixed(4)} USDT</span>
+            </div>
+            <div className="flex justify-between">
               <span className="text-gray-500 dark:text-gray-400">Комиссия закрытия (0.055%)</span>
-              <span className="font-mono text-red-400">−{fee.toFixed(4)} USDT</span>
+              <span className="font-mono text-red-400">−{closeFee.toFixed(4)} USDT</span>
             </div>
             <div className="flex justify-between border-t border-gray-200 dark:border-gray-700 pt-2">
               <span className="text-gray-600 dark:text-gray-300 font-medium">Итого</span>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { listStrategies } from '../api/strategies'
+import { listStrategies, setStrategyStatus, deleteStrategy } from '../api/strategies'
 import { listAccounts } from '../api/accounts'
 import { StrategyCard } from '../components/strategies/StrategyCard'
 import { HedgePairCard } from '../components/strategies/HedgePairCard'
@@ -33,6 +33,10 @@ export function StrategiesPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [matrixDebugOpen, setMatrixDebugOpen] = useState(false)
+  const [bulkMode, setBulkMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkActing, setBulkActing] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -198,9 +202,73 @@ export function StrategiesPage() {
     })
   }, [strategies, hedgeInfoMap])
 
+  const allSingleIds = useMemo(
+    () => renderItems.filter(i => i.type === 'single').map(i => (i as { type: 'single'; strategy: Strategy }).strategy.id),
+    [renderItems],
+  )
+  const allSelected = allSingleIds.length > 0 && allSingleIds.every(id => selectedIds.has(id))
+
+  function toggleBulkMode() {
+    setBulkMode(prev => !prev)
+    setSelectedIds(new Set())
+    setDeleteConfirm(false)
+  }
+
+  function handleSelectAll() {
+    setDeleteConfirm(false)
+    if (allSelected) setSelectedIds(new Set())
+    else setSelectedIds(new Set(allSingleIds))
+  }
+
   function handleSelect(s: Strategy) {
-    setSelectedId(s.id)
-    setExpandedId(prev => (prev !== null && prev !== s.id ? null : prev))
+    if (bulkMode) {
+      setDeleteConfirm(false)
+      setSelectedIds(prev => {
+        const next = new Set(prev)
+        if (next.has(s.id)) next.delete(s.id)
+        else next.add(s.id)
+        return next
+      })
+    } else {
+      setSelectedId(s.id)
+      setExpandedId(prev => (prev !== null && prev !== s.id ? null : prev))
+    }
+  }
+
+  async function handleBulkStart() {
+    if (selectedIds.size === 0 || bulkActing) return
+    setBulkActing(true)
+    try {
+      await Promise.allSettled([...selectedIds].map(id => setStrategyStatus(id, 'active')))
+      load()
+    } finally {
+      setBulkActing(false)
+    }
+  }
+
+  async function handleBulkStop() {
+    if (selectedIds.size === 0 || bulkActing) return
+    setBulkActing(true)
+    try {
+      await Promise.allSettled([...selectedIds].map(id => setStrategyStatus(id, 'stopped')))
+      load()
+    } finally {
+      setBulkActing(false)
+    }
+  }
+
+  async function handleBulkDelete() {
+    if (selectedIds.size === 0 || bulkActing) return
+    if (!deleteConfirm) { setDeleteConfirm(true); return }
+    setBulkActing(true)
+    try {
+      await Promise.allSettled([...selectedIds].map(id => deleteStrategy(id)))
+      setSelectedIds(new Set())
+      setDeleteConfirm(false)
+      load()
+    } finally {
+      setBulkActing(false)
+    }
   }
 
   function openCreate() {
@@ -224,7 +292,7 @@ export function StrategiesPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Стратегии</h1>
         <div className="flex items-center gap-2">
-          {strategies.some(s => s.strategy_type === 'matrix') && (
+          {strategies.some(s => s.strategy_type === 'matrix') && !bulkMode && (
             <button
               onClick={() => setMatrixDebugOpen(true)}
               className="px-3 py-2 bg-gray-700 text-gray-200 text-sm rounded-lg hover:bg-gray-600 transition-colors border border-gray-600"
@@ -233,14 +301,82 @@ export function StrategiesPage() {
               ⊞ Matrix Debug
             </button>
           )}
-          <button
-            onClick={openCreate}
-            className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            + Новая стратегия
-          </button>
+          {!bulkMode && (
+            <button
+              onClick={openCreate}
+              className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              + Новая стратегия
+            </button>
+          )}
+          {strategies.length > 0 && (
+            <button
+              onClick={toggleBulkMode}
+              className={`px-3 py-2 text-sm rounded-lg transition-colors border ${
+                bulkMode
+                  ? 'bg-white/10 border-white/20 text-white hover:bg-white/15'
+                  : 'bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              {bulkMode ? '✕ Отмена' : '☑ Выбрать'}
+            </button>
+          )}
         </div>
       </div>
+
+      {bulkMode && (
+        <div className="flex items-center gap-2 px-1 flex-wrap">
+          <button
+            onClick={handleSelectAll}
+            className="text-xs px-3 py-1.5 rounded-lg border border-white/15 text-slate-300 hover:bg-white/10 transition-colors"
+          >
+            {allSelected ? 'Снять все' : 'Выбрать все'}
+          </button>
+          <span className="text-xs text-slate-500 min-w-[60px]">
+            {selectedIds.size > 0 ? `${selectedIds.size} выбрано` : 'Не выбрано'}
+          </span>
+          <div className="flex-1" />
+          <button
+            onClick={handleBulkStart}
+            disabled={selectedIds.size === 0 || bulkActing}
+            className="text-xs px-3 py-1.5 rounded-lg border border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            ▶ Запустить
+          </button>
+          <button
+            onClick={handleBulkStop}
+            disabled={selectedIds.size === 0 || bulkActing}
+            className="text-xs px-3 py-1.5 rounded-lg border border-slate-500/40 text-slate-400 hover:bg-white/5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            ⏸ Остановить
+          </button>
+          {deleteConfirm ? (
+            <>
+              <button
+                onClick={handleBulkDelete}
+                disabled={bulkActing}
+                className="text-xs px-3 py-1.5 rounded-lg bg-red-600 border border-red-500 text-white hover:bg-red-700 transition-colors disabled:opacity-50"
+              >
+                {bulkActing ? 'Удаляем…' : `Удалить ${selectedIds.size}?`}
+              </button>
+              <button
+                onClick={() => setDeleteConfirm(false)}
+                className="text-xs px-3 py-1.5 rounded-lg border border-white/15 text-slate-400 hover:bg-white/5 transition-colors"
+              >
+                Отмена
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={handleBulkDelete}
+              disabled={selectedIds.size === 0 || bulkActing}
+              className="text-xs px-3 py-1.5 rounded-lg border border-red-500/40 text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              🗑 Удалить
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow overflow-hidden">
         {loadError ? (
@@ -291,8 +427,9 @@ export function StrategiesPage() {
                   positions={positions}
                   onEdit={openEdit}
                   onChanged={load}
-                  selected={s.id === selectedId}
+                  selected={bulkMode ? selectedIds.has(s.id) : s.id === selectedId}
                   onSelect={handleSelect}
+                  bulkMode={bulkMode}
                   isOpen={s.id === expandedId}
                   onToggleOpen={() => {
                     const isExpanding = expandedId !== s.id

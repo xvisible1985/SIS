@@ -148,17 +148,20 @@ func (s *Syncer) syncExecutions(ctx context.Context, a accountRow, creds Credent
 				}
 				isMaker := strconv.FormatBool(e.IsMaker)
 				_ = isMaker
+				posIdx := e.PositionIdx
 				_, err := s.pool.Exec(ctx, `
 					INSERT INTO trader_executions
 					  (owner_id, account_id, exec_id, order_id, order_link_id,
 					   exchange, symbol, category, side, exec_type,
-					   qty, price, exec_value, exec_fee, fee_rate, is_maker, exec_time)
-					VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+					   qty, price, exec_value, exec_fee, fee_rate, is_maker, exec_time,
+					   position_idx)
+					VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 					ON CONFLICT (account_id, exec_id) DO NOTHING`,
 					a.ownerID, a.id, e.ExecId, nullStr(e.OrderId), nullStr(e.OrderLinkId),
 					a.exchange, e.Symbol, category, nullStr(e.Side), e.ExecType,
 					nullNum(e.ExecQty), nullNum(e.ExecPrice), nullNum(e.ExecValue),
 					nullNum(e.ExecFee), nullNum(e.FeeRate), e.IsMaker, execTime,
+					posIdx,
 				)
 				if err != nil {
 					log.Printf("syncer: upsert exec %s: %v", e.ExecId, err)

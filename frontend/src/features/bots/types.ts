@@ -1,5 +1,5 @@
-import type { MatrixLevel, MatrixEntryLevel } from '../../types';
-export type { MatrixLevel, MatrixEntryLevel };
+import type { MatrixLevel, MatrixEntryLevel, SignalConfig } from '../../types';
+export type { MatrixLevel, MatrixEntryLevel, SignalConfig };
 
 export type BotStatus = 'active' | 'stopped' | 'draft';
 
@@ -17,7 +17,7 @@ export type TriggerPnl = {
 
 export type Trigger = TriggerSignal | TriggerPnl;
 
-export type BotKind = 'signal' | 'parser' | 'hedge';
+export type BotKind = 'signal' | 'parser' | 'hedge' | 'matrix';
 
 export type StrategyConfig = {
   bot_kind?: BotKind;
@@ -31,6 +31,7 @@ export type StrategyConfig = {
   hedge_mode?: boolean;
   grid_levels?: number;
   grid_active?: number;
+  max_stop_active?: number;
   grid_step_pct?: number;
   grid_size_usdt?: number;
   steps?: { price_move_pct: number; lots?: number; size_pct?: number }[];
@@ -47,11 +48,12 @@ export type StrategyConfig = {
   after_stop_mode?: 'delete' | 'restart';
   max_cycles?: number;
   priority_signal?: string;
-  // Signal-gated exit
-  tp_signal_name?: string;
-  tp_signal_dir?: 'buy' | 'sell';
-  sl_signal_name?: string;
-  sl_signal_dir?: 'buy' | 'sell';
+  // Signal-gated exit (dir=null → auto: long→sell, short→buy)
+  // Multiple configs use AND logic: all signals must fire in the required direction.
+  tp_signal_configs?: SignalConfig[] | null;
+  tp_signal_dir?: 'buy' | 'sell' | null;
+  sl_signal_configs?: SignalConfig[] | null;
+  sl_signal_dir?: 'buy' | 'sell' | null;
   // Matrix-specific
   matrix_levels?: MatrixLevel[];
   matrix_entry_level?: MatrixEntryLevel;
@@ -81,6 +83,10 @@ export type StrategyConfig = {
   hedge_cancel_main_tp?: boolean;   // cancel TP orders on main bot when hedge activates
   hedge_cancel_main_sl?: boolean;   // cancel SL orders on main bot when hedge activates
   hedge_stop_main?: boolean;        // move main bot to "stopped" state and cancel all orders
+  // Force activation: (1) bypass activation criteria for positions in posMap,
+  // (2) create standalone hedge on whitelisted symbols even without a main position.
+  // Standalone hedges are not tied to any main strategy and deactivate via paired-close only.
+  hedge_force_activation?: boolean;
 };
 
 export type Bot = {
@@ -115,6 +121,13 @@ export type Bot = {
   activeSecondsAcc: number;
   activeSince: string | null;
   approvalStatus: 'pending' | 'approved' | 'rejected' | null;
+  price?: number;
+  spark?: number[];
+  activeUsersCount?: number;
+  tradesTotal?: number;
+  tradesWin?: number;
+  netPnlTotal?: number;
+  sourceAuthor?: string;
   custom?: boolean;
 };
 

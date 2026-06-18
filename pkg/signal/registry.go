@@ -226,4 +226,16 @@ func init() {
 			ttl:       ttl,
 		}
 	})
+
+	// ADX — trend-strength filter.
+	// Returns Buy when ADX ≥ threshold AND +DI > -DI (uptrend).
+	// Returns Sell when ADX ≥ threshold AND -DI > +DI (downtrend).
+	// Returns Neutral when ADX < threshold (no trend / ranging).
+	Register("adx", func(cfg Config) Signal {
+		return &adxSignal{
+			period:    int(cfg.Float("period", 14)),
+			threshold: cfg.Float("threshold", 25),
+			mode:      cfg.Str("mode", "trend"),
+		}
+	})
 }

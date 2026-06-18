@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Check, Flame, X, Copy, Share2, SlidersHorizontal, Play, TrendingUp, Search, Shield } from 'lucide-react';
+import { Check, Flame, X, Copy, Share2, SlidersHorizontal, TrendingUp, Search, Shield, Layers, CheckCircle2 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { FeaturedBot } from '../ui-types';
 import type { BotKind } from '../types';
@@ -14,18 +14,18 @@ const KIND_ICONS: Record<BotKind, LucideIcon> = {
   signal: TrendingUp,
   parser: Search,
   hedge:  Shield,
+  matrix: Layers,
 };
 
 type Props = {
   bot: FeaturedBot;
+  alreadyOwned?: boolean;
   onClose: () => void;
-  onLaunchDefault: () => void;
-  onConfigure: () => void;
   onClone: () => void;
 };
 
 /** Развёрнутый просмотр готового бота в модалке */
-export function FeaturedBotModal({ bot, onClose, onLaunchDefault, onConfigure, onClone }: Props) {
+export function FeaturedBotModal({ bot, alreadyOwned = false, onClose, onClone }: Props) {
   // ESC closes
   useEffect(() => {
     const fn = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -34,11 +34,13 @@ export function FeaturedBotModal({ bot, onClose, onLaunchDefault, onConfigure, o
   }, [onClose]);
 
   const strat = STRAT_META[bot.strategy];
-  const km    = bot.botKind ? getBotKindMeta(bot.botKind) : null;
+  const km    = getBotKindMeta(bot.botKind);
   const Icon: LucideIcon = bot.botKind ? KIND_ICONS[bot.botKind] : strat.icon;
-  const iconBg     = km ? km.iconBg  : strat.bg;
-  const iconBorder = km ? km.border  : strat.border;
-  const iconColor  = km ? km.color   : strat.color;
+
+  const headerBg   = km.bgHeader;
+  const iconBg     = km.iconBg;
+  const iconBorder = km.border;
+  const iconColor  = km.color;
 
   return (
     <div
@@ -47,10 +49,11 @@ export function FeaturedBotModal({ bot, onClose, onLaunchDefault, onConfigure, o
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[calc(100vh-48px)] w-full max-w-[820px] flex-col overflow-hidden rounded-[18px] border border-white/[.08] bg-[#0c1018] shadow-[0_32px_80px_-16px_rgba(0,0,0,.7)]"
+        className="flex max-h-[calc(100vh-48px)] w-full max-w-[820px] flex-col overflow-hidden rounded-[18px] border bg-[#0c1018] shadow-[0_32px_80px_-16px_rgba(0,0,0,.7)]"
+        style={{ borderColor: iconBorder }}
       >
-        {/* header */}
-        <div className="flex items-start gap-3.5 border-b border-white/[.06] px-5 pb-4 pt-5">
+        {/* ── Цветная шапка ──────────────────────────────────────────────── */}
+        <div className="relative flex items-start gap-3.5 px-5 pb-4 pt-5" style={{ background: headerBg }}>
           <div
             className="flex h-[54px] w-[54px] shrink-0 items-center justify-center rounded-xl border"
             style={{ background: iconBg, borderColor: iconBorder, color: iconColor }}
@@ -74,6 +77,13 @@ export function FeaturedBotModal({ bot, onClose, onLaunchDefault, onConfigure, o
               <PriceBadge price={bot.price} />
             </div>
             <div className="mb-1.5 flex flex-wrap items-center gap-2">
+              {/* Kind badge */}
+              <span
+                className="inline-flex items-center rounded-[5px] border px-2 py-0.5 text-[11px] font-bold uppercase tracking-wider"
+                style={{ background: iconBg, borderColor: iconBorder, color: iconColor }}
+              >
+                {km.label}
+              </span>
               <StrategyChip strategy={bot.strategy} />
               <RiskChip risk={bot.risk} />
               {bot.tags.map((t) => (
@@ -99,7 +109,7 @@ export function FeaturedBotModal({ bot, onClose, onLaunchDefault, onConfigure, o
           </button>
         </div>
 
-        {/* body */}
+        {/* ── Тело ───────────────────────────────────────────────────────── */}
         <div className="flex flex-col gap-4 overflow-auto p-5">
           <p className="m-0 text-[13px] leading-relaxed text-slate-200">{bot.desc}</p>
 
@@ -126,8 +136,8 @@ export function FeaturedBotModal({ bot, onClose, onLaunchDefault, onConfigure, o
             <div>
               <SectionLabel>Описание</SectionLabel>
               <div
-                className="rounded-xl border border-white/[.05] bg-white/[.02] px-4 py-3.5 text-[13px] leading-relaxed text-slate-300 whitespace-pre-wrap"
-                style={{ borderColor: km ? `${km.border}` : undefined }}
+                className="rounded-xl border px-4 py-3.5 text-[13px] leading-relaxed text-slate-300 whitespace-pre-wrap"
+                style={{ borderColor: iconBorder, background: `${iconBg}` }}
               >
                 {bot.fullDescription}
               </div>
@@ -179,7 +189,7 @@ export function FeaturedBotModal({ bot, onClose, onLaunchDefault, onConfigure, o
             <div className="mb-2 flex items-center gap-2">
               <SlidersHorizontal size={13} className="text-slate-400" />
               <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Базовые настройки</span>
-              <span className="ml-auto text-[10px] text-slate-500">можно изменить при запуске</span>
+              <span className="ml-auto text-[10px] text-slate-500">можно изменить после добавления</span>
             </div>
             <div className="grid grid-cols-3 gap-3.5 font-mono text-[11px]">
               <ConfigRow label="Плечо"     value={`×${bot.lev}`} />
@@ -189,19 +199,24 @@ export function FeaturedBotModal({ bot, onClose, onLaunchDefault, onConfigure, o
           </div>
         </div>
 
-        {/* footer */}
+        {/* ── Footer ─────────────────────────────────────────────────────── */}
         <div className="flex items-center gap-2 border-t border-white/[.06] px-5 py-3.5">
-          <FooterBtn onClick={onClone}><Copy size={12} />В свои боты</FooterBtn>
           <FooterBtn onClick={() => { /* share */ }}><Share2 size={12} />Поделиться</FooterBtn>
           <div className="flex-1" />
-          <FooterBtn onClick={onConfigure}><SlidersHorizontal size={12} />Настроить и запустить</FooterBtn>
-          <button
-            type="button"
-            onClick={onLaunchDefault}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[linear-gradient(180deg,#4a7dff,#3a67e6)] px-4 py-2 text-xs font-semibold text-white shadow-[inset_0_1px_0_rgba(255,255,255,.18),0_4px_12px_-6px_rgba(74,125,255,.6)]"
-          >
-            <Play size={11} fill="currentColor" />Запустить с дефолтами
-          </button>
+          {alreadyOwned ? (
+            <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/25 bg-emerald-500/[.08] px-4 py-2 text-xs font-semibold text-emerald-400/70 cursor-default">
+              <CheckCircle2 size={12} strokeWidth={2} />
+              Уже в ваших ботах
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={onClone}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[linear-gradient(180deg,#4a7dff,#3a67e6)] px-4 py-2 text-xs font-semibold text-white shadow-[inset_0_1px_0_rgba(255,255,255,.18),0_4px_12px_-6px_rgba(74,125,255,.6)]"
+            >
+              <Copy size={12} />В свои боты
+            </button>
+          )}
         </div>
       </div>
     </div>

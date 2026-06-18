@@ -12,7 +12,7 @@ type MaP    = BaseParams & { period: number; offset: number; source: PriceSource
 type BbP    = BaseParams & { period: number; std: number; source: PriceSource };
 type StochP = BaseParams & { k: number; d: number; smooth: number };
 type AtrP   = BaseParams & { period: number };
-type AdxP   = BaseParams & { period: number; threshold: number };
+type AdxP   = BaseParams & { period: number; threshold: number; mode?: string };
 type IchiP  = BaseParams & { tenkan: number; kijun: number; senkou: number; shift: number };
 type VwapP  = BaseParams & { anchor: 'session' | 'day' | 'week' };
 type CciP   = BaseParams & { period: number; upper: number; lower: number; source: PriceSource };
@@ -201,15 +201,23 @@ export const INDICATORS: IndicatorDef<any>[] = [
     id: 'adx', abbr: 'ADX', name: 'ADX', cat: 'trend',
     desc: 'Сила тренда независимо от направления',
     about: 'ADX (0–100) измеряет силу тренда: < 20 — флет или слабый тренд, 20–40 — формирующийся тренд, > 40 — сильный. +DI и −DI показывают давление покупателей/продавцов: +DI > −DI — восходящий тренд. ADX не указывает направление — только силу.',
-    defaults: { period: 14, threshold: 25, tf: '1h' } as AdxP,
+    defaults: { period: 14, threshold: 25, mode: 'trend', tf: '1h' } as AdxP,
     params: [
-      { kind: 'number', key: 'period',    label: 'Период',  hint: 'Число баров для расчёта DI+ и DI−. Стандарт: 14.' },
-      { kind: 'number', key: 'threshold', label: 'Порог',   hint: 'Минимальное значение ADX для подтверждения тренда. > 25 — тренд значимый.' },
+      { kind: 'number',    key: 'period',    label: 'Период',  hint: 'Число баров для расчёта DI+ и DI−. Стандарт: 14.' },
+      { kind: 'number',    key: 'threshold', label: 'Порог',   hint: 'ADX > порога — тренд. ADX < порога — боковик. Стандарт: 25.' },
+      { kind: 'segmented', key: 'mode',      label: 'Режим',   hint: 'Тренд — сигнал когда рынок трендовый. Боковик — сигнал когда рынок в флете.', options: ['trend', 'flat'] as const },
     ],
     compute: (p: AdxP, c: Candle[]) => {
       if (c.length < p.period * 2) return sig('neutral')
       const v = last(ADX.calculate({ high: c.map(x => x.high), low: c.map(x => x.low), close: c.map(x => x.close), period: p.period }))
       if (!v) return sig('neutral')
+      const isFlat = (p.mode ?? 'trend') === 'flat'
+      if (isFlat) {
+        // Flat mode: fire when ADX < threshold
+        if (v.adx >= p.threshold) return sig('neutral', v.adx.toFixed(1))
+        return sig(v.pdi > v.mdi ? 'buy' : 'sell', v.adx.toFixed(1))
+      }
+      // Trend mode (default): fire when ADX >= threshold
       if (v.adx >= p.threshold) return sig(v.pdi > v.mdi ? 'buy' : 'sell', v.adx.toFixed(1))
       return sig('neutral', v.adx.toFixed(1))
     },

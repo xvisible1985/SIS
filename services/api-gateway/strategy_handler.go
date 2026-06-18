@@ -124,6 +124,9 @@ type strategyPayload struct {
 	TPSignalDir             *string         `json:"tp_signal_dir"`
 	SLSignalName            *string         `json:"sl_signal_name"`
 	SLSignalDir             *string         `json:"sl_signal_dir"`
+	TPSignalConfigs         json.RawMessage `json:"tp_signal_configs"`
+	SLSignalConfigs         json.RawMessage `json:"sl_signal_configs"`
+	AdoptPositionData       json.RawMessage `json:"adopt_position_data,omitempty"`
 }
 
 func (p *strategyPayload) applyDefaults() {
@@ -177,6 +180,7 @@ const listStrategiesQuery = `
 		COALESCE(s.matrix_rebuild_from_entry,false), COALESCE(s.size_as_main,false),
 		s.hedged_strategy_id,
 		s.tp_signal_name, s.tp_signal_dir, s.sl_signal_name, s.sl_signal_dir,
+		COALESCE(s.tp_signal_configs::text,'[]'), COALESCE(s.sl_signal_configs::text,'[]'),
 		s.created_at, s.updated_at, s.manual_alert,
 		COALESCE((
 			SELECT SUM(sl.size_usdt)
@@ -195,7 +199,14 @@ const listStrategiesQuery = `
 			WHERE strategy_id = s.id AND ended_at IS NOT NULL
 			ORDER BY cycle_num DESC LIMIT 1
 		), 0),
-		s.bot_id, b.name
+		s.bot_id, b.name, b.strategy_config->>'bot_kind',
+		COALESCE((
+			SELECT COALESCE(sl.filled_price, sl.target_price)
+			FROM strategy_levels sl
+			JOIN strategy_cycles sc ON sl.cycle_id = sc.id
+			WHERE sc.strategy_id = s.id AND sc.ended_at IS NULL AND sl.status = 'filled'
+			ORDER BY sl.level_idx DESC LIMIT 1
+		), 0)
 	FROM strategies s
 	LEFT JOIN bots b ON b.id = s.bot_id`
 
@@ -270,16 +281,20 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 		LastPnl               float64         `json:"last_pnl"`
 		BotID                 *string         `json:"bot_id"`
 		BotName               *string         `json:"bot_name"`
+		BotKind               *string         `json:"bot_kind"`
+		LastFilledPrice       float64         `json:"last_filled_price"`
 		TPSignalName          *string         `json:"tp_signal_name"`
 		TPSignalDir           *string         `json:"tp_signal_dir"`
 		SLSignalName          *string         `json:"sl_signal_name"`
 		SLSignalDir           *string         `json:"sl_signal_dir"`
+		TPSignalConfigs       json.RawMessage `json:"tp_signal_configs,omitempty"`
+		SLSignalConfigs       json.RawMessage `json:"sl_signal_configs,omitempty"`
 	}
 
 	var result []row
 	for rows.Next() {
 		var r row
-		var scStr string
+		var scStr, tpSigCfgStr, slSigCfgStr string
 		var stepsStr, matrixStr, entryLevelStr *string
 		if err := rows.Scan(
 			&r.ID, &r.AccountID, &r.Symbol, &r.Category, &r.Direction, &r.Status,
@@ -292,9 +307,10 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 			&r.MatrixRebuildFromEntry, &r.SizeAsMain,
 			&r.HedgedStrategyID,
 			&r.TPSignalName, &r.TPSignalDir, &r.SLSignalName, &r.SLSignalDir,
+			&tpSigCfgStr, &slSigCfgStr,
 			&r.CreatedAt, &r.UpdatedAt, &r.ManualAlert,
 			&r.VolumeUSDT, &r.ActiveLevels, &r.LastPnl,
-			&r.BotID, &r.BotName,
+			&r.BotID, &r.BotName, &r.BotKind, &r.LastFilledPrice,
 		); err == nil {
 			r.SignalConfigs = json.RawMessage(scStr)
 			if stepsStr != nil {
@@ -305,6 +321,12 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 			}
 			if entryLevelStr != nil {
 				r.MatrixEntryLevel = json.RawMessage(*entryLevelStr)
+			}
+			if tpSigCfgStr != "" && tpSigCfgStr != "[]" {
+				r.TPSignalConfigs = json.RawMessage(tpSigCfgStr)
+			}
+			if slSigCfgStr != "" && slSigCfgStr != "[]" {
+				r.SLSignalConfigs = json.RawMessage(slSigCfgStr)
 			}
 			result = append(result, r)
 		}
@@ -334,12 +356,12 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 	req.applyDefaults()
 
-	// Prevent duplicate strategies for same account+symbol+direction (any status).
+	// Prevent duplicate active/finishing strategies for same account+symbol+direction.
 	var dupCount int
 	if err := s.pool.QueryRow(r.Context(),
 		`SELECT COUNT(*) FROM strategies
 		 WHERE owner_id=$1 AND account_id=$2 AND symbol=$3 AND direction=$4
-		   AND status IN ('active','finishing','stopped')`,
+		   AND status IN ('active','finishing')`,
 		userID, req.AccountID, req.Symbol, req.Direction,
 	).Scan(&dupCount); err == nil && dupCount > 0 {
 		writeError(w, http.StatusConflict, "стратегия для этой пары уже существует")
@@ -357,13 +379,17 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		   trailing_stop_enabled, trailing_activation_pct, trailing_callback_pct,
 		   matrix_levels, safe_zone_pct, matrix_entry_level, protected_build, matrix_rebuild_on_sl,
 		   matrix_rebuild_from_entry, size_as_main,
-		   tp_signal_name, tp_signal_dir, sl_signal_name, sl_signal_dir)
+		   tp_signal_name, tp_signal_dir, sl_signal_name, sl_signal_dir,
+		   tp_signal_configs, sl_signal_configs,
+		   adopt_position_data)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
 		        $16,$17,$18,$19,$20,
 		        $21::jsonb, ($22::text)::jsonb,
 		        $23,$24,$25,
 		        ($26::text)::jsonb, $27, ($28::text)::jsonb, $29, $30, $31, $32,
-		        $33,$34,$35,$36)
+		        $33,$34,$35,$36,
+		        ($37::text)::jsonb, ($38::text)::jsonb,
+		        ($39::text)::jsonb)
 		RETURNING id`,
 		userID, req.AccountID, req.Symbol, req.Category, req.Direction,
 		req.GridLevels, req.GridActive, req.MaxStopActive, req.GridStepPct, req.GridSizeUSDT,
@@ -374,6 +400,8 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		nullableJSONB(req.MatrixLevels), req.SafeZonePct, nullableJSONB(req.MatrixEntryLevel),
 		req.ProtectedBuild, req.MatrixRebuildOnSL, req.MatrixRebuildFromEntry, req.SizeAsMain,
 		req.TPSignalName, req.TPSignalDir, req.SLSignalName, req.SLSignalDir,
+		nullableJSONB(req.TPSignalConfigs), nullableJSONB(req.SLSignalConfigs),
+		nullableJSONB(req.AdoptPositionData),
 	).Scan(&id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -413,7 +441,7 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		if err := s.pool.QueryRow(r.Context(),
 			`SELECT COUNT(*) FROM strategies
 			 WHERE id<>$1 AND owner_id=$2 AND account_id=$3 AND symbol=$4 AND direction=$5
-			   AND status IN ('active','finishing','stopped')`,
+			   AND status IN ('active','finishing')`,
 			id, userID, curAccID, newSym, newDir,
 		).Scan(&dupCount); err == nil && dupCount > 0 {
 			writeError(w, http.StatusConflict, "стратегия для этой пары уже существует")
@@ -448,8 +476,9 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		  protected_build=$27, matrix_rebuild_on_sl=$28,
 		  matrix_rebuild_from_entry=$29, size_as_main=$30,
 		  tp_signal_name=$31, tp_signal_dir=$32, sl_signal_name=$33, sl_signal_dir=$34,
+		  tp_signal_configs=($35::text)::jsonb, sl_signal_configs=($36::text)::jsonb,
 		  updated_at=NOW()
-		WHERE id=$35 AND owner_id=$36`,
+		WHERE id=$37 AND owner_id=$38`,
 		req.Symbol, req.Category, req.Direction,
 		req.GridLevels, req.GridActive, req.MaxStopActive, req.GridStepPct, req.GridSizeUSDT,
 		req.TPMode, req.TPPct, req.SLType, req.SLPct, req.SignalFilter,
@@ -460,6 +489,7 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		req.SafeZonePct, nullableJSONB(req.MatrixEntryLevel),
 		req.ProtectedBuild, req.MatrixRebuildOnSL, req.MatrixRebuildFromEntry, req.SizeAsMain,
 		req.TPSignalName, req.TPSignalDir, req.SLSignalName, req.SLSignalDir,
+		nullableJSONB(req.TPSignalConfigs), nullableJSONB(req.SLSignalConfigs),
 		id, userID,
 	)
 	if err != nil {
@@ -1296,7 +1326,6 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 
 // GetHedgeSession returns the most recent hedge session for a strategy.
 // The strategy ID can be either the main_strategy_id or hedge_strategy_id.
-// Cumulative hedge P&L is computed live from trade_history.
 // GET /strategies/{id}/hedge-session
 func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
@@ -1327,13 +1356,7 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 			hs.gap_at_start,
 			hs.started_at,
 			hs.ended_at,
-			COALESCE((
-				SELECT SUM(th.net_pnl)
-				FROM trade_history th
-				WHERE th.strategy_id = hs.hedge_strategy_id
-				  AND th.closed_at >= hs.started_at
-				  AND (hs.ended_at IS NULL OR th.closed_at <= hs.ended_at)
-			), 0)
+			0::float8
 		FROM hedge_sessions hs
 		WHERE (hs.main_strategy_id = $1 OR hs.hedge_strategy_id = $1)
 		  AND hs.bot_id IN (SELECT id FROM bots WHERE owner_id = $2)

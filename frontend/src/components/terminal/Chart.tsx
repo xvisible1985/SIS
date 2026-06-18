@@ -81,8 +81,12 @@ function extractCycleNum(linkId?: string): number | null {
   return null
 }
 
-function pctFromPrice(orderPrice: number, currentPrice: number): string {
-  const pct = (orderPrice - currentPrice) / currentPrice * 100
+function pctFromPrice(orderPrice: number, currentPrice: number, positionIsLong = false): string {
+  // For long positions: positive = current above level (profitable), negative = below (not yet reached)
+  // For short positions (default): positive = level above current, negative = below current
+  const pct = positionIsLong
+    ? (currentPrice - orderPrice) / orderPrice * 100
+    : (orderPrice - currentPrice) / currentPrice * 100
   return `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`
 }
 
@@ -115,6 +119,8 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const hedgePairTargetLineRef = useRef<any>(null)
   const safeZoneOverlayRef = useRef<HTMLDivElement>(null)
+  const priceLabelOverlayRef = useRef<HTMLDivElement>(null)
+  const priceLineTitlesRef = useRef<{ price: number; color: string; text: string; filled: boolean; isEntry?: boolean; leftOffset?: number }[]>([])
   const loadedSymbolRef = useRef<string | null>(null)
   const prevFirstTimeRef = useRef<number | null>(null)
   const tickerRef = useRef<Map<string, number> | undefined>(tickerPrices)
@@ -280,6 +286,13 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
 
     if (isNewSymbol) {
       seriesRef.current.setData(candles as any)
+      // Apply precision immediately from candle data (before lastPrice WebSocket tick arrives)
+      const lastClose = candles[candles.length - 1]?.close
+      if (lastClose && lastClose > 0) {
+        const { precision, minMove } = autoPrecision(lastClose)
+        lastPrecisionRef.current = precision
+        seriesRef.current.applyOptions({ priceFormat: { type: 'custom', formatter: (p: number) => p.toFixed(precision), minMove } })
+      }
       chartRef.current?.priceScale('right').applyOptions({ autoScale: true })
       chartRef.current?.timeScale().fitContent()
       chartRef.current?.timeScale().applyOptions({ rightOffset: Math.round(candles.length * 0.2) })
@@ -318,7 +331,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         color: '#64748b',
         lineWidth: 1,
         lineStyle: 2,
-        axisLabelVisible: true,
+        axisLabelVisible: false,
         title: '',
       })
     }
@@ -353,7 +366,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     const { precision, minMove } = autoPrecision(price)
     if (precision === lastPrecisionRef.current) return
     lastPrecisionRef.current = precision
-    series.applyOptions({ priceFormat: { type: 'price', precision, minMove } })
+    series.applyOptions({ priceFormat: { type: 'custom', formatter: (p: number) => p.toFixed(precision), minMove } })
   }, [lastPrice])
 
   // Price lines — positions and orders
@@ -365,6 +378,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       try { series.removePriceLine(line) } catch {}
     }
     priceLines.current = []
+    priceLineTitlesRef.current = []
 
     const currentPrice = lastPrice ? parseFloat(lastPrice) : 0
     const dirFilter = overlaySettings && !overlaySettings.bothDirections && effectiveDir ? effectiveDir : null
@@ -377,16 +391,47 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     })) {
       const price = parseFloat(pos.entryPrice)
       if (!price) continue
-      const isLong = pos.side === 'Buy'
-      const pct = currentPrice > 0 ? ` ${pctFromPrice(price, currentPrice)}` : ''
+      const pct = currentPrice > 0 ? ` ${pctFromPrice(price, currentPrice, pos.side === 'Buy')}` : ''
+      if (!stratIdShort) priceLineTitlesRef.current.push({ price, color: '#9ca3af', text: `ТВХ${pct}`, filled: false, isEntry: true, leftOffset: 28 })
       priceLines.current.push(series.createPriceLine({
         price,
-        color: isLong ? '#059669' : '#dc2626',
+        color: '#9ca3af',
         lineWidth: 2,
         lineStyle: 0,
-        axisLabelVisible: !stratIdShort,
-        title: stratIdShort ? '' : `Вход${pct}`,
+        axisLabelVisible: false,
+        title: '',
       }))
+
+      // Trailing stop lines — drawn when Bybit reports trailingStop on the position.
+      const tsCallback = parseFloat(pos.trailingStop ?? '0')
+      const tsActive  = parseFloat(pos.activePrice  ?? '0')
+      const tsStop    = parseFloat(pos.stopLoss      ?? '0')
+      if (tsCallback > 0) {
+        // Once activated Bybit populates stopLoss with the current trailing level.
+        if (tsStop > 0) {
+          const tsPct = currentPrice > 0 ? ` ${pctFromPrice(tsStop, currentPrice)}` : ''
+          priceLineTitlesRef.current.push({ price: tsStop, color: '#f59e0b', text: `TS${tsPct}`, filled: false })
+          priceLines.current.push(series.createPriceLine({
+            price: tsStop,
+            color: '#f59e0b',
+            lineWidth: 1,
+            lineStyle: 1,
+            axisLabelVisible: false,
+            title: '',
+          }))
+        } else if (tsActive > 0) {
+          const taPct = currentPrice > 0 ? ` ${pctFromPrice(tsActive, currentPrice)}` : ''
+          priceLineTitlesRef.current.push({ price: tsActive, color: 'rgba(245,158,11,0.5)', text: `TS↑${taPct}`, filled: false })
+          priceLines.current.push(series.createPriceLine({
+            price: tsActive,
+            color: 'rgba(245,158,11,0.5)',
+            lineWidth: 1,
+            lineStyle: 3,
+            axisLabelVisible: false,
+            title: '',
+          }))
+        }
+      }
     }
 
     const virtualLevelIdxs = new Set(
@@ -438,32 +483,37 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       const isLong = ord.side === 'Buy'
       const label = resolveLabel(parseOrderLabel(ord.orderLinkId, ord.side))
       const color = label.startsWith('TP') ? '#5b8cff' : label.startsWith('SL_L') ? '#facc15' : label.startsWith('SL') ? '#f59e0b' : (isLong ? '#34d399' : '#f87171')
+      const isTpSl = label.startsWith('TP') || label.startsWith('SL')
+      // TP_LONG/SL_LONG close a long position (side=Sell); use long-perspective sign: +=above level, -=below
+      const posIsLong = label.startsWith('TP_LONG') || label.startsWith('SL_LONG')
       if (ord.triggerPrice && parseFloat(ord.triggerPrice) > 0) {
         const p = parseFloat(ord.triggerPrice)
         const usdt = (parseFloat(ord.qty) * p).toFixed(0)
-        const pct = currentPrice > 0 ? ` ${pctFromPrice(p, currentPrice)}` : ''
+        const pct = currentPrice > 0 ? ` ${pctFromPrice(p, currentPrice, posIsLong)}` : ''
         const prefix = label || (isLong ? 'Buy' : 'Sell')
+        priceLineTitlesRef.current.push({ price: p, color, text: `${prefix}${pct} ${usdt}$`, filled: false, isEntry: isTpSl, leftOffset: isTpSl ? 28 : undefined })
         priceLines.current.push(series.createPriceLine({
           price: p,
           color,
           lineWidth: 1,
           lineStyle: 1,
-          axisLabelVisible: true,
-          title: `${prefix}${pct} ${usdt}$ [B]`,
+          axisLabelVisible: false,
+          title: '',
         }))
       }
       if (ord.price && parseFloat(ord.price) > 0) {
         const p = parseFloat(ord.price)
-        const pct = currentPrice > 0 ? ` ${pctFromPrice(p, currentPrice)}` : ''
+        const pct = currentPrice > 0 ? ` ${pctFromPrice(p, currentPrice, posIsLong)}` : ''
         const prefix = label || (isLong ? 'Buy' : 'Sell')
         const usdt = (parseFloat(ord.qty) * p).toFixed(0)
+        priceLineTitlesRef.current.push({ price: p, color, text: `${prefix}${pct} ${usdt}$`, filled: false, isEntry: isTpSl, leftOffset: isTpSl ? 28 : undefined })
         priceLines.current.push(series.createPriceLine({
           price: p,
           color,
           lineWidth: 1,
           lineStyle: 2,
-          axisLabelVisible: true,
-          title: `${prefix}${pct} ${usdt}$ [B]`,
+          axisLabelVisible: false,
+          title: '',
         }))
       }
     }
@@ -476,17 +526,19 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
           if (dirFilter === 'short' && lvLong) continue
         }
         const p = lv.target_price
-        const pct = currentPrice > 0 ? ` ${pctFromPrice(p, currentPrice)}` : ''
-        const usdt = lv.size_usdt > 0 ? ` ${lv.size_usdt.toFixed(0)}$` : ''
         const isLong = lv.side === 'Buy'
+        const pct = currentPrice > 0 ? ` ${pctFromPrice(p, currentPrice, isLong)}` : ''
+        const usdt = lv.size_usdt > 0 ? ` ${lv.size_usdt.toFixed(0)}$` : ''
         const color = isLong ? '#6ee7b7' : '#fca5a5'
+        const vText = `${lv.slot != null ? `L(${lv.slot})` : `L${lv.level_idx}`}${pct}${usdt} [V]`
+        priceLineTitlesRef.current.push({ price: p, color, text: vText, filled: false })
         priceLines.current.push(series.createPriceLine({
           price: p,
           color,
           lineWidth: 1,
           lineStyle: 3,
-          axisLabelVisible: true,
-          title: `${lv.slot != null ? `L(${lv.slot})` : `L${lv.level_idx}`}${pct}${usdt} [V]`,
+          axisLabelVisible: false,
+          title: '',
         }))
       }
     }
@@ -583,17 +635,76 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         if (avgPrice <= 0) continue
         const isBuy = g.side === 'Buy'
         const color = isBuy ? '#059669' : '#dc2626'
-        const pct = currentPrice > 0 ? ` ${pctFromPrice(avgPrice, currentPrice)}` : ''
+        const pct = currentPrice > 0 ? ` ${pctFromPrice(avgPrice, currentPrice, isBuy)}` : ''
+        const gText = `${g.label} ${g.totalValue.toFixed(0)}$${pct}`
+        priceLineTitlesRef.current.push({ price: avgPrice, color, text: gText, filled: true })
         priceLines.current.push(series.createPriceLine({
           price: avgPrice,
           color,
           lineWidth: 1,
           lineStyle: 0,
-          axisLabelVisible: true,
-          title: `${g.label} ${g.totalValue.toFixed(0)}$${pct}`,
+          axisLabelVisible: false,
+          title: '',
         }))
       }
     }
+  }, [positions, orders, executions, symbol, lastPrice, afterSetData, overlaySettings, effectiveDir, stratIdShort, currentCycleNum, strategyLevels])
+
+  // Price line title labels overlay — custom HTML, since v5 couples title with axisLabelVisible
+  useEffect(() => {
+    const container = priceLabelOverlayRef.current
+    const series = seriesRef.current
+    const chart = chartRef.current
+    if (!container || !series || !chart) return
+    container.innerHTML = ''
+    const titles = priceLineTitlesRef.current
+    if (titles.length === 0) return
+    const scaleW = chart.priceScale('right').width()
+    const rightOffset = (scaleW > 0 ? scaleW : 68) + 4
+    const els: HTMLDivElement[] = []
+    for (const t of titles) {
+      const el = document.createElement('div')
+      el.style.position = 'absolute'
+      el.style.transform = 'translateY(-50%)'
+      el.style.padding = '2px 7px'
+      el.style.borderRadius = '4px'
+      el.style.fontFamily = 'monospace'
+      el.style.fontWeight = '600'
+      el.style.whiteSpace = 'nowrap'
+      el.style.pointerEvents = 'none'
+      el.style.userSelect = 'none'
+      if (t.isEntry) {
+        el.style.left = `${t.leftOffset ?? 6}px`
+        el.style.fontSize = '12px'
+        el.style.backgroundColor = 'rgba(10, 10, 15, 1)'
+        el.style.color = '#ffffff'
+        el.style.border = `1px solid ${t.color}`
+      } else if (t.filled) {
+        el.style.right = `${rightOffset}px`
+        el.style.fontSize = '11px'
+        el.style.backgroundColor = t.color
+        el.style.color = '#ffffff'
+        el.style.border = 'none'
+      } else {
+        el.style.right = `${rightOffset}px`
+        el.style.fontSize = '11px'
+        el.style.backgroundColor = 'rgba(10, 10, 15, 0.55)'
+        el.style.color = t.color
+        el.style.border = `1px solid ${t.color}90`
+      }
+      el.textContent = t.text
+      container.appendChild(el)
+      els.push(el)
+    }
+    const update = () => {
+      for (let i = 0; i < titles.length; i++) {
+        const y = series.priceToCoordinate(titles[i].price)
+        if (y === null) { els[i].style.display = 'none' } else { els[i].style.display = 'block'; els[i].style.top = `${y}px` }
+      }
+    }
+    update()
+    let rafId = requestAnimationFrame(function loop() { update(); rafId = requestAnimationFrame(loop) })
+    return () => { cancelAnimationFrame(rafId); container.innerHTML = '' }
   }, [positions, orders, executions, symbol, lastPrice, afterSetData, overlaySettings, effectiveDir, stratIdShort, currentCycleNum, strategyLevels])
 
   // Execution markers
@@ -814,23 +925,20 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     const pnlSpans: HTMLSpanElement[] = []
     const pctSpans: HTMLSpanElement[] = []
 
-    const dark = document.documentElement.classList.contains('dark')
-    const bgColor = dark ? 'rgba(10, 10, 15, 0.92)' : 'rgba(255, 255, 255, 0.92)'
-
     for (const pos of filtered) {
       const el = document.createElement('div')
       const isLong = pos.side === 'Buy'
       const dirColor = isLong ? '#00DC82' : '#ef4444'
       el.className = 'absolute flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-mono font-bold pointer-events-auto'
-      el.style.backgroundColor = bgColor
+      el.style.backgroundColor = 'rgba(10, 10, 15, 0.92)'
       el.style.color = '#e5e7eb'
       el.style.border = `1px solid ${dirColor}`
       el.style.transition = 'top 0.05s linear'
       el.style.zIndex = '11'
       el.style.whiteSpace = 'nowrap'
       el.style.boxShadow = `0 2px 8px ${dirColor}25`
-      el.style.left = '50%'
-      el.style.transform = 'translate(-50%, -50%)'
+      el.style.left = '10%'
+      el.style.transform = 'translateY(-50%)'
 
       const pnlSpan = document.createElement('span')
       const pctSpan = document.createElement('span')
@@ -875,8 +983,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
           ? (pos.side === 'Buy' ? (mark - entry) : (entry - mark)) * size
           : parseFloat(pos.unrealisedPnl)
         const pnlPct = entry > 0 && size > 0 ? (pnl / (size * entry)) * 100 : parseFloat(pos.unrealisedPnlPct)
-        const pnlColor = pnl >= 0 ? '#00DC82' : '#ef4444'
-        pnlSpans[i].style.color = pnlColor
+        pnlSpans[i].style.color = pnl >= 0 ? '#00DC82' : '#ef4444'
         pnlSpans[i].textContent = `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}$`
         pctSpans[i].textContent = `(${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`
       }
@@ -949,6 +1056,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     <div className="relative w-full h-full">
       <div ref={containerRef} className="absolute inset-0" style={{ zIndex: 1 }} />
       <div ref={safeZoneOverlayRef} className="absolute inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 8 }} />
+      <div ref={priceLabelOverlayRef} className="absolute inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 9 }} />
       <div ref={overlayRef} className="absolute inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 10 }} />
       {timeBadge && (
         <div

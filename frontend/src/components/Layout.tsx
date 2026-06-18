@@ -7,6 +7,7 @@ import { Sidebar } from './Sidebar'
 import { MobileNav } from './MobileNav'
 import { DepositModal } from './DepositModal'
 import { useSelectedAccount } from '../contexts/AccountContext'
+import { useWalletWs } from '../hooks/useWalletWs'
 import type { ExchangeAccount } from '../types'
 import { useState, useEffect, type ReactNode } from 'react'
 
@@ -19,6 +20,7 @@ export function Layout({ children }: { children: ReactNode }) {
   const { selectedAccountId, setSelectedAccountId } = useSelectedAccount()
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
   const [equity, setEquity] = useState(0)
+  const wallet = useWalletWs(selectedAccountId)
   const [pnl24h, setPnl24h] = useState({ percent: 0, usd: 0 })
   const [has24hData, setHas24hData] = useState(false)
   const [novabotBalance, setNovabotBalance] = useState(0)
@@ -70,6 +72,11 @@ export function Layout({ children }: { children: ReactNode }) {
       }
     }).catch(() => {})
   }, [selectedAccountId])
+
+  // Keep equity in sync with live WS wallet updates (overrides the REST snapshot)
+  useEffect(() => {
+    if (wallet.equity != null && wallet.equity > 0) setEquity(wallet.equity)
+  }, [wallet.equity])
 
   const selectedAccount = accounts.find(a => a.id === selectedAccountId)
 

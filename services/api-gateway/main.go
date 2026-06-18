@@ -89,9 +89,13 @@ func main() {
 	// Start coin icon cache refresher
 	s.coinIcons.StartRefresher(ctx)
 
-	// Start background syncer
+	// Start background syncer (executions + order history)
 	syncer := traderPkg.NewSyncer(pool, encKey, syncDays)
 	syncer.Start(ctx)
+
+	// Start closed PnL syncer (manual trade attribution to trade_history)
+	closedPnlSyncer := NewClosedPnlSyncer(pool, encKey)
+	closedPnlSyncer.Start(ctx)
 
 	// Start max-leverage DB refresher (every 10 min, covers all active strategy symbols)
 	RunLeverageRefresher(ctx, pool)
@@ -230,6 +234,10 @@ func main() {
 		r.Get("/trader/pnl", s.GetClosedPnl)
 		r.Get("/trader/stats", s.GetTraderStats)
 
+		// Trade history (closed cycles with PnL, fees, funding, bot attribution)
+		r.Get("/trade-history", s.GetTradeHistory)
+		r.Get("/trade-history/symbols", s.GetTradeHistorySymbols)
+
 		// Instrument constraints (leverage, lot size limits)
 		r.Get("/instrument-info", s.GetInstrumentConstraints)
 
@@ -254,10 +262,6 @@ func main() {
 		r.Post("/bots/{id}/trigger", s.TriggerBot)
 		r.Post("/bots/{id}/blacklist-add", s.AddBotBlacklist)
 		r.Post("/bots/signal-scan", s.ScanSignals)
-
-			// Trade history
-			r.Get("/trade-history", s.GetTradeHistory)
-			r.Get("/trade-history/symbols", s.GetTradeHistorySymbols)
 
 			// Dashboard
 			r.Get("/dashboard", s.GetDashboard)
@@ -344,6 +348,7 @@ func main() {
 	r.Get("/ws/strategies/{id}/events", s.StrategyEventsStream)
 	r.Get("/ws/bots/updates", s.BotSignalUpdatesStream)
 	r.Get("/ws/bots/{id}/events", s.BotEventsStream)
+	r.Get("/ws/debug-events", s.DebugEventsStream)
 
 	srv := &http.Server{Addr: listenAddr, Handler: r}
 

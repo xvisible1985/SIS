@@ -234,7 +234,7 @@ export type WsMsg =
   | { type: 'position'; dataType: 'snapshot' | 'delta'; data: any[] }
   | { type: 'order'; dataType: 'snapshot' | 'delta'; data: any[] }
   | { type: 'execution'; dataType: 'delta'; data: any[] }
-  | { type: 'wallet'; availableBalance: number }
+  | { type: 'wallet'; availableBalance: number; equity?: number }
 
 // Strategies
 export interface SignalConfig {
@@ -295,9 +295,11 @@ export interface Strategy {
   volume_usdt: number
   active_levels: number
   last_pnl: number
+  last_filled_price?: number
   manual_alert?: string
   bot_id?: string | null
   bot_name?: string | null
+  bot_kind?: string | null
   current_cycle_num?: number
 }
 
@@ -418,6 +420,7 @@ export interface StrategyFormData {
   matrix_rebuild_from_entry: boolean
   size_as_main: boolean
   matrix_entry_level: MatrixEntryLevel
+  adopt_position_data?: { size: string; entry_price: string } | null
 }
 
 // Cycle Audit

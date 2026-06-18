@@ -131,11 +131,13 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 					}
 				}
 				if topic == "wallet" {
-					// Extract totalAvailableBalance from Bybit wallet update and relay to client.
 					avail := extractWalletAvailable(raw["data"])
-					if avail >= 0 {
-						safeSend(conn, map[string]any{"type": "wallet", "availableBalance": avail})
+					eq := extractWalletEquity(raw["data"])
+					msg := map[string]any{"type": "wallet", "availableBalance": avail}
+					if eq >= 0 {
+						msg["equity"] = eq
 					}
+					safeSend(conn, msg)
 				}
 			}
 		}
@@ -155,15 +157,28 @@ func fetchAndSendSnapshot(ctx context.Context, conn *websocket.Conn, creds Crede
 	}
 	safeSend(conn, map[string]any{"type": "order", "dataType": "snapshot", "data": orders})
 
-	_, available, err := GetWalletBalance(ctx, creds)
-	if err == nil && available >= 0 {
-		safeSend(conn, map[string]any{"type": "wallet", "availableBalance": available})
+	eq, available, err := GetWalletBalance(ctx, creds)
+	if err == nil {
+		msg := map[string]any{"type": "wallet", "availableBalance": available}
+		if eq >= 0 {
+			msg["equity"] = eq
+		}
+		safeSend(conn, msg)
 	}
 	return nil
 }
 
 // extractWalletAvailable parses totalAvailableBalance from a Bybit wallet WS event data array.
 func extractWalletAvailable(data any) float64 {
+	return extractWalletField(data, "totalAvailableBalance")
+}
+
+// extractWalletEquity parses totalEquity from a Bybit wallet WS event data array.
+func extractWalletEquity(data any) float64 {
+	return extractWalletField(data, "totalEquity")
+}
+
+func extractWalletField(data any, field string) float64 {
 	items, ok := data.([]any)
 	if !ok || len(items) == 0 {
 		return -1
@@ -172,7 +187,7 @@ func extractWalletAvailable(data any) float64 {
 	if !ok {
 		return -1
 	}
-	if v, ok := wallet["totalAvailableBalance"].(string); ok {
+	if v, ok := wallet[field].(string); ok {
 		var f float64
 		fmt.Sscanf(v, "%f", &f)
 		return f

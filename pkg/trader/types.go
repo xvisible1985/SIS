@@ -37,6 +37,18 @@ type CancelAllRequest struct {
 	Symbol   string `json:"symbol,omitempty"`
 }
 
+// TradingStopRequest sets or clears Bybit's native trailing stop on an open position.
+// TrailingStop is the callback distance in price units (e.g. "0.0003").
+// ActivePrice is the trigger price at which trailing begins (empty = activate immediately).
+// Pass TrailingStop="0" to remove an existing trailing stop.
+type TradingStopRequest struct {
+	Category     string `json:"category"`
+	Symbol       string `json:"symbol"`
+	TrailingStop string `json:"trailingStop"`          // price distance; "0" to clear
+	ActivePrice  string `json:"activePrice,omitempty"` // activation price; omit to activate immediately
+	PositionIdx  int    `json:"positionIdx"`
+}
+
 // BatchOrderItem is a single order in a batch place request.
 // Category is omitted — it lives at the top level of BatchPlaceRequest.
 type BatchOrderItem struct {
@@ -123,6 +135,8 @@ type Order struct {
 
 type ClosedPnl struct {
 	Symbol        string `json:"symbol"`
+	OrderId       string `json:"orderId"`      // closing order ID — for exact match with tpOrderID/slOrderID
+	OrderLinkId   string `json:"orderLinkId"`  // our custom link ID
 	Side          string `json:"side"`
 	Qty           string `json:"qty"`
 	AvgEntryPrice string `json:"avgEntryPrice"`
@@ -152,4 +166,5 @@ type Execution struct {
 	ExecTime    time.Time `json:"-"`
 	ExecTimeMs  string    `json:"execTime"`
 	Category    string    `json:"category"`
+	PositionIdx int       `json:"positionIdx"`
 }

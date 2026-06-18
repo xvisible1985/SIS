@@ -326,16 +326,24 @@ export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder 
 
   return (
     <div ref={containerRef} className="relative">
-      {/* chip filter bar */}
-      {values.length > 5 && (
+      {/* chip filter bar — search filter + clear all */}
+      {values.length > 0 && (
         <div className="mb-1.5 flex items-center gap-1.5 rounded-lg border border-white/[.06] bg-black/[.15] px-2.5 py-1">
           <Search size={11} className="shrink-0 text-slate-500" />
           <input type="text" value={chipFilter} onChange={e => setChipFilter(e.target.value)}
-            placeholder={`Фильтр по выбранным (${values.length})...`}
+            placeholder={values.length <= 5 ? `${values.length} выбрано` : `Фильтр по выбранным (${values.length})...`}
             className="flex-1 bg-transparent text-[11px] text-slate-200 outline-none placeholder:text-slate-500" />
           {chipFilter && (
             <button type="button" onClick={() => setChipFilter('')} className="text-slate-500 hover:text-slate-300"><X size={10} /></button>
           )}
+          <button
+            type="button"
+            onClick={() => { onChange([]); setChipFilter('') }}
+            className="ml-1 inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-slate-600 hover:bg-rose-500/[.12] hover:text-rose-400 transition-colors"
+            title="Очистить весь список"
+          >
+            <Trash2 size={10} /> Очистить
+          </button>
         </div>
       )}
 
@@ -382,11 +390,19 @@ export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder 
               <span className="text-[10px] font-semibold text-emerald-400 animate-pulse">{addedMsg}</span>
             )}
             {values.length > 0 && (
-              <button type="button"
-                onClick={() => { setSaveMode(v => !v); setCreateMode(false) }}
-                className="inline-flex items-center gap-1 rounded-md border border-[#5b8cff]/25 bg-[#5b8cff]/[.10] px-2 py-1 text-[10px] font-semibold text-[#a0b8ff] hover:bg-[#5b8cff]/[.18]">
-                <Save size={10} /> Сохранить
-              </button>
+              <>
+                <button type="button"
+                  onClick={() => { onChange([]); setChipFilter('') }}
+                  className="inline-flex items-center gap-1 rounded-md border border-rose-500/20 bg-rose-500/[.07] px-2 py-1 text-[10px] font-semibold text-rose-400/80 hover:bg-rose-500/[.14] hover:text-rose-300 transition-colors"
+                  title="Очистить весь список">
+                  <Trash2 size={10} /> Очистить
+                </button>
+                <button type="button"
+                  onClick={() => { setSaveMode(v => !v); setCreateMode(false) }}
+                  className="inline-flex items-center gap-1 rounded-md border border-[#5b8cff]/25 bg-[#5b8cff]/[.10] px-2 py-1 text-[10px] font-semibold text-[#a0b8ff] hover:bg-[#5b8cff]/[.18]">
+                  <Save size={10} /> Сохранить
+                </button>
+              </>
             )}
           </div>
 
@@ -427,7 +443,10 @@ export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder 
             <div className="border-b border-white/[.06]">
               {/* header */}
               <div className="flex items-center justify-between px-3 pt-2 pb-1">
-                <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">Списки монет</span>
+                <div>
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">Списки монет</span>
+                  <span className="ml-2 text-[9px] text-slate-600">+ добавляет к выбранным · ↺ заменяет</span>
+                </div>
                 <button type="button"
                   onClick={() => setCreateMode(true)}
                   className="inline-flex items-center gap-1 rounded-md border border-emerald-500/25 bg-emerald-500/[.08] px-2 py-0.5 text-[10px] font-semibold text-emerald-400 hover:bg-emerald-500/[.14]">
@@ -439,12 +458,20 @@ export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder 
               <div className="px-2 pb-1">
                 <div className="mb-0.5 px-1 text-[9px] font-semibold uppercase tracking-wider text-slate-600">Пресеты</div>
                 {STATIC_PRESETS.map(list => (
-                  <button key={list.name} type="button" onClick={() => loadList(list)}
-                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-white/[.04]">
+                  <div key={list.name} className="flex w-full items-center gap-1 rounded-lg px-2 py-1 hover:bg-white/[.03]">
                     <span className="flex-1 text-[12px] font-semibold text-slate-200">{list.name}</span>
                     <span className="text-[10px] text-slate-500">{list.symbols.length} монет</span>
-                    <ChevronRight size={11} className="text-slate-600" />
-                  </button>
+                    <button type="button" onClick={() => loadList(list)}
+                      title="Добавить к текущему выбору"
+                      className="ml-1 rounded px-1.5 py-0.5 text-[10px] font-bold text-[#5b8cff] hover:bg-[#5b8cff]/[.15] transition-colors">
+                      +
+                    </button>
+                    <button type="button" onClick={() => { onChange(list.symbols); setActiveTab('all') }}
+                      title="Заменить текущий выбор"
+                      className="rounded px-1.5 py-0.5 text-[10px] font-bold text-slate-500 hover:bg-white/[.06] hover:text-slate-200 transition-colors">
+                      ↺
+                    </button>
+                  </div>
                 ))}
               </div>
 
@@ -453,12 +480,20 @@ export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder 
                 <div className="px-2 pb-1">
                   <div className="mb-0.5 px-1 text-[9px] font-semibold uppercase tracking-wider text-slate-600">По объёму 24ч</div>
                   {dynamicPresets.map(list => (
-                    <button key={list.name} type="button" onClick={() => loadList(list)}
-                      className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-white/[.04]">
+                    <div key={list.name} className="flex w-full items-center gap-1 rounded-lg px-2 py-1 hover:bg-white/[.03]">
                       <span className="flex-1 text-[12px] font-semibold text-slate-200">{list.name}</span>
                       <span className="text-[10px] text-slate-500">{list.symbols.length} монет</span>
-                      <ChevronRight size={11} className="text-slate-600" />
-                    </button>
+                      <button type="button" onClick={() => loadList(list)}
+                        title="Добавить к текущему выбору"
+                        className="ml-1 rounded px-1.5 py-0.5 text-[10px] font-bold text-[#5b8cff] hover:bg-[#5b8cff]/[.15] transition-colors">
+                        +
+                      </button>
+                      <button type="button" onClick={() => { onChange(list.symbols); setActiveTab('all') }}
+                        title="Заменить текущий выбор"
+                        className="rounded px-1.5 py-0.5 text-[10px] font-bold text-slate-500 hover:bg-white/[.06] hover:text-slate-200 transition-colors">
+                        ↺
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
@@ -472,15 +507,24 @@ export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder 
                   <div className="py-2 text-center text-[11px] text-slate-600">Нет сохранённых списков</div>
                 )}
                 {savedLists.map(list => (
-                  <button key={list.name} type="button" onClick={() => loadList(list)}
-                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-white/[.04]">
+                  <div key={list.name} className="flex w-full items-center gap-1 rounded-lg px-2 py-1 hover:bg-white/[.03]">
                     <span className="flex-1 text-[12px] font-semibold text-slate-200">{list.name}</span>
                     <span className="text-[10px] text-slate-500">{list.symbols.length} монет</span>
+                    <button type="button" onClick={() => loadList(list)}
+                      title="Добавить к текущему выбору"
+                      className="ml-1 rounded px-1.5 py-0.5 text-[10px] font-bold text-[#5b8cff] hover:bg-[#5b8cff]/[.15] transition-colors">
+                      +
+                    </button>
+                    <button type="button" onClick={() => { onChange(list.symbols); setActiveTab('all') }}
+                      title="Заменить текущий выбор"
+                      className="rounded px-1.5 py-0.5 text-[10px] font-bold text-slate-500 hover:bg-white/[.06] hover:text-slate-200 transition-colors">
+                      ↺
+                    </button>
                     <button type="button" onClick={e => handleDeleteList(list.name, e)}
-                      className="text-slate-600 hover:text-rose-400 transition-colors">
+                      className="rounded p-0.5 text-slate-600 hover:text-rose-400 transition-colors">
                       <Trash2 size={11} />
                     </button>
-                  </button>
+                  </div>
                 ))}
               </div>
             </div>

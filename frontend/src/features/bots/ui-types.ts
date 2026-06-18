@@ -80,6 +80,12 @@ export type MyBot = {
   approvalStatus: 'pending' | 'approved' | 'rejected' | null;
   activeSecondsAcc: number;
   activeSince: string | null;
+  /** Статистика сделок */
+  tradesTotal: number;
+  tradesWin: number;
+  netPnlTotal: number;
+  /** Автор шаблона ('NovaBot' | email) или ник владельца если кастомный */
+  sourceAuthor: string;
   /** Произвольный конфиг — структура зависит от strategy */
   config: Record<string, unknown>;
 };

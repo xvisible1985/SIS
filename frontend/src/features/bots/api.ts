@@ -36,6 +36,13 @@ function parseBot(raw: RawBot): Bot {
     activeSecondsAcc:      (raw.activeSecondsAcc as number) ?? 0,
     activeSince:           (raw.activeSince as string) ?? null,
     approvalStatus:        (raw.approvalStatus as Bot['approvalStatus']) ?? null,
+    price:                 (raw.price as number) ?? 0,
+    spark:                 (raw.spark as number[] | null) ?? [],
+    activeUsersCount:      (raw.activeUsersCount as number) ?? 0,
+    tradesTotal:           (raw.tradesTotal as number) ?? 0,
+    tradesWin:             (raw.tradesWin as number) ?? 0,
+    netPnlTotal:           (raw.netPnlTotal as number) ?? 0,
+    sourceAuthor:          (raw.sourceAuthor as string) || '',
   };
 }
 

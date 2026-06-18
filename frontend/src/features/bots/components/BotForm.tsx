@@ -1,16 +1,18 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { getStrategyDefaults } from '../../admin-defaults/api';
-import { X, Bot, ToggleLeft, ToggleRight, Camera, Trash2, Search, Loader2 } from 'lucide-react';
+import { X, Bot, ToggleLeft, ToggleRight, Camera, Trash2, Search, Loader2, Smile } from 'lucide-react';
+import { BotIconPicker } from './BotIconPicker';
 import { getCoinFilter, checkCoinFlagged } from '../../../components/common/coinFilter';
-import type { CoinFilterSettings } from '../../../components/common/coinFilter';
+import type { CoinFilterSettings } from '../../../components/common/coinFilter'; // used for the flagged-coin confirm dialog
 import { CoinMultiPicker } from '../../../components/common/CoinMultiPicker';
-import { Toggle, Tip, SignalPickerField } from '../../../components/strategies/FormWidgets';
-import { SIGNALS } from '../../indicators/signals';
+import { LeverageSlider } from '../../../components/common/LeverageSlider';
+import { Toggle, Tip, SignalPickerField, SignalGateField, sigPriorityKey } from '../../../components/strategies/FormWidgets';
 import { apiClient } from '../../../api/client';
 import { getAllSymbols, matchesPattern } from '../../../components/common/CoinMultiPicker';
 import { getInstrumentConstraints, type InstrumentConstraints } from '../../../api/strategies';
 import type { Bot as BotType, BotKind, CreateBotInput, StrategyConfig, MatrixLevel, MatrixEntryLevel } from '../types';
 import { getBotKindMeta } from '../botKindMeta';
+import { ResetStatsConfirmModal } from './ResetStatsConfirmModal';
 import type { SignalConfig } from '../../../types';
 import { useSelectedAccount } from '../../../contexts/AccountContext';
 
@@ -54,6 +56,7 @@ function defaultConfig(bot?: BotType, kind?: BotKind): StrategyConfig {
     hedge_mode:            s.hedge_mode            ?? false,
     grid_size_usdt:        s.grid_size_usdt        ?? 100,
     grid_active:           s.grid_active           ?? 0,
+    max_stop_active:       s.max_stop_active       ?? 0,
     steps:                 s.steps                 ?? [
       { price_move_pct: 0,   size_pct: 50 },
       { price_move_pct: 1.5, size_pct: 100 },
@@ -64,7 +67,7 @@ function defaultConfig(bot?: BotType, kind?: BotKind): StrategyConfig {
     tp_mode:               s.tp_mode               ?? 'total',
     tp_pct:                s.tp_pct                ?? 2.0,
     sl_type:               s.sl_type               ?? 'conditional',
-    sl_pct:                s.sl_pct                ?? 5.0,
+    sl_pct:                s.sl_pct                ?? -5.0,
     signal_filter:         s.signal_filter         ?? false,
     trailing_stop_enabled: s.trailing_stop_enabled ?? false,
     trailing_activation_pct: s.trailing_activation_pct ?? 1.5,
@@ -73,10 +76,10 @@ function defaultConfig(bot?: BotType, kind?: BotKind): StrategyConfig {
     max_cycles:              s.max_cycles              ?? 0,
     priority_signal:         s.priority_signal         ?? undefined,
     // Signal-gated exit
-    tp_signal_name:          s.tp_signal_name          ?? undefined,
-    tp_signal_dir:           s.tp_signal_dir           ?? undefined,
-    sl_signal_name:          s.sl_signal_name          ?? undefined,
-    sl_signal_dir:           s.sl_signal_dir           ?? undefined,
+    tp_signal_configs:       s.tp_signal_configs        ?? undefined,
+    tp_signal_dir:           s.tp_signal_dir            ?? undefined,
+    sl_signal_configs:       s.sl_signal_configs        ?? undefined,
+    sl_signal_dir:           s.sl_signal_dir            ?? undefined,
     // Matrix-specific
     matrix_levels:           s.matrix_levels           ?? DEFAULT_MATRIX_LEVELS,
     matrix_entry_level:      s.matrix_entry_level      ?? DEFAULT_MATRIX_ENTRY,
@@ -114,8 +117,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
   const [outerTab, setOuterTab]   = useState<OuterTab>('basic');
   const [stratTab, setStratTab]   = useState<StrategySubTab>('entry');
 
-  // Editing strategy_config is blocked while the bot is active (server enforces this too).
-  const strategyLocked = bot?.status === 'active' && !bot?.isOfficial
+  const strategyLocked = false // strategy_config can be edited at any time; server enforces type-change restriction
 
   const [name,        setName]        = useState(bot?.name        ?? '');
   const [description, setDescription] = useState(bot?.description ?? '');
@@ -143,11 +145,12 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
   const [minLotEnabled, setMinLotEnabled] = useState(false);
   const [leverageMax,   setLeverageMax]   = useState(false);
   const [sizeAsMain,    setSizeAsMain]    = useState<boolean>(bot?.strategyConfig?.size_as_main ?? false);
-  const [ignoreCoinFilter, setIgnoreCoinFilter] = useState<boolean>(bot?.ignoreCoinFilter ?? false);
   const [coinFilterSettings, setCoinFilterSettings] = useState<CoinFilterSettings | null>(null);
   const [showCoinFilterConfirm, setShowCoinFilterConfirm] = useState(false);
+  const [showResetStatsConfirm, setShowResetStatsConfirm] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [showIconPicker, setShowIconPicker] = useState(false);
   const bypassCoinFilterRef = useRef(false)
 
   useEffect(() => {
@@ -191,18 +194,34 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
       if (!d) return
       setConfig(c => {
         const overrides: Partial<typeof c> = {}
-        if (d.leverage !== undefined) overrides.leverage = d.leverage
+        // Common fields
+        if (d.leverage !== undefined)      overrides.leverage      = d.leverage
         if (d.grid_size_usdt !== undefined) overrides.grid_size_usdt = d.grid_size_usdt
+        if (d.entry_order_type !== undefined) overrides.entry_order_type = d.entry_order_type
+        if (d.margin_type !== undefined)   overrides.margin_type   = d.margin_type
+        if (d.hedge_mode !== undefined)    overrides.hedge_mode    = d.hedge_mode
+        if (d.grid_active !== undefined)   overrides.grid_active   = d.grid_active
+        if (d.max_stop_active !== undefined) overrides.max_stop_active = d.max_stop_active
+        if (d.after_stop_mode !== undefined) overrides.after_stop_mode = d.after_stop_mode
+        if (d.max_cycles !== undefined)    overrides.max_cycles    = d.max_cycles
         if (!isMatrix) {
           const gd = d as import('../../admin-defaults/types').GridDefaults
-          if (gd.tp_pct !== undefined) overrides.tp_pct = gd.tp_pct
-          if (gd.sl_pct !== undefined) overrides.sl_pct = gd.sl_pct
+          if (gd.direction !== undefined)              overrides.direction              = gd.direction
+          if (gd.tp_pct !== undefined)                 overrides.tp_pct                = gd.tp_pct
+          if (gd.sl_pct !== undefined)                 overrides.sl_pct                = gd.sl_pct
+          if (gd.sl_type !== undefined)                overrides.sl_type               = gd.sl_type
           if (gd.trailing_activation_pct !== undefined) overrides.trailing_activation_pct = gd.trailing_activation_pct
-          if (gd.trailing_callback_pct !== undefined) overrides.trailing_callback_pct = gd.trailing_callback_pct
-          if (gd.steps) overrides.steps = gd.steps
+          if (gd.trailing_callback_pct !== undefined)  overrides.trailing_callback_pct = gd.trailing_callback_pct
+          if (gd.steps)                                overrides.steps                 = gd.steps
         } else {
           const md = d as import('../../admin-defaults/types').MatrixDefaults
-          if (md.safe_zone_pct !== undefined) overrides.safe_zone_pct = md.safe_zone_pct
+          if (md.direction !== undefined)              overrides.direction              = md.direction
+          if (md.safe_zone_pct !== undefined)          overrides.safe_zone_pct         = md.safe_zone_pct
+          if (md.protected_build !== undefined)        overrides.protected_build        = md.protected_build
+          if (md.matrix_rebuild_on_sl !== undefined)   overrides.matrix_rebuild_on_sl   = md.matrix_rebuild_on_sl
+          if (md.matrix_rebuild_from_entry !== undefined) overrides.matrix_rebuild_from_entry = md.matrix_rebuild_from_entry
+          if (md.matrix_levels)                        overrides.matrix_levels         = md.matrix_levels
+          if (md.matrix_entry_level)                   overrides.matrix_entry_level    = md.matrix_entry_level
         }
         return { ...c, ...overrides }
       })
@@ -284,8 +303,6 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
     patch({ matrix_levels: [...matrixLevels, newLevel] });
   }
   function removeMatrixLevel(direction: 'above' | 'below', idx: number) {
-    const dirLevels = matrixLevels.filter(l => l.direction === direction);
-    if (dirLevels.length <= 1) return;
     let removed = false;
     patch({ matrix_levels: matrixLevels.filter(l => {
       if (l.direction !== direction) return true;
@@ -353,25 +370,21 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
     }
   };
 
-  const handleSubmit = async () => {
-    if (showCoinFilterConfirm) return;
-    if (!name.trim()) return;
-
+  // Core submit — runs after all confirmations are resolved.
+  const doSubmit = async () => {
     // For signal bots: if the symbol is flagged and the user hasn't opted out,
     // show a confirmation dialog instead of submitting immediately.
-    const isSignalBot = (config.bot_kind ?? initialKind ?? 'signal') === 'signal'
-    if (isSignalBot && !ignoreCoinFilter && coinFilterSettings) {
-      const symbol = config.symbol ?? ''
-      // Pass turnover=Infinity so only blacklist check fires (turnover requires
-      // the ticker cache which isn't accessible here).
-      const { flagged } = checkCoinFlagged(symbol, Infinity, coinFilterSettings)
+    const isSignalBot = (config.bot_kind ?? initialKind ?? 'signal') === 'signal';
+    if (isSignalBot && coinFilterSettings) {
+      const symbol = config.symbol ?? '';
+      const { flagged } = checkCoinFlagged(symbol, Infinity, coinFilterSettings);
       if (flagged && !bypassCoinFilterRef.current) {
-        setShowCoinFilterConfirm(true)
-        return
+        setShowCoinFilterConfirm(true);
+        return;
       }
-      bypassCoinFilterRef.current = false
+      bypassCoinFilterRef.current = false;
     }
-    setShowCoinFilterConfirm(false)
+    setShowCoinFilterConfirm(false);
 
     setSubmitting(true);
     setSubmitError(null);
@@ -403,7 +416,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
         maxSymConsecutiveRuns,
         accountId: selectedAccountId || null,
         autoMode,
-        ignoreCoinFilter,
+        ignoreCoinFilter: false,
       });
       onClose();
     } catch (e) {
@@ -411,6 +424,22 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleSubmit = async () => {
+    if (showCoinFilterConfirm) return;
+    if (!name.trim()) return;
+    if (!description.trim()) {
+      setSubmitError('Добавьте описание бота — оно отображается в карточке');
+      return;
+    }
+
+    // Warn about stats reset when editing a bot that already has trade history.
+    if (bot && (bot.tradesTotal ?? 0) > 0) {
+      setShowResetStatsConfirm(true);
+      return;
+    }
+    await doSubmit();
   };
 
   const outerTabs: { id: OuterTab; label: string }[] = [
@@ -522,13 +551,20 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                       maxLength={30}
                     />
                   </Field>
-                  <div className="flex items-center gap-2">
+                  <div className="relative flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
                       className="inline-flex items-center gap-1.5 rounded-md border border-white/[.08] bg-white/[.04] px-3 py-1 text-[11px] font-semibold text-slate-300 hover:bg-white/[.08]"
                     >
                       <Camera size={11} /> Загрузить
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowIconPicker(v => !v)}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-white/[.08] bg-white/[.04] px-3 py-1 text-[11px] font-semibold text-slate-300 hover:bg-white/[.08]"
+                    >
+                      <Smile size={11} /> Иконки
                     </button>
                     {avatarUrl && (
                       <button
@@ -539,7 +575,13 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                         <Trash2 size={11} /> Удалить
                       </button>
                     )}
-                    <span className="text-[11px] text-slate-500">PNG, JPG, GIF, WebP · до 300×300</span>
+                    {showIconPicker && (
+                      <BotIconPicker
+                        value={avatarUrl}
+                        onChange={url => setAvatarUrl(url)}
+                        onClose={() => setShowIconPicker(false)}
+                      />
+                    )}
                   </div>
                 </div>
               </div>
@@ -573,7 +615,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                   </span>
                 </div>
               </Field>
-              {mode !== 'admin' && (
+              {mode !== 'admin' && !bot?.sourceBotId && (
                 <div className="flex items-center justify-between rounded-lg border border-white/[.06] bg-white/[.02] px-4 py-3">
                   <div>
                     <div className="text-[13px] font-semibold text-slate-200">Публичный бот</div>
@@ -625,19 +667,6 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                 </div>
               </div>
 
-              {/* Ignore coin filter — only relevant for signal bots */}
-              {(config.bot_kind ?? initialKind ?? 'signal') === 'signal' && (
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-slate-400">Игнорировать фильтр монет</span>
-                  <button
-                    type="button"
-                    onClick={() => setIgnoreCoinFilter(v => !v)}
-                    className="text-slate-400 hover:text-slate-200"
-                  >
-                    {ignoreCoinFilter ? <ToggleRight size={20} className="text-amber-400" /> : <ToggleLeft size={20} />}
-                  </button>
-                </div>
-              )}
 
               {/* Ограничения */}
               <div>
@@ -717,9 +746,9 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
               )}
               <div className="flex flex-col gap-4">
               {bot && (
-                <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/[.08] px-3 py-2.5 text-[11.5px] text-amber-300 leading-relaxed">
-                  <span className="mt-px shrink-0 text-amber-400">⚠</span>
-                  <span>Изменения настроек стратегии применятся только к <strong className="text-amber-200">новым стратегиям</strong>, которые бот создаст в будущем. Уже запущенные стратегии затронуты не будут.</span>
+                <div className="flex items-start gap-2 rounded-lg border border-blue-500/30 bg-blue-500/[.08] px-3 py-2.5 text-[11.5px] text-blue-300 leading-relaxed">
+                  <span className="mt-px shrink-0 text-blue-400">ℹ</span>
+                  <span>Изменения <strong className="text-blue-200">SL/TP и параметров сетки</strong> применятся немедленно ко всем активным стратегиям. Новые стратегии также будут созданы с новыми настройками. Тип стратегии нельзя менять при активных позициях.</span>
                 </div>
               )}
               {/* strategy type selector */}
@@ -840,6 +869,36 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                       onChange={v => patch({ hedge_mode: v === 'true' })}
                     />
                   </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className={labelCls}>
+                        {config.strategy_type === 'matrix'
+                          ? 'Активных слотов (0 = все)'
+                          : 'Активных ордеров (0 = все шаги)'}
+                        <Tip text={config.strategy_type === 'matrix'
+                          ? 'Скользящее окно: сколько лимитных ордеров матрицы висит на бирже одновременно. 0 = все сразу.'
+                          : 'Скользящее окно: сколько лимитных ордеров из сетки висит на бирже одновременно. При исполнении одного — автоматически выставляется следующий. 0 = все сразу.'
+                        } />
+                      </label>
+                      <MxNum
+                        value={config.grid_active ?? 0}
+                        onChange={v => patch({ grid_active: Math.max(0, Math.round(v)) })}
+                        cls={inputCls}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelCls}>
+                        Условных стопов (0 = без лимита)
+                        <Tip text="Максимум одновременных stop-loss ордеров на бирже. Bybit ограничивает conditional-ордера на символ. 0 = без ограничений." />
+                      </label>
+                      <MxNum
+                        value={config.max_stop_active ?? 0}
+                        onChange={v => patch({ max_stop_active: Math.max(0, Math.round(v)) })}
+                        cls={inputCls}
+                      />
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -871,13 +930,13 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                           {instrInfo && <span className="ml-1.5 text-[10px] text-slate-500">макс. ×{instrInfo.max_leverage}</span>}
                           <Tip text="Кратность заёмных средств. ×5 = на $100 открывается позиция $500." />
                         </label>
-                        <input
-                          type="range" min={1} max={instrInfo?.max_leverage ?? 100} step={1}
+                        <LeverageSlider
                           value={config.leverage ?? 5}
+                          max={instrInfo?.max_leverage ?? 100}
                           disabled={leverageMax}
-                          onChange={e => { setLeverageMax(false); patch({ leverage: parseInt(e.target.value) }) }}
-                          className="w-full h-1.5 mt-2 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                          style={{ accentColor: getBotKindMeta(initialKind ?? 'signal').color }}
+                          color={getBotKindMeta(initialKind ?? 'signal').color}
+                          onChange={v => { setLeverageMax(false); patch({ leverage: v }); }}
+                          className="mt-2"
                         />
                         <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
                           <span>×1</span>
@@ -956,18 +1015,6 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                     >
                       + Добавить шаг
                     </button>
-                  </div>
-
-                  <div>
-                    <label className={labelCls}>
-                      Одновременно на бирже (0 = все шаги)
-                      <Tip text="Сколько ордеров из сетки висит на бирже одновременно. 0 = все сразу." />
-                    </label>
-                    <MxNum
-                      value={config.grid_active ?? 0}
-                      onChange={v => patch({ grid_active: Math.max(0, Math.round(v)) })}
-                      cls={inputCls}
-                    />
                   </div>
 
                   <div>
@@ -1180,7 +1227,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                       <div>
                         {[...aboveLevels].reverse().map((level, revIdx) => {
                           const dirIdx = aboveLevels.length - 1 - revIdx;
-                          return levelRow('above', level, dirIdx, dirIdx + 1, aboveLevels.length > 1);
+                          return levelRow('above', level, dirIdx, dirIdx + 1, true);
                         })}
                       </div>
                     </div>
@@ -1220,7 +1267,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                       {colHdrs()}
                       <div>
                         {belowLevels.map((level, dirIdx) =>
-                          levelRow('below', level, dirIdx, dirIdx + 1, belowLevels.length > 1)
+                          levelRow('below', level, dirIdx, dirIdx + 1, true)
                         )}
                       </div>
                       <div className="text-[9px] text-gray-400 uppercase tracking-wider flex items-center justify-between pt-1 border-t border-gray-800 mt-1 mb-1">
@@ -1305,131 +1352,167 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
 
               {stratTab === 'exit' && (
                 <div className="flex flex-col gap-4">
-                  {/* TP */}
+                  {/* TP / Trailing Stop */}
                   <div className="rounded-lg border border-green-900/50 bg-green-950/20 p-3 space-y-3">
-                    <div className="text-xs font-semibold text-green-400">Take Profit</div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className={labelCls}>
-                          TP %
-                          <Tip text="Процент прибыли от средней цены входа, при котором выставляется закрывающий ордер." />
-                        </label>
-                        <MxNum
-                          value={config.tp_pct ?? 2.0}
-                          onChange={v => patch({ tp_pct: v })}
-                          cls={inputCls}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>
-                          Режим
-                          <Tip text="«На всю позицию» — один TP закрывает всё. «По уровням» — каждый уровень получает свой TP." />
-                        </label>
-                        <Toggle
-                          options={[
-                            { label: 'На всю позицию', value: 'total' },
-                            { label: 'По уровням',     value: 'per_level' },
-                          ]}
-                          value={config.tp_mode ?? 'total'}
-                          onChange={v => patch({ tp_mode: v as StrategyConfig['tp_mode'] })}
-                        />
-                      </div>
+                    {/* Mode switcher */}
+                    <div className="flex gap-1 rounded-lg bg-black/20 border border-green-900/30 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => patch({ trailing_stop_enabled: false })}
+                        className={`flex-1 rounded-md py-1.5 text-[11px] font-semibold transition-colors ${
+                          !config.trailing_stop_enabled
+                            ? 'bg-green-800/60 text-green-200 shadow-sm'
+                            : 'text-green-700/70 hover:text-green-500'
+                        }`}
+                      >
+                        Take Profit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => patch({ trailing_stop_enabled: true })}
+                        className={`flex-1 rounded-md py-1.5 text-[11px] font-semibold transition-colors ${
+                          config.trailing_stop_enabled
+                            ? 'bg-green-800/60 text-green-200 shadow-sm'
+                            : 'text-green-700/70 hover:text-green-500'
+                        }`}
+                      >
+                        Trailing Stop
+                      </button>
                     </div>
-                    {/* Trailing stop inside TP */}
-                    <div className="pt-2 border-t border-green-900/40 space-y-3">
-                      <div className="flex items-center gap-1 text-[10px] text-green-600/80 font-bold uppercase tracking-wider pb-1">
-                        Трейлинг-стоп
-                        <Tip text="Подтягивает стоп вслед за ценой, фиксируя прибыль. При откате на callback — позиция закрывается." />
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <button
-                          type="button"
-                          onClick={() => patch({ trailing_stop_enabled: !(config.trailing_stop_enabled ?? false) })}
-                          className={`w-10 h-5 rounded-full relative transition-colors ${
-                            config.trailing_stop_enabled ? 'bg-green-600' : 'bg-gray-700'
-                          }`}
-                        >
-                          <span className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
-                            config.trailing_stop_enabled ? 'translate-x-5' : 'translate-x-0'
-                          }`} />
-                        </button>
-                        <span className={`text-xs ${config.trailing_stop_enabled ? 'text-green-400' : 'text-gray-500'}`}>
-                          {config.trailing_stop_enabled ? 'Включён' : 'Выключен'}
-                        </span>
-                      </div>
-                      {config.trailing_stop_enabled && (
+
+                    {/* Take Profit fields */}
+                    {!config.trailing_stop_enabled && (
+                      <>
                         <div className="grid grid-cols-2 gap-3">
                           <div>
                             <label className={labelCls}>
-                              Активация %
-                              <Tip text="Прибыль от входа, при которой трейлинг начинает следить за ценой." />
+                              TP %
+                              <Tip text="Процент прибыли от средней цены входа, при котором выставляется закрывающий ордер." />
                             </label>
                             <MxNum
-                              value={config.trailing_activation_pct ?? 1.5}
-                              onChange={v => patch({ trailing_activation_pct: v })}
+                              value={config.tp_pct ?? 2.0}
+                              onChange={v => patch({ tp_pct: v })}
                               cls={inputCls}
                             />
                           </div>
                           <div>
                             <label className={labelCls}>
-                              Callback %
-                              <Tip text="Откат от пика, после которого трейлинг-стоп срабатывает." />
+                              Режим
+                              <Tip text="«На всю позицию» — один TP закрывает всё. «По уровням» — каждый уровень получает свой TP." />
                             </label>
-                            <MxNum
-                              value={config.trailing_callback_pct ?? 0.5}
-                              onChange={v => patch({ trailing_callback_pct: v })}
-                              cls={inputCls}
+                            <Toggle
+                              options={[
+                                { label: 'На всю позицию', value: 'total' },
+                                { label: 'По уровням',     value: 'per_level' },
+                              ]}
+                              value={config.tp_mode ?? 'total'}
+                              onChange={v => patch({ tp_mode: v as StrategyConfig['tp_mode'] })}
                             />
                           </div>
                         </div>
-                      )}
-                    </div>
-                    <BotSignalGate
-                      label="Сигнал для ТП"
-                      tip="Тейкпрофит сработает только при подтверждении указанным сигналом. Для Long-позиции ждите Sell-сигнал (разворот вниз)."
-                      name={config.tp_signal_name ?? null}
-                      dir={config.tp_signal_dir ?? null}
-                      onChange={(n, d) => patch({ tp_signal_name: n ?? undefined, tp_signal_dir: d ?? undefined })}
-                    />
+                        <div className="pt-1 border-t border-green-900/30">
+                          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-green-700/80 flex items-center gap-1">
+                            Сигнал для ТП
+                            <Tip text="Тейкпрофит сработает только при подтверждении указанным сигналом. Для Long-позиции ждите Sell-сигнал." />
+                          </div>
+                          <SignalGateField
+                            configs={config.tp_signal_configs ?? []}
+                            dir={config.tp_signal_dir ?? null}
+                            onChange={(cfgs, d) => patch({ tp_signal_configs: cfgs.length ? cfgs : undefined, tp_signal_dir: d ?? undefined })}
+                            buttonLabel="Добавить сигнал для ТП"
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {/* Trailing Stop fields */}
+                    {config.trailing_stop_enabled && (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className={labelCls}>
+                            Активация %
+                            <Tip text="Прибыль от входа, при которой трейлинг начинает следить за ценой." />
+                          </label>
+                          <MxNum
+                            value={config.trailing_activation_pct ?? 1.5}
+                            onChange={v => patch({ trailing_activation_pct: v })}
+                            cls={inputCls}
+                          />
+                        </div>
+                        <div>
+                          <label className={labelCls}>
+                            Callback %
+                            <Tip text="Откат от пика, после которого трейлинг-стоп срабатывает." />
+                          </label>
+                          <MxNum
+                            value={config.trailing_callback_pct ?? 0.5}
+                            onChange={v => patch({ trailing_callback_pct: v })}
+                            cls={inputCls}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* SL */}
                   <div className="rounded-lg border border-red-900/50 bg-red-950/20 p-3 space-y-3">
-                    <div className="text-xs font-semibold text-red-400">Stop Loss</div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className={labelCls}>
-                          SL %
-                          <Tip text="Процент убытка от средней цены, при котором позиция принудительно закрывается." />
-                        </label>
-                        <MxNum
-                          value={config.sl_pct ?? 5.0}
-                          onChange={v => patch({ sl_pct: v })}
-                          cls={inputCls}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>
-                          Тип
-                          <Tip text="«На бирже» — стоп-ордер на Bybit, работает даже без сервера. «Программный» — сервис следит через WS." />
-                        </label>
-                        <Toggle
-                          options={[
-                            { label: 'На бирже',    value: 'conditional' },
-                            { label: 'Программный', value: 'programmatic' },
-                          ]}
-                          value={config.sl_type ?? 'conditional'}
-                          onChange={v => patch({ sl_type: v as StrategyConfig['sl_type'] })}
-                        />
-                      </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-red-400">Stop Loss</span>
+                      <button
+                        type="button"
+                        onClick={() => patch({ sl_pct: (config.sl_pct ?? 0) < 0 ? 0 : -5.0 })}
+                        className={`w-8 h-4 rounded-full relative transition-colors shrink-0 ${(config.sl_pct ?? 0) < 0 ? 'bg-red-600' : 'bg-gray-700'}`}
+                      >
+                        <span className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${(config.sl_pct ?? 0) < 0 ? 'translate-x-4' : 'translate-x-0'}`} />
+                      </button>
                     </div>
-                    <BotSignalGate
-                      label="Сигнал для СЛ"
-                      tip="Стоп-лосс сработает только при подтверждении указанным сигналом. Для Long-позиции ждите Sell-сигнал (разворот вниз)."
-                      name={config.sl_signal_name ?? null}
-                      dir={config.sl_signal_dir ?? null}
-                      onChange={(n, d) => patch({ sl_signal_name: n ?? undefined, sl_signal_dir: d ?? undefined })}
-                    />
+                    {(config.sl_pct ?? 0) < 0 ? (
+                      <>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className={labelCls}>
+                              SL %
+                              <Tip text="Расстояние стоп-лосса от средней цены входа. Отрицательное значение = ниже средней для Long (например, -5 = SL на 5% ниже)." />
+                            </label>
+                            <MxNum
+                              value={config.sl_pct ?? -5.0}
+                              onChange={v => patch({ sl_pct: v })}
+                              cls={inputCls}
+                            />
+                          </div>
+                          <div>
+                            <label className={labelCls}>
+                              Тип
+                              <Tip text="«На бирже» — стоп-ордер на Bybit, работает даже без сервера. «Программный» — сервис следит через WS." />
+                            </label>
+                            <Toggle
+                              options={[
+                                { label: 'На бирже',    value: 'conditional' },
+                                { label: 'Программный', value: 'programmatic' },
+                              ]}
+                              value={config.sl_type ?? 'conditional'}
+                              onChange={v => patch({ sl_type: v as StrategyConfig['sl_type'] })}
+                            />
+                          </div>
+                        </div>
+                        <div className="pt-1 border-t border-red-900/30">
+                          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-red-700/80 flex items-center gap-1">
+                            Сигнал для СЛ
+                            <Tip text="Стоп-лосс сработает только при подтверждении указанным сигналом. Для Long-позиции ждите Sell-сигнал." />
+                          </div>
+                          <SignalGateField
+                            configs={config.sl_signal_configs ?? []}
+                            dir={config.sl_signal_dir ?? null}
+                            onChange={(cfgs, d) => patch({ sl_signal_configs: cfgs.length ? cfgs : undefined, sl_signal_dir: d ?? undefined })}
+                            buttonLabel="Добавить сигнал для СЛ"
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-[11px] text-gray-600 italic">
+                        Без стоп-лосса — позиция закрывается только по TP или вручную
+                      </div>
+                    )}
                   </div>
 
                 </div>
@@ -1450,53 +1533,17 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                 <SignalPickerField
                   configs={(config.activation_signals as SignalConfig[]) ?? []}
                   onChange={v => {
-                    const names = new Set((v as SignalConfig[]).map(s => s.name));
-                    const keep = config.priority_signal && names.has(config.priority_signal)
+                    const keys = new Set((v as SignalConfig[]).map(sigPriorityKey));
+                    const keep = config.priority_signal && keys.has(config.priority_signal)
                       ? config.priority_signal
                       : undefined;
                     patch({ activation_signals: v, priority_signal: keep });
                   }}
+                  priorityKey={config.priority_signal as string | undefined}
+                  onPriorityChange={key => patch({ priority_signal: key })}
                 />
               </div>
 
-              {/* Priority signal selector */}
-              {((config.activation_signals as SignalConfig[]) ?? []).length > 0 && (
-                <div>
-                  <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 pb-1 border-b border-white/[.05] mb-2">
-                    Приоритетный сигнал
-                    <Tip text="Бот сортирует монеты по этому сигналу. Volume Spike — по величине объёма. SuperTrend — по остатку TTL (самый свежий первым)." />
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    {((config.activation_signals as SignalConfig[]) ?? []).map(sig => (
-                      <label key={sig.name} className="flex items-center gap-2.5 cursor-pointer group">
-                        <input
-                          type="radio"
-                          name="priority_signal"
-                          value={sig.name}
-                          checked={config.priority_signal === sig.name}
-                          onChange={() => patch({ priority_signal: sig.name })}
-                          className="accent-[#5b8cff] h-3.5 w-3.5 cursor-pointer"
-                        />
-                        <span className="text-[12px] text-slate-300 group-hover:text-slate-100 transition-colors">
-                          {sigLabel(sig.name)}
-                        </span>
-                        {config.priority_signal === sig.name && SIG_SORT_HINT[sig.name] && (
-                          <span className="text-[10px] text-slate-500">— {SIG_SORT_HINT[sig.name]}</span>
-                        )}
-                      </label>
-                    ))}
-                    {config.priority_signal && (
-                      <button
-                        type="button"
-                        onClick={() => patch({ priority_signal: undefined })}
-                        className="mt-0.5 self-start text-[10px] text-slate-600 hover:text-slate-400 underline underline-offset-2"
-                      >
-                        Сбросить
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
 
               {/* Whitelist */}
               <div>
@@ -1649,6 +1696,17 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
         </div>
       </div>
 
+      {/* Stats reset confirmation modal */}
+      {showResetStatsConfirm && bot && (
+        <ResetStatsConfirmModal
+          tradesTotal={bot.tradesTotal ?? 0}
+          netPnlTotal={bot.netPnlTotal ?? 0}
+          tradesWin={bot.tradesWin ?? 0}
+          onConfirm={() => { setShowResetStatsConfirm(false); void doSubmit(); }}
+          onCancel={() => setShowResetStatsConfirm(false)}
+        />
+      )}
+
       {/* Coin filter confirm dialog */}
       {showCoinFilterConfirm && (
         <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60">
@@ -1689,52 +1747,6 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/** Signal-gated exit widget for BotForm's TP/SL sections */
-function BotSignalGate({ label, tip, name, dir, onChange }: {
-  label: string;
-  tip: string;
-  name: string | null;
-  dir: 'buy' | 'sell' | null;
-  onChange: (name: string | null, dir: 'buy' | 'sell' | null) => void;
-}) {
-  const enabled = !!name;
-  return (
-    <div className="pt-2 border-t border-white/[.04] space-y-2">
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => onChange(enabled ? null : (SIGNALS[0]?.id ?? ''), enabled ? null : 'sell')}
-          className={`w-8 h-4 rounded-full relative transition-colors shrink-0 ${enabled ? 'bg-[#5b8cff]' : 'bg-gray-700'}`}
-        >
-          <span className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0'}`} />
-        </button>
-        <span className="flex items-center gap-1 text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
-          {label}<Tip text={tip} />
-        </span>
-      </div>
-      {enabled && (
-        <div className="grid grid-cols-[1fr_auto] gap-2 pl-10">
-          <select
-            value={name ?? ''}
-            onChange={e => onChange(e.target.value || null, dir)}
-            className="w-full rounded-lg border border-white/[.08] bg-black/[.25] px-2 py-1.5 text-[12px] text-slate-200 outline-none focus:border-[#5b8cff]/50"
-          >
-            {SIGNALS.map(s => (
-              <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
-          </select>
-          <Toggle
-            options={[{ label: 'Buy', value: 'buy' }, { label: 'Sell', value: 'sell' }]}
-            value={dir ?? 'sell'}
-            onChange={v => onChange(name, v as 'buy' | 'sell')}
-            optionColors={{ buy: 'bg-emerald-700 text-white', sell: 'bg-rose-700 text-white' }}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
 
 /** Numeric input for matrix level cells (non-nullable) */
 function MxNum({ value, onChange, cls, err, disabled }: {
@@ -1827,6 +1839,7 @@ const SIG_LABELS: Record<string, string> = {
 function sigLabel(name: string): string {
   return SIG_LABELS[name] ?? name;
 }
+
 
 const SIG_SORT_HINT: Record<string, string> = {
   'st-flip':   'сначала с наибольшим остатком TTL',

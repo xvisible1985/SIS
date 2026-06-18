@@ -163,6 +163,20 @@ func (s *Server) applyBotOpportunities(ctx context.Context, botID string, opps [
 	// Sort by score descending — strongest signal gets a slot first.
 	sort.Slice(opps, func(i, j int) bool { return opps[i].score > opps[j].score })
 
+	// Fetch open exchange positions once for the entire batch.
+	// Used below to prevent opening a new strategy while a хвостик (orphan position)
+	// from a previously stopped strategy is still on the exchange.
+	openPositions := make(map[string]bool)
+	if creds, err := s.loadBotAccountCreds(ctx, b.accountID); err == nil {
+		if positions, err := trader.FetchPositions(ctx, creds); err == nil {
+			for _, p := range positions {
+				if size, err2 := strconv.ParseFloat(p.Size, 64); err2 == nil && size > 0 {
+					openPositions[p.Symbol] = true
+				}
+			}
+		}
+	}
+
 	// De-duplicate: keep only the best-scored occurrence of each sym+dir pair.
 	seen := make(map[string]bool, len(opps))
 	for _, o := range opps {
@@ -207,16 +221,17 @@ func (s *Server) applyBotOpportunities(ctx context.Context, botID string, opps [
 			continue
 		}
 		if b.maxSymConsecutive > 0 {
-			// Count how many of the most recent strategies for this bot are consecutively the same symbol.
-			// Query the last maxSymConsecutive strategies ordered newest first.
+			// Count how many of the most recent completed runs for this bot are
+			// consecutively the same symbol. bot_symbol_history persists across
+			// strategy deletions (after_stop_mode=delete), so history is never lost.
 			symRows, err := s.pool.Query(ctx,
-				`SELECT symbol FROM strategies WHERE bot_id=$1 ORDER BY created_at DESC LIMIT $2`,
+				`SELECT symbol FROM bot_symbol_history WHERE bot_id=$1 ORDER BY ran_at DESC LIMIT $2`,
 				b.id, b.maxSymConsecutive)
 			if err == nil {
 				consecutive := 0
 				for symRows.Next() {
-					var s string
-					if symRows.Scan(&s) == nil && s == o.sym {
+					var sym string
+					if symRows.Scan(&sym) == nil && sym == o.sym {
 						consecutive++
 					} else {
 						break
@@ -228,7 +243,17 @@ func (s *Server) applyBotOpportunities(ctx context.Context, botID string, opps [
 				}
 			}
 		}
-		if _, err := s.createBotStrategy(ctx, b, cfg, o.sym, o.dir, 0, ""); err != nil {
+		// Guard: don't open a new strategy if there's already an open position for this
+		// symbol on the exchange (e.g. a хвостик from a previously stopped strategy).
+		// Starting a new strategy on top of an orphan position leads to qty mismatches.
+		if openPositions[o.sym] {
+			s.logBotEvent(ctx, b.id,
+				fmt.Sprintf("[%s] Пропуск %s %s: на бирже уже есть открытая позиция (хвостик?) — закройте вручную", o.source, o.sym, o.dir),
+				"warn", "strategy")
+			continue
+		}
+
+		if _, err := s.createBotStrategy(ctx, b, cfg, o.sym, o.dir, 0, "", nil); err != nil {
 			if !strings.Contains(err.Error(), "unique") {
 				s.logBotEvent(ctx, b.id, fmt.Sprintf("[%s] Ошибка открытия %s %s: %v", o.source, o.sym, o.dir, err), "error", "strategy")
 			}
@@ -396,8 +421,8 @@ func (s *Server) botEngineTick(ctx context.Context) {
 			s.logBotEvent(ctx, b.id, fmt.Sprintf("Ошибка чтения конфига: %v", err), "error", "system")
 			continue
 		}
-		// Hedge bots are handled by the separate hedge engine loop — skip here.
-		if cfg.BotKind == "hedge" {
+		// Hedge and matrix bots are handled by the separate hedge engine loop — skip here.
+		if cfg.BotKind == "hedge" || cfg.BotKind == "matrix" {
 			continue
 		}
 		if len(cfg.ActivationSignals) == 0 {
@@ -531,7 +556,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 					}
 					defer func() { <-sem }()
 
-					st := s.signalEngine.ComputeStateForce(sym, key.interval, entry.sigCfgs)
+					st := s.signalEngine.ComputeMultiTFState(sym, entry.sigCfgs)
 					mu.Lock()
 					results[sym] = st
 					mu.Unlock()
@@ -734,10 +759,10 @@ type botCfgJSON struct {
 	GridActive     int     `json:"grid_active"`
 	GridStepPct    float64 `json:"grid_step_pct"`
 	GridSizeUSDT   float64 `json:"grid_size_usdt"`
-	TPMode         string  `json:"tp_mode"`
-	TPPct          float64 `json:"tp_pct"`
-	SLType         string  `json:"sl_type"`
-	SLPct          float64 `json:"sl_pct"`
+	TPMode         string   `json:"tp_mode"`
+	TPPct          *float64 `json:"tp_pct"`
+	SLType         string   `json:"sl_type"`
+	SLPct          *float64 `json:"sl_pct"`
 	SignalFilter   bool    `json:"signal_filter"`
 	TrailingEnabled  bool    `json:"trailing_stop_enabled"`
 	TrailingActPct   float64 `json:"trailing_activation_pct"`
@@ -755,6 +780,7 @@ type botCfgJSON struct {
 	} `json:"signal_configs"`
 	Steps []struct {
 		PriceMovePct float64 `json:"price_move_pct"`
+		SizePct      float64 `json:"size_pct"`
 		Lots         float64 `json:"lots"`
 	} `json:"steps"`
 
@@ -787,6 +813,10 @@ type botCfgJSON struct {
 	HedgeCancelMainSl bool `json:"hedge_cancel_main_sl"` // cancel all SL on main at hedge activation
 	HedgeStopMain     bool `json:"hedge_stop_main"`      // hard-stop main at hedge activation
 
+	// HedgeForceActivation bypasses activation criteria: hedge is created immediately
+	// for every qualifying position (filters and direction rules still apply).
+	HedgeForceActivation bool `json:"hedge_force_activation"`
+
 	// Matrix-specific strategy config (used when StrategyType="matrix").
 	MatrixLevels          json.RawMessage `json:"matrix_levels"`
 	MatrixEntryLevel      json.RawMessage `json:"matrix_entry_level"`
@@ -803,7 +833,13 @@ func computeOpportunityScore(eng *signal.Engine, sym, interval string, cfgs []si
 	if priority == "" {
 		return 1.0
 	}
-	if priority == "st-flip" {
+	// priority_signal may be "name" or "name:tf" — strip the optional ":tf" suffix
+	// so that e.g. "st-flip:1h" and "st-flip" both resolve to "st-flip".
+	basePriority := priority
+	if idx := strings.Index(priority, ":"); idx >= 0 {
+		basePriority = priority[:idx]
+	}
+	if basePriority == "st-flip" {
 		ttl := eng.QueryTTLRemaining(sym, interval, cfgs)
 		if ttl >= 0 {
 			return ttl
@@ -811,7 +847,7 @@ func computeOpportunityScore(eng *signal.Engine, sym, interval string, cfgs []si
 		return 0
 	}
 	if vals := eng.QueryValues(sym, interval, cfgs); vals != nil {
-		if v, ok := vals[priority]; ok {
+		if v, ok := vals[basePriority]; ok {
 			return v
 		}
 	}
@@ -841,7 +877,7 @@ func join(items []string) string {
 // hedgedStrategyID (non-empty only for hedge bots) records which main strategy this hedge
 // covers. A unique partial index on hedged_strategy_id prevents two bots from hedging
 // the same main position; if the slot is already taken the INSERT is silently skipped.
-func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botCfgJSON, sym, dir string, leverageOverride int, hedgedStrategyID string) (string, error) {
+func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botCfgJSON, sym, dir string, leverageOverride int, hedgedStrategyID string, adoptJSON *string) (string, error) {
 	// Apply defaults (same as strategyPayload.applyDefaults)
 	category := cfg.Category
 	if category == "" {
@@ -903,16 +939,22 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 			gridSize = 1.0
 		}
 	}
-	tpPct := cfg.TPPct
-	if tpPct == 0 {
-		tpPct = 2.0
+	tpPct := 2.0 // default
+	if cfg.TPPct != nil {
+		tpPct = *cfg.TPPct
 	}
-	slPct := cfg.SLPct
-	if slPct > 0 {
-		slPct = -slPct
-	}
-	if slPct == 0 {
-		slPct = -5.0
+	slPct := -5.0 // default
+	if cfg.SLPct != nil {
+		slPct = *cfg.SLPct
+		if slPct > 0 {
+			slPct = -slPct
+		}
+		// Clamp to valid range: slPct must be in (-100, 0).
+		// Values ≤ -100 produce a non-positive trigger price and are treated as
+		// "SL disabled" by updateSL. Store 0 explicitly so the intent is clear.
+		if slPct <= -100 {
+			slPct = 0
+		}
 	}
 
 	scJSON, _ := json.Marshal(cfg.SignalConfigs)
@@ -965,7 +1007,7 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		   cycle_count, max_cycles, size_as_main,
 		   matrix_levels, matrix_entry_level, safe_zone_pct,
 		   protected_build, matrix_rebuild_on_sl, matrix_rebuild_from_entry,
-		   hedged_strategy_id)
+		   hedged_strategy_id, adopt_position_data)
 		VALUES ($1,$2,$3,$4,$5,$6,'active',
 		        $7,$8,$9,$10,
 		        $11,$12,$13,$14,$15,
@@ -975,7 +1017,7 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		        $26, $27, $28,
 		        ($29::text)::jsonb, ($30::text)::jsonb, $31,
 		        $32, $33, $34,
-		        NULLIF($35,'')::uuid)
+		        NULLIF($35,'')::uuid, ($36::text)::jsonb)
 		ON CONFLICT DO NOTHING
 		RETURNING id`,
 		b.ownerID, b.accountID, b.id, sym, category, dir,
@@ -987,7 +1029,7 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		0, cfg.MaxCycles, cfg.SizeAsMain,
 		matrixLevelsParam, matrixEntryParam, cfg.SafeZonePct,
 		cfg.ProtectedBuild, cfg.MatrixRebuildOnSL, cfg.MatrixRebuildFromEntry,
-		hedgedStrategyID,
+		hedgedStrategyID, adoptJSON,
 	).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Another hedge bot already claimed this main strategy — silently skip.
@@ -1029,9 +1071,10 @@ func (s *Server) loadBotAccountCreds(ctx context.Context, accountID string) (tra
 // the same strategy after a TP/SL close. Once the window expires the record is deleted.
 func (s *Server) cleanupStoppedBotStrategies(ctx context.Context, b botEngineRow, cfg botCfgJSON) {
 	type stoppedStrategy struct {
-		id       string
-		symbol   string
-		category string
+		id        string
+		symbol    string
+		category  string
+		direction string
 	}
 
 	// Detect news bot and read its lifetime_minutes.
@@ -1058,9 +1101,9 @@ func (s *Server) cleanupStoppedBotStrategies(ctx context.Context, b botEngineRow
 
 	// For news bots only include strategies older than lifetime_minutes so that the
 	// re-creation guard in processNewsBots remains active until the window expires.
-	query := `SELECT id, symbol, category FROM strategies WHERE bot_id=$1 AND status='stopped'`
+	query := `SELECT id, symbol, category, direction FROM strategies WHERE bot_id=$1 AND status='stopped'`
 	if isNewsBot {
-		query = fmt.Sprintf(`SELECT id, symbol, category FROM strategies
+		query = fmt.Sprintf(`SELECT id, symbol, category, direction FROM strategies
 		         WHERE bot_id=$1 AND status='stopped'
 		           AND created_at < NOW() - INTERVAL '%d minutes'`, lifetimeMin)
 	}
@@ -1072,7 +1115,7 @@ func (s *Server) cleanupStoppedBotStrategies(ctx context.Context, b botEngineRow
 	var stopped []stoppedStrategy
 	for rows.Next() {
 		var st stoppedStrategy
-		if rows.Scan(&st.id, &st.symbol, &st.category) == nil {
+		if rows.Scan(&st.id, &st.symbol, &st.category, &st.direction) == nil {
 			stopped = append(stopped, st)
 		}
 	}
@@ -1097,23 +1140,44 @@ func (s *Server) cleanupStoppedBotStrategies(ctx context.Context, b botEngineRow
 	openPositions := make(map[string]bool, len(positions))
 	for _, p := range positions {
 		if size, err2 := strconv.ParseFloat(p.Size, 64); err2 == nil && size > 0 {
-			openPositions[p.Symbol] = true
+			dir := "long"
+			if p.Side == "Sell" {
+				dir = "short"
+			}
+			openPositions[p.Symbol+":"+dir] = true
 		}
 	}
 
+	const cleanupMaxWait = 10 * time.Minute
+
 	for _, st := range stopped {
-		if openPositions[st.symbol] {
+		posKey := st.symbol + ":" + st.direction
+		if openPositions[posKey] {
+			now := time.Now()
+			firstSeen, _ := s.cleanupWaiters.LoadOrStore(st.id, now)
+			waited := now.Sub(firstSeen.(time.Time))
+			if waited < cleanupMaxWait {
+				s.logBotEvent(ctx, b.id,
+					fmt.Sprintf("Очистка: стратегия %s ожидает закрытия позиции на бирже", st.symbol),
+					"info", "strategy")
+				continue
+			}
 			s.logBotEvent(ctx, b.id,
-				fmt.Sprintf("Очистка: стратегия %s ожидает закрытия позиции на бирже", st.symbol),
-				"info", "strategy")
-			continue
+				fmt.Sprintf("Очистка: стратегия %s — позиция не закрылась за %v, принудительное удаление", st.symbol, cleanupMaxWait),
+				"warn", "strategy")
 		}
+		// Record symbol run in history before deletion so consecutive-run
+		// checks remain accurate even after the strategy row is removed.
+		s.pool.Exec(ctx, //nolint:errcheck
+			`INSERT INTO bot_symbol_history (bot_id, symbol) VALUES ($1, $2)`,
+			b.id, st.symbol)
 		if _, err := s.pool.Exec(ctx, `DELETE FROM strategies WHERE id=$1`, st.id); err != nil {
 			s.logBotEvent(ctx, b.id,
 				fmt.Sprintf("Очистка: ошибка удаления стратегии %s: %v", st.symbol, err),
 				"error", "strategy")
 			continue
 		}
+		s.cleanupWaiters.Delete(st.id)
 		s.engine.ForceRemoveStrategy(ctx, st.id, b.accountID)
 		s.logBotEvent(ctx, b.id,
 			fmt.Sprintf("Очистка: стратегия %s удалена (позиция закрыта)", st.symbol),
@@ -1306,7 +1370,7 @@ func (s *Server) processNewsBots(ctx context.Context) {
 					levOverride = parseLeverage(*ann.MaxLeverage)
 				}
 
-				if _, err := s.createBotStrategy(ctx, b, cfg, sym, openDir, levOverride, ""); err != nil {
+				if _, err := s.createBotStrategy(ctx, b, cfg, sym, openDir, levOverride, "", nil); err != nil {
 					if !strings.Contains(err.Error(), "unique") {
 						s.logBotEvent(ctx, b.id, fmt.Sprintf("Bybit News: ошибка открытия %s %s: %v", sym, openDir, err), "error", "strategy")
 					}
@@ -1410,12 +1474,15 @@ func (s *Server) processBotSymbol(ctx context.Context, symbol, interval, hash st
 			continue
 		}
 
-		// Compute this bot's signal config hash and compare with the fired hash
+		// Compute this bot's signal config hash and compare with the fired hash.
+		// NOTE: HashConfigs includes the symbol in the digest, so we must pass
+		// the actual symbol here — NOT "" (which would produce a different hash
+		// and never match the hash emitted by the compute unit).
 		sigCfgs := make([]signal.Config, len(cfg.ActivationSignals))
 		for i, a := range cfg.ActivationSignals {
 			sigCfgs[i] = signal.Config{Name: a.Name, Params: a.Params}
 		}
-		botHash := signal.HashConfigs("", interval, sigCfgs)
+		botHash := signal.HashConfigs(symbol, interval, sigCfgs)
 		if botHash != hash {
 			continue
 		}

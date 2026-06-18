@@ -1,13 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Shield, ToggleLeft, ToggleRight, Camera, Trash2 } from 'lucide-react';
+import { X, Shield, ToggleLeft, ToggleRight, Camera, Trash2, Smile } from 'lucide-react';
+import { BotIconPicker } from './BotIconPicker';
 import { Toggle, Tip, SignalPickerField } from '../../../components/strategies/FormWidgets';
+import { getStrategyDefaults } from '../../admin-defaults/api';
 import { CoinMultiPicker } from '../../../components/common/CoinMultiPicker';
 import { getInstrumentConstraints, type InstrumentConstraints } from '../../../api/strategies';
 import { apiClient } from '../../../api/client';
 import { useSelectedAccount } from '../../../contexts/AccountContext';
 import type { Bot as BotType, CreateBotInput, StrategyConfig, MatrixLevel, MatrixEntryLevel } from '../types';
 import { BOT_KIND_META } from '../botKindMeta';
+import { ResetStatsConfirmModal } from './ResetStatsConfirmModal';
 import type { SignalConfig } from '../../../types';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -26,6 +29,7 @@ type StratTab = 'entry' | 'matrix' | 'params';
 type HedgeActivation = {
   act_type:          number;          // 0=last_order%, 1=drawdown%, 2=pnl$, 3=roi%
   act_value:         number;
+  force_activation:  boolean;         // bypass act_type/act_value — open hedge immediately
   close_type:        number;          // 0=at_cycle_end, 1=max_loss$
   close_value:       number;
   deact_close_type:  number;          // 0=pnl$, 1=roi%, 2=breakeven
@@ -62,7 +66,8 @@ const DEACT_UNITS = ['%', '$', '%', '%', ''];
 function defaultHedgeAct(s?: StrategyConfig): HedgeActivation {
   return {
     act_type:          s?.hedge_act_type          ?? 1,
-    act_value:         s?.hedge_act_value          ?? 5,
+    act_value:         s?.hedge_act_value          ?? -4,
+    force_activation:  s?.hedge_force_activation   ?? false,
     close_type:        s?.hedge_close_type         ?? 0,
     close_value:       s?.hedge_close_value        ?? 10,
     deact_close_type:  s?.hedge_deact_close_type   ?? 0,
@@ -98,6 +103,8 @@ function defaultStratConfig(bot?: BotType): StrategyConfig {
     margin_type:             s.margin_type             ?? 'isolated',
     hedge_mode:              s.hedge_mode              ?? true,
     grid_size_usdt:          s.grid_size_usdt          ?? 100,
+    grid_active:             s.grid_active             ?? 0,
+    max_stop_active:         s.max_stop_active         ?? 0,
     signal_configs:          (s.signal_configs          as SignalConfig[]) ?? [],
     activation_signals:      (s.activation_signals      as SignalConfig[]) ?? [],
     after_stop_mode:         s.after_stop_mode         ?? 'restart',
@@ -181,13 +188,15 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
   const [sizeAsMain,   setSizeAsMain]   = useState<boolean>(bot?.strategyConfig?.size_as_main ?? false);
   const [leverageMax,  setLeverageMax]  = useState(false);
 
-  const [submitting,  setSubmitting]  = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitting,            setSubmitting]            = useState(false);
+  const [submitError,           setSubmitError]           = useState<string | null>(null);
+  const [showResetStatsConfirm, setShowResetStatsConfirm] = useState(false);
   const [instrInfo,   setInstrInfo]   = useState<InstrumentConstraints | null>(null);
   const [minLotEnabled, setMinLotEnabled] = useState(false);
 
   const { selectedAccountId } = useSelectedAccount();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [showIconPicker, setShowIconPicker] = useState(false);
 
   useEffect(() => {
     const fn = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -219,6 +228,51 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
     getInstrumentConstraints('BTCUSDT', config.category ?? 'linear')
       .then(setInstrInfo).catch(() => setInstrInfo(null));
   }, [config.category]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Apply admin-configured defaults for new bots
+  useEffect(() => {
+    if (bot) return
+    getStrategyDefaults().then(defaults => {
+      const d = defaults.bot_hedge
+      if (!d) return
+      setConfig(c => {
+        const o: Partial<typeof c> = {}
+        if (d.leverage !== undefined)      o.leverage      = d.leverage
+        if (d.grid_size_usdt !== undefined) o.grid_size_usdt = d.grid_size_usdt
+        if (d.entry_order_type !== undefined) o.entry_order_type = d.entry_order_type
+        if (d.margin_type !== undefined)   o.margin_type   = d.margin_type
+        if (d.grid_active !== undefined)   o.grid_active   = d.grid_active
+        if (d.max_stop_active !== undefined) o.max_stop_active = d.max_stop_active
+        if (d.after_stop_mode !== undefined) o.after_stop_mode = d.after_stop_mode
+        if (d.max_cycles !== undefined)    o.max_cycles    = d.max_cycles
+        if (d.safe_zone_pct !== undefined) o.safe_zone_pct = d.safe_zone_pct
+        if (d.protected_build !== undefined) o.protected_build = d.protected_build
+        if (d.matrix_rebuild_on_sl !== undefined) o.matrix_rebuild_on_sl = d.matrix_rebuild_on_sl
+        if (d.matrix_rebuild_from_entry !== undefined) o.matrix_rebuild_from_entry = d.matrix_rebuild_from_entry
+        if (d.matrix_levels)       o.matrix_levels       = d.matrix_levels
+        if (d.matrix_entry_level)  o.matrix_entry_level  = d.matrix_entry_level
+        return { ...c, ...o }
+      })
+      if (d.hedge_act_type !== undefined || d.hedge_act_value !== undefined ||
+          d.hedge_force_activation !== undefined || d.hedge_close_type !== undefined ||
+          d.hedge_deact_close_type !== undefined || d.hedge_deact_type !== undefined) {
+        setHa(prev => ({
+          ...prev,
+          ...(d.hedge_act_type !== undefined ? { act_type: d.hedge_act_type } : {}),
+          ...(d.hedge_act_value !== undefined ? { act_value: d.hedge_act_value } : {}),
+          ...(d.hedge_force_activation !== undefined ? { force_activation: d.hedge_force_activation } : {}),
+          ...(d.hedge_close_type !== undefined ? { close_type: d.hedge_close_type } : {}),
+          ...(d.hedge_close_value !== undefined ? { close_value: d.hedge_close_value } : {}),
+          ...(d.hedge_deact_close_type !== undefined ? { deact_close_type: d.hedge_deact_close_type } : {}),
+          ...(d.hedge_deact_close_value !== undefined ? { deact_close_value: d.hedge_deact_close_value } : {}),
+          ...(d.hedge_profit_lazy !== undefined ? { profit_lazy: d.hedge_profit_lazy } : {}),
+          ...(d.hedge_profit_lazy_pct !== undefined ? { profit_lazy_pct: d.hedge_profit_lazy_pct } : {}),
+          ...(d.hedge_deact_type !== undefined ? { deact_type: d.hedge_deact_type } : {}),
+          ...(d.hedge_deact_value !== undefined ? { deact_value: d.hedge_deact_value } : {}),
+        }))
+      }
+    }).catch(() => {})
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (minLotEnabled && instrInfo && instrInfo.min_order_usdt > 0) {
@@ -293,8 +347,8 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
     stop_pct: matrixEntryLevel.stop_pct !== null && matrixEntryLevel.stop_pct >= 0 ? 'Стоп отрицательным' : null,
   };
 
-  const handleSubmit = async () => {
-    if (!name.trim()) return;
+  // Core submit — runs after all confirmations are resolved.
+  const doSubmit = async () => {
     setSubmitting(true);
     setSubmitError(null);
     const totalMatrixLevels = aboveLevels.length + 1 + belowLevels.length;
@@ -313,10 +367,10 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
           strategy_type: 'matrix',
           grid_levels:   totalMatrixLevels,
           grid_step_pct: belowLevels[0]?.price_step_pct ?? aboveLevels[0]?.price_step_pct ?? 0,
-          signal_filter: false, // signal_configs used only for per-level use_signal gating, not cycle-start blocking
-          // Hedge activation
+          signal_filter: false,
           hedge_act_type:          ha.act_type,
           hedge_act_value:         ha.act_value,
+          hedge_force_activation:  ha.force_activation,
           hedge_close_type:        ha.close_type,
           hedge_close_value:       ha.close_value,
           hedge_deact_close_type:  ha.deact_close_type,
@@ -343,6 +397,17 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleSubmit = async () => {
+    if (!name.trim()) return;
+
+    // Warn about stats reset when editing a bot that already has trade history.
+    if (bot && (bot.tradesTotal ?? 0) > 0) {
+      setShowResetStatsConfirm(true);
+      return;
+    }
+    await doSubmit();
   };
 
   const outerTabs: { id: OuterTab; label: string }[] = [
@@ -447,13 +512,20 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                       maxLength={30}
                     />
                   </Field>
-                  <div className="flex items-center gap-2">
+                  <div className="relative flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
                       className="inline-flex items-center gap-1.5 rounded-md border border-white/[.08] bg-white/[.04] px-3 py-1 text-[11px] font-semibold text-slate-300 hover:bg-white/[.08]"
                     >
                       <Camera size={11} /> Загрузить
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowIconPicker(v => !v)}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-white/[.08] bg-white/[.04] px-3 py-1 text-[11px] font-semibold text-slate-300 hover:bg-white/[.08]"
+                    >
+                      <Smile size={11} /> Иконки
                     </button>
                     {avatarUrl && (
                       <button
@@ -464,7 +536,13 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                         <Trash2 size={11} /> Удалить
                       </button>
                     )}
-                    <span className="text-[11px] text-slate-500">PNG, JPG · до 300×300</span>
+                    {showIconPicker && (
+                      <BotIconPicker
+                        value={avatarUrl}
+                        onChange={url => setAvatarUrl(url)}
+                        onClose={() => setShowIconPicker(false)}
+                      />
+                    )}
                   </div>
                 </div>
               </div>
@@ -501,7 +579,7 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                 </div>
               </Field>
 
-              {mode !== 'admin' && (
+              {mode !== 'admin' && !bot?.sourceBotId && (
                 <div className="flex items-center justify-between rounded-lg border border-white/[.06] bg-white/[.02] px-4 py-3">
                   <div>
                     <div className="text-[13px] font-semibold text-slate-200">Публичный бот</div>
@@ -677,8 +755,27 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
               {/* ── Секция: Активация ── */}
               <SectionHeader icon="▶" color="amber">Активация хеджа</SectionHeader>
 
+              {/* Принудительная активация */}
+              <div className="rounded-lg border border-amber-500/20 bg-amber-950/[.12] p-3 space-y-2">
+                <div className="flex items-center gap-2.5">
+                  <ToggleSwitch
+                    enabled={ha.force_activation}
+                    onToggle={() => patchHa({ force_activation: !ha.force_activation })}
+                  />
+                  <span className="flex items-center gap-1 text-[12px] font-semibold text-amber-300">
+                    Принудительная активация
+                    <Tip text="Хедж открывается немедленно для каждой подходящей позиции — условие активации ниже игнорируется. Фильтры монет, ботов и направления по-прежнему применяются." />
+                  </span>
+                </div>
+                {ha.force_activation && (
+                  <p className="pl-11 text-[11px] leading-relaxed text-amber-400/80">
+                    Хедж будет открыт сразу при обнаружении позиции. Порог активации ниже не учитывается.
+                  </p>
+                )}
+              </div>
+
               {/* Условие активации + Закрыть Safe — одна строка */}
-              <div className="grid grid-cols-2 gap-3">
+              <div className={`grid grid-cols-2 gap-3${ha.force_activation ? ' opacity-40 pointer-events-none select-none' : ''}`}>
                 <div>
                   <label className={labelCls}>
                     Активировать при
@@ -719,6 +816,40 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                       />
                     </div>
                   </div>
+                  <p className="mt-1 text-[10px] text-slate-500 leading-tight">
+                    {ha.act_type === 0 && (ha.act_value < 0 ? <>
+                      Цена ушла ПРОТИВ позиции от последнего ордера.<br />
+                      Long: цена упала на {Math.abs(ha.act_value)}% ниже последнего ордера.<br />
+                      Short: цена выросла на {Math.abs(ha.act_value)}% выше последнего ордера.
+                    </> : <>
+                      Цена ушла В ПОЛЬЗУ позиции от последнего ордера.<br />
+                      Long: цена выросла на {ha.act_value}% выше последнего ордера.<br />
+                      Short: цена упала на {ha.act_value}% ниже последнего ордера.
+                    </>)}
+                    {ha.act_type === 1 && (ha.act_value < 0 ? <>
+                      Цена ушла ПРОТИВ позиции от ТВХ (просадка).<br />
+                      Long: цена упала на {Math.abs(ha.act_value)}% ниже ТВХ.<br />
+                      Short: цена выросла на {Math.abs(ha.act_value)}% выше ТВХ.
+                    </> : <>
+                      Цена ушла В ПОЛЬЗУ позиции от ТВХ (буфер прибыли).<br />
+                      Long: цена выросла на {ha.act_value}% выше ТВХ.<br />
+                      Short: цена упала на {ha.act_value}% ниже ТВХ.
+                    </>)}
+                    {ha.act_type === 2 && (ha.act_value < 0 ? <>
+                      Хедж активируется при нереализованном убытке ≥ {Math.abs(ha.act_value)} USDT.<br />
+                      Пример: −50 = убыток от 50 USDT.
+                    </> : <>
+                      Хедж активируется при нереализованной прибыли ≥ {ha.act_value} USDT.<br />
+                      Пример: +50 = прибыль от 50 USDT.
+                    </>)}
+                    {ha.act_type === 3 && (ha.act_value < 0 ? <>
+                      Хедж активируется при ROI позиции ≤ −{Math.abs(ha.act_value)}%.<br />
+                      ROI = PnL / начальная маржа × 100. Пример: −10 = потеряно 10% маржи.
+                    </> : <>
+                      Хедж активируется при ROI позиции ≥ +{ha.act_value}%.<br />
+                      ROI = PnL / начальная маржа × 100. Пример: +10 = заработано 10% маржи.
+                    </>)}
+                  </p>
                 </div>
 
                 <div>
@@ -761,6 +892,20 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                       </div>
                     )}
                   </div>
+                  <p className="mt-1 text-[10px] text-slate-500 leading-tight">
+                    {ha.close_type === 0 && <>
+                      Бот ждёт естественного завершения цикла конкурирующей стратегии (TP или SL),
+                      и только после этого открывает хедж.
+                    </>}
+                    {ha.close_type === 1 && <>
+                      Если убыток конкурирующей стратегии достигает {ha.close_value} USDT —
+                      бот принудительно её останавливает и немедленно открывает хедж.
+                    </>}
+                    {ha.close_type === 2 && <>
+                      Бот отменяет все ордера конкурирующей стратегии и перехватывает управление.
+                      После деактивации хеджа стратегия возобновляется с нового цикла.
+                    </>}
+                  </p>
                 </div>
               </div>
 
@@ -1024,6 +1169,31 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                       value={String(config.hedge_mode ?? true)}
                       onChange={v => patch({ hedge_mode: v === 'true' })}
                     />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className={labelCls}>
+                        Активных слотов (0 = все)
+                        <Tip text="Скользящее окно: сколько лимитных ордеров матрицы висит на бирже одновременно. 0 = все сразу." />
+                      </label>
+                      <MxNum
+                        value={config.grid_active ?? 0}
+                        onChange={v => patch({ grid_active: Math.max(0, Math.round(v)) })}
+                        cls={inputCls}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelCls}>
+                        Условных стопов (0 = без лимита)
+                        <Tip text="Максимум одновременных stop-loss ордеров на бирже. Bybit ограничивает conditional-ордера на символ. 0 = без ограничений." />
+                      </label>
+                      <MxNum
+                        value={config.max_stop_active ?? 0}
+                        onChange={v => patch({ max_stop_active: Math.max(0, Math.round(v)) })}
+                        cls={inputCls}
+                      />
+                    </div>
                   </div>
                 </div>
               )}
@@ -1403,6 +1573,17 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
           </div>
         </div>
       </div>
+
+      {/* Stats reset confirmation modal */}
+      {showResetStatsConfirm && bot && (
+        <ResetStatsConfirmModal
+          tradesTotal={bot.tradesTotal ?? 0}
+          netPnlTotal={bot.netPnlTotal ?? 0}
+          tradesWin={bot.tradesWin ?? 0}
+          onConfirm={() => { setShowResetStatsConfirm(false); void doSubmit(); }}
+          onCancel={() => setShowResetStatsConfirm(false)}
+        />
+      )}
     </div>
   );
 }

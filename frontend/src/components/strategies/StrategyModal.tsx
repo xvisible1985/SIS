@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { TemplateSelector } from './TemplateSelector'
-import { Toggle, Tip, SignalPickerField } from './FormWidgets'
+import { Toggle, Tip, SignalPickerField, SignalGateField } from './FormWidgets'
 import { createStrategy, updateStrategy, getStrategyState, getInstrumentConstraints, type InstrumentConstraints } from '../../api/strategies'
 import { CoinPicker } from '../common/CoinPicker'
+import { LeverageSlider } from '../common/LeverageSlider'
 import { SIGNALS } from '../../features/indicators/signals'
 import type { Strategy, StrategyFormData, GridStep, MatrixLevel, MatrixEntryLevel } from '../../types'
 
@@ -54,9 +55,9 @@ function defaultForm(): StrategyFormData {
     matrix_rebuild_from_entry: false,
     size_as_main: false,
     matrix_entry_level: DEFAULT_MATRIX_ENTRY,
-    tp_signal_name: null,
+    tp_signal_configs: null,
     tp_signal_dir: null,
-    sl_signal_name: null,
+    sl_signal_configs: null,
     sl_signal_dir: null,
   }
 }
@@ -75,7 +76,10 @@ function strategyToForm(s: Strategy): StrategyFormData {
     grid_size_usdt: s.grid_size_usdt,
     margin_type: s.margin_type,
     hedge_mode: s.hedge_mode,
-    steps: s.steps ?? [{ price_move_pct: s.grid_step_pct, size_pct: 50 }],
+    steps: (s.steps ?? [{ price_move_pct: s.grid_step_pct, size_pct: 50 }]).map(step => ({
+      ...step,
+      size_pct: (step as any).size_pct ?? 50,
+    })),
     grid_active: s.grid_active ?? 0,
     max_stop_active: s.max_stop_active ?? 10,
     signal_configs: s.signal_configs ?? [],
@@ -103,9 +107,9 @@ function strategyToForm(s: Strategy): StrategyFormData {
     matrix_rebuild_from_entry: s.matrix_rebuild_from_entry ?? false,
     size_as_main: s.size_as_main ?? false,
     matrix_entry_level: s.matrix_entry_level ?? DEFAULT_MATRIX_ENTRY,
-    tp_signal_name: s.tp_signal_name ?? null,
+    tp_signal_configs: s.tp_signal_configs ?? null,
     tp_signal_dir: s.tp_signal_dir ?? null,
-    sl_signal_name: s.sl_signal_name ?? null,
+    sl_signal_configs: s.sl_signal_configs ?? null,
     sl_signal_dir: s.sl_signal_dir ?? null,
   }
 }
@@ -308,8 +312,6 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
     patch({ matrix_levels: [...form.matrix_levels, newLevel] })
   }
   function removeMatrixLevel(direction: 'above' | 'below', idx: number) {
-    const dirLevels = form.matrix_levels.filter(l => l.direction === direction)
-    if (dirLevels.length <= 1) return
     let removed = false
     patch({ matrix_levels: form.matrix_levels.filter(l => {
       if (l.direction !== direction) return true
@@ -317,6 +319,9 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
       if (thisIdx === idx && !removed) { removed = true; return false }
       return true
     }) })
+  }
+  function clearMatrixLevels(direction: 'above' | 'below') {
+    patch({ matrix_levels: form.matrix_levels.filter(l => l.direction !== direction) })
   }
   function updateMatrixLevel(direction: 'above' | 'below', idx: number, field: keyof MatrixLevel, value: number | string | boolean | null) {
     let dirCount = 0
@@ -385,7 +390,9 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
       const payload = {
         ...form,
         grid_levels: isMatrix ? totalMatrixLevels : (form.steps.length || 1),
-        grid_active: isMatrix ? totalMatrixLevels : (form.grid_active > 0 ? form.grid_active : form.steps.length || 1),
+        grid_active: isMatrix
+          ? (form.grid_active > 0 ? form.grid_active : totalMatrixLevels)
+          : (form.grid_active > 0 ? form.grid_active : form.steps.length || 1),
         grid_step_pct: isMatrix ? (belowLevels[0]?.price_step_pct ?? aboveLevels[0]?.price_step_pct ?? 0) : (form.steps[0]?.price_move_pct ?? 0),
         signal_filter: form.signal_configs.length > 0,
       }
@@ -434,8 +441,8 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
     stop_cond_pct: form.matrix_entry_level.stop_cond_pct !== null && form.matrix_entry_level.stop_cond_pct <= 0 ? 'Условие перевыставления должно быть положительным' : null,
   }
   const fieldErrors = {
-    grid_active: form.grid_active < 0 || form.grid_active > form.steps.length,
-    max_stop_active: form.max_stop_active < 0 || form.max_stop_active > 10,
+    grid_active: form.grid_active < 0,
+    max_stop_active: form.max_stop_active < 0,
     tp_pct: form.tp_pct !== null && form.tp_pct <= 0,
     trailing_activation_pct: form.trailing_stop_enabled && form.trailing_activation_pct <= 0,
     trailing_callback_pct: form.trailing_stop_enabled && form.trailing_callback_pct <= 0,
@@ -564,29 +571,29 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
               </div>
 
               <div>
-                <label className={labelCls}>Одновременно на бирже<Tip text="Лимиты на количество активных ордеров одновременно. Bybit ограничивает условные StopOrder-ордера до ~10 на символ." /></label>
+                <label className={labelCls}>Одновременно на бирже<Tip text="Лимиты на количество активных ордеров одновременно. Bybit ограничивает условные StopOrder-ордера на символ." /></label>
                 <div className="flex gap-2">
-                  {form.strategy_type === 'grid' && (
-                    <div className="flex-1">
-                      <p className="text-[10px] text-gray-500 mb-1">Лимитных (0 = все)</p>
-                      <NumericInput
-                        value={form.grid_active}
-                        onChange={v => patch({ grid_active: v })}
-                        className={errCls(fieldErrors.grid_active)}
-                        placeholder="0"
-                      />
-                    </div>
-                  )}
                   <div className="flex-1">
-                    <p className="text-[10px] text-gray-500 mb-1">Условных стопов (макс. 10)</p>
+                    <p className="text-[10px] text-gray-500 mb-1">
+                      {form.strategy_type === 'matrix' ? 'Активных слотов (0 = все)' : 'Лимитных (0 = все)'}
+                    </p>
+                    <NumericInput
+                      value={form.grid_active}
+                      onChange={v => patch({ grid_active: v })}
+                      className={errCls(fieldErrors.grid_active)}
+                      placeholder="0"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-[10px] text-gray-500 mb-1">Условных стопов (0 = без лимита)</p>
                     <NumericInput
                       value={form.max_stop_active}
-                      onChange={v => patch({ max_stop_active: v ?? 10 })}
+                      onChange={v => patch({ max_stop_active: v ?? 0 })}
                       className={errCls(fieldErrors.max_stop_active)}
-                      placeholder="10"
+                      placeholder="0"
                     />
                     {fieldErrors.max_stop_active && (
-                      <p className="text-[10px] text-red-400 mt-0.5">Значение от 0 до 10</p>
+                      <p className="text-[10px] text-red-400 mt-0.5">Значение не может быть отрицательным</p>
                     )}
                   </div>
                 </div>
@@ -744,15 +751,12 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                         {instrInfo && <span className="ml-1.5 text-[10px] text-gray-500">макс. ×{instrInfo.max_leverage}</span>}
                         <Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500." />
                       </label>
-                      <input
-                        type="range"
-                        min={1}
-                        max={instrInfo?.max_leverage ?? 100}
-                        step={1}
+                      <LeverageSlider
                         value={form.leverage}
+                        max={instrInfo?.max_leverage ?? 100}
                         disabled={leverageMax}
-                        onChange={e => { setLeverageMax(false); patch({ leverage: parseInt(e.target.value) }) }}
-                        className="w-full h-1.5 mt-2 cursor-pointer accent-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                        onChange={v => { setLeverageMax(false); patch({ leverage: v }); }}
+                        className="mt-2"
                       />
                       <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
                         <span>×1</span>
@@ -789,7 +793,15 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                     <div>
                       <div className="text-[9px] text-gray-400 uppercase tracking-wider flex items-center justify-between pb-1 border-b border-gray-800 mb-1">
                         {topLabel}
-                        <span className="bg-emerald-900/60 text-emerald-400 rounded px-1.5 py-0.5 text-[8px]">{topCount} уровней</span>
+                        <div className="flex items-center gap-1.5">
+                          {topCount > 0 && (
+                            <button onClick={() => clearMatrixLevels(topDir)}
+                              className="text-[8px] text-red-700 hover:text-red-400 transition-colors">
+                              Очистить
+                            </button>
+                          )}
+                          <span className="bg-emerald-900/60 text-emerald-400 rounded px-1.5 py-0.5 text-[8px]">{topCount} уровней</span>
+                        </div>
                       </div>
                       <button onClick={topAdd}
                         className="w-full border border-dashed border-emerald-900 text-emerald-700 rounded py-1 text-[10px] hover:border-emerald-700 hover:text-emerald-400 transition-colors mb-2">
@@ -799,7 +811,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                         {[...topLevels].reverse().map((level, revIdx) => {
                           const dirIdx = topLevels.length - 1 - revIdx
                           const labelNum = dirIdx + 1
-                          return levelRow(topDir, level, dirIdx, labelNum, false, topLevels.length > 1)
+                          return levelRow(topDir, level, dirIdx, labelNum, false, true)
                         })}
                       </div>
                     </div>
@@ -867,12 +879,20 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                       <div>
                         {botLevels.map((level, dirIdx) => {
                           const isFilled = dirIdx < filledLevels
-                          return levelRow(botDir, level, dirIdx, dirIdx + 1, isFilled, botLevels.length > 1)
+                          return levelRow(botDir, level, dirIdx, dirIdx + 1, isFilled, true)
                         })}
                       </div>
                       <div className="text-[9px] text-gray-400 uppercase tracking-wider flex items-center justify-between pt-1 border-t border-gray-800 mt-1 mb-1">
                         {botLabel}
-                        <span className="bg-blue-900/60 text-blue-400 rounded px-1.5 py-0.5 text-[8px]">{botCount} уровней</span>
+                        <div className="flex items-center gap-1.5">
+                          {botCount > 0 && (
+                            <button onClick={() => clearMatrixLevels(botDir)}
+                              className="text-[8px] text-red-700 hover:text-red-400 transition-colors">
+                              Очистить
+                            </button>
+                          )}
+                          <span className="bg-blue-900/60 text-blue-400 rounded px-1.5 py-0.5 text-[8px]">{botCount} уровней</span>
+                        </div>
                       </div>
                       <button onClick={botAdd}
                         className="w-full border border-dashed border-blue-900 text-blue-600 rounded py-1 text-[10px] hover:border-blue-700 hover:text-blue-400 transition-colors">
@@ -924,15 +944,12 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                       {instrInfo && <span className="ml-1.5 text-[10px] text-gray-500">макс. ×{instrInfo.max_leverage}</span>}
                       <Tip text="Кратность заёмных средств. Плечо ×5 означает, что на $100 маржи открывается позиция на $500." />
                     </label>
-                    <input
-                      type="range"
-                      min={1}
-                      max={instrInfo?.max_leverage ?? 100}
-                      step={1}
+                    <LeverageSlider
                       value={form.leverage}
+                      max={instrInfo?.max_leverage ?? 100}
                       disabled={leverageMax}
-                      onChange={e => { setLeverageMax(false); patch({ leverage: parseInt(e.target.value) }) }}
-                      className="w-full h-1.5 mt-2 cursor-pointer accent-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                      onChange={v => { setLeverageMax(false); patch({ leverage: v }); }}
+                      className="mt-2"
                     />
                     <div className="flex justify-between text-[10px] text-gray-500 mt-0.5">
                       <span>×1</span>
@@ -1097,7 +1114,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                     ...form,
                     signal_configs: newConfigs,
                     grid_levels: form.steps.length || 1,
-                    grid_active: form.grid_active > 0 ? form.grid_active : form.steps.length || 1,
+                    grid_active: form.grid_active > 0 ? form.grid_active : form.steps.length || 1, // grid only (autosave called from grid signal picker)
                     grid_step_pct: form.steps[0]?.price_move_pct ?? 0,
                     signal_filter: newConfigs.length > 0,
                   }
@@ -1166,81 +1183,106 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
           )}
           {tab === 2 && form.strategy_type !== 'matrix' && (
             <>
-              {/* TP */}
+              {/* TP / Trailing Stop */}
               <div className="border border-green-900/50 bg-green-950/20 rounded-lg p-3 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-green-400">Take Profit</span>
+                {/* Mode switcher */}
+                <div className="flex gap-1 rounded-lg bg-black/20 border border-green-900/30 p-0.5">
                   <button
                     type="button"
-                    onClick={() => patch({ tp_pct: form.tp_pct === null ? 2.0 : null })}
-                    className={`w-8 h-4 rounded-full relative transition-colors shrink-0 ${form.tp_pct !== null ? 'bg-green-600' : 'bg-gray-700'}`}
+                    onClick={() => patch({ trailing_stop_enabled: false })}
+                    className={`flex-1 rounded-md py-1.5 text-[11px] font-semibold transition-colors ${
+                      !form.trailing_stop_enabled
+                        ? 'bg-green-800/60 text-green-200 shadow-sm'
+                        : 'text-green-700/70 hover:text-green-500'
+                    }`}
                   >
-                    <span className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${form.tp_pct !== null ? 'translate-x-4' : 'translate-x-0'}`} />
+                    Take Profit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => patch({ trailing_stop_enabled: true })}
+                    className={`flex-1 rounded-md py-1.5 text-[11px] font-semibold transition-colors ${
+                      form.trailing_stop_enabled
+                        ? 'bg-green-800/60 text-green-200 shadow-sm'
+                        : 'text-green-700/70 hover:text-green-500'
+                    }`}
+                  >
+                    Trailing Stop
                   </button>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className={labelCls}>TP %<Tip text="Процент прибыли от средней цены входа. Если не задан — позиция закрывается только по сигналу." /></label>
-                    {form.tp_pct !== null
-                      ? <NumericInput step="0.1" value={form.tp_pct} onChange={v => patch({ tp_pct: v })} className={errCls(fieldErrors.tp_pct)} />
-                      : <div className={`${inputCls} text-gray-600 italic select-none`}>Без лимита</div>
-                    }
-                  </div>
-                  <div>
-                    <label className={labelCls}>Режим<Tip text="«На всю позицию» — один TP-ордер закрывает сразу всё. «По уровням» — каждый заполненный уровень получает свой TP; позиция закрывается порциями по мере роста цены." /></label>
-                    <Toggle
-                      options={[{ label: 'На всю позицию', value: 'total' }, { label: 'По уровням', value: 'per_level' }]}
-                      value={form.tp_mode}
-                      onChange={v => patch({ tp_mode: v as 'total' | 'per_level' })}
-                      className="h-[34px]"
-                      btnClassName="h-full"
-                    />
-                  </div>
-                </div>
-                <SignalGate
-                  label="Сигнал для ТП"
-                  tip="Тейкпрофит сработает только при подтверждении указанным сигналом. Если TP % не задан — позиция закрывается только по этому сигналу."
-                  name={form.tp_signal_name ?? null}
-                  dir={form.tp_signal_dir ?? null}
-                  onChange={(name, dir) => patch({ tp_signal_name: name, tp_signal_dir: dir })}
-                />
-                {/* Trailing stop */}
-                <div className="pt-2 border-t border-green-900/40 space-y-3">
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => patch({ trailing_stop_enabled: !form.trailing_stop_enabled })}
-                      className={`w-8 h-4 rounded-full relative transition-colors shrink-0 ${form.trailing_stop_enabled ? 'bg-green-600' : 'bg-gray-700'}`}
-                    >
-                      <span className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${form.trailing_stop_enabled ? 'translate-x-4' : 'translate-x-0'}`} />
-                    </button>
-                    <span className="flex items-center gap-1 text-[10px] text-gray-400 font-semibold uppercase tracking-wider">
-                      Трейлинг-стоп<Tip text="Автоматически подтягивает стоп вслед за ценой, фиксируя накопленную прибыль. Пока цена идёт в твою сторону — стоп следует за ней. Как только цена откатывается на заданный callback — позиция закрывается." />
-                    </span>
-                  </div>
-                  {form.trailing_stop_enabled && (
+
+                {/* Take Profit fields */}
+                {!form.trailing_stop_enabled && (
+                  <>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className={labelCls}>Активация %<Tip text="Прибыль от средней цены входа, при достижении которой трейлинг-стоп начинает следить за ценой. До этого порога стоп стоит на фиксированном уровне SL." /></label>
-                        <NumericInput
-                          step="0.1"
-                          value={form.trailing_activation_pct}
-                          onChange={v => patch({ trailing_activation_pct: v })}
-                          className={errCls(fieldErrors.trailing_activation_pct)}
-                        />
+                        <label className={labelCls}>
+                          TP %
+                          <Tip text="Процент прибыли от средней цены входа. Если не задан — позиция закрывается только по сигналу." />
+                        </label>
+                        <div className="flex items-center gap-2">
+                          {form.tp_pct !== null
+                            ? <NumericInput step="0.1" value={form.tp_pct} onChange={v => patch({ tp_pct: v })} className={errCls(fieldErrors.tp_pct)} />
+                            : <div className={`${inputCls} text-gray-600 italic select-none flex-1`}>Без лимита</div>
+                          }
+                          <button
+                            type="button"
+                            onClick={() => patch({ tp_pct: form.tp_pct === null ? 2.0 : null })}
+                            className={`shrink-0 w-8 h-4 rounded-full relative transition-colors ${form.tp_pct !== null ? 'bg-green-600' : 'bg-gray-700'}`}
+                          >
+                            <span className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${form.tp_pct !== null ? 'translate-x-4' : 'translate-x-0'}`} />
+                          </button>
+                        </div>
                       </div>
                       <div>
-                        <label className={labelCls}>Callback %<Tip text="Максимальный откат от пика цены, после которого трейлинг-стоп срабатывает и закрывает позицию. Чем меньше значение — тем раньше фиксируется прибыль, но выше риск закрыться на случайном колебании." /></label>
-                        <NumericInput
-                          step="0.1"
-                          value={form.trailing_callback_pct}
-                          onChange={v => patch({ trailing_callback_pct: v })}
-                          className={errCls(fieldErrors.trailing_callback_pct)}
+                        <label className={labelCls}>Режим<Tip text="«На всю позицию» — один TP-ордер закрывает сразу всё. «По уровням» — каждый заполненный уровень получает свой TP." /></label>
+                        <Toggle
+                          options={[{ label: 'На всю позицию', value: 'total' }, { label: 'По уровням', value: 'per_level' }]}
+                          value={form.tp_mode}
+                          onChange={v => patch({ tp_mode: v as 'total' | 'per_level' })}
+                          className="h-[34px]"
+                          btnClassName="h-full"
                         />
                       </div>
                     </div>
-                  )}
-                </div>
+                    <div className="pt-1 border-t border-green-900/30">
+                      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-green-700/80 flex items-center gap-1">
+                        Сигнал для ТП
+                        <Tip text="Тейкпрофит сработает только при подтверждении указанным сигналом. Если TP % не задан — позиция закрывается только по этому сигналу." />
+                      </div>
+                      <SignalGateField
+                        configs={form.tp_signal_configs ?? []}
+                        dir={form.tp_signal_dir ?? null}
+                        onChange={(cfgs, d) => patch({ tp_signal_configs: cfgs.length ? cfgs : null, tp_signal_dir: d })}
+                        buttonLabel="Добавить сигнал для ТП"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {/* Trailing Stop fields */}
+                {form.trailing_stop_enabled && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className={labelCls}>Активация %<Tip text="Прибыль от средней цены входа, при достижении которой трейлинг-стоп начинает следить за ценой." /></label>
+                      <NumericInput
+                        step="0.1"
+                        value={form.trailing_activation_pct}
+                        onChange={v => patch({ trailing_activation_pct: v })}
+                        className={errCls(fieldErrors.trailing_activation_pct)}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelCls}>Callback %<Tip text="Максимальный откат от пика цены, после которого трейлинг-стоп срабатывает." /></label>
+                      <NumericInput
+                        step="0.1"
+                        value={form.trailing_callback_pct}
+                        onChange={v => patch({ trailing_callback_pct: v })}
+                        className={errCls(fieldErrors.trailing_callback_pct)}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* SL */}
@@ -1264,7 +1306,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                     }
                   </div>
                   <div>
-                    <label className={labelCls}>Тип<Tip text="«На бирже» — стоп-ордер живёт непосредственно на Bybit и сработает даже если сервер недоступен. «Программный» — сервис сам следит за ценой через WS и закрывает позицию рыночным ордером при достижении уровня." /></label>
+                    <label className={labelCls}>Тип<Tip text="«На бирже» — стоп-ордер живёт непосредственно на Bybit и сработает даже если сервер недоступен. «Программный» — сервис сам следит за ценой через WS." /></label>
                     <Toggle
                       options={[
                         { label: 'На бирже', value: 'conditional' },
@@ -1277,13 +1319,18 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                     />
                   </div>
                 </div>
-                <SignalGate
-                  label="Сигнал для СЛ"
-                  tip="Стоп-лосс сработает только при подтверждении указанным сигналом. Если SL % не задан — позиция закрывается только по этому сигналу."
-                  name={form.sl_signal_name ?? null}
-                  dir={form.sl_signal_dir ?? null}
-                  onChange={(name, dir) => patch({ sl_signal_name: name, sl_signal_dir: dir })}
-                />
+                <div className="pt-1 border-t border-red-900/30">
+                  <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-red-700/80 flex items-center gap-1">
+                    Сигнал для СЛ
+                    <Tip text="Стоп-лосс сработает только при подтверждении указанным сигналом. Если SL % не задан — позиция закрывается только по этому сигналу." />
+                  </div>
+                  <SignalGateField
+                    configs={form.sl_signal_configs ?? []}
+                    dir={form.sl_signal_dir ?? null}
+                    onChange={(cfgs, d) => patch({ sl_signal_configs: cfgs.length ? cfgs : null, sl_signal_dir: d })}
+                    buttonLabel="Добавить сигнал для СЛ"
+                  />
+                </div>
               </div>
             </>
           )}
@@ -1315,52 +1362,3 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
   )
 }
 
-// ─── SignalGate ───────────────────────────────────────────────────────────────
-// Reusable signal-gated exit confirmation widget used in TP and SL sections.
-
-function SignalGate({ label, tip, name, dir, onChange }: {
-  label: string
-  tip: string
-  name: string | null
-  dir: 'buy' | 'sell' | null
-  onChange: (name: string | null, dir: 'buy' | 'sell' | null) => void
-}) {
-  const enabled = !!name
-  return (
-    <div className="pt-2 border-t border-white/[.04] space-y-2">
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => onChange(enabled ? null : (SIGNALS[0]?.id ?? ''), enabled ? null : 'sell')}
-          className={`w-8 h-4 rounded-full relative transition-colors shrink-0 ${enabled ? 'bg-blue-600' : 'bg-gray-700'}`}
-        >
-          <span className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0'}`} />
-        </button>
-        <span className="flex items-center gap-1 text-[10px] text-gray-400 font-semibold uppercase tracking-wider">
-          {label}<Tip text={tip} />
-        </span>
-      </div>
-      {enabled && (
-        <div className="grid grid-cols-[1fr_auto] gap-2 pl-10">
-          <select
-            value={name ?? ''}
-            onChange={e => onChange(e.target.value || null, dir)}
-            className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 outline-none focus:border-blue-500"
-          >
-            {SIGNALS.map(s => (
-              <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
-          </select>
-          <Toggle
-            options={[{ label: 'Buy', value: 'buy' }, { label: 'Sell', value: 'sell' }]}
-            value={dir ?? 'sell'}
-            onChange={v => onChange(name, v as 'buy' | 'sell')}
-            optionColors={{ buy: 'bg-emerald-700 text-white', sell: 'bg-rose-700 text-white' }}
-            className="h-[28px]"
-            btnClassName="h-full text-[11px] px-2"
-          />
-        </div>
-      )}
-    </div>
-  )
-}

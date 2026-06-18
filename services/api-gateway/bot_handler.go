@@ -64,14 +64,6 @@ func (s *Server) BotSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var pnlToday, pnlWeek float64
-	s.pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(pnl),0) FROM trade_history
-		 WHERE owner_id=$1 AND closed_at >= NOW()-INTERVAL '1 day'`, userID,
-	).Scan(&pnlToday)
-	s.pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(pnl),0) FROM trade_history
-		 WHERE owner_id=$1 AND closed_at >= NOW()-INTERVAL '7 days'`, userID,
-	).Scan(&pnlWeek)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"strategies": strategies,

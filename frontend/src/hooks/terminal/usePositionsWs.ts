@@ -53,6 +53,9 @@ function mapPosition(p: any): Position {
     positionIdx: p.positionIdx ?? 0,
     category: p.category ?? 'linear',
     positionIM: positionIM && positionIM > 0 ? positionIM : undefined,
+    trailingStop: p.trailingStop ?? '',
+    activePrice: p.activePrice ?? '',
+    stopLoss: p.stopLoss ?? '',
   }
 }
 

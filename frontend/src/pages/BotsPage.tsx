@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { BotsPage as BotsPageUI } from '../features/bots/BotsPage';
 import { BotForm } from '../features/bots/components/BotForm';
 import { HedgeBotForm } from '../features/bots/components/HedgeBotForm';
+import { MatrixBotForm } from '../features/bots/components/MatrixBotForm';
 import { BotTypePickerModal } from '../features/bots/components/BotTypePickerModal';
-import { DeployModal } from '../features/bots/components/DeployModal';
 import { useBots } from '../features/bots/api';
 import { useBotSignalCounts } from '../hooks/useBotSignalCounts';
 import type { BotSignalCount } from '../hooks/useBotSignalCounts';
@@ -43,6 +43,11 @@ function toMyBot(b: Bot, sc: BotSignalCount | undefined): MyBot {
     approvalStatus:    b.approvalStatus,
     activeSecondsAcc:  b.activeSecondsAcc,
     activeSince:       b.activeSince,
+    tradesTotal:       b.tradesTotal ?? 0,
+    tradesWin:         b.tradesWin ?? 0,
+    netPnlTotal:       b.netPnlTotal ?? 0,
+    // шаблонный → автор шаблона; кастомный → ник владельца
+    sourceAuthor:      b.sourceBotId ? (b.sourceAuthor || b.ownerName) : b.ownerName,
     config:            b.strategyConfig as Record<string, unknown>,
   };
 }
@@ -51,24 +56,26 @@ function toFeaturedBot(b: Bot): FeaturedBot {
   return {
     id:        b.id,
     name:      b.name,
-    author:    b.ownerName,
-    strategy:  'grid' as BotStrategy,
+    author:    b.isOfficial ? 'NovaBot' : b.ownerName,
+    botKind:   (b.strategyConfig?.bot_kind as BotKind) ?? 'signal',
+    strategy:  (b.strategyConfig?.strategy_type as BotStrategy) ?? 'grid',
     risk:      'medium' as RiskLevel,
     verified:  b.isOfficial,
     fire:      b.deployCount > 10,
-    price:     0,
+    price:     b.price ?? 0,
+    fullDescription: b.fullDescription || undefined,
     desc:      b.description,
     pairs:     b.symbolWhitelist.length > 0 ? b.symbolWhitelist : ['BTC'],
     minCap:    0,
     fee:       0,
-    users:     b.deployCount,
-    rating:    4.0,
+    users:     b.activeUsersCount ?? 0,
+    rating:    0,
     perfMonth: 0,
     perfTotal: 0,
     winRate:   0,
     sharpe:    0,
     drawdown:  0,
-    spark:     [0, 0],
+    spark:     (b.spark && b.spark.length >= 2) ? b.spark : [0, 0],
     exchanges: ['bybit'],
     lev:       1,
     mode:      'futures' as TradeMode,
@@ -82,7 +89,6 @@ export function BotsPage() {
 
   const [formMode, setFormMode] = useState<'create' | 'edit' | null>(null);
   const [editBot, setEditBot] = useState<Bot | null>(null);
-  const [deployBot, setDeployBot] = useState<Bot | null>(null);
   const [kindPickerOpen, setKindPickerOpen] = useState(false);
   const [selectedKind, setSelectedKind] = useState<BotKind>('signal');
 
@@ -126,25 +132,6 @@ export function BotsPage() {
     }
   };
 
-  const handleLaunchTpl = (tplId: string) => {
-    const bot = catalog.find((b) => b.id === tplId) ?? null;
-    if (bot) {
-      setDeployBot(bot);
-    } else {
-      action({ type: 'deploy', botId: tplId });
-    }
-  };
-
-  const handleDeploy = (whitelist: string[], blacklist: string[]) => {
-    if (!deployBot) return;
-    action({
-      type: 'deploy',
-      botId: deployBot.id,
-      symbolWhitelist: whitelist.length > 0 ? whitelist : undefined,
-      symbolBlacklist: blacklist.length > 0 ? blacklist : undefined,
-    });
-  };
-
   return (
     <>
       <BotsPageUI
@@ -161,8 +148,6 @@ export function BotsPage() {
         onEditBot={handleEditBot}
         onDeleteBot={(id) => action({ type: 'delete', botId: id })}
         onRequestApproval={(id) => action({ type: 'request-approval', botId: id })}
-        onLaunchTpl={handleLaunchTpl}
-        onConfigureTpl={handleLaunchTpl}
         onCloneTpl={(tplId) => action({ type: 'fork', botId: tplId })}
       />
 
@@ -181,7 +166,15 @@ export function BotsPage() {
         />
       )}
 
-      {formMode !== null && selectedKind !== 'hedge' && (
+      {formMode !== null && selectedKind === 'matrix' && (
+        <MatrixBotForm
+          bot={editBot ?? undefined}
+          onSubmit={handleFormSubmit}
+          onClose={handleFormClose}
+        />
+      )}
+
+      {formMode !== null && selectedKind !== 'hedge' && selectedKind !== 'matrix' && (
         <BotForm
           bot={editBot ?? undefined}
           initialKind={selectedKind}
@@ -190,13 +183,6 @@ export function BotsPage() {
         />
       )}
 
-      {deployBot && (
-        <DeployModal
-          bot={deployBot}
-          onDeploy={handleDeploy}
-          onClose={() => setDeployBot(null)}
-        />
-      )}
     </>
   );
 }

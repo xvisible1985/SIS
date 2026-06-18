@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { useSearchParams, Link } from 'react-router-dom'
 import { Chart, type ChartOverlaySettings } from '../components/terminal/Chart'
 import { Orderbook } from '../components/terminal/Orderbook'
@@ -9,6 +10,7 @@ import { HistoryTable } from '../components/terminal/HistoryTable'
 import { ExecutionsTable } from '../components/terminal/ExecutionsTable'
 import { TradeLog } from '../components/terminal/TradeLog'
 import { PnlTable } from '../components/terminal/PnlTable'
+import { DebugLogTab } from '../components/terminal/DebugLogTab'
 import { GridForm } from '../components/terminal/GridForm'
 import { CoinPicker } from '../components/common/CoinPicker'
 import { usePositionsWs } from '../hooks/terminal/usePositionsWs'
@@ -17,9 +19,10 @@ import { useOrderbook } from '../hooks/terminal/useOrderbook'
 import { useTickerPrices } from '../hooks/terminal/useTickerPrices'
 import { listAccounts } from '../api/accounts'
 import { useSelectedAccount } from '../contexts/AccountContext'
-import { listStrategies, getStrategyState } from '../api/strategies'
-import { listExecutions } from '../api/trader'
+import { listStrategies, getStrategyState, setStrategyStatus, deleteStrategy } from '../api/strategies'
+import { listExecutions, placeOrder } from '../api/trader'
 import { StrategyCard } from '../components/strategies/StrategyCard'
+import { TAKER_FEE } from '../components/common/ClosePositionModal'
 import { HedgePairCard } from '../components/strategies/HedgePairCard'
 import { StrategyModal } from '../components/strategies/StrategyModal'
 import { useBots } from '../features/bots/api'
@@ -31,9 +34,10 @@ import { useBotSignalCounts } from '../hooks/useBotSignalCounts'
 import { useBotEventsWs, type BotEventCategory } from '../hooks/useBotEventsWs'
 import { BotForm } from '../features/bots/components/BotForm'
 import { HedgeBotForm } from '../features/bots/components/HedgeBotForm'
+import { MatrixBotForm } from '../features/bots/components/MatrixBotForm'
 import { BotScanModal } from '../features/bots/components/BotScanModal'
 import { getBotKindMeta } from '../features/bots/botKindMeta'
-import { TrendingUp, Search, Shield, X } from 'lucide-react'
+import { TrendingUp, Search, Shield, Layers, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { Bot, BotKind, BotAction } from '../features/bots/types'
 import type { Strategy, ExchangeAccount, ActiveOrder, Position, ChartExecution, StrategyLevel } from '../types'
@@ -43,6 +47,7 @@ const KIND_ICONS: Record<BotKind, LucideIcon> = {
   signal: TrendingUp,
   parser: Search,
   hedge:  Shield,
+  matrix: Layers,
 }
 
 let _cachedSymbol = localStorage.getItem('t_symbol') ?? 'BTCUSDT'
@@ -57,7 +62,7 @@ const TIMEFRAMES = [
   { label: '1д', value: 'D' },
 ]
 
-type BottomTab = 'positions' | 'orders' | 'history' | 'executions' | 'log' | 'pnl'
+type BottomTab = 'positions' | 'orders' | 'history' | 'executions' | 'log' | 'pnl' | 'debug'
 type RightTab = 'manual' | 'strategies' | 'bots'
 type MobileTab = 'positions' | 'orders' | 'strategies' | 'trade'
 
@@ -228,7 +233,7 @@ function BotEventLog({ botId, open }: { botId: string; open: boolean }) {
         {events.map((e, i) => (
           <div key={i} className="flex gap-2">
             <span className="shrink-0 text-slate-600">
-              {new Date(e.created_at).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              {new Date(e.created_at).toLocaleString('ru', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
             </span>
             <span className={LEVEL_COLOR[e.level] ?? 'text-slate-400'}>{e.message}</span>
           </div>
@@ -572,7 +577,14 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
           onClose={() => setEditBotId(null)}
         />
       )}
-      {editBot && editBot.strategyConfig.bot_kind !== 'hedge' && (
+      {editBot && editBot.strategyConfig.bot_kind === 'matrix' && (
+        <MatrixBotForm
+          bot={editBot}
+          onSubmit={async (data) => { await action({ type: 'update', botId: editBot.id, data }); setEditBotId(null) }}
+          onClose={() => setEditBotId(null)}
+        />
+      )}
+      {editBot && editBot.strategyConfig.bot_kind !== 'hedge' && editBot.strategyConfig.bot_kind !== 'matrix' && (
         <BotForm
           bot={editBot}
           onSubmit={async (data) => { await action({ type: 'update', botId: editBot.id, data }); setEditBotId(null) }}
@@ -639,6 +651,9 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
   const [selectedId, setSelectedId] = useState<string | null>(() => localStorage.getItem('t_sel'))
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [signalStates, setSignalStates] = useState<Record<string, LiveSignal>>({})
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [lastSelectedId, setLastSelectedId] = useState<string | null>(null)
+  const [bulkAction, setBulkAction] = useState<{ type: 'close' | 'delete'; ids: Set<string> } | null>(null)
 
   // Ref для быстрого доступа к текущему списку из WS-обработчика (без closure-захвата)
   const strategiesRef = useRef<Strategy[]>([])
@@ -743,13 +758,44 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
     }
   }, [])
 
-  function handleSelect(s: Strategy) {
+  function handleSelect(s: Strategy, e?: React.MouseEvent) {
+    if (e?.ctrlKey || e?.metaKey) {
+      // Ctrl/Cmd+click: toggle this card
+      setLastSelectedId(s.id)
+      setSelectedIds(prev => {
+        const next = new Set(prev)
+        next.has(s.id) ? next.delete(s.id) : next.add(s.id)
+        return next
+      })
+      return
+    }
+    if (e?.shiftKey) {
+      // Shift+click: range from last selected to this
+      if (lastSelectedId && allSingleIds.length > 0) {
+        const fromIdx = allSingleIds.indexOf(lastSelectedId)
+        const toIdx = allSingleIds.indexOf(s.id)
+        if (fromIdx !== -1 && toIdx !== -1) {
+          const [a, b] = [Math.min(fromIdx, toIdx), Math.max(fromIdx, toIdx)]
+          setSelectedIds(prev => {
+            const next = new Set(prev)
+            allSingleIds.slice(a, b + 1).forEach(id => next.add(id))
+            return next
+          })
+        }
+      } else {
+        setSelectedIds(new Set([s.id]))
+      }
+      setLastSelectedId(s.id)
+      return
+    }
+    // Normal click: clear multi-selection, single-select
+    setSelectedIds(new Set())
+    setLastSelectedId(s.id)
     setSelectedId(s.id)
     localStorage.setItem('t_sel', s.id)
     onSymbolChange(s.symbol)
     onStrategySelect?.(s)
     setExpandedId(prev => (prev !== null && prev !== s.id ? null : prev))
-    // Clear pair target when switching to a standalone strategy
     onPairTargetUpdate?.(null)
   }
 
@@ -864,6 +910,54 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
     })
   }, [visibleStrategies, hedgeInfoMap])
 
+  const allSingleIds = useMemo(
+    () => renderItems.filter(i => i.type === 'single').map(i => (i as { type: 'single'; strategy: Strategy }).strategy.id),
+    [renderItems],
+  )
+  const allSelected = allSingleIds.length > 0 && allSingleIds.every(id => selectedIds.has(id))
+
+  function handleSelectAll() {
+    if (allSelected) { setSelectedIds(new Set()); setLastSelectedId(null) }
+    else setSelectedIds(new Set(allSingleIds))
+  }
+
+  async function handleBulkStatus(status: 'active' | 'finishing' | 'stopped') {
+    if (selectedIds.size === 0) return
+    await Promise.allSettled([...selectedIds].map(id => setStrategyStatus(id, status)))
+    load()
+  }
+
+  async function handleBulkDelete(ids: Set<string>) {
+    if (ids.size === 0) return
+    await Promise.allSettled([...ids].map(id => deleteStrategy(id)))
+    setSelectedIds(new Set())
+    load()
+  }
+
+  async function handleBulkClose(ids: Set<string>) {
+    if (ids.size === 0) return
+    const toClose = strategies.filter(s => ids.has(s.id))
+    await Promise.allSettled(toClose.map(s => {
+      const pos = positions.find(p =>
+        p.symbol === s.symbol &&
+        p.positionIdx === (s.direction === 'long' ? 1 : 2) &&
+        parseFloat(p.size) > 0,
+      )
+      if (!pos) return Promise.resolve()
+      return placeOrder({
+        account_id: s.account_id,
+        symbol: pos.symbol,
+        category: pos.category,
+        side: pos.side === 'Buy' ? 'Sell' : 'Buy',
+        order_type: 'Market',
+        qty: pos.size,
+        reduce_only: true,
+        position_idx: pos.positionIdx,
+      })
+    }))
+    load()
+  }
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex-shrink-0">
@@ -920,8 +1014,13 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
                 tickerPrices={tickerPrices}
                 onEdit={s => { setEditTarget(s); setModalOpen(true) }}
                 onChanged={load}
-                selected={s.id === selectedId}
+                selected={selectedIds.size > 0 ? selectedIds.has(s.id) : s.id === selectedId}
                 onSelect={handleSelect}
+                bulkMode={selectedIds.size > 0}
+                selectedCount={selectedIds.size}
+                onBulkStatus={handleBulkStatus}
+                onBulkDelete={() => setBulkAction({ type: 'delete', ids: new Set(selectedIds) })}
+                onBulkClose={() => setBulkAction({ type: 'close', ids: new Set(selectedIds) })}
                 isOpen={s.id === expandedId}
                 liveSignal={signalStates[s.id]}
                 hedgeWatcherCount={countHedgeWatchers(s, hedgeBots)}
@@ -951,6 +1050,76 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
           liveSignal={editTarget ? signalStates[editTarget.id] : undefined}
         />
       )}
+
+      {bulkAction && (() => {
+        const { type: actionType, ids: actionIds } = bulkAction
+        const selectedStrategies = strategies.filter(s => actionIds.has(s.id))
+        const closablePositions = actionType === 'close'
+          ? selectedStrategies.map(s => positions.find(p =>
+              p.symbol === s.symbol &&
+              p.positionIdx === (s.direction === 'long' ? 1 : 2) &&
+              parseFloat(p.size) > 0,
+            )).filter(Boolean) as typeof positions
+          : []
+        const totalPnl = closablePositions.reduce((sum, p) => sum + parseFloat(p.unrealisedPnl), 0)
+        const totalOpenFee = closablePositions.reduce((sum, p) => sum + parseFloat(p.size) * parseFloat(p.entryPrice) * TAKER_FEE, 0)
+        const totalCloseFee = closablePositions.reduce((sum, p) => sum + p.sizeUsdt * TAKER_FEE, 0)
+        const netPnl = totalPnl - totalOpenFee - totalCloseFee
+        const isClose = actionType === 'close'
+        return createPortal(
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.80)' }} onClick={() => setBulkAction(null)}>
+            <div className="rounded-xl p-5 w-80" style={{ background: '#12141c', border: '1px solid rgba(255,255,255,.14)', boxShadow: '0 32px 80px rgba(0,0,0,1)' }} onClick={e => e.stopPropagation()}>
+              <h3 className="text-sm font-semibold text-white mb-4">
+                {isClose ? `Закрыть позиции (${closablePositions.length} из ${selectedStrategies.length})` : `Удалить ${selectedStrategies.length} стратегий?`}
+              </h3>
+
+              {isClose && closablePositions.length > 0 && (
+                <div className="mb-4 space-y-2 text-xs">
+                  <div className="flex justify-between text-slate-400">
+                    <span>Нереализованный P&L</span>
+                    <span className={totalPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                      {totalPnl >= 0 ? '+' : ''}{totalPnl.toFixed(4)} USDT
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-slate-400">
+                    <span>Комиссия открытия (0.055%)</span>
+                    <span className="text-rose-400">−{totalOpenFee.toFixed(4)} USDT</span>
+                  </div>
+                  <div className="flex justify-between text-slate-400">
+                    <span>Комиссия закрытия (0.055%)</span>
+                    <span className="text-rose-400">−{totalCloseFee.toFixed(4)} USDT</span>
+                  </div>
+                  <div className="h-px bg-white/[.08]" />
+                  <div className="flex justify-between font-semibold text-white">
+                    <span>Итого</span>
+                    <span className={netPnl >= 0 ? 'text-emerald-300' : 'text-rose-300'}>
+                      {netPnl >= 0 ? '+' : ''}{netPnl.toFixed(4)} USDT
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {isClose && closablePositions.length === 0 && (
+                <p className="text-xs text-slate-400 mb-4">Нет открытых позиций среди выбранных стратегий.</p>
+              )}
+
+              {!isClose && (
+                <p className="text-xs text-slate-400 mb-4">Ордера будут отменены. Позиции на бирже останутся открытыми.</p>
+              )}
+
+              <div className="flex gap-2">
+                <button onClick={() => setBulkAction(null)} className="flex-1 px-3 py-2 text-xs rounded-lg text-slate-300 hover:text-white transition-colors" style={{ background: 'rgba(255,255,255,.07)', border: '1px solid rgba(255,255,255,.10)' }}>Отмена</button>
+                <button
+                  disabled={isClose && closablePositions.length === 0}
+                  onClick={() => { setBulkAction(null); if (isClose) handleBulkClose(actionIds); else handleBulkDelete(actionIds) }}
+                  className={`flex-1 px-3 py-2 text-xs text-white rounded-lg transition-colors font-semibold disabled:opacity-40 ${isClose ? 'bg-amber-700 hover:bg-amber-600' : 'bg-rose-700 hover:bg-rose-600'}`}
+                >{isClose ? 'Закрыть позиции' : 'Удалить'}</button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )
+      })()}
     </div>
   )
 }
@@ -1363,6 +1532,7 @@ export function TerminalPage() {
     { key: 'executions', label: 'Сделки' },
     { key: 'log', label: 'Лог' },
     { key: 'pnl', label: 'P&L' },
+    { key: 'debug', label: 'Дебаг' },
   ]
 
   const dividerV = (
@@ -1448,7 +1618,7 @@ export function TerminalPage() {
           {chartToolbar}
           <div className="flex-1 min-h-0 relative">
             <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} hedgePairTarget={hedgePairTarget} />
-            <HedgeBotOverlay symbol={symbol} positions={positions} bots={myBots} accountId={accountId} tickerPrices={tickerPrices} />
+            <HedgeBotOverlay symbol={symbol} positions={positions} bots={myBots} accountId={accountId} tickerPrices={tickerPrices} strategies={_strategies} />
           </div>
         </div>
         {/* Mobile tabs */}
@@ -1534,7 +1704,7 @@ export function TerminalPage() {
           </div>
           <div className="flex-1 min-h-0 relative">
             <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} hedgePairTarget={hedgePairTarget} />
-            <HedgeBotOverlay symbol={symbol} positions={positions} bots={myBots} accountId={accountId} tickerPrices={tickerPrices} />
+            <HedgeBotOverlay symbol={symbol} positions={positions} bots={myBots} accountId={accountId} tickerPrices={tickerPrices} strategies={_strategies} />
           </div>
         </div>
 
@@ -1570,6 +1740,7 @@ export function TerminalPage() {
             {bottomTab === 'executions' && <ExecutionsTable accountId={accountId ?? undefined} />}
             {bottomTab === 'log' && <TradeLog log={log} />}
             {bottomTab === 'pnl' && <PnlTable accountId={accountId ?? undefined} />}
+            {bottomTab === 'debug' && <DebugLogTab />}
           </div>
         </div>
 

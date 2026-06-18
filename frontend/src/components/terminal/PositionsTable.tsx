@@ -3,6 +3,7 @@ import { placeOrder } from '../../api/trader'
 import { createStrategy, listStrategies } from '../../api/strategies'
 import { useState, useEffect, useRef } from 'react'
 import { ClosePositionModal, makeCloseConfirm, type CloseConfirm } from '../common/ClosePositionModal'
+import { getBotKindMeta } from '../../features/bots/botKindMeta'
 
 interface Props {
   accountId: string
@@ -16,15 +17,21 @@ function coinIcon(s: string) {
   return `https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons/32/color/${s.replace(/USDT|USDC|USD$/, '').toLowerCase()}.png`
 }
 
-function getPositionOwner(pos: Position, strategies: Strategy[], accountId: string): string {
+interface PositionOwner {
+  name: string
+  botKind: string | null
+}
+
+function getPositionOwner(pos: Position, strategies: Strategy[], accountId: string): PositionOwner | null {
   const posDir = pos.side === 'Buy' ? 'long' : 'short'
   const match = strategies.find(s =>
     s.account_id === accountId &&
     s.symbol === pos.symbol &&
     (s.direction === posDir || s.direction === 'both')
   )
-  if (!match) return ''
-  return match.bot_id ? (match.bot_name ?? match.bot_id) : 'Manual'
+  if (!match) return null
+  if (!match.bot_id) return { name: 'Manual', botKind: null }
+  return { name: match.bot_name ?? match.bot_id, botKind: match.bot_kind ?? null }
 }
 
 export function PositionsTable({ accountId, positions, onSelect, loading, tickerPrices }: Props) {
@@ -107,6 +114,7 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
         category: pos.category,
         direction: pos.side === 'Buy' ? 'long' : 'short',
         strategy_type: 'grid',
+        adopt_position_data: { size: pos.size, entry_price: pos.entryPrice },
         robot_enabled: false,
         virtual_orders: false,
         entry_order_type: 'limit',
@@ -228,6 +236,7 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
               : parseFloat(pos.unrealisedPnl)
             const pnlPct = entry > 0 && size > 0 ? (pnl / (size * entry)) * 100 : 0
             const owner = getPositionOwner(pos, strategies, accountId)
+            const ownerMeta = owner?.botKind ? getBotKindMeta(owner.botKind) : null
             return (
               <tr
                 key={posKey}
@@ -257,9 +266,22 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
                   {creatingFor === posKey ? (
                     <span className="text-[10px] text-blue-400 animate-pulse">создаём...</span>
                   ) : owner ? (
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${owner === 'Manual' ? 'bg-blue-500/15 text-blue-400' : 'bg-purple-500/15 text-purple-400'}`}>
-                      {owner}
-                    </span>
+                    ownerMeta ? (
+                      <span
+                        className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                        style={{
+                          color: ownerMeta.color,
+                          background: ownerMeta.bg,
+                          border: `1px solid ${ownerMeta.border}`,
+                        }}
+                      >
+                        {owner.name}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-500/15 text-gray-400 border border-gray-500/20">
+                        {owner.name}
+                      </span>
+                    )
                   ) : null}
                 </td>
                 <td className="px-3 py-2 text-right" onClick={e => e.stopPropagation()}>

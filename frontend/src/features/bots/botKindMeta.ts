@@ -13,7 +13,7 @@ export interface BotKindMeta {
   disabled?:  boolean
 }
 
-export const BOT_KINDS: BotKind[] = ['signal', 'parser', 'hedge']
+export const BOT_KINDS: BotKind[] = ['signal', 'parser', 'hedge', 'matrix']
 
 export const BOT_KIND_META: Record<BotKind, BotKindMeta> = {
   signal: {
@@ -49,6 +49,17 @@ export const BOT_KIND_META: Record<BotKind, BotKindMeta> = {
     bg:       'rgba(180,83,9,0.15)',
     bgHeader: 'linear-gradient(135deg,rgba(180,83,9,0.24) 0%,rgba(120,53,15,0.06) 100%)',
     iconBg:   'rgba(180,83,9,0.20)',
+  },
+  matrix: {
+    id:       'matrix',
+    label:    'MatrixBot',
+    tagline:  'Парная матрица с симметричным закрытием',
+    desc:     'Автоматически открывает зеркальные матричные позиции лонг и шорт на каждом символе. Закрывает пару когда суммарный PnL достигает цели — без привязки к внешним позициям.',
+    color:    '#a78bfa',
+    border:   'rgba(124,58,237,0.40)',
+    bg:       'rgba(124,58,237,0.12)',
+    bgHeader: 'linear-gradient(135deg,rgba(124,58,237,0.22) 0%,rgba(91,33,182,0.06) 100%)',
+    iconBg:   'rgba(124,58,237,0.20)',
   },
 }
 

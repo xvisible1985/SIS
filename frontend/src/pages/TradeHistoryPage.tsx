@@ -1,8 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { getTradeHistory, getTradeHistorySymbols, type TradeHistoryRow, type TradeHistoryStats, type TradeHistoryParams } from '../api/tradeHistory'
 import { listStrategies } from '../api/strategies'
 import { apiClient } from '../api/client'
 import type { Bot } from '../features/bots/types'
+
+interface AccountOption { id: string; label: string }
 
 const LIMIT = 50
 const POLL_MS = 30_000
@@ -356,28 +358,85 @@ function SortIcon({ col, sortCol, sortDir }: { col: string; sortCol: string; sor
   return <span className="ml-0.5 text-[#5b8cff]">{sortDir === 'asc' ? '↑' : '↓'}</span>
 }
 
+// ── Pair detection ────────────────────────────────────────────────────────────
+
+interface PairMeta { pairKey: string; combinedNetPnl: number; symbol: string }
+
+function detectPairs(trades: TradeHistoryRow[]): Map<string, PairMeta> {
+  const byKey = new Map<string, TradeHistoryRow[]>()
+  for (const t of trades) {
+    const key = `${t.symbol}::${t.opened_at}`
+    const arr = byKey.get(key) ?? []
+    arr.push(t)
+    byKey.set(key, arr)
+  }
+  const result = new Map<string, PairMeta>()
+  for (const [key, rows] of byKey) {
+    if (rows.length === 2 && rows[0].direction !== rows[1].direction) {
+      const combined = (rows[0].net_pnl ?? 0) + (rows[1].net_pnl ?? 0)
+      const meta: PairMeta = { pairKey: key, combinedNetPnl: combined, symbol: rows[0].symbol }
+      result.set(rows[0].id, meta)
+      result.set(rows[1].id, meta)
+    }
+  }
+  return result
+}
+
+// ── PairSummaryRow ────────────────────────────────────────────────────────────
+
+function PairSummaryRow({ symbol, combinedNetPnl }: { symbol: string; combinedNetPnl: number }) {
+  return (
+    <tr className="border-b border-violet-500/20 bg-violet-500/[.04]">
+      <td colSpan={11} className="py-1.5 px-3">
+        <div className="flex items-center gap-2 text-[11px]">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-violet-500/40 bg-violet-500/15 px-2.5 py-0.5 font-semibold text-violet-300">
+            ⇄ Парное закрытие
+          </span>
+          <span className="text-gray-500">{symbol}</span>
+          <span className="text-gray-600">·</span>
+          <span className="text-gray-400">Совокупный PnL:</span>
+          <span className={`font-mono font-semibold ${combinedNetPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            {combinedNetPnl >= 0 ? '+' : ''}{fmtSig(combinedNetPnl)}$
+          </span>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
 // ── TradeRow ──────────────────────────────────────────────────────────────────
 
-function ExitBadge({ result }: { result: string }) {
-  const label = result === 'tp' ? 'TP' : result === 'sl' ? 'SL' : 'Ручной'
+function ExitBadge({ result, source }: { result: string; source?: string }) {
+  if (result === 'tp') {
+    return <span className="px-1.5 py-0.5 rounded font-medium bg-green-500/15 text-green-400">TP</span>
+  }
+  if (result === 'sl') {
+    return <span className="px-1.5 py-0.5 rounded font-medium bg-red-500/15 text-red-400">SL</span>
+  }
+  const isManualSource = source === 'manual'
   return (
-    <span className="px-1.5 py-0.5 rounded font-medium bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-      {label}
+    <span className={`px-1.5 py-0.5 rounded font-medium ${isManualSource ? 'bg-yellow-500/15 text-yellow-400' : 'bg-gray-800 text-gray-400'}`}>
+      {isManualSource ? 'Ручная' : 'Ручной'}
     </span>
   )
 }
 
-function TradeRow({ t }: { t: TradeHistoryRow }) {
+function TradeRow({ t, isPaired }: { t: TradeHistoryRow; isPaired?: boolean }) {
   return (
-    <tr className="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30">
+    <tr className={`border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/30 ${isPaired ? 'bg-violet-500/[.02]' : ''}`}>
       <td className="py-2.5 px-3 text-sm font-medium">{t.symbol}</td>
       <td className="py-2.5 px-3 text-xs">
-        <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${t.direction === 'long' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-          {t.direction === 'long' ? 'LONG' : 'SHORT'}
-        </span>
+        <div className="flex items-center gap-1">
+          <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${t.direction === 'long' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+            {t.direction === 'long' ? 'LONG' : 'SHORT'}
+          </span>
+          {isPaired && (
+            <span className="text-[10px] font-bold text-violet-400" title="Парная сделка">⇄</span>
+          )}
+        </div>
       </td>
       <td className="py-2.5 px-3 text-xs">
-        <ExitBadge result={t.result} />
+        <ExitBadge result={t.result} source={t.source} />
       </td>
       <td className="py-2.5 px-3 text-xs text-gray-500">{t.bot_name ?? '—'}</td>
       <td className="py-2.5 px-3 text-xs text-right">{fmt(t.volume_usdt, 1)}$</td>
@@ -440,6 +499,8 @@ function TradeRow({ t }: { t: TradeHistoryRow }) {
 type FilterItem = { id: string; label: string; kind: 'bot' | 'strategy' }
 
 export function TradeHistoryPage() {
+  const [accounts, setAccounts]         = useState<AccountOption[]>([])
+  const [filterAccount, setFilterAccount] = useState('')
   const [filterItems, setFilterItems]   = useState<FilterItem[]>([])
   const [symbolOptions, setSymbolOptions] = useState<string[]>([])
   const [filterSymbol, setFilterSymbol] = useState('')
@@ -447,9 +508,10 @@ export function TradeHistoryPage() {
   const [trades, setTrades] = useState<TradeHistoryRow[]>([])
   const [total, setTotal]   = useState(0)
   const [offset, setOffset] = useState(0)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading]  = useState(false)
 
   const [filterItem,   setFilterItem]   = useState('')
+  const [filterSource, setFilterSource] = useState<'' | 'strategy' | 'manual'>('')
   const [filterResult, setFilterResult] = useState<'' | 'tp' | 'sl' | 'manual'>('')
   const [dateFrom,     setDateFrom]     = useState('')
   const [dateTo,       setDateTo]       = useState('')
@@ -457,6 +519,13 @@ export function TradeHistoryPage() {
 
   const [sortCol, setSortCol] = useState<SortCol>('closed_at')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
+
+  // ── Fetch accounts once (for account filter dropdown) ──
+  useEffect(() => {
+    apiClient.get<AccountOption[]>('/accounts')
+      .then(r => setAccounts(r.data ?? []))
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     getTradeHistorySymbols().then(setSymbolOptions).catch(() => {})
@@ -506,13 +575,15 @@ export function TradeHistoryPage() {
     })
   }, [])
 
-  const load = useCallback(async (off: number, silent = false) => {
+  // ── Load trade history from DB ────────────────────────────────────────────
+  const loadDB = useCallback(async (off: number, silent = false) => {
     if (!silent) setLoading(true)
     const params: TradeHistoryParams = { limit: LIMIT, offset: off, sort_by: sortCol, sort_dir: sortDir }
+    if (filterAccount) params.account_id = filterAccount
     if (filterItem.startsWith('bot:'))      params.bot_id      = filterItem.slice(4)
     if (filterItem.startsWith('strategy:')) params.strategy_id = filterItem.slice(9)
     if (filterItem.startsWith('bot-symbol:')) {
-      const rest = filterItem.slice('bot-symbol:'.length)       // "botId:SYMBOL"
+      const rest = filterItem.slice('bot-symbol:'.length)
       const colon = rest.indexOf(':')
       if (colon !== -1) {
         params.bot_id = rest.slice(0, colon)
@@ -520,6 +591,7 @@ export function TradeHistoryPage() {
       }
     }
     if (filterSymbol)  params.symbol  = filterSymbol
+    if (filterSource)  params.source  = filterSource
     if (filterResult)  params.result  = filterResult
     if (dateFrom) params.from = new Date(dateFrom).toISOString()
     if (dateTo)   params.to   = new Date(dateTo + 'T23:59:59').toISOString()
@@ -534,14 +606,20 @@ export function TradeHistoryPage() {
     } finally {
       if (!silent) setLoading(false)
     }
-  }, [filterItem, filterSymbol, filterResult, dateFrom, dateTo, sortCol, sortDir])
+  }, [filterAccount, filterItem, filterSymbol, filterSource, filterResult, dateFrom, dateTo, sortCol, sortDir])
+
+  const load = useCallback((off: number, silent = false) => {
+    loadDB(off, silent)
+  }, [loadDB])
 
   useEffect(() => { load(0) }, [load])
 
   useEffect(() => {
-    const id = setInterval(() => { load(offset, true) }, POLL_MS)
+    const id = setInterval(() => { loadDB(offset, true) }, POLL_MS)
     return () => clearInterval(id)
-  }, [load, offset])
+  }, [loadDB, offset])
+
+  const displayStats = stats
 
   function handleSort(col: SortCol) {
     if (col === sortCol) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
@@ -549,7 +627,7 @@ export function TradeHistoryPage() {
     // offset reset happens via useEffect on load deps change
   }
 
-  const hasFilter = !!(filterItem || filterSymbol || filterResult || dateFrom || dateTo)
+  const hasFilter = !!(filterAccount || filterItem || filterSymbol || filterSource || filterResult || dateFrom || dateTo)
 
   const COLS: [SortCol, string, string][] = [
     ['symbol',     'Символ',          'left'],
@@ -574,6 +652,22 @@ export function TradeHistoryPage() {
 
       {/* Filters */}
       <div className="flex flex-wrap gap-3 mb-5">
+
+        {/* Account filter */}
+        {accounts.length > 1 && (
+          <select
+            value={filterAccount}
+            onChange={e => setFilterAccount(e.target.value)}
+            className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-medium"
+          >
+            <option value="">Все аккаунты</option>
+            {accounts.map(a => (
+              <option key={a.id} value={a.id}>{a.label}</option>
+            ))}
+          </select>
+        )}
+
+        {/* Strategy / bot filter */}
         <select
           value={filterItem}
           onChange={e => setFilterItem(e.target.value)}
@@ -596,7 +690,7 @@ export function TradeHistoryPage() {
           )}
         </select>
 
-        {/* Symbol filter — populated from actual trade_history data */}
+        {/* Symbol filter */}
         {symbolOptions.length > 0 && (
           <select
             value={filterSymbol}
@@ -610,6 +704,18 @@ export function TradeHistoryPage() {
           </select>
         )}
 
+        {/* Source filter */}
+        <select
+          value={filterSource}
+          onChange={e => setFilterSource(e.target.value as '' | 'strategy' | 'manual')}
+          className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200"
+        >
+          <option value="">Все сделки</option>
+          <option value="strategy">Стратегия</option>
+          <option value="manual">Ручные</option>
+        </select>
+
+        {/* Result filter */}
         <select
           value={filterResult}
           onChange={e => setFilterResult(e.target.value as '' | 'tp' | 'sl' | 'manual')}
@@ -630,7 +736,17 @@ export function TradeHistoryPage() {
 
         {hasFilter && (
           <button
-            onClick={() => { setFilterItem(''); setFilterSymbol(''); setFilterResult(''); setDateFrom(''); setDateTo(''); setDatePreset('all') }}
+            onClick={() => {
+              setFilterAccount('')
+              setFilterItem('')
+              setFilterSymbol('')
+              setFilterSource('')
+              setFilterResult('')
+              setDateFrom('')
+              setDateTo('')
+              setDatePreset('all')
+              setTrades([])
+            }}
             className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 underline"
           >
             Сбросить
@@ -639,7 +755,7 @@ export function TradeHistoryPage() {
       </div>
 
       {/* Stats */}
-      {stats && <StatsCards stats={stats} />}
+      {displayStats && <StatsCards stats={displayStats} />}
 
       {/* Table */}
       <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl overflow-hidden">
@@ -667,12 +783,35 @@ export function TradeHistoryPage() {
                 </tr>
               </thead>
               <tbody>
-                {trades.map((t: TradeHistoryRow) => <TradeRow key={t.id} t={t} />)}
+                {(() => {
+                  const pairMap = detectPairs(trades)
+                  const emitted = new Set<string>()
+                  const rows: ReactNode[] = []
+                  for (const t of trades) {
+                    const meta = pairMap.get(t.id)
+                    rows.push(<TradeRow key={t.id} t={t} isPaired={!!meta} />)
+                    if (meta) {
+                      if (emitted.has(meta.pairKey)) {
+                        rows.push(
+                          <PairSummaryRow
+                            key={`pair-${meta.pairKey}`}
+                            symbol={meta.symbol}
+                            combinedNetPnl={meta.combinedNetPnl}
+                          />
+                        )
+                      } else {
+                        emitted.add(meta.pairKey)
+                      }
+                    }
+                  }
+                  return rows
+                })()}
               </tbody>
             </table>
           </div>
         )}
 
+        {/* ── Pagination ── */}
         {total > LIMIT && (
           <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100 dark:border-gray-800">
             <span className="text-xs text-gray-500">
@@ -681,14 +820,14 @@ export function TradeHistoryPage() {
             <div className="flex gap-2">
               <button
                 disabled={offset === 0}
-                onClick={() => load(Math.max(0, offset - LIMIT))}
+                onClick={() => loadDB(Math.max(0, offset - LIMIT))}
                 className="px-3 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded-lg disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-gray-800"
               >
                 ← Назад
               </button>
               <button
                 disabled={offset + LIMIT >= total}
-                onClick={() => load(offset + LIMIT)}
+                onClick={() => loadDB(offset + LIMIT)}
                 className="px-3 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded-lg disabled:opacity-40 hover:bg-gray-50 dark:hover:bg-gray-800"
               >
                 Вперёд →

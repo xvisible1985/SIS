@@ -1,8 +1,9 @@
+// services/api-gateway/dashboard_handler.go
 package main
 
 import (
-	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -58,182 +59,182 @@ type dashboardResponse struct {
 }
 
 // GetDashboard returns aggregated trade stats, daily PnL, bot leaderboard, and recent trades.
-// GET /dashboard?period=1d|7d|30d|90d|1y|all
+// GET /dashboard?period=1d|7d|30d|90d|1y|all&account_id=
 func (s *Server) GetDashboard(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
+	q := r.URL.Query()
+	period := q.Get("period")
+	accountID := q.Get("account_id")
 
-	period := r.URL.Query().Get("period")
-	now := time.Now().UTC()
-	var cutoff time.Time
-	switch period {
-	case "1d":
-		cutoff = now.AddDate(0, 0, -1)
-	case "7d":
-		cutoff = now.AddDate(0, 0, -7)
-	case "90d":
-		cutoff = now.AddDate(0, 0, -90)
-	case "1y":
-		cutoff = now.AddDate(-1, 0, 0)
-	case "all":
-		cutoff = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
-	default: // "30d"
-		cutoff = now.AddDate(0, 0, -30)
-	}
-
-	// When period is "1d" we use hourly buckets; otherwise daily.
 	granularity := "day"
 	if period == "1d" {
 		granularity = "hour"
 	}
 
-	// ─── Period stats ─────────────────────────────────────────────────────────
+	now := time.Now().UTC()
+	var since *time.Time
+	switch period {
+	case "1d":
+		t := now.Add(-24 * time.Hour)
+		since = &t
+	case "7d":
+		t := now.AddDate(0, 0, -7)
+		since = &t
+	case "30d":
+		t := now.AddDate(0, 0, -30)
+		since = &t
+	case "90d":
+		t := now.AddDate(0, 0, -90)
+		since = &t
+	case "1y":
+		t := now.AddDate(-1, 0, 0)
+		since = &t
+	}
+
+	ctx := r.Context()
+
+	// Build reusable base filter.
+	baseWhere := "WHERE th.owner_id = $1"
+	baseArgs := []any{userID}
+	n := 2
+	addFilter := func(cond string, val any) {
+		baseWhere += " AND " + cond + " $" + strconv.Itoa(n)
+		baseArgs = append(baseArgs, val)
+		n++
+	}
+	if accountID != "" {
+		addFilter("th.account_id =", accountID)
+	}
+	if since != nil {
+		addFilter("th.closed_at >=", *since)
+	}
+
+	// ── 1. Period stats ───────────────────────────────────────────────────────
 	var stats dashboardPeriodStats
-	var best, worst *float64
-	var grossProfit, grossLoss float64
-	err := s.pool.QueryRow(r.Context(), `
-		SELECT
-			COUNT(*)::int,
-			COUNT(*) FILTER (WHERE result = 'tp')::int,
-			COUNT(*) FILTER (WHERE result = 'sl')::int,
-			COALESCE(SUM(pnl), 0),
-			COALESCE(AVG(pnl), 0),
-			MAX(pnl),
-			MIN(pnl),
-			COALESCE(SUM(pnl) FILTER (WHERE pnl > 0), 0),
-			COALESCE(ABS(SUM(pnl) FILTER (WHERE pnl < 0)), 0)
-		FROM trade_history
-		WHERE owner_id = $1 AND closed_at >= $2`,
-		userID, cutoff,
-	).Scan(
-		&stats.Total, &stats.Wins, &stats.Losses,
-		&stats.TotalPnL, &stats.AvgPnL, &best, &worst,
-		&grossProfit, &grossLoss,
-	)
-	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
-		return
-	}
-	stats.BestTrade = best
-	stats.WorstTrade = worst
-	if stats.Total > 0 {
-		stats.WinRate = float64(stats.Wins) / float64(stats.Total) * 100
-	}
-	if grossLoss > 0 {
-		stats.ProfitFactor = grossProfit / grossLoss
-	} else if grossProfit > 0 {
-		stats.ProfitFactor = 999 // infinite — no losing trades
-	}
-
-	// ─── Periodic PnL buckets (hourly for "1d", daily for all other periods) ────
-	var bucketSQL, dayFmt string
-	if granularity == "hour" {
-		bucketSQL = `DATE_TRUNC('hour', closed_at AT TIME ZONE 'UTC')`
-		dayFmt = "2006-01-02T15" // e.g. "2026-06-03T14" — frontend appends ":00"
-	} else {
-		bucketSQL = `DATE_TRUNC('day', closed_at AT TIME ZONE 'UTC')`
-		dayFmt = "2006-01-02"
-	}
-	dailyRows, err := s.pool.Query(r.Context(), `
-		SELECT
-			`+bucketSQL+` AS bucket,
-			COALESCE(SUM(pnl), 0),
-			COUNT(*)::int,
-			COUNT(*) FILTER (WHERE result = 'tp')::int
-		FROM trade_history
-		WHERE owner_id = $1 AND closed_at >= $2
-		GROUP BY 1
-		ORDER BY 1`,
-		userID, cutoff,
-	)
-	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
-		return
-	}
-	defer dailyRows.Close()
-
-	var dailyPnL []dashboardDayPnL
-	for dailyRows.Next() {
-		var d dashboardDayPnL
-		var bucket time.Time
-		if err := dailyRows.Scan(&bucket, &d.PnL, &d.Trades, &d.Wins); err != nil {
-			continue
+	{
+		row := s.pool.QueryRow(ctx, `
+			SELECT
+				COUNT(*)                                                      AS total,
+				COUNT(*) FILTER (WHERE net_pnl > 0)                          AS wins,
+				COUNT(*) FILTER (WHERE net_pnl <= 0)                         AS losses,
+				COALESCE(SUM(net_pnl), 0)                                    AS total_pnl,
+				COALESCE(AVG(net_pnl), 0)                                    AS avg_pnl,
+				MAX(net_pnl)                                                  AS best_trade,
+				MIN(net_pnl)                                                  AS worst_trade,
+				COALESCE(SUM(net_pnl) FILTER (WHERE net_pnl > 0), 0)        AS gross_profit,
+				COALESCE(ABS(SUM(net_pnl) FILTER (WHERE net_pnl < 0)), 0)   AS gross_loss
+			FROM trade_history th `+baseWhere,
+			baseArgs...,
+		)
+		var grossProfit, grossLoss float64
+		_ = row.Scan(
+			&stats.Total, &stats.Wins, &stats.Losses,
+			&stats.TotalPnL, &stats.AvgPnL,
+			&stats.BestTrade, &stats.WorstTrade,
+			&grossProfit, &grossLoss,
+		)
+		if stats.Total > 0 {
+			stats.WinRate = float64(stats.Wins) / float64(stats.Total) * 100
 		}
-		d.Day = bucket.UTC().Format(dayFmt)
-		dailyPnL = append(dailyPnL, d)
-	}
-	if dailyPnL == nil {
-		dailyPnL = []dashboardDayPnL{}
-	}
-
-	// ─── Bot stats (same period as selected filter) ───────────────────────────
-	botRows, err := s.pool.Query(r.Context(), `
-		SELECT b.id, b.name, b.status,
-			COUNT(th.id)::int,
-			COUNT(th.id) FILTER (WHERE th.result = 'tp')::int,
-			COALESCE(SUM(th.pnl), 0)
-		FROM bots b
-		LEFT JOIN trade_history th
-			ON th.bot_id = b.id AND th.owner_id = $1 AND th.closed_at >= $2
-		WHERE b.owner_id = $1
-		GROUP BY b.id, b.name, b.status
-		ORDER BY COALESCE(SUM(th.pnl), 0) DESC
-		LIMIT 10`,
-		userID, cutoff,
-	)
-	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
-		return
-	}
-	defer botRows.Close()
-
-	var botStats []dashboardBotStat
-	for botRows.Next() {
-		var b dashboardBotStat
-		if err := botRows.Scan(&b.BotID, &b.Name, &b.Status, &b.Trades, &b.Wins, &b.PnL); err != nil {
-			continue
+		switch {
+		case grossLoss > 0:
+			stats.ProfitFactor = grossProfit / grossLoss
+		case grossProfit > 0:
+			stats.ProfitFactor = 999
 		}
-		botStats = append(botStats, b)
-	}
-	if botStats == nil {
-		botStats = []dashboardBotStat{}
 	}
 
-	// ─── Recent trades (last 10 within the selected period) ──────────────────
-	recentRows, err := s.pool.Query(r.Context(), `
-		SELECT th.id, th.symbol, th.direction, th.result,
-			b.name, th.pnl, th.pnl_pct, th.closed_at
-		FROM trade_history th
-		LEFT JOIN bots b ON b.id = th.bot_id
-		WHERE th.owner_id = $1 AND th.closed_at >= $2
-		ORDER BY th.closed_at DESC
-		LIMIT 10`,
-		userID, cutoff,
-	)
-	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
-		return
-	}
-	defer recentRows.Close()
-
-	var recentTrades []dashboardRecentTrade
-	for recentRows.Next() {
-		var t dashboardRecentTrade
-		var closedAt time.Time
-		if err := recentRows.Scan(
-			&t.ID, &t.Symbol, &t.Direction, &t.Result,
-			&t.BotName, &t.PnL, &t.PnLPct, &closedAt,
-		); err != nil {
-			continue
+	// ── 2. Daily / hourly PnL ────────────────────────────────────────────────
+	dailyPnL := []dashboardDayPnL{}
+	{
+		trunc := "day"
+		if granularity == "hour" {
+			trunc = "hour"
 		}
-		t.ClosedAt = closedAt.UTC().Format(time.RFC3339)
-		recentTrades = append(recentTrades, t)
-	}
-	if recentTrades == nil {
-		recentTrades = []dashboardRecentTrade{}
+		rows, err := s.pool.Query(ctx, `
+			SELECT
+				DATE_TRUNC('`+trunc+`', th.closed_at) AS bucket,
+				COALESCE(SUM(th.net_pnl), 0)          AS pnl,
+				COUNT(*)                               AS trades,
+				COUNT(*) FILTER (WHERE th.net_pnl > 0) AS wins
+			FROM trade_history th `+baseWhere+`
+			GROUP BY bucket
+			ORDER BY bucket ASC`,
+			baseArgs...,
+		)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var bucket time.Time
+				var entry dashboardDayPnL
+				if rows.Scan(&bucket, &entry.PnL, &entry.Trades, &entry.Wins) == nil {
+					entry.Day = bucket.Format(time.RFC3339)
+					dailyPnL = append(dailyPnL, entry)
+				}
+			}
+		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(dashboardResponse{
+	// ── 3. Bot leaderboard ───────────────────────────────────────────────────
+	botStats := []dashboardBotStat{}
+	{
+		// Extend baseArgs with bot_id IS NOT NULL (no extra param needed — it's a constant).
+		rows, err := s.pool.Query(ctx, `
+			SELECT
+				b.id, b.name, b.status,
+				COUNT(th.id)                                AS trades,
+				COUNT(th.id) FILTER (WHERE th.net_pnl > 0) AS wins,
+				COALESCE(SUM(th.net_pnl), 0)               AS pnl
+			FROM trade_history th
+			JOIN bots b ON b.id = th.bot_id `+baseWhere+`
+				AND th.bot_id IS NOT NULL
+			GROUP BY b.id, b.name, b.status
+			ORDER BY pnl DESC
+			LIMIT 10`,
+			baseArgs...,
+		)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var bs dashboardBotStat
+				if rows.Scan(&bs.BotID, &bs.Name, &bs.Status, &bs.Trades, &bs.Wins, &bs.PnL) == nil {
+					botStats = append(botStats, bs)
+				}
+			}
+		}
+	}
+
+	// ── 4. Recent trades ─────────────────────────────────────────────────────
+	recentTrades := []dashboardRecentTrade{}
+	{
+		rows, err := s.pool.Query(ctx, `
+			SELECT
+				th.id, th.symbol, th.direction, th.result,
+				b.name,
+				th.net_pnl,
+				th.pnl_pct,
+				th.closed_at
+			FROM trade_history th
+			LEFT JOIN bots b ON b.id = th.bot_id `+baseWhere+`
+			ORDER BY th.closed_at DESC
+			LIMIT 10`,
+			baseArgs...,
+		)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var rt dashboardRecentTrade
+				var closedAt time.Time
+				if rows.Scan(&rt.ID, &rt.Symbol, &rt.Direction, &rt.Result,
+					&rt.BotName, &rt.PnL, &rt.PnLPct, &closedAt) == nil {
+					rt.ClosedAt = closedAt.Format(time.RFC3339)
+					recentTrades = append(recentTrades, rt)
+				}
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, dashboardResponse{
 		Stats:        stats,
 		DailyPnL:     dailyPnL,
 		BotStats:     botStats,
