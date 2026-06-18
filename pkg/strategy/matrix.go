@@ -763,6 +763,96 @@ func (sr *StrategyRunner) runMatrixPriceMonitorPolling(ctx context.Context, canc
 	}
 }
 
+// matrixApplyStopCondSLs checks all filled levels and places a replacement SL for any
+// level whose stop_cond threshold has been crossed at currentPrice.
+// Mirrors section 3 of matrixPriceTick and is also called once at startup in loadMatrixCycle
+// to handle levels whose threshold was crossed while the server was down.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixApplyStopCondSLs(ctx context.Context, currentPrice float64) {
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Status != LevelFilled || l.SLReplaced || l.Slot == nil {
+			continue
+		}
+		_, _, stopCondPct, stopReplacePct := sr.matrixLevelConfig(*l.Slot)
+		if stopCondPct == nil || stopReplacePct == nil {
+			continue
+		}
+		condPct := math.Abs(*stopCondPct)
+		threshold := matrixStopCondThreshold(sr.strategy.Direction, l.FilledPrice, condPct)
+		var condMet bool
+		if sr.strategy.Direction == DirectionLong {
+			condMet = currentPrice >= threshold
+		} else {
+			condMet = currentPrice <= threshold
+		}
+		if !condMet {
+			continue
+		}
+		// Replace SL
+		newTrigger := matrixStopReplaceTrigger(sr.strategy.Direction, l.FilledPrice, *stopReplacePct)
+		if l.SLOrderID != "" {
+			old := l.SLOrderID
+			sr.runner.UnregisterOrder(old)
+			l.SLOrderID = ""
+			sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{ //nolint:errcheck
+				Symbol:      sr.strategy.Symbol,
+				Category:    sr.strategy.Category,
+				OrderId:     old,
+				OrderFilter: "StopOrder",
+			})
+		}
+
+		var slSide string
+		var trigDir int
+		if sr.strategy.Direction == DirectionLong {
+			slSide, trigDir = "Sell", 2
+		} else {
+			slSide, trigDir = "Buy", 1
+		}
+		sr.matrixSLSeq++
+		linkID := fmt.Sprintf("SIS_STR-%s-msl-%s-%d",
+			sr.strategy.ID[:8], matrixSlotLinkStr(l), sr.matrixSLSeq)
+		qty, _ := strconv.ParseFloat(l.Qty, 64)
+		fmtQty := trader.FormatQty(qty, sr.instr.QtyStep, sr.instr.MinQty)
+		if fmtQty == "0" || fmtQty == "" {
+			sr.warn(ctx, fmt.Sprintf("matrixApplyStopCondSLs: stop-cond SL replace L%d: qty rounds to zero, skipping", l.LevelIdx))
+			continue
+		}
+		ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "matrix_sl"}
+		sr.runner.RegisterOrder(linkID, ref)
+
+		result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+			Symbol:           sr.strategy.Symbol,
+			Category:         sr.strategy.Category,
+			Side:             slSide,
+			OrderType:        "Market",
+			Qty:              fmtQty,
+			TriggerPrice:     trader.FormatPrice(newTrigger, sr.instr.TickSize),
+			TriggerBy:        "LastPrice",
+			TriggerDirection: trigDir,
+			OrderFilter:      "StopOrder",
+			ReduceOnly:       !sr.strategy.HedgeMode,
+			PositionIdx:      positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
+			OrderLinkId:      linkID,
+		})
+		if err != nil {
+			sr.runner.UnregisterOrder(linkID)
+			sr.errlog(ctx, fmt.Sprintf("Matrix stop-cond SL replace %s: %v", slotLabel(l.Slot), err))
+			continue
+		}
+		l.SLOrderID = result.OrderId
+		l.SLPrice = newTrigger
+		l.SLReplaced = true
+		sr.runner.RegisterOrder(result.OrderId, ref)
+		sr.runner.pool.Exec(ctx, //nolint:errcheck
+			`UPDATE strategy_levels SET sl_order_id=$1, sl_price=$2, sl_replaced=true WHERE id=$3`,
+			result.OrderId, newTrigger, l.ID,
+		)
+		sr.info(ctx, fmt.Sprintf("Matrix SL %s переставлен → %.4f (stop cond сработал)", slotLabel(l.Slot), newTrigger))
+	}
+}
+
 // matrixPriceTick is called on each mark price update from TickerHub or the REST fallback poll.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice float64) {
@@ -817,88 +907,7 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 	}
 
 	// 3. Check stop conditions for filled levels
-	for i := range sr.levels {
-		l := &sr.levels[i]
-		if l.Status != LevelFilled || l.SLReplaced || l.Slot == nil {
-			continue
-		}
-		_, _, stopCondPct, stopReplacePct := sr.matrixLevelConfig(*l.Slot)
-		if stopCondPct == nil || stopReplacePct == nil {
-			continue
-		}
-		condPct := math.Abs(*stopCondPct)
-		threshold := matrixStopCondThreshold(sr.strategy.Direction, l.FilledPrice, condPct)
-		var condMet bool
-		if sr.strategy.Direction == DirectionLong {
-			condMet = currentPrice >= threshold
-		} else {
-			condMet = currentPrice <= threshold
-		}
-		if !condMet {
-			continue
-		}
-		// Replace SL
-		newTrigger := matrixStopReplaceTrigger(sr.strategy.Direction, l.FilledPrice, *stopReplacePct)
-		if l.SLOrderID != "" {
-			old := l.SLOrderID
-			sr.runner.UnregisterOrder(old)
-			l.SLOrderID = ""
-			sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{ //nolint:errcheck
-				Symbol:      sr.strategy.Symbol,
-				Category:    sr.strategy.Category,
-				OrderId:     old,
-				OrderFilter: "StopOrder",
-			})
-		}
-
-		var slSide string
-		var trigDir int
-		if sr.strategy.Direction == DirectionLong {
-			slSide, trigDir = "Sell", 2
-		} else {
-			slSide, trigDir = "Buy", 1
-		}
-		sr.matrixSLSeq++
-		linkID := fmt.Sprintf("SIS_STR-%s-msl-%s-%d",
-			sr.strategy.ID[:8], matrixSlotLinkStr(l), sr.matrixSLSeq)
-		qty, _ := strconv.ParseFloat(l.Qty, 64)
-		fmtQty := trader.FormatQty(qty, sr.instr.QtyStep, sr.instr.MinQty)
-		if fmtQty == "0" || fmtQty == "" {
-			sr.warn(ctx, fmt.Sprintf("matrixPriceTick: stop-cond SL replace L%d: qty rounds to zero, skipping", l.LevelIdx))
-			continue
-		}
-		ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "matrix_sl"}
-		sr.runner.RegisterOrder(linkID, ref)
-
-		result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
-			Symbol:           sr.strategy.Symbol,
-			Category:         sr.strategy.Category,
-			Side:             slSide,
-			OrderType:        "Market",
-			Qty:              fmtQty,
-			TriggerPrice:     trader.FormatPrice(newTrigger, sr.instr.TickSize),
-			TriggerBy:        "LastPrice",
-			TriggerDirection: trigDir,
-			OrderFilter:      "StopOrder",
-			ReduceOnly:       !sr.strategy.HedgeMode,
-			PositionIdx:      positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
-			OrderLinkId:      linkID,
-		})
-		if err != nil {
-			sr.runner.UnregisterOrder(linkID)
-			sr.errlog(ctx, fmt.Sprintf("Matrix stop-cond SL replace %s: %v", slotLabel(l.Slot), err))
-			continue
-		}
-		l.SLOrderID = result.OrderId
-		l.SLPrice = newTrigger
-		l.SLReplaced = true
-		sr.runner.RegisterOrder(result.OrderId, ref)
-		sr.runner.pool.Exec(ctx, //nolint:errcheck
-			`UPDATE strategy_levels SET sl_order_id=$1, sl_price=$2, sl_replaced=true WHERE id=$3`,
-			result.OrderId, newTrigger, l.ID,
-		)
-		sr.info(ctx, fmt.Sprintf("Matrix SL %s переставлен → %.4f (stop cond сработал)", slotLabel(l.Slot), newTrigger))
-	}
+	sr.matrixApplyStopCondSLs(ctx, currentPrice)
 
 	// 4. Retry placing per-level SL for filled levels where SL is missing.
 	// Handles cases where SL placement failed at fill time: zero fill price (race with
