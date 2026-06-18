@@ -52,6 +52,29 @@ func userStatus(isBlocked, emailVerified bool) string {
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
+// ImpersonateUser generates a JWT for the target user so the admin can
+// log in as them client-side. The token TTL matches a normal session (7 days).
+// POST /admin/impersonate/{userId}
+func (s *Server) ImpersonateUser(w http.ResponseWriter, r *http.Request) {
+	targetID := chi.URLParam(r, "userId")
+	ctx := r.Context()
+
+	var exists bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)`, targetID,
+	).Scan(&exists); err != nil || !exists {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+
+	token, err := auth.GenerateToken(targetID, string(s.jwtSecret), 7*24*time.Hour)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "token error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"token": token})
+}
+
 // ListAdminUsers returns all users with decrypted exchange accounts.
 // GET /admin/users
 func (s *Server) ListAdminUsers(w http.ResponseWriter, r *http.Request) {

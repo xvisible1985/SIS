@@ -1,0 +1,19 @@
+# Frontend build artifacts
+frontend/node_modules
+frontend/dist
+
+# Dev tooling
+.claude
+.worktrees
+.git
+
+# Test / local binaries
+**/*.exe
+**/*.test
+
+# Docs
+docs/
+
+# IDE
+.vscode
+.idea

@@ -968,7 +968,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
                     <div className="grid grid-cols-[28px_1fr_1fr_1fr_28px] gap-2 text-[10px] text-gray-600 mb-1 px-0.5">
                       <div className="text-center">#</div>
                       <div className="text-center">Движение %</div>
-                      <div className="text-center">Лотов</div>
+                      <div className="text-center">% от депозита</div>
                       <div className="text-center">USDT</div>
                       <div />
                     </div>

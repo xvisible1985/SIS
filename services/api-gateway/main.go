@@ -273,6 +273,7 @@ func main() {
 		r.Group(func(r chi.Router) {
 			r.Use(s.RequireAdmin)
 			// Admin: user management
+			r.Post("/admin/impersonate/{userId}", s.ImpersonateUser)
 			r.Get("/admin/users", s.ListAdminUsers)
 			r.Patch("/admin/users/{id}", s.PatchAdminUser)
 			r.Post("/admin/users/{id}/email/verify", s.AdminVerifyEmail)

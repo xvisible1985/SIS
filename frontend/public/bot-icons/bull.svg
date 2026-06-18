@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4ade80"/>
+      <stop offset="100%" stop-color="#16a34a"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#001508"/>
+  <!-- horns -->
+  <path d="M16 22 Q10 12 14 8 Q20 14 22 20Z" fill="url(#g)"/>
+  <path d="M48 22 Q54 12 50 8 Q44 14 42 20Z" fill="url(#g)"/>
+  <!-- head -->
+  <ellipse cx="32" cy="34" rx="18" ry="16" fill="url(#g)"/>
+  <!-- muzzle -->
+  <ellipse cx="32" cy="43" rx="10" ry="7" fill="#15803d"/>
+  <!-- nostrils -->
+  <ellipse cx="28" cy="44" rx="2.5" ry="2" fill="#001508"/>
+  <ellipse cx="36" cy="44" rx="2.5" ry="2" fill="#001508"/>
+  <!-- eyes -->
+  <circle cx="24" cy="30" r="4" fill="#001508"/>
+  <circle cx="40" cy="30" r="4" fill="#001508"/>
+  <circle cx="25" cy="29" r="1.5" fill="#4ade80"/>
+  <circle cx="41" cy="29" r="1.5" fill="#4ade80"/>
+  <!-- forehead -->
+  <path d="M22 26 Q32 20 42 26" fill="none" stroke="#4ade80" stroke-width="1.5" opacity=".5"/>
+  <!-- arrow up -->
+  <polygon points="32,4 38,14 26,14" fill="#4ade80" opacity=".3"/>
+</svg>

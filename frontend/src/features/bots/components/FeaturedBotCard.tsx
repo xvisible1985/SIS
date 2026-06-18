@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { Check, Flame, Users, Copy, TrendingUp, Search, Shield, Layers, RotateCcw, BookOpen, CheckCircle2 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { FeaturedBot } from '../ui-types';
@@ -18,12 +18,13 @@ type Props = {
   bot: FeaturedBot;
   alreadyOwned?: boolean;
   onOpen: () => void;
-  onAdd: () => void;
+  onAdd: (sourceRect: DOMRect) => void;
 };
 
 /** Карточка готового бота с 3D-флипом при клике (если есть fullDescription) */
 export function FeaturedBotCard({ bot, alreadyOwned = false, onOpen, onAdd }: Props) {
   const [flipped, setFlipped] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
 
   const km    = getBotKindMeta(bot.botKind);
   const Icon: LucideIcon = KIND_ICONS[bot.botKind ?? 'signal'];
@@ -40,8 +41,22 @@ export function FeaturedBotCard({ bot, alreadyOwned = false, onOpen, onAdd }: Pr
     else onOpen();
   }
 
+  function getRect(): DOMRect {
+    return cardRef.current?.getBoundingClientRect() ?? new DOMRect();
+  }
+
   return (
-    <div className="relative h-full" style={{ perspective: '1200px' }}>
+    <div
+      ref={cardRef}
+      className="relative h-full"
+      style={{ perspective: '1200px' }}
+      draggable={!alreadyOwned}
+      onDragStart={(e) => {
+        e.dataTransfer.setData('botId', bot.id);
+        e.dataTransfer.effectAllowed = 'copy';
+        // полупрозрачный ghost по умолчанию от браузера
+      }}
+    >
 
       {/* flip container */}
       <div
@@ -149,7 +164,7 @@ export function FeaturedBotCard({ bot, alreadyOwned = false, onOpen, onAdd }: Pr
                   </span>
                 ) : (
                   <span
-                    onClick={(e) => { e.stopPropagation(); onAdd(); }}
+                    onClick={(e) => { e.stopPropagation(); onAdd(getRect()); }}
                     className="inline-flex items-center gap-1.5 rounded-lg border border-[#5b8cff]/35 bg-[#5b8cff]/[.12] px-3 py-2 text-xs font-semibold text-[#a0b8ff] hover:bg-[#5b8cff]/[.20] transition-colors cursor-pointer"
                   >
                     <Copy size={11} strokeWidth={2.2} />
@@ -208,7 +223,7 @@ export function FeaturedBotCard({ bot, alreadyOwned = false, onOpen, onAdd }: Pr
               ) : (
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); onAdd(); }}
+                  onClick={(e) => { e.stopPropagation(); onAdd(getRect()); }}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-[#5b8cff]/35 bg-[#5b8cff]/[.12] px-3 py-2 text-xs font-semibold text-[#a0b8ff] hover:bg-[#5b8cff]/[.20] transition-colors"
                 >
                   <Copy size={11} strokeWidth={2.2} />

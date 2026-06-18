@@ -6,8 +6,10 @@ import { getProfile } from '../api/account'
 import { Sidebar } from './Sidebar'
 import { MobileNav } from './MobileNav'
 import { DepositModal } from './DepositModal'
+import { AdminUserPickerBar } from './AdminUserPickerBar'
 import { useSelectedAccount } from '../contexts/AccountContext'
 import { useWalletWs } from '../hooks/useWalletWs'
+import { isImpersonating } from '../contexts/ImpersonationContext'
 import type { ExchangeAccount } from '../types'
 import { useState, useEffect, type ReactNode } from 'react'
 
@@ -25,6 +27,9 @@ export function Layout({ children }: { children: ReactNode }) {
   const [has24hData, setHas24hData] = useState(false)
   const [novabotBalance, setNovabotBalance] = useState(0)
   const [depositOpen, setDepositOpen] = useState(false)
+
+  // Show admin bar when user is admin OR when in impersonation mode
+  const showAdminBar = isAdmin || isImpersonating()
 
   function loadAccounts() {
     listAccounts().then(accs => {
@@ -62,7 +67,6 @@ export function Layout({ children }: { children: ReactNode }) {
           setPnl24h({ percent: balanceRes.equity_change_percent, usd: balanceRes.equity_change_usd })
           setHas24hData(true)
         } else {
-          // fallback: use current unrealized P&L from positions
           const positions = posRes.ok ? (posRes.positions ?? []) : []
           const totalPnl = positions.reduce((sum, p) => sum + parseFloat(p.unrealisedPnl || '0'), 0)
           const pct = balanceRes.equity > 0 ? (totalPnl / balanceRes.equity) * 100 : 0
@@ -80,7 +84,6 @@ export function Layout({ children }: { children: ReactNode }) {
 
   const selectedAccount = accounts.find(a => a.id === selectedAccountId)
 
-  // derive user display info from email
   const userEmail = email ?? ''
   const userName = userEmail.split('@')[0] ?? ''
   const userInitials = userName.slice(0, 2).toUpperCase() || '??'
@@ -90,7 +93,6 @@ export function Layout({ children }: { children: ReactNode }) {
     navigate('/login')
   }
 
-  // theme toggle button lives outside sidebar for now — keep it accessible via keyboard shortcut later
   void theme; void toggle; void pathname
 
   return (
@@ -131,13 +133,18 @@ export function Layout({ children }: { children: ReactNode }) {
       </div>
       <MobileNav isAdmin={isAdmin} onLogout={handleLogout} onOpenSettings={() => navigate('/account')} />
       <DepositModal open={depositOpen} onClose={() => setDepositOpen(false)} />
-      <main className={
-        pathname === '/terminal' || pathname === '/signal-chart'
-          ? 'flex-1 h-full overflow-hidden dark:text-gray-100'
-          : 'flex-1 overflow-auto pb-16 dark:text-gray-100 md:pb-0 p-4 md:p-6'
-      }>
-        {children}
-      </main>
+
+      {/* Right column: admin bar (all pages for admins/impersonation) + page content */}
+      <div className="flex flex-1 flex-col min-w-0 h-full">
+        {showAdminBar && <AdminUserPickerBar />}
+        <main className={
+          pathname === '/terminal' || pathname === '/signal-chart'
+            ? 'flex-1 h-full overflow-hidden dark:text-gray-100 min-h-0'
+            : 'flex-1 overflow-auto pb-16 dark:text-gray-100 md:pb-0 p-4 md:p-6'
+        }>
+          {children}
+        </main>
+      </div>
     </div>
   )
 }

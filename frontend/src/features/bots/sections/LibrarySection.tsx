@@ -7,7 +7,7 @@ import { FeaturedBotModal } from '../components/FeaturedBotModal';
 type Props = {
   bots: FeaturedBot[];
   ownedTplIds?: Set<string>;
-  onClone: (botId: string) => void;
+  onClone: (botId: string, sourceRect: DOMRect) => void;
 };
 
 const DEFAULTS: BotFilters = {
@@ -61,7 +61,7 @@ export function LibrarySection({ bots, ownedTplIds, onClone }: Props) {
                 bot={b}
                 alreadyOwned={ownedTplIds?.has(b.id) ?? false}
                 onOpen={() => setOpenId(b.id)}
-                onAdd={() => onClone(b.id)}
+                onAdd={(rect) => onClone(b.id, rect)}
               />
             ))}
           </div>
@@ -73,7 +73,7 @@ export function LibrarySection({ bots, ownedTplIds, onClone }: Props) {
           bot={open}
           alreadyOwned={ownedTplIds?.has(open.id) ?? false}
           onClose={() => setOpenId(null)}
-          onClone={() => { onClone(open.id); setOpenId(null); }}
+          onClone={() => { onClone(open.id, new DOMRect()); setOpenId(null); }}
         />
       )}
     </section>

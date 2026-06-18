@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#94a3b8"/>
+      <stop offset="100%" stop-color="#334155"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#64748b"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0a0f1a"/>
+  <!-- large gear -->
+  <path d="M38 10 L36 6 L28 6 L26 10 Q20 12 16 16 L12 14 L6 20 L8 24 Q6 30 6 32 L2 34 L2 42 L6 44 Q8 50 12 54 L10 58 L16 62 L20 60 Q26 62 32 62 L34 66 L42 66 L44 62 Q50 60 54 56 L58 58 L64 52 L62 48 Q64 42 64 40 L68 38 L68 30 L64 28 Q62 22 58 18 L60 14 L54 8 L50 10 Q44 8 38 10Z" fill="url(#g)" transform="scale(0.48) translate(2,2)"/>
+  <!-- inner circle cut -->
+  <circle cx="32" cy="32" r="8" fill="#0a0f1a"/>
+  <!-- small gear -->
+  <path d="M38 10 L36 6 L28 6 L26 10 Q20 12 16 16 L12 14 L6 20 L8 24 Q6 30 6 32 L2 34 L2 42 L6 44 Q8 50 12 54 L10 58 L16 62 L20 60 Q26 62 32 62 L34 66 L42 66 L44 62 Q50 60 54 56 L58 58 L64 52 L62 48 Q64 42 64 40 L68 38 L68 30 L64 28 Q62 22 58 18 L60 14 L54 8 L50 10 Q44 8 38 10Z" fill="url(#g2)" transform="scale(0.28) translate(92,90)"/>
+  <circle cx="47" cy="43" r="4" fill="#0a0f1a"/>
+  <!-- accent line on big gear -->
+  <circle cx="32" cy="32" r="12" fill="none" stroke="#475569" stroke-width="1.5" stroke-dasharray="2,3"/>
+</svg>

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="ball" cx="38%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#ede9fe"/>
+      <stop offset="40%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#3b0764"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#a78bfa" stop-opacity=".5"/>
+      <stop offset="100%" stop-color="#a78bfa" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0d0820"/>
+  <!-- outer glow -->
+  <circle cx="32" cy="30" r="24" fill="url(#glow)"/>
+  <!-- ball -->
+  <circle cx="32" cy="30" r="20" fill="url(#ball)"/>
+  <!-- inner scene / nebula -->
+  <circle cx="32" cy="30" r="14" fill="#1e0b3a" opacity=".6"/>
+  <ellipse cx="30" cy="28" rx="6" ry="4" fill="#7c3aed" opacity=".5" transform="rotate(-20,30,28)"/>
+  <ellipse cx="36" cy="33" rx="4" ry="3" fill="#6d28d9" opacity=".4" transform="rotate(15,36,33)"/>
+  <circle cx="28" cy="26" r="1.5" fill="#e9d5ff" opacity=".8"/>
+  <circle cx="36" cy="24" r="1" fill="#e9d5ff" opacity=".6"/>
+  <circle cx="34" cy="36" r="1" fill="#e9d5ff" opacity=".6"/>
+  <!-- specular highlights -->
+  <ellipse cx="24" cy="22" rx="5" ry="3" fill="#ffffff" opacity=".35" transform="rotate(-30,24,22)"/>
+  <circle cx="40" cy="20" r="2" fill="#ffffff" opacity=".2"/>
+  <!-- base/shadow -->
+  <ellipse cx="32" cy="54" rx="12" ry="4" fill="#7c3aed" opacity=".2"/>
+  <rect x="26" y="50" width="12" height="4" rx="2" fill="#4c1d95" opacity=".6"/>
+</svg>

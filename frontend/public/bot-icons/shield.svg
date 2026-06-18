@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#6d28d9"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#c4b5fd"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0d0820"/>
+  <!-- shield -->
+  <path d="M32 8 L52 16 L52 34 Q52 50 32 58 Q12 50 12 34 L12 16 Z" fill="url(#g)"/>
+  <!-- inner shield -->
+  <path d="M32 13 L47 20 L47 34 Q47 46 32 53 Q17 46 17 34 L17 20 Z" fill="url(#g2)" opacity=".4"/>
+  <!-- bolt symbol -->
+  <polygon points="35,20 27,34 33,34 29,46 37,32 31,32" fill="#ffffff"/>
+  <!-- shine -->
+  <path d="M18 18 Q32 14 46 18 L44 22 Q32 18 20 22Z" fill="#ffffff" opacity=".2"/>
+</svg>

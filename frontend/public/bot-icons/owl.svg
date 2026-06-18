@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#4c1d95"/>
+    </linearGradient>
+    <linearGradient id="eye" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#fde68a"/>
+      <stop offset="100%" stop-color="#d97706"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0d0820"/>
+  <!-- body -->
+  <ellipse cx="32" cy="42" rx="18" ry="16" fill="url(#g)"/>
+  <!-- wing left -->
+  <path d="M14 38 Q6 30 8 20 Q16 30 20 36Z" fill="#6d28d9"/>
+  <!-- wing right -->
+  <path d="M50 38 Q58 30 56 20 Q48 30 44 36Z" fill="#6d28d9"/>
+  <!-- head -->
+  <circle cx="32" cy="26" r="16" fill="url(#g)"/>
+  <!-- ear tufts -->
+  <polygon points="24,12 20,6 28,14" fill="#7c3aed"/>
+  <polygon points="40,12 44,6 36,14" fill="#7c3aed"/>
+  <!-- eyes -->
+  <circle cx="24" cy="24" r="8" fill="#fbbf24"/>
+  <circle cx="40" cy="24" r="8" fill="#fbbf24"/>
+  <circle cx="24" cy="24" r="5" fill="#0d0820"/>
+  <circle cx="40" cy="24" r="5" fill="#0d0820"/>
+  <circle cx="24" cy="24" r="2.5" fill="#fde68a" opacity=".4"/>
+  <circle cx="40" cy="24" r="2.5" fill="#fde68a" opacity=".4"/>
+  <circle cx="22" cy="22" r="1.5" fill="#ffffff" opacity=".8"/>
+  <circle cx="38" cy="22" r="1.5" fill="#ffffff" opacity=".8"/>
+  <!-- beak -->
+  <polygon points="32,28 29,34 35,34" fill="#fbbf24"/>
+  <!-- belly pattern -->
+  <ellipse cx="32" cy="44" rx="10" ry="10" fill="#6d28d9" opacity=".5"/>
+  <ellipse cx="32" cy="46" rx="7" ry="8" fill="#7c3aed" opacity=".3"/>
+  <!-- feet -->
+  <path d="M26 56 Q24 60 22 60 M26 56 Q26 60 26 62 M26 56 Q28 60 30 60" fill="none" stroke="#a78bfa" stroke-width="2" stroke-linecap="round"/>
+  <path d="M38 56 Q36 60 34 60 M38 56 Q38 60 38 62 M38 56 Q40 60 42 60" fill="none" stroke="#a78bfa" stroke-width="2" stroke-linecap="round"/>
+</svg>

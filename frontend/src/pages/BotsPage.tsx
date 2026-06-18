@@ -148,7 +148,7 @@ export function BotsPage() {
         onEditBot={handleEditBot}
         onDeleteBot={(id) => action({ type: 'delete', botId: id })}
         onRequestApproval={(id) => action({ type: 'request-approval', botId: id })}
-        onCloneTpl={(tplId) => action({ type: 'fork', botId: tplId })}
+        onCloneTpl={(tplId) => action({ type: 'deploy', botId: tplId })}
       />
 
       {kindPickerOpen && (

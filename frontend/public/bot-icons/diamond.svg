@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a8f0ff"/>
+      <stop offset="100%" stop-color="#0099cc"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e0fbff"/>
+      <stop offset="100%" stop-color="#40c4e8"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#001520"/>
+  <!-- outer diamond -->
+  <polygon points="32,8 54,28 32,58 10,28" fill="url(#g)"/>
+  <!-- facets -->
+  <polygon points="32,8 54,28 32,28" fill="url(#g2)" opacity=".5"/>
+  <polygon points="32,8 10,28 32,28" fill="#006688" opacity=".6"/>
+  <polygon points="10,28 32,58 32,28" fill="#004466" opacity=".7"/>
+  <polygon points="54,28 32,58 32,28" fill="#007799" opacity=".5"/>
+  <!-- top highlight -->
+  <polygon points="32,8 44,22 32,22 20,22" fill="#ffffff" opacity=".25"/>
+  <!-- center shine -->
+  <ellipse cx="32" cy="26" rx="4" ry="3" fill="#ffffff" opacity=".5" transform="rotate(-20,32,26)"/>
+</svg>

@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="core" cx="50%" cy="60%" r="50%">
+      <stop offset="0%" stop-color="#fef9c3"/>
+      <stop offset="40%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#b45309"/>
+    </radialGradient>
+    <radialGradient id="wing" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="#fca5a5"/>
+      <stop offset="100%" stop-color="#b91c1c"/>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#1a0500"/>
+  <!-- tail feathers -->
+  <path d="M32 48 Q26 56 20 60 Q24 52 28 46Z" fill="#dc2626" opacity=".7"/>
+  <path d="M32 48 Q32 58 32 62 Q30 54 32 46Z" fill="#f97316" opacity=".8"/>
+  <path d="M32 48 Q38 56 44 60 Q40 52 36 46Z" fill="#dc2626" opacity=".7"/>
+  <!-- wings -->
+  <path d="M32 32 Q18 22 8 24 Q14 34 22 36Z" fill="url(#wing)"/>
+  <path d="M32 32 Q46 22 56 24 Q50 34 42 36Z" fill="url(#wing)"/>
+  <!-- wing details -->
+  <path d="M22 36 Q16 28 10 26" fill="none" stroke="#fca5a5" stroke-width="1.5" opacity=".5"/>
+  <path d="M20 38 Q12 30 8 28" fill="none" stroke="#fca5a5" stroke-width="1" opacity=".4"/>
+  <path d="M42 36 Q48 28 54 26" fill="none" stroke="#fca5a5" stroke-width="1.5" opacity=".5"/>
+  <!-- body + head -->
+  <ellipse cx="32" cy="32" rx="10" ry="14" fill="url(#core)"/>
+  <!-- head crest -->
+  <path d="M28 18 Q32 10 36 18 Q34 16 32 14 Q30 16 28 18Z" fill="#fbbf24"/>
+  <path d="M30 16 Q32 8 34 16 Q33 13 32 11 Q31 13 30 16Z" fill="#fef9c3"/>
+  <!-- eye -->
+  <circle cx="32" cy="24" r="3.5" fill="#1a0500"/>
+  <circle cx="32" cy="24" r="2" fill="#fde68a"/>
+  <circle cx="31" cy="23" r="0.8" fill="#ffffff"/>
+  <!-- beak -->
+  <path d="M30 28 L26 31 L32 30Z" fill="#fbbf24"/>
+  <!-- glow around body -->
+  <ellipse cx="32" cy="32" rx="14" ry="18" fill="none" stroke="#fbbf24" stroke-width="1.5" opacity=".2"/>
+</svg>

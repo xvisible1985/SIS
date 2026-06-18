@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f97316"/>
+      <stop offset="100%" stop-color="#7f1d1d"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#1a0800"/>
+  <!-- wings -->
+  <path d="M18 28 Q4 14 8 6 Q16 18 24 24Z" fill="#9a3412" opacity=".8"/>
+  <path d="M46 28 Q60 14 56 6 Q48 18 40 24Z" fill="#9a3412" opacity=".8"/>
+  <path d="M18 28 Q6 20 8 6" fill="none" stroke="#f97316" stroke-width="1" opacity=".4"/>
+  <path d="M46 28 Q58 20 56 6" fill="none" stroke="#f97316" stroke-width="1" opacity=".4"/>
+  <!-- wing veins -->
+  <line x1="18" y1="28" x2="10" y2="10" stroke="#c2410c" stroke-width="1" opacity=".5"/>
+  <line x1="18" y1="28" x2="14" y2="8" stroke="#c2410c" stroke-width="1" opacity=".5"/>
+  <line x1="46" y1="28" x2="54" y2="10" stroke="#c2410c" stroke-width="1" opacity=".5"/>
+  <line x1="46" y1="28" x2="50" y2="8" stroke="#c2410c" stroke-width="1" opacity=".5"/>
+  <!-- body -->
+  <ellipse cx="32" cy="36" rx="16" ry="18" fill="url(#g)"/>
+  <!-- head -->
+  <ellipse cx="32" cy="22" rx="12" ry="10" fill="url(#g)"/>
+  <!-- snout -->
+  <path d="M24 26 Q32 32 40 26 Q38 30 32 32 Q26 30 24 26Z" fill="#7f1d1d"/>
+  <!-- horns -->
+  <path d="M26 14 Q22 6 24 4 Q28 10 28 14Z" fill="#c2410c"/>
+  <path d="M38 14 Q42 6 40 4 Q36 10 36 14Z" fill="#c2410c"/>
+  <!-- eyes -->
+  <ellipse cx="27" cy="20" rx="3.5" ry="3" fill="#fde68a"/>
+  <ellipse cx="37" cy="20" rx="3.5" ry="3" fill="#fde68a"/>
+  <ellipse cx="27" cy="20" rx="1.5" ry="2.5" fill="#1a0800"/>
+  <ellipse cx="37" cy="20" rx="1.5" ry="2.5" fill="#1a0800"/>
+  <!-- fire breath -->
+  <path d="M32 30 Q36 36 44 34 Q40 40 32 36 Q24 40 20 34 Q28 36 32 30Z" fill="#fbbf24" opacity=".7"/>
+  <!-- belly scales -->
+  <ellipse cx="32" cy="42" rx="8" ry="6" fill="#9a3412" opacity=".4"/>
+  <ellipse cx="32" cy="48" rx="7" ry="5" fill="#9a3412" opacity=".4"/>
+</svg>

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00e5a0"/>
+      <stop offset="100%" stop-color="#007a55"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#001a10"/>
+  <!-- bars growing -->
+  <rect x="10" y="44" width="9" height="10" rx="2" fill="#00a060" opacity=".7"/>
+  <rect x="22" y="36" width="9" height="18" rx="2" fill="#00c070" opacity=".85"/>
+  <rect x="34" y="26" width="9" height="28" rx="2" fill="url(#g)"/>
+  <rect x="46" y="18" width="9" height="36" rx="2" fill="#00e5a0"/>
+  <!-- trend line -->
+  <polyline points="14,43 27,35 39,25 50,17" fill="none" stroke="#80ffd0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity=".7"/>
+  <!-- dots on line -->
+  <circle cx="14" cy="43" r="2.5" fill="#ffffff"/>
+  <circle cx="27" cy="35" r="2.5" fill="#ffffff"/>
+  <circle cx="39" cy="25" r="2.5" fill="#ffffff"/>
+  <circle cx="50" cy="17" r="2.5" fill="#ffffff"/>
+  <!-- grid lines -->
+  <line x1="8" y1="54" x2="56" y2="54" stroke="#00a060" stroke-width="1" opacity=".4"/>
+  <line x1="8" y1="10" x2="8" y2="54" stroke="#00a060" stroke-width="1" opacity=".4"/>
+</svg>

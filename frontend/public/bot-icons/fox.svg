@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fb923c"/>
+      <stop offset="100%" stop-color="#c2410c"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#1a0a00"/>
+  <!-- ears -->
+  <polygon points="18,26 10,6 26,20" fill="url(#g)"/>
+  <polygon points="46,26 54,6 38,20" fill="url(#g)"/>
+  <polygon points="18,26 12,10 24,20" fill="#fde68a"/>
+  <polygon points="46,26 52,10 40,20" fill="#fde68a"/>
+  <!-- head -->
+  <ellipse cx="32" cy="36" rx="20" ry="18" fill="url(#g)"/>
+  <!-- face markings -->
+  <ellipse cx="32" cy="40" rx="13" ry="10" fill="#fde68a"/>
+  <!-- eyes -->
+  <ellipse cx="24" cy="32" rx="4" ry="4.5" fill="#1a0a00"/>
+  <ellipse cx="40" cy="32" rx="4" ry="4.5" fill="#1a0a00"/>
+  <ellipse cx="24" cy="31" rx="2" ry="2.5" fill="#fbbf24"/>
+  <ellipse cx="40" cy="31" rx="2" ry="2.5" fill="#fbbf24"/>
+  <circle cx="24" cy="32" r="1" fill="#1a0a00"/>
+  <circle cx="40" cy="32" r="1" fill="#1a0a00"/>
+  <circle cx="23" cy="31" r="0.8" fill="#ffffff" opacity=".7"/>
+  <circle cx="39" cy="31" r="0.8" fill="#ffffff" opacity=".7"/>
+  <!-- nose -->
+  <ellipse cx="32" cy="40" rx="3" ry="2" fill="#1a0a00"/>
+  <!-- mouth -->
+  <path d="M28 44 Q32 48 36 44" fill="none" stroke="#1a0a00" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- cheek spots -->
+  <circle cx="20" cy="40" r="3" fill="#fca5a5" opacity=".4"/>
+  <circle cx="44" cy="40" r="3" fill="#fca5a5" opacity=".4"/>
+  <!-- whiskers -->
+  <line x1="8" y1="38" x2="20" y2="40" stroke="#fde68a" stroke-width="1" opacity=".5"/>
+  <line x1="8" y1="42" x2="20" y2="42" stroke="#fde68a" stroke-width="1" opacity=".5"/>
+  <line x1="56" y1="38" x2="44" y2="40" stroke="#fde68a" stroke-width="1" opacity=".5"/>
+  <line x1="56" y1="42" x2="44" y2="42" stroke="#fde68a" stroke-width="1" opacity=".5"/>
+</svg>

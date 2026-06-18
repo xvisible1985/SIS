@@ -224,3 +224,56 @@ func TestMatrixPlacePerLevelSLSkipsNegativeSlots(t *testing.T) {
 	sr.matrixPlacePerLevelSL(context.Background(), l, 100.0, -2.0)
 	// If we reach here, the guard worked.
 }
+
+func TestMatrixApplyStopCondSLsSkipsAlreadyReplaced(t *testing.T) {
+	// SLReplaced=true → must exit before touching sr.runner (nil here).
+	slot := 1
+	condPct := 1.5
+	replacePct := 0.5
+	sr := &StrategyRunner{
+		strategy: Strategy{
+			Direction: DirectionLong,
+			MatrixLevels: []MatrixLevel{
+				{Direction: "above", StopCondPct: &condPct, StopReplacePct: &replacePct},
+			},
+		},
+		levels: []GridLevel{
+			{
+				ID:          "level-1",
+				Slot:        &slot,
+				Status:      LevelFilled,
+				FilledPrice: 100.0,
+				SLReplaced:  true,
+			},
+		},
+	}
+	// price (105) > threshold (101.5) — would place SL if guard is missing → panic on nil runner
+	sr.matrixApplyStopCondSLs(context.Background(), 105.0)
+}
+
+func TestMatrixApplyStopCondSLsSkipsBelowThreshold(t *testing.T) {
+	// price < stop_cond threshold → condition not met, no SL placed.
+	slot := 1
+	condPct := 1.5
+	replacePct := 0.5
+	sr := &StrategyRunner{
+		strategy: Strategy{
+			Direction: DirectionLong,
+			MatrixLevels: []MatrixLevel{
+				{Direction: "above", StopCondPct: &condPct, StopReplacePct: &replacePct},
+			},
+		},
+		levels: []GridLevel{
+			{
+				ID:          "level-1",
+				Slot:        &slot,
+				Status:      LevelFilled,
+				FilledPrice: 100.0,
+				SLReplaced:  false,
+				SLOrderID:   "",
+			},
+		},
+	}
+	// price 101.0 < threshold 101.5 → condMet=false → no SL → no panic
+	sr.matrixApplyStopCondSLs(context.Background(), 101.0)
+}

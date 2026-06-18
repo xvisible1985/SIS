@@ -321,9 +321,14 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}
+	// Auto-fork on first edit: transparently detach linked subscription so user can edit freely.
 	if sourceID != nil && !isFork {
-		writeError(w, http.StatusForbidden, "fork first")
-		return
+		if _, err := s.pool.Exec(ctx,
+			`UPDATE bots SET is_fork = true, updated_at = NOW() WHERE id = $1`, botID,
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
 	}
 
 	var body map[string]json.RawMessage
@@ -692,7 +697,7 @@ func (s *Server) DeployBot(w http.ResponseWriter, r *http.Request) {
 	var newID string
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO bots (owner_id, source_bot_id, is_fork, name, description, full_description, triggers, strategy_config)
-		VALUES ($1, $2, false, $3, $4, $5, $6, $7)
+		VALUES ($1, $2, true, $3, $4, $5, $6, $7)
 		RETURNING id`,
 		callerID, sourceID, name, desc, fullDesc, triggers, stratCfg,
 	).Scan(&newID); err != nil {
