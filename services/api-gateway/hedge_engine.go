@@ -567,8 +567,9 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 				}
 			}
 
-			// For last_order% (type 0): measure drawdown from the last filled grid level's
-			// price rather than avg entry.
+			// For last_order% (type 0): wait until the last grid level (highest level_idx)
+			// is filled, then measure drawdown from its price rather than avg entry.
+			// "После последнего ордера" means both: prerequisite (full grid) and reference price.
 			evalPos := pos
 			if cfg.HedgeActType == 0 && mainStrategyID != "" {
 				var cycleID string
@@ -576,42 +577,39 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 					`SELECT id FROM strategy_cycles WHERE strategy_id=$1 AND ended_at IS NULL LIMIT 1`,
 					mainStrategyID).Scan(&cycleID)
 
-				if cycleID != "" {
-					var lastFilledPrice float64
-					_ = s.pool.QueryRow(ctx,
-						`SELECT COALESCE(filled_price, target_price)
-						   FROM strategy_levels
-						  WHERE cycle_id=$1 AND status='filled'
-						  ORDER BY level_idx DESC LIMIT 1`,
-						cycleID).Scan(&lastFilledPrice)
-					if lastFilledPrice > 0 {
-						evalPos.EntryPrice = lastFilledPrice
-					}
+				if cycleID == "" {
+					continue // no active cycle — nothing to hedge yet
+				}
 
-					// HedgeWaitFullGrid: skip activation until the very last grid level
-					// (highest level_idx across ALL levels in the cycle) is filled.
-					// Accounts for grid_active (progressive placement): levels that have
-					// not been placed yet still exist in strategy_levels and are counted.
-					if cfg.HedgeWaitFullGrid {
-						var lastLevelFilled bool
-						_ = s.pool.QueryRow(ctx, `
-							SELECT (
-								SELECT MAX(level_idx) FROM strategy_levels
-								 WHERE cycle_id=$1 AND status='filled'
-							) = (
-								SELECT MAX(level_idx) FROM strategy_levels WHERE cycle_id=$1
-							)`, cycleID).Scan(&lastLevelFilled)
-						if !lastLevelFilled {
-							s.logBotEvent(ctx, botID, fmt.Sprintf(
-								"Хедж: %s — ожидаем заполнения последнего ордера сетки (hedge_wait_full_grid)",
-								pos.Symbol,
-							), "info", "system")
-							continue
-						}
-					}
-				} else if cfg.HedgeWaitFullGrid {
-					// No active cycle → cannot verify grid completeness; skip to be safe.
+				// Require the last grid level (highest level_idx) to be filled before activation.
+				// Accounts for grid_active (progressive placement): all levels in strategy_levels
+				// are counted, including those not yet placed.
+				var lastLevelFilled bool
+				_ = s.pool.QueryRow(ctx, `
+					SELECT (
+						SELECT MAX(level_idx) FROM strategy_levels
+						 WHERE cycle_id=$1 AND status='filled'
+					) = (
+						SELECT MAX(level_idx) FROM strategy_levels WHERE cycle_id=$1
+					)`, cycleID).Scan(&lastLevelFilled)
+				if !lastLevelFilled {
+					s.logBotEvent(ctx, botID, fmt.Sprintf(
+						"Хедж: %s — сетка не заполнена до конца, ожидаем последнего ордера",
+						pos.Symbol,
+					), "info", "system")
 					continue
+				}
+
+				// Use the last filled level's price as the drawdown reference point.
+				var lastFilledPrice float64
+				_ = s.pool.QueryRow(ctx,
+					`SELECT COALESCE(filled_price, target_price)
+					   FROM strategy_levels
+					  WHERE cycle_id=$1 AND status='filled'
+					  ORDER BY level_idx DESC LIMIT 1`,
+					cycleID).Scan(&lastFilledPrice)
+				if lastFilledPrice > 0 {
+					evalPos.EntryPrice = lastFilledPrice
 				}
 			}
 
