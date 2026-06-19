@@ -57,6 +57,17 @@ function periodFullLabel(day: string, granularity: 'day' | 'hour'): string {
   return fmtDay(day)
 }
 
+// ─── Mobile hook ─────────────────────────────────────────────────────────────
+function useWindowWidth() {
+  const [w, setW] = useState(() => typeof window !== 'undefined' ? window.innerWidth : 1200)
+  useEffect(() => {
+    const h = () => setW(window.innerWidth)
+    window.addEventListener('resize', h)
+    return () => window.removeEventListener('resize', h)
+  }, [])
+  return w
+}
+
 // ─── Catmull-Rom → cubic Bezier ───────────────────────────────────────────────
 function smoothPath(pts: [number, number][]): string {
   if (pts.length < 2) return ''
@@ -374,23 +385,28 @@ const PERIODS: { id: Period; label: string }[] = [
   { id: 'all', label: 'Всё'     },
 ]
 
-function PeriodTabs({ value, onChange }: { value: Period; onChange: (p: Period) => void }) {
+const PERIOD_SHORT: Record<Period, string> = { '1d': '1д', '7d': '7д', '30d': '30д', '90d': '90д', '1y': '1г', 'all': 'Всё' }
+
+function PeriodTabs({ value, onChange, isMobile = false }: { value: Period; onChange: (p: Period) => void; isMobile?: boolean }) {
   return (
-    <div style={{ display: 'flex', gap: 2, padding: 3, background: 'rgba(0,0,0,.25)', border: `1px solid ${T.border}`, borderRadius: 10 }}>
-      {PERIODS.map(p => (
-        <button key={p.id} onClick={() => onChange(p.id)} style={{
-          padding: '7px 14px', border: 0, borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
-          background: value === p.id ? 'rgba(123,140,255,.18)' : 'transparent',
-          color: value === p.id ? T.text : T.dim,
-        }}>{p.label}</button>
-      ))}
+    <div style={{ overflowX: isMobile ? 'auto' : 'visible', WebkitOverflowScrolling: 'touch' as CSSProperties['WebkitOverflowScrolling'] }}>
+      <div style={{ display: 'flex', gap: 2, padding: 3, background: 'rgba(0,0,0,.25)', border: `1px solid ${T.border}`, borderRadius: 10, ...(isMobile ? { width: 'max-content' } : {}) }}>
+        {PERIODS.map(p => (
+          <button key={p.id} onClick={() => onChange(p.id)} style={{
+            padding: isMobile ? '6px 10px' : '7px 14px', border: 0, borderRadius: 7,
+            fontSize: isMobile ? 11 : 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+            background: value === p.id ? 'rgba(123,140,255,.18)' : 'transparent',
+            color: value === p.id ? T.text : T.dim, whiteSpace: 'nowrap',
+          }}>{isMobile ? PERIOD_SHORT[p.id] : p.label}</button>
+        ))}
+      </div>
     </div>
   )
 }
 
 // ─── Hero card ────────────────────────────────────────────────────────────────
-function HeroCard({ data, period, equity, equityChange }: {
-  data: DashboardData; period: Period; equity: number | null; equityChange: { usd: number; pct: number } | null
+function HeroCard({ data, period, equity, equityChange, isMobile = false }: {
+  data: DashboardData; period: Period; equity: number | null; equityChange: { usd: number; pct: number } | null; isMobile?: boolean
 }) {
   const { stats, daily_pnl, recent_trades } = data
   const pLabel = PERIODS.find(p => p.id === period)?.label ?? period
@@ -401,7 +417,6 @@ function HeroCard({ data, period, equity, equityChange }: {
     return daily_pnl.map(d => { acc += d.pnl; return base + acc })
   }, [daily_pnl, stats.total_pnl])
 
-  // Reward:Risk — avg winner / avg loser (from recent_trades sample)
   const rr = useMemo(() => {
     const wins = recent_trades.filter(t => (t.pnl ?? 0) > 0)
     const losses = recent_trades.filter(t => (t.pnl ?? 0) < 0)
@@ -410,6 +425,51 @@ function HeroCard({ data, period, equity, equityChange }: {
     const avgL = Math.abs(losses.reduce((s, t) => s + (t.pnl ?? 0), 0) / losses.length)
     return avgL > 0 ? avgW / avgL : null
   }, [recent_trades])
+
+  if (isMobile) {
+    return (
+      <div style={{
+        background: 'linear-gradient(135deg,#131a30 0%,#16182d 40%,#1f1932 100%)',
+        border: '1px solid rgba(123,140,255,.22)', borderRadius: 14,
+        boxShadow: '0 12px 40px -16px rgba(91,140,255,.4)',
+        position: 'relative', overflow: 'hidden', padding: '16px',
+      }}>
+        <div style={{ position: 'absolute', top: -40, right: -40, width: 200, height: 200, pointerEvents: 'none', background: 'radial-gradient(circle,rgba(91,140,255,.3),transparent 60%)', filter: 'blur(16px)' }} />
+        {/* Equity row */}
+        <Lbl>{equity != null ? 'Equity' : `P&L · ${pLabel}`}</Lbl>
+        <div style={{ ...grotesk, fontSize: 30, fontWeight: 700, color: '#fff', letterSpacing: '-0.8px', marginTop: 4, lineHeight: 1.05, display: 'flex', alignItems: 'baseline', gap: 6 }}>
+          {equity != null ? fmt$(equity) : fmt$(stats.total_pnl)}
+          <span style={{ fontSize: 12, color: T.dim, fontFamily: 'Inter,sans-serif', fontWeight: 500 }}>USDT</span>
+        </div>
+        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+          {equityChange != null
+            ? <Delta val={equityChange.usd} pct={equityChange.pct} size="md" />
+            : <Delta val={stats.total_pnl} size="md" />
+          }
+          <span style={{ fontSize: 11, color: T.dim }}>за {pLabel}</span>
+        </div>
+        {/* Key P&L rows */}
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 5, paddingBottom: 12, borderBottom: `1px solid rgba(255,255,255,.06)` }}>
+          <SmRow label="Реализованный P&L" value={fmt$(stats.total_pnl)} c={stats.total_pnl >= 0 ? T.green : T.red} />
+          <SmRow label="Лучшая сделка" value={fmt$(stats.best_trade)} c={T.green} />
+          <SmRow label="Худшая сделка" value={fmt$(stats.worst_trade)} c={T.red} />
+        </div>
+        {/* Stat boxes 3×2 */}
+        <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+          <StatBox label="Win Rate" value={`${stats.win_rate.toFixed(1)}%`}
+            good={stats.win_rate >= 60} warn={stats.win_rate >= 45 && stats.win_rate < 60}
+            bad={stats.win_rate < 45 && stats.total > 0} />
+          <StatBox label="Profit F." value={stats.profit_factor >= 999 ? '∞' : stats.profit_factor.toFixed(2)}
+            good={stats.profit_factor >= 1.5} warn={stats.profit_factor >= 1 && stats.profit_factor < 1.5}
+            bad={stats.profit_factor < 1 && stats.total > 0} />
+          <StatBox label="R:R" value={rr != null ? rr.toFixed(2) : '—'} good={rr != null && rr >= 1.5} warn={rr != null && rr >= 1 && rr < 1.5} bad={rr != null && rr < 1} />
+          <StatBox label="Сделок" value={String(stats.total)} />
+          <StatBox label="Ср. P&L" value={fmt$(stats.avg_pnl)} good={stats.avg_pnl > 0} bad={stats.avg_pnl < 0} />
+          <StatBox label="Побед" value={`${stats.wins}/${stats.losses}`} />
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div style={{
@@ -482,7 +542,7 @@ function HeroCard({ data, period, equity, equityChange }: {
 }
 
 // ─── Daily / Hourly Stats Strip ───────────────────────────────────────────────
-function DailyStatsStrip({ data }: { data: DashboardData }) {
+function DailyStatsStrip({ data, isMobile = false }: { data: DashboardData; isMobile?: boolean }) {
   const { daily_pnl } = data
   const granularity = data.granularity
   const unit = granularity === 'hour' ? 'ч.' : 'дн.'
@@ -549,22 +609,24 @@ function DailyStatsStrip({ data }: { data: DashboardData }) {
     },
   ]
 
+  const cols = isMobile ? 'repeat(2,1fr)' : 'repeat(6,1fr)'
+  const valSize = isMobile ? 18 : 22
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 12 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: cols, gap: isMobile ? 8 : 12 }}>
       {daily_pnl.length === 0
-        ? Array.from({ length: 6 }).map((_, i) => (
-          <Card key={i} pad="14px 16px">
+        ? Array.from({ length: isMobile ? 4 : 6 }).map((_, i) => (
+          <Card key={i} pad={isMobile ? '10px 12px' : '14px 16px'}>
             <Lbl>—</Lbl>
-            <div style={{ ...grotesk, fontSize: 22, fontWeight: 700, color: T.dim, marginTop: 8 }}>—</div>
+            <div style={{ ...grotesk, fontSize: valSize, fontWeight: 700, color: T.dim, marginTop: 8 }}>—</div>
           </Card>
         ))
-        : items.map((it, i) => (
-          <Card key={i} pad="14px 16px">
+        : (isMobile ? items.slice(0, 4) : items).map((it, i) => (
+          <Card key={i} pad={isMobile ? '10px 12px' : '14px 16px'}>
             <Lbl>{it.label}</Lbl>
-            <div style={{ ...grotesk, fontSize: 22, fontWeight: 700, color: it.accent, letterSpacing: '-0.4px', marginTop: 8, lineHeight: 1.1 }}>
+            <div style={{ ...grotesk, fontSize: valSize, fontWeight: 700, color: it.accent, letterSpacing: '-0.4px', marginTop: 6, lineHeight: 1.1 }}>
               {it.value}
             </div>
-            <div style={{ marginTop: 6, fontSize: 11, color: T.dim }}>{it.sub}</div>
+            <div style={{ marginTop: 4, fontSize: 10, color: T.dim }}>{it.sub}</div>
           </Card>
         ))
       }
@@ -730,39 +792,43 @@ function DrawdownCard({ data }: { data: DashboardData }) {
 }
 
 // ─── Open Positions card ──────────────────────────────────────────────────────
-function OpenPositionsCard({ positions, accountLabel }: { positions: Position[]; accountLabel: string }) {
+function OpenPositionsCard({ positions, accountLabel, isMobile = false }: { positions: Position[]; accountLabel: string; isMobile?: boolean }) {
   const totalPnl = positions.reduce((s, p) => s + parseFloat(p.unrealisedPnl || '0'), 0)
+  const colsFull = 'minmax(0,1fr) 48px 72px 72px 72px 80px'
+  const colsMob  = 'minmax(0,1fr) 36px 74px'
+  const cols = isMobile ? colsMob : colsFull
   return (
     <Card pad="0" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <div style={{ padding: '14px 18px 10px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-        <h2 style={{ margin: 0, ...grotesk, fontSize: 14, fontWeight: 700, color: T.text }}>Открытые позиции</h2>
-        <span style={{ fontSize: 11, color: T.dim }}>{positions.length} активных · {accountLabel}</span>
+      <div style={{ padding: '12px 14px 10px', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, flexWrap: 'wrap' }}>
+        <h2 style={{ margin: 0, ...grotesk, fontSize: 13, fontWeight: 700, color: T.text }}>Открытые позиции</h2>
+        <span style={{ fontSize: 10, color: T.dim }}>{positions.length} · {accountLabel}</span>
         <div style={{ flex: 1 }} />
         {positions.length > 0 && (
           <Pill c={totalPnl >= 0 ? T.green : T.red}
             bg={totalPnl >= 0 ? T.greenSoft : T.redSoft}
             bd={totalPnl >= 0 ? T.greenBd : T.redBd}>
-            P&L: {totalPnl >= 0 ? '+' : ''}{fmt$(totalPnl)}
+            {totalPnl >= 0 ? '+' : ''}{fmt$(totalPnl)}
           </Pill>
         )}
       </div>
       {positions.length === 0 ? (
-        <div style={{ padding: '32px 18px', textAlign: 'center', color: T.dim, fontSize: 13, borderTop: `1px solid ${T.border}` }}>
+        <div style={{ padding: '24px 14px', textAlign: 'center', color: T.dim, fontSize: 13, borderTop: `1px solid ${T.border}` }}>
           Нет открытых позиций
         </div>
       ) : (
         <div style={{ borderTop: `1px solid ${T.border}`, flex: 1, overflowY: 'auto' }}>
           <div style={{
-            display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 48px 72px 72px 72px 80px',
-            padding: '9px 16px', fontSize: 10, color: T.dim,
+            display: 'grid', gridTemplateColumns: cols,
+            padding: '8px 12px', fontSize: 10, color: T.dim,
             textTransform: 'uppercase', letterSpacing: '1.2px', fontWeight: 600,
             borderBottom: `1px solid ${T.border}`,
             position: 'sticky', top: 0, background: T.panel, zIndex: 1,
           }}>
-            <div>Символ</div><div>Side</div>
-            <div style={{ textAlign: 'right' }}>Размер</div>
-            <div style={{ textAlign: 'right' }}>Вход</div>
-            <div style={{ textAlign: 'right' }}>Mark</div>
+            <div>Символ</div>
+            <div></div>
+            {!isMobile && <div style={{ textAlign: 'right' }}>Размер</div>}
+            {!isMobile && <div style={{ textAlign: 'right' }}>Вход</div>}
+            {!isMobile && <div style={{ textAlign: 'right' }}>Mark</div>}
             <div style={{ textAlign: 'right' }}>P&L</div>
           </div>
           {positions.slice(0, 10).map((p, i) => {
@@ -770,27 +836,29 @@ function OpenPositionsCard({ positions, accountLabel }: { positions: Position[];
             const pnl = parseFloat(p.unrealisedPnl || '0')
             return (
               <div key={i} style={{
-                display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 48px 72px 72px 72px 80px',
-                padding: '10px 16px', fontSize: 12, alignItems: 'center',
+                display: 'grid', gridTemplateColumns: cols,
+                padding: isMobile ? '9px 12px' : '10px 16px', fontSize: 12, alignItems: 'center',
                 borderBottom: i === positions.length - 1 ? 'none' : `1px solid ${T.border}`,
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
-                  <span style={{ ...mono, fontWeight: 700, color: T.text, fontSize: 12 }}>{p.symbol}</span>
-                  <span style={{ ...mono, fontSize: 9, color: T.dim, padding: '1px 4px', background: 'rgba(255,255,255,.04)', borderRadius: 3, fontWeight: 600 }}>{p.leverage}x</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+                  <span style={{ ...mono, fontWeight: 700, color: T.text, fontSize: isMobile ? 11 : 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {isMobile ? p.symbol.replace('USDT','') : p.symbol}
+                  </span>
+                  {!isMobile && <span style={{ ...mono, fontSize: 9, color: T.dim, padding: '1px 4px', background: 'rgba(255,255,255,.04)', borderRadius: 3, fontWeight: 600 }}>{p.leverage}x</span>}
                 </div>
                 <div>
                   <span style={{
-                    display: 'inline-flex', padding: '2px 6px', borderRadius: 3, fontSize: 9, fontWeight: 700,
+                    display: 'inline-flex', padding: '2px 5px', borderRadius: 3, fontSize: 9, fontWeight: 700,
                     background: isLong ? T.greenSoft : T.redSoft,
                     border: `1px solid ${isLong ? T.greenBd : T.redBd}`,
                     color: isLong ? T.green : T.red, textTransform: 'uppercase',
                   }}>{isLong ? 'L' : 'S'}</span>
                 </div>
-                <div style={{ ...mono, fontSize: 11, color: T.body, textAlign: 'right' }}>{fmt$(p.sizeUsdt, 0)}</div>
-                <div style={{ ...mono, fontSize: 11, color: T.body, textAlign: 'right' }}>{fmtPrice(parseFloat(p.entryPrice || '0'))}</div>
-                <div style={{ ...mono, fontSize: 11, color: T.text, textAlign: 'right', fontWeight: 600 }}>{fmtPrice(parseFloat(p.markPrice || '0'))}</div>
+                {!isMobile && <div style={{ ...mono, fontSize: 11, color: T.body, textAlign: 'right' }}>{fmt$(p.sizeUsdt, 0)}</div>}
+                {!isMobile && <div style={{ ...mono, fontSize: 11, color: T.body, textAlign: 'right' }}>{fmtPrice(parseFloat(p.entryPrice || '0'))}</div>}
+                {!isMobile && <div style={{ ...mono, fontSize: 11, color: T.text, textAlign: 'right', fontWeight: 600 }}>{fmtPrice(parseFloat(p.markPrice || '0'))}</div>}
                 <div style={{ textAlign: 'right' }}>
-                  <div style={{ ...mono, fontSize: 12, fontWeight: 700, color: pnl >= 0 ? T.green : T.red }}>{pnl >= 0 ? '+' : ''}{fmt$(pnl)}</div>
+                  <div style={{ ...mono, fontSize: isMobile ? 11 : 12, fontWeight: 700, color: pnl >= 0 ? T.green : T.red }}>{pnl >= 0 ? '+' : ''}{fmt$(pnl)}</div>
                   <div style={{ ...mono, fontSize: 10, color: pnl >= 0 ? T.green : T.red, marginTop: 1 }}>
                     {p.unrealisedPnlPct ? (parseFloat(p.unrealisedPnlPct) >= 0 ? '+' : '') + parseFloat(p.unrealisedPnlPct).toFixed(2) + '%' : ''}
                   </div>
@@ -851,30 +919,35 @@ function AssetAllocationCard({ positions }: { positions: Position[] }) {
 }
 
 // ─── Recent Trades card (standalone) ─────────────────────────────────────────
-function RecentTradesCard({ data }: { data: DashboardData }) {
+function RecentTradesCard({ data, isMobile = false }: { data: DashboardData; isMobile?: boolean }) {
   const { recent_trades } = data
+  const colsFull = '78px minmax(0,1.2fr) 40px minmax(0,1fr) 80px 58px'
+  const colsMob  = 'minmax(0,1fr) 36px 76px'
+  const cols = isMobile ? colsMob : colsFull
   return (
     <Card pad="0" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <div style={{ padding: '14px 18px 10px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-        <h2 style={{ margin: 0, ...grotesk, fontSize: 14, fontWeight: 700, color: T.text }}>Последние сделки</h2>
-        <span style={{ fontSize: 11, color: T.dim }}>{recent_trades.length} записей</span>
+      <div style={{ padding: '12px 14px 10px', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        <h2 style={{ margin: 0, ...grotesk, fontSize: 13, fontWeight: 700, color: T.text }}>Последние сделки</h2>
+        <span style={{ fontSize: 10, color: T.dim }}>{recent_trades.length}</span>
       </div>
       {recent_trades.length === 0 ? (
-        <div style={{ padding: '32px 18px', textAlign: 'center', color: T.dim, fontSize: 13, borderTop: `1px solid ${T.border}` }}>
+        <div style={{ padding: '24px 14px', textAlign: 'center', color: T.dim, fontSize: 13, borderTop: `1px solid ${T.border}` }}>
           Нет закрытых сделок
         </div>
       ) : (
         <div style={{ borderTop: `1px solid ${T.border}`, flex: 1, overflowY: 'auto' }}>
-          {/* Header row */}
           <div style={{
-            display: 'grid', gridTemplateColumns: '78px minmax(0,1.2fr) 40px minmax(0,1fr) 80px 58px',
-            padding: '8px 16px', fontSize: 10, color: T.dim, textTransform: 'uppercase',
+            display: 'grid', gridTemplateColumns: cols,
+            padding: '8px 12px', fontSize: 10, color: T.dim, textTransform: 'uppercase',
             letterSpacing: '1.2px', fontWeight: 600, borderBottom: `1px solid ${T.border}`,
             position: 'sticky', top: 0, background: T.panel, zIndex: 1,
           }}>
-            <div>Дата</div><div>Символ</div><div>Side</div><div>Бот</div>
+            {!isMobile && <div>Дата</div>}
+            <div>Символ</div>
+            <div></div>
+            {!isMobile && <div>Бот</div>}
             <div style={{ textAlign: 'right' }}>P&L</div>
-            <div style={{ textAlign: 'right' }}>%</div>
+            {!isMobile && <div style={{ textAlign: 'right' }}>%</div>}
           </div>
           {recent_trades.map((t, i) => {
             const isLong = t.direction === 'long'
@@ -883,13 +956,15 @@ function RecentTradesCard({ data }: { data: DashboardData }) {
             const ds = `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
             return (
               <div key={t.id} style={{
-                display: 'grid', gridTemplateColumns: '78px minmax(0,1.2fr) 40px minmax(0,1fr) 80px 58px',
-                padding: '9px 16px', alignItems: 'center', fontSize: 12,
+                display: 'grid', gridTemplateColumns: cols,
+                padding: isMobile ? '9px 12px' : '9px 16px', alignItems: 'center', fontSize: 12,
                 borderBottom: i === recent_trades.length - 1 ? 'none' : `1px solid ${T.border}`,
               }}>
-                <div style={{ ...mono, color: T.dim, fontSize: 11 }}>{ds}</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
-                  <span style={{ ...mono, fontWeight: 700, color: T.text, fontSize: 12 }}>{t.symbol}</span>
+                {!isMobile && <div style={{ ...mono, color: T.dim, fontSize: 11 }}>{ds}</div>}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+                  <span style={{ ...mono, fontWeight: 700, color: T.text, fontSize: isMobile ? 11 : 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {isMobile ? t.symbol.replace('USDT','') : t.symbol}
+                  </span>
                   <span style={{
                     padding: '1px 4px', borderRadius: 3, fontSize: 9, fontWeight: 700,
                     background: isTP ? T.greenSoft : T.redSoft,
@@ -899,21 +974,30 @@ function RecentTradesCard({ data }: { data: DashboardData }) {
                 </div>
                 <div>
                   <span style={{
-                    padding: '1px 5px', borderRadius: 3, fontSize: 10, fontWeight: 700,
+                    padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 700,
                     background: isLong ? T.greenSoft : T.redSoft,
                     border: `1px solid ${isLong ? T.greenBd : T.redBd}`,
                     color: isLong ? T.green : T.red, textTransform: 'uppercase',
                   }}>{isLong ? 'L' : 'S'}</span>
                 </div>
-                <div style={{ fontSize: 11, color: T.body, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {t.bot_name ?? '—'}
+                {!isMobile && (
+                  <div style={{ fontSize: 11, color: T.body, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {t.bot_name ?? '—'}
+                  </div>
+                )}
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ ...mono, fontSize: isMobile ? 11 : 13, fontWeight: 700, color: (t.pnl ?? 0) >= 0 ? T.green : T.red }}>
+                    {t.pnl != null ? ((t.pnl >= 0 ? '+' : '') + fmt$(t.pnl)) : '—'}
+                  </div>
+                  {isMobile && t.pnl_pct != null && (
+                    <div style={{ ...mono, fontSize: 10, color: (t.pnl_pct ?? 0) >= 0 ? T.green : T.red }}>{fmtPct(t.pnl_pct)}</div>
+                  )}
                 </div>
-                <div style={{ textAlign: 'right', ...mono, fontSize: 13, fontWeight: 700, color: (t.pnl ?? 0) >= 0 ? T.green : T.red }}>
-                  {t.pnl != null ? ((t.pnl >= 0 ? '+' : '') + fmt$(t.pnl)) : '—'}
-                </div>
-                <div style={{ textAlign: 'right', ...mono, fontSize: 11, color: (t.pnl_pct ?? 0) >= 0 ? T.green : T.red }}>
-                  {t.pnl_pct != null ? fmtPct(t.pnl_pct) : '—'}
-                </div>
+                {!isMobile && (
+                  <div style={{ textAlign: 'right', ...mono, fontSize: 11, color: (t.pnl_pct ?? 0) >= 0 ? T.green : T.red }}>
+                    {t.pnl_pct != null ? fmtPct(t.pnl_pct) : '—'}
+                  </div>
+                )}
               </div>
             )
           })}
@@ -973,6 +1057,7 @@ function BotsCard({ data, period }: { data: DashboardData; period: Period }) {
 export function DashboardPage() {
   const navigate = useNavigate()
   const { selectedAccountId } = useSelectedAccount()
+  const isMobile = useWindowWidth() < 768
   const [period, setPeriod] = useState<Period>('30d')
   const [animKey, setAnimKey] = useState(0)
   const [data, setData] = useState<DashboardData | null>(null)
@@ -1045,22 +1130,22 @@ export function DashboardPage() {
   return (
     <div style={{ color: T.body }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: isMobile ? 14 : 20, flexWrap: 'wrap' }}>
         <div>
-          <h1 style={{ margin: 0, ...grotesk, fontSize: 22, fontWeight: 700, letterSpacing: '-0.5px', color: T.text }}>Дашборд</h1>
-          <div style={{ fontSize: 12, color: T.dim, marginTop: 4, display: 'flex', alignItems: 'center', gap: 7 }}>
+          <h1 style={{ margin: 0, ...grotesk, fontSize: isMobile ? 18 : 22, fontWeight: 700, letterSpacing: '-0.5px', color: T.text }}>Дашборд</h1>
+          <div style={{ fontSize: 11, color: T.dim, marginTop: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: T.green, boxShadow: `0 0 8px ${T.green}`, display: 'inline-block' }} />
             {accLabel}
           </div>
         </div>
         <div style={{ flex: 1 }} />
-        <PeriodTabs value={period} onChange={setPeriod} />
+        <PeriodTabs value={period} onChange={setPeriod} isMobile={isMobile} />
         <button onClick={handleRefresh} disabled={refreshing} style={{
-          width: 36, height: 36, background: T.panel, border: `1px solid ${T.border}`,
+          width: 34, height: 34, background: T.panel, border: `1px solid ${T.border}`,
           borderRadius: 10, color: T.body, cursor: 'pointer', display: 'flex',
-          alignItems: 'center', justifyContent: 'center',
+          alignItems: 'center', justifyContent: 'center', flexShrink: 0,
         }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"
             style={{ animation: refreshing ? 'spin 1s linear infinite' : 'none' }}>
             <path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" />
           </svg>
@@ -1068,13 +1153,13 @@ export function DashboardPage() {
       </div>
 
       {error && (
-        <div style={{ marginBottom: 16, padding: '12px 16px', background: T.redSoft, border: `1px solid ${T.redBd}`, borderRadius: 10, color: T.red, fontSize: 13 }}>
+        <div style={{ marginBottom: 12, padding: '10px 14px', background: T.redSoft, border: `1px solid ${T.redBd}`, borderRadius: 10, color: T.red, fontSize: 13 }}>
           {error}
         </div>
       )}
 
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '80px 0', color: T.dim }}>
+        <div style={{ textAlign: 'center', padding: '60px 0', color: T.dim }}>
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={T.blue} strokeWidth={2} strokeLinecap="round" style={{ animation: 'spin 1s linear infinite' }}>
             <path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" />
           </svg>
@@ -1082,25 +1167,38 @@ export function DashboardPage() {
         </div>
       ) : data ? (
         <div key={animKey} style={{ animation: 'dashFadeIn 0.4s ease-out' }}>
-          {/* Hero block: left column [HeroCard + KpiStrip], right column [RecentTrades] */}
-          <div style={{ display: 'grid', gridTemplateColumns: '7fr 3fr', gap: 14, marginBottom: 18, alignItems: 'stretch' }}>
-            {/* Left: HeroCard + KpiStrip stacked */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <HeroCard data={data} period={period} equity={equity} equityChange={equityChange} />
-              <DailyStatsStrip data={data} />
+          {isMobile ? (
+            /* ── Mobile layout: single column ── */
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <HeroCard data={data} period={period} equity={equity} equityChange={equityChange} isMobile />
+              <DailyStatsStrip data={data} isMobile />
+              <RecentTradesCard data={data} isMobile />
+              <PnLCurveCard data={data} period={period} />
+              <OpenPositionsCard positions={positions} accountLabel={accLabel} isMobile />
+              <DailyBarsCard data={data} />
+              <AssetAllocationCard positions={positions} />
+              <BotsCard data={data} period={period} />
             </div>
-            {/* Right: Recent Trades spanning full height */}
-            <RecentTradesCard data={data} />
-          </div>
-          {/* Два ряда по три виджета — одна сетка с фиксированной высотой строки */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gridAutoRows: '360px', gap: 14, marginBottom: 18 }}>
-            <PnLCurveCard data={data} period={period} />
-            <DailyBarsCard data={data} />
-            <DrawdownCard data={data} />
-            <OpenPositionsCard positions={positions} accountLabel={accLabel} />
-            <AssetAllocationCard positions={positions} />
-            <BotsCard data={data} period={period} />
-          </div>
+          ) : (
+            /* ── Desktop layout ── */
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '7fr 3fr', gap: 14, marginBottom: 18, alignItems: 'stretch' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <HeroCard data={data} period={period} equity={equity} equityChange={equityChange} />
+                  <DailyStatsStrip data={data} />
+                </div>
+                <RecentTradesCard data={data} />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gridAutoRows: '360px', gap: 14, marginBottom: 18 }}>
+                <PnLCurveCard data={data} period={period} />
+                <DailyBarsCard data={data} />
+                <DrawdownCard data={data} />
+                <OpenPositionsCard positions={positions} accountLabel={accLabel} />
+                <AssetAllocationCard positions={positions} />
+                <BotsCard data={data} period={period} />
+              </div>
+            </>
+          )}
         </div>
       ) : null}
 
