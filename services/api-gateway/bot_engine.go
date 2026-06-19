@@ -820,6 +820,10 @@ type botCfgJSON struct {
 	// for every qualifying position (filters and direction rules still apply).
 	HedgeForceActivation bool `json:"hedge_force_activation"`
 
+	// HedgeWaitFullGrid, when true, prevents hedge activation until the grid's last
+	// level (highest level_idx) is filled. Only applies to HedgeActType=0 (last_order%).
+	HedgeWaitFullGrid bool `json:"hedge_wait_full_grid"`
+
 	// Matrix-specific strategy config (used when StrategyType="matrix").
 	MatrixLevels          json.RawMessage `json:"matrix_levels"`
 	MatrixEntryLevel      json.RawMessage `json:"matrix_entry_level"`

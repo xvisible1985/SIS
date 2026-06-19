@@ -568,10 +568,7 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 			}
 
 			// For last_order% (type 0): measure drawdown from the last filled grid level's
-			// price rather than avg entry.  We no longer wait for all levels to fill —
-			// if the hedge slot is empty the hedge is created immediately once the
-			// threshold is crossed; if the slot already has a position,
-			// resolveHedgeSlotConflict below handles "wait" or "force-close" logic.
+			// price rather than avg entry.
 			evalPos := pos
 			if cfg.HedgeActType == 0 && mainStrategyID != "" {
 				var cycleID string
@@ -590,6 +587,31 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 					if lastFilledPrice > 0 {
 						evalPos.EntryPrice = lastFilledPrice
 					}
+
+					// HedgeWaitFullGrid: skip activation until the very last grid level
+					// (highest level_idx across ALL levels in the cycle) is filled.
+					// Accounts for grid_active (progressive placement): levels that have
+					// not been placed yet still exist in strategy_levels and are counted.
+					if cfg.HedgeWaitFullGrid {
+						var lastLevelFilled bool
+						_ = s.pool.QueryRow(ctx, `
+							SELECT (
+								SELECT MAX(level_idx) FROM strategy_levels
+								 WHERE cycle_id=$1 AND status='filled'
+							) = (
+								SELECT MAX(level_idx) FROM strategy_levels WHERE cycle_id=$1
+							)`, cycleID).Scan(&lastLevelFilled)
+						if !lastLevelFilled {
+							s.logBotEvent(ctx, botID, fmt.Sprintf(
+								"Хедж: %s — ожидаем заполнения последнего ордера сетки (hedge_wait_full_grid)",
+								pos.Symbol,
+							), "info", "system")
+							continue
+						}
+					}
+				} else if cfg.HedgeWaitFullGrid {
+					// No active cycle → cannot verify grid completeness; skip to be safe.
+					continue
 				}
 			}
 

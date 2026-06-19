@@ -2334,7 +2334,12 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 
 	// Skip if TP is already placed with the same qty, avg entry, and price.
 	// Must be checked BEFORE cancelling the existing order.
-	if sr.tpOrderID != "" && sr.lastTPSLQty == totalQty && sr.lastTPSLAvg == avg &&
+	// Both avg and lastTPSLAvg are normalised via FormatPrice to avoid spurious
+	// cancel+re-place cycles when WS avg (limited precision, e.g. 0.0169) differs
+	// from avgEntry() (raw float, e.g. 0.01693821) but both round to the same tick.
+	fmtAvg := trader.FormatPrice(avg, sr.instr.TickSize)
+	if sr.tpOrderID != "" && sr.lastTPSLQty == totalQty &&
+		trader.FormatPrice(sr.lastTPSLAvg, sr.instr.TickSize) == fmtAvg &&
 		trader.FormatPrice(sr.lastTPPrice, sr.instr.TickSize) == trader.FormatPrice(tpPrice, sr.instr.TickSize) {
 		log.Printf("strategy %s: updateTP: TP уже выставлен (id=%s, qty=%.6f, avg=%.4f, price=%.4f) — пропуск",
 			sr.strategy.ID[:8], sr.tpOrderID, totalQty, avg, tpPrice)
@@ -2343,7 +2348,7 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 
 	// Position state changed (different qty or entry price) — reset the cancel streak
 	// so the circuit breaker doesn't suppress a valid TP after a level fill.
-	if totalQty != sr.lastTPSLQty || avg != sr.lastTPSLAvg {
+	if totalQty != sr.lastTPSLQty || trader.FormatPrice(sr.lastTPSLAvg, sr.instr.TickSize) != fmtAvg {
 		sr.tpCancelStreak = 0
 	}
 
