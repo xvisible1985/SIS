@@ -19,7 +19,7 @@ import { useSelectedAccount } from '../../../contexts/AccountContext';
 type Props = {
   bot?: BotType;
   initialKind?: BotKind;
-  onSubmit: (data: CreateBotInput) => Promise<void> | void;
+  onSubmit: (data: CreateBotInput) => Promise<{ warnings?: string[] } | void> | void;
   onClose: () => void;
   mode?: 'user' | 'admin';
 };

@@ -137,11 +137,12 @@ export function BotsPage() {
     setSelectedKind('signal');
   };
 
-  const handleFormSubmit = async (data: CreateBotInput) => {
+  const handleFormSubmit = async (data: CreateBotInput): Promise<{ warnings?: string[] } | void> => {
     if (formMode === 'create') {
       await action({ type: 'create', data });
+      return;
     } else if (formMode === 'edit' && editBot) {
-      await action({ type: 'update', botId: editBot.id, data });
+      return action({ type: 'update', botId: editBot.id, data }) as Promise<{ warnings?: string[] } | void>;
     }
   };
 

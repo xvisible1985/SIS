@@ -15,7 +15,7 @@ import { ResetStatsConfirmModal } from './ResetStatsConfirmModal';
 
 type Props = {
   bot?: BotType;
-  onSubmit: (data: CreateBotInput) => Promise<void> | void;
+  onSubmit: (data: CreateBotInput) => Promise<{ warnings?: string[] } | void> | void;
   onClose: () => void;
   mode?: 'user' | 'admin';
   takenSymbols?: Map<string, string>;
@@ -122,6 +122,7 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
 
   const [submitting,            setSubmitting]            = useState(false);
   const [submitError,           setSubmitError]           = useState<string | null>(null);
+  const [submitWarnings,        setSubmitWarnings]        = useState<string[]>([]);
   const [showResetStatsConfirm, setShowResetStatsConfirm] = useState(false);
   const [instrInfo,   setInstrInfo]   = useState<InstrumentConstraints | null>(null);
 
@@ -244,9 +245,10 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
   const doSubmit = async () => {
     setSubmitting(true);
     setSubmitError(null);
+    setSubmitWarnings([]);
     const totalMatrixLevels = aboveLevels.length + 1 + belowLevels.length;
     try {
-      await onSubmit({
+      const result = await onSubmit({
         name: name.trim(),
         description: description.trim(),
         fullDescription: fullDescription.trim() || undefined,
@@ -272,7 +274,12 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
         accountId: selectedAccountId || null,
         autoMode,
       });
-      onClose();
+      const warnings = (result as { warnings?: string[] })?.warnings ?? [];
+      if (warnings.length > 0) {
+        setSubmitWarnings(warnings);
+      } else {
+        onClose();
+      }
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : 'Неизвестная ошибка');
     } finally {
@@ -940,6 +947,21 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
           {submitError && (
             <div className="mb-2.5 rounded-lg border border-rose-500/30 bg-rose-500/[.1] px-3 py-2 text-[12px] text-rose-300">
               {submitError}
+            </div>
+          )}
+          {submitWarnings.length > 0 && (
+            <div className="mb-2.5 rounded-lg border border-orange-500/30 bg-orange-500/[.08] p-3 flex flex-col gap-1.5">
+              <div className="text-[11px] font-bold text-orange-400">⚡ Конфликты символов</div>
+              {submitWarnings.map((w, i) => (
+                <div key={i} className="text-[11px] text-orange-300/90">{w}</div>
+              ))}
+              <button
+                type="button"
+                onClick={onClose}
+                className="mt-1 self-start rounded-md bg-orange-500/[.15] px-3 py-1 text-[11px] font-semibold text-orange-300 hover:bg-orange-500/[.25] transition-colors"
+              >
+                Понятно, закрыть
+              </button>
             </div>
           )}
           <div className="flex items-center justify-end gap-2">

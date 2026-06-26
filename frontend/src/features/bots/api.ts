@@ -75,7 +75,7 @@ export function useBots() {
     return () => window.removeEventListener('bot-updated', handler);
   }, [load]);
 
-  const action = useCallback(async (a: BotAction) => {
+  const action = useCallback(async (a: BotAction): Promise<Record<string, unknown> | void> => {
     try {
       switch (a.type) {
         case 'start':   await apiClient.post(`/bots/${a.botId}/start`); break;
@@ -87,7 +87,10 @@ export function useBots() {
         case 'fork':    await apiClient.post(`/bots/${a.botId}/fork`); break;
         case 'publish': await apiClient.post(`/bots/${a.botId}/publish`); break;
         case 'request-approval': await apiClient.post(`/bots/${a.botId}/request-approval`); break;
-        case 'update':  await apiClient.patch(`/bots/${a.botId}`, a.data); break;
+        case 'update': {
+          const res = await apiClient.patch<Record<string, unknown>>(`/bots/${a.botId}`, a.data);
+          return res.data;
+        }
         case 'delete':  await apiClient.delete(`/bots/${a.botId}`); break;
         case 'create':  await apiClient.post('/bots', a.data); break;
       }
