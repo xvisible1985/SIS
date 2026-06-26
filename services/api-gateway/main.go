@@ -340,6 +340,15 @@ func main() {
 			// Admin: services status
 			r.Get("/admin/services", s.GetServices)
 
+			// Admin: whale parser
+			r.Get("/admin/whale/addresses", s.ListWhaleAddresses)
+			r.Post("/admin/whale/addresses", s.CreateWhaleAddress)
+			r.Patch("/admin/whale/addresses/{id}", s.PatchWhaleAddress)
+			r.Delete("/admin/whale/addresses/{id}", s.DeleteWhaleAddress)
+			r.Get("/admin/whale/events", s.ListWhaleEvents)
+			r.Get("/admin/whale/state", s.GetWhaleState)
+			r.Post("/admin/whale/simulate", s.SimulateWhale)
+
 				// Admin: sign Bybit trading agreement (disabled — requires master API key permissions)
 				// r.Post("/admin/accounts/{id}/sign-agreement", s.AdminSignAgreement)
 		})
