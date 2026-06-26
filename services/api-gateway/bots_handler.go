@@ -1,4 +1,4 @@
-﻿// services/api-gateway/bots_handler.go
+// services/api-gateway/bots_handler.go
 package main
 
 import (
@@ -20,7 +20,7 @@ import (
 	"sis/pkg/trader"
 )
 
-// в"Ђв"Ђ Types в"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђ
+// РІ"Р‚РІ"Р‚ Types РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚
 
 type botResp struct {
 	ID                    string          `json:"id"`
@@ -63,6 +63,11 @@ type botResp struct {
 	SourceAuthor          string          `json:"sourceAuthor"`
 }
 
+type patchBotWithWarningsResp struct {
+	botResp
+	Warnings []string `json:"warnings,omitempty"`
+}
+
 type listBotsResp struct {
 	Catalog []botResp `json:"catalog"`
 	Mine    []botResp `json:"mine"`
@@ -76,10 +81,10 @@ type scanHit struct {
 	DirBlocked     bool    `json:"dir_blocked"`
 	SignalValue    float64 `json:"signal_value"`     // raw indicator value (e.g. RSI=14.2)
 	Strength       float64 `json:"strength"`         // sort key: higher = stronger signal
-	TTLRemainingSec float64 `json:"ttl_remaining_sec"` // -1 = no TTL; в‰Ґ0 = seconds left
+	TTLRemainingSec float64 `json:"ttl_remaining_sec"` // -1 = no TTL; РІвЂ°Тђ0 = seconds left
 }
 
-// в"Ђв"Ђ Helpers в"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђ
+// РІ"Р‚РІ"Р‚ Helpers РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚
 
 const botCols = `b.id, b.name, b.description, b.full_description, b.avatar_url, b.owner_id, COALESCE(u.username, u.email),
 	b.is_public, b.is_official, b.status, b.source_bot_id, b.is_fork,
@@ -99,7 +104,7 @@ const botCols = `b.id, b.name, b.description, b.full_description, b.avatar_url, 
 
 const botFrom = ` FROM bots b JOIN users u ON u.id = b.owner_id `
 
-// mineStatsCols — нули для статистики сделок (trade_history удалена, будет пересоздана)
+// mineStatsCols вЂ” РЅСѓР»Рё РґР»СЏ СЃС‚Р°С‚РёСЃС‚РёРєРё СЃРґРµР»РѕРє (trade_history СѓРґР°Р»РµРЅР°, Р±СѓРґРµС‚ РїРµСЂРµСЃРѕР·РґР°РЅР°)
 const mineStatsCols = `,
 	0::int AS trades_total,
 	0::int AS trades_win,
@@ -111,7 +116,7 @@ const mineStatsCols = `,
 		''
 	) AS source_author`
 
-// zeroStatsCols — нули/пустые значения для запросов без контекста пользователя
+// zeroStatsCols вЂ” РЅСѓР»Рё/РїСѓСЃС‚С‹Рµ Р·РЅР°С‡РµРЅРёСЏ РґР»СЏ Р·Р°РїСЂРѕСЃРѕРІ Р±РµР· РєРѕРЅС‚РµРєСЃС‚Р° РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ
 const zeroStatsCols = `, 0::int AS trades_total, 0::int AS trades_win, 0::float8 AS net_pnl_total, '' AS source_author`
 
 // collectBots scans all rows into []botResp and closes rows.
@@ -162,7 +167,7 @@ func fetchBot(s *Server, r *http.Request, botID, callerID string) (botResp, bool
 	return bots[0], true
 }
 
-// в"Ђв"Ђ Handlers в"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђ
+// РІ"Р‚РІ"Р‚ Handlers РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚
 
 // GET /bots
 func (s *Server) ListBots(w http.ResponseWriter, r *http.Request) {
@@ -317,7 +322,7 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "bot not found")
 		return
 	}
-	if ownerID != callerID {
+	if ownerID != callerID && !s.isAdmin(ctx, callerID) {
 		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -351,7 +356,7 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 					`SELECT COUNT(*) FROM strategies WHERE bot_id=$1 AND status IN ('active','finishing')`,
 					botID).Scan(&hotCount); hotCount > 0 {
 					writeError(w, http.StatusUnprocessableEntity,
-						"Нельзя менять тип стратегии при наличии активных стратегий. Дождитесь их завершения.")
+						"РќРµР»СЊР·СЏ РјРµРЅСЏС‚СЊ С‚РёРї СЃС‚СЂР°С‚РµРіРёРё РїСЂРё РЅР°Р»РёС‡РёРё Р°РєС‚РёРІРЅС‹С… СЃС‚СЂР°С‚РµРіРёР№. Р”РѕР¶РґРёС‚РµСЃСЊ РёС… Р·Р°РІРµСЂС€РµРЅРёСЏ.")
 					return
 				}
 			}
@@ -431,6 +436,20 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 	addBool("isPublic", "is_public")
 	addBool("autoMode", "auto_mode")
 	addBool("ignoreCoinFilter", "ignore_coin_filter")
+	// Validate account ownership before allowing account_id change.
+	if v, ok := body["accountId"]; ok {
+		var newAccountID string
+		json.Unmarshal(v, &newAccountID) //nolint:errcheck
+		if newAccountID != "" {
+			var owned bool
+			if err := s.pool.QueryRow(ctx,
+				`SELECT true FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
+				newAccountID, ownerID).Scan(&owned); err != nil || !owned {
+				writeError(w, http.StatusForbidden, "account not found")
+				return
+			}
+		}
+	}
 	addNullableStr("accountId", "account_id")
 	addSlice("symbolWhitelist", "symbol_whitelist")
 	addSlice("symbolBlacklist", "symbol_blacklist")
@@ -465,13 +484,13 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	s.logBotEvent(ctx, botID, "Настройки бота изменены пользователем", "info", "user")
+	s.logBotEvent(ctx, botID, "РќР°СЃС‚СЂРѕР№РєРё Р±РѕС‚Р° РёР·РјРµРЅРµРЅС‹ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј", "info", "user")
 
 	// If strategyConfig changed: reset trade stats, update in-memory snapshot, and sync active strategies.
 	if changingStrategy {
 		if _, err := s.pool.Exec(ctx,
 			`DELETE FROM trade_history WHERE bot_id = $1 AND owner_id = $2`,
-			botID, callerID,
+			botID, ownerID,
 		); err != nil {
 			_ = err
 		}
@@ -493,7 +512,63 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
+
+	// Check for symbol whitelist conflicts with other active bots.
+	if _, changingWL := body["symbolWhitelist"]; changingWL {
+		if warnings := s.checkWhitelistConflicts(ctx, botID, ownerID, bot.SymbolWhitelist); len(warnings) > 0 {
+			writeJSON(w, http.StatusOK, patchBotWithWarningsResp{botResp: bot, Warnings: warnings})
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, bot)
+}
+
+// checkWhitelistConflicts returns warning strings for each other active bot
+// whose symbol_whitelist overlaps with the given whitelist.
+func (s *Server) checkWhitelistConflicts(ctx context.Context, botID, ownerID string, whitelist []string) []string {
+	if len(whitelist) == 0 {
+		return nil
+	}
+	// Build set of concrete (non-pattern) symbols to check
+	wlSet := make(map[string]bool, len(whitelist))
+	for _, sym := range whitelist {
+		if !strings.Contains(sym, "*") {
+			wlSet[sym] = true
+		}
+	}
+	if len(wlSet) == 0 {
+		return nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT name, COALESCE(strategy_config->>'bot_kind', 'bot'), symbol_whitelist
+		FROM bots
+		WHERE owner_id=$1 AND id != $2 AND status='active'
+		  AND cardinality(symbol_whitelist) > 0
+	`, ownerID, botID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var warnings []string
+	for rows.Next() {
+		var otherName, otherKind string
+		var otherWL []string
+		if rows.Scan(&otherName, &otherKind, &otherWL) != nil {
+			continue
+		}
+		var conflicts []string
+		for _, sym := range otherWL {
+			if wlSet[sym] {
+				conflicts = append(conflicts, sym)
+			}
+		}
+		if len(conflicts) > 0 {
+			warnings = append(warnings, fmt.Sprintf("%v пересекается с ботом «%s» (%s)", conflicts, otherName, otherKind))
+		}
+	}
+	return warnings
 }
 
 // syncBotStrategies reads the bot's current strategy_config and applies it to all
@@ -655,7 +730,7 @@ func (s *Server) DeleteBot(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /bots/{id}/deploy вЂ" creates a subscription (linked copy) for the caller.
+// POST /bots/{id}/deploy РІР‚" creates a subscription (linked copy) for the caller.
 func (s *Server) DeployBot(w http.ResponseWriter, r *http.Request) {
 	callerID := UserIDFromCtx(r.Context())
 	sourceID := chi.URLParam(r, "id")
@@ -723,7 +798,7 @@ func (s *Server) DeployBot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, bot)
 }
 
-// POST /bots/{id}/fork вЂ" unlinks a subscription so it can be edited independently.
+// POST /bots/{id}/fork РІР‚" unlinks a subscription so it can be edited independently.
 func (s *Server) ForkBot(w http.ResponseWriter, r *http.Request) {
 	callerID := UserIDFromCtx(r.Context())
 	botID := chi.URLParam(r, "id")
@@ -779,7 +854,7 @@ func (s *Server) StartBot(w http.ResponseWriter, r *http.Request) {
 		botID, callerID,
 	).Scan(&botKind, &symbol, &ignoreCoinFilter)
 	if err != nil {
-		// bot not found — let setBotStatus return 404
+		// bot not found вЂ” let setBotStatus return 404
 		s.setBotStatus(w, r, "active")
 		return
 	}
@@ -793,8 +868,8 @@ func (s *Server) StartBot(w http.ResponseWriter, r *http.Request) {
 			for _, b := range blacklist {
 				if b == symbol {
 					writeError(w, http.StatusUnprocessableEntity,
-						"Монета «"+symbol+"» находится в чёрном списке фильтра монет. "+
-							"Включите «Игнорировать фильтр монет» в настройках бота, чтобы продолжить.")
+						"РњРѕРЅРµС‚Р° В«"+symbol+"В» РЅР°С…РѕРґРёС‚СЃСЏ РІ С‡С‘СЂРЅРѕРј СЃРїРёСЃРєРµ С„РёР»СЊС‚СЂР° РјРѕРЅРµС‚. "+
+							"Р’РєР»СЋС‡РёС‚Рµ В«РРіРЅРѕСЂРёСЂРѕРІР°С‚СЊ С„РёР»СЊС‚СЂ РјРѕРЅРµС‚В» РІ РЅР°СЃС‚СЂРѕР№РєР°С… Р±РѕС‚Р°, С‡С‚РѕР±С‹ РїСЂРѕРґРѕР»Р¶РёС‚СЊ.")
 					return
 				}
 			}
@@ -868,9 +943,9 @@ func (s *Server) setBotStatus(w http.ResponseWriter, r *http.Request, status str
 		writeError(w, http.StatusNotFound, "bot not found")
 		return
 	}
-	msg := "Бот остановлен пользователем"
+	msg := "Р‘РѕС‚ РѕСЃС‚Р°РЅРѕРІР»РµРЅ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј"
 	if status == "active" {
-		msg = "Бот запущен пользователем"
+		msg = "Р‘РѕС‚ Р·Р°РїСѓС‰РµРЅ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј"
 	}
 	s.logBotEvent(r.Context(), botID, msg, "info", "user")
 	if status == "stopped" {
@@ -913,7 +988,7 @@ func (s *Server) stopBotStrategiesWithoutPosition(ctx context.Context, botID str
 	}
 	if len(ids) > 0 {
 		s.logBotEvent(ctx, botID,
-			fmt.Sprintf("Остановлено %d стратегий без открытой позиции", len(ids)), "info", "strategy")
+			fmt.Sprintf("РћСЃС‚Р°РЅРѕРІР»РµРЅРѕ %d СЃС‚СЂР°С‚РµРіРёР№ Р±РµР· РѕС‚РєСЂС‹С‚РѕР№ РїРѕР·РёС†РёРё", len(ids)), "info", "strategy")
 	}
 }
 
@@ -1005,7 +1080,7 @@ func (s *Server) PublishBot(w http.ResponseWriter, r *http.Request) {
 	if !isOfficial {
 		if approvalStatus == nil || *approvalStatus != "approved" {
 			writeError(w, http.StatusUnprocessableEntity,
-				"Бот не прошёл согласование. Отправьте заявку и дождитесь одобрения администратора.")
+				"Р‘РѕС‚ РЅРµ РїСЂРѕС€С‘Р» СЃРѕРіР»Р°СЃРѕРІР°РЅРёРµ. РћС‚РїСЂР°РІСЊС‚Рµ Р·Р°СЏРІРєСѓ Рё РґРѕР¶РґРёС‚РµСЃСЊ РѕРґРѕР±СЂРµРЅРёСЏ Р°РґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂР°.")
 			return
 		}
 	}
@@ -1024,7 +1099,7 @@ func (s *Server) PublishBot(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /bots/signal-scan — scan available symbols against provided signal configs.
+// POST /bots/signal-scan вЂ” scan available symbols against provided signal configs.
 // Applies direction filtering (like ScanBot) so counts match across the UI.
 func (s *Server) ScanSignals(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -1135,7 +1210,7 @@ func (s *Server) ScanSignals(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"results": matches})
 }
 
-// ── Hedge bot scan ────────────────────────────────────────────────────────────
+// в”Ђв”Ђ Hedge bot scan в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 // hedgeScanPos represents a single monitored/hedged position returned by scanHedgeBot.
 type hedgeScanPos struct {
@@ -1163,16 +1238,16 @@ func calcHedgeMetricValue(pos hedgePosInfo, cfg botCfgJSON) (label string, curre
 	threshold = math.Abs(cfg.HedgeActValue)
 	switch cfg.HedgeActType {
 	case 0, 1: // last_order% or drawdown%
-		label = "Просадка"
+		label = "РџСЂРѕСЃР°РґРєР°"
 		current = hedgeDrawdown(pos)
-	case 2: // pnl$ — show loss as positive number
-		label = "Убыток $"
+	case 2: // pnl$ вЂ” show loss as positive number
+		label = "РЈР±С‹С‚РѕРє $"
 		current = -pos.UnrealisedPnl
-	case 3: // roi% — show loss as positive number
-		label = "ROI убыток %"
+	case 3: // roi% вЂ” show loss as positive number
+		label = "ROI СѓР±С‹С‚РѕРє %"
 		current = -hedgeROI(pos)
 	default:
-		label = "Просадка"
+		label = "РџСЂРѕСЃР°РґРєР°"
 		current = hedgeDrawdown(pos)
 	}
 	return
@@ -1182,19 +1257,19 @@ func calcHedgeMetricValue(pos hedgePosInfo, cfg botCfgJSON) (label string, curre
 // is currently monitoring and which are already being hedged.
 func (s *Server) scanHedgeBot(w http.ResponseWriter, ctx context.Context, botID, accountID string, whitelist, blacklist []string, cfg botCfgJSON) {
 	if accountID == "" {
-		writeError(w, http.StatusBadRequest, "бот не привязан к торговому аккаунту")
+		writeError(w, http.StatusBadRequest, "Р±РѕС‚ РЅРµ РїСЂРёРІСЏР·Р°РЅ Рє С‚РѕСЂРіРѕРІРѕРјСѓ Р°РєРєР°СѓРЅС‚Сѓ")
 		return
 	}
 
 	creds, err := s.loadBotAccountCreds(ctx, accountID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "не удалось загрузить ключи аккаунта")
+		writeError(w, http.StatusInternalServerError, "РЅРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РіСЂСѓР·РёС‚СЊ РєР»СЋС‡Рё Р°РєРєР°СѓРЅС‚Р°")
 		return
 	}
 
 	rawPositions, err := trader.FetchPositions(ctx, creds)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("ошибка получения позиций: %v", err))
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("РѕС€РёР±РєР° РїРѕР»СѓС‡РµРЅРёСЏ РїРѕР·РёС†РёР№: %v", err))
 		return
 	}
 
@@ -1300,7 +1375,7 @@ func (s *Server) scanHedgeBot(w http.ResponseWriter, ctx context.Context, botID,
 	})
 }
 
-// GET /bots/{id}/scan вЂ" run signal scan for this bot and return matching symbols.
+// GET /bots/{id}/scan РІР‚" run signal scan for this bot and return matching symbols.
 // For hedge bots, returns positions being monitored/hedged instead of signal hits.
 func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 	callerID := UserIDFromCtx(r.Context())
@@ -1425,9 +1500,9 @@ func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 			ttlRem := s.signalEngine.QueryTTLRemaining(sym, interval, sigCfgs)
 
 			// Strength = sort key (higher = preferred).
-			// priority_signal=st-flip  → TTL remaining (more = more recent signal)
-			// priority_signal=<other>  → signal value (higher = stronger)
-			// no priority_signal       → buy: negate value (lower RSI = stronger); sell: value
+			// priority_signal=st-flip  в†’ TTL remaining (more = more recent signal)
+			// priority_signal=<other>  в†’ signal value (higher = stronger)
+			// no priority_signal       в†’ buy: negate value (lower RSI = stronger); sell: value
 			var strength float64
 			switch {
 			case cfg.PrioritySignal == "st-flip":
@@ -1514,7 +1589,7 @@ func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// POST /bots/{id}/trigger вЂ" manually trigger strategy creation for a specific symbol.
+// POST /bots/{id}/trigger РІР‚" manually trigger strategy creation for a specific symbol.
 // Body: { "symbol": "BTCUSDT", "direction": "long" }
 func (s *Server) TriggerBot(w http.ResponseWriter, r *http.Request) {
 	callerID := UserIDFromCtx(r.Context())
@@ -1561,7 +1636,7 @@ func (s *Server) TriggerBot(w http.ResponseWriter, r *http.Request) {
 			`SELECT COUNT(*) FROM strategies WHERE bot_id = $1 AND status IN ('active', 'finishing')`,
 			botID,
 		).Scan(&activeCount); err == nil && activeCount >= b.maxStrat {
-			writeError(w, http.StatusConflict, fmt.Sprintf("лимит стратегий бота достигнут (%d/%d)", activeCount, b.maxStrat))
+			writeError(w, http.StatusConflict, fmt.Sprintf("Р»РёРјРёС‚ СЃС‚СЂР°С‚РµРіРёР№ Р±РѕС‚Р° РґРѕСЃС‚РёРіРЅСѓС‚ (%d/%d)", activeCount, b.maxStrat))
 			return
 		}
 	}
@@ -1576,7 +1651,7 @@ func (s *Server) TriggerBot(w http.ResponseWriter, r *http.Request) {
 			`SELECT COUNT(*) FROM strategies WHERE bot_id = $1 AND direction = $2 AND status IN ('active', 'finishing')`,
 			botID, req.Direction,
 		).Scan(&dirCount); err == nil && dirCount >= dirLimit {
-			writeError(w, http.StatusConflict, fmt.Sprintf("лимит %s стратегий бота достигнут (%d/%d)", req.Direction, dirCount, dirLimit))
+			writeError(w, http.StatusConflict, fmt.Sprintf("Р»РёРјРёС‚ %s СЃС‚СЂР°С‚РµРіРёР№ Р±РѕС‚Р° РґРѕСЃС‚РёРіРЅСѓС‚ (%d/%d)", req.Direction, dirCount, dirLimit))
 			return
 		}
 	}
@@ -1589,7 +1664,7 @@ func (s *Server) TriggerBot(w http.ResponseWriter, r *http.Request) {
 		   AND (bot_id = $3 OR (bot_id IS NULL AND owner_id = $4 AND account_id = $5))`,
 		req.Symbol, req.Direction, botID, b.ownerID, b.accountID,
 	).Scan(&existing); err == nil && existing > 0 {
-		writeError(w, http.StatusConflict, "стратегия для этой пары уже открыта")
+		writeError(w, http.StatusConflict, "СЃС‚СЂР°С‚РµРіРёСЏ РґР»СЏ СЌС‚РѕР№ РїР°СЂС‹ СѓР¶Рµ РѕС‚РєСЂС‹С‚Р°")
 		return
 	}
 
@@ -1599,14 +1674,14 @@ func (s *Server) TriggerBot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logBotEvent(ctx, botID,
-		fmt.Sprintf("Запущена стратегия вручную: %s %s", req.Symbol, req.Direction), "info", "user")
+		fmt.Sprintf("Р—Р°РїСѓС‰РµРЅР° СЃС‚СЂР°С‚РµРіРёСЏ РІСЂСѓС‡РЅСѓСЋ: %s %s", req.Symbol, req.Direction), "info", "user")
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
 }
 
 // sortHits orders scan hits:
-//  1. actionable (not blocked, not open) вЂ" sorted by signal strength desc
-//  2. already open вЂ" sorted by signal strength desc
-//  3. direction blocked вЂ" sorted by signal strength desc
+//  1. actionable (not blocked, not open) РІР‚" sorted by signal strength desc
+//  2. already open РІР‚" sorted by signal strength desc
+//  3. direction blocked РІР‚" sorted by signal strength desc
 func sortHits(hits []scanHit) {
 	rank := func(h scanHit) int {
 		if h.DirBlocked {
@@ -1627,7 +1702,7 @@ func sortHits(hits []scanHit) {
 	})
 }
 
-// в"Ђв"Ђ Admin handlers в"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђ
+// РІ"Р‚РІ"Р‚ Admin handlers РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚РІ"Р‚
 
 // AddBotBlacklist adds a symbol to the bot's symbol_blacklist.
 // POST /bots/{id}/blacklist-add  Body: {"symbol":"BTCUSDT"}
@@ -1656,12 +1731,12 @@ func (s *Server) AddBotBlacklist(w http.ResponseWriter, r *http.Request) {
 	added := tag.RowsAffected() > 0
 	if added {
 		s.logBotEvent(r.Context(), botID,
-			fmt.Sprintf("Символ %s добавлен в блэклист пользователем", req.Symbol), "info", "user")
+			fmt.Sprintf("РЎРёРјРІРѕР» %s РґРѕР±Р°РІР»РµРЅ РІ Р±Р»СЌРєР»РёСЃС‚ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј", req.Symbol), "info", "user")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "added": added})
 }
 
-// GET /admin/bots вЂ" list all bots (admin only)
+// GET /admin/bots РІР‚" list all bots (admin only)
 func (s *Server) ListAdminBots(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	rows, err := s.pool.Query(ctx,
@@ -1714,7 +1789,7 @@ func (s *Server) PublishBotToCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if dupCount > 0 {
-		writeError(w, http.StatusConflict, "Бот с таким именем уже существует в библиотеке")
+		writeError(w, http.StatusConflict, "Р‘РѕС‚ СЃ С‚Р°РєРёРј РёРјРµРЅРµРј СѓР¶Рµ СЃСѓС‰РµСЃС‚РІСѓРµС‚ РІ Р±РёР±Р»РёРѕС‚РµРєРµ")
 		return
 	}
 
@@ -1757,7 +1832,7 @@ func (s *Server) DeleteAdminBot(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /admin/bots вЂ" create an official NovaBot (admin only)
+// POST /admin/bots РІР‚" create an official NovaBot (admin only)
 func (s *Server) CreateOfficialBot(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	callerID := UserIDFromCtx(ctx)
