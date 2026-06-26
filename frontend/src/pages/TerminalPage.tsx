@@ -258,7 +258,7 @@ function formatVolume(v: string): string {
   return n.toFixed(2)
 }
 
-function BotTerminalCard({ bot, sc, onSymbolChange, onStop, onStart, onEdit, onArchive, onScan, onToggleAuto }: {
+function BotTerminalCard({ bot, sc, onSymbolChange, onStop, onStart, onEdit, onArchive, onScan, onToggleAuto, hasConflict }: {
   bot: Bot
   sc: { signalCount: number; totalCount: number } | undefined
   onSymbolChange: (s: string) => void
@@ -268,6 +268,7 @@ function BotTerminalCard({ bot, sc, onSymbolChange, onStop, onStart, onEdit, onA
   onArchive: () => void
   onScan: () => void
   onToggleAuto: () => void
+  hasConflict?: boolean
 }) {
   const [logOpen, setLogOpen] = useState(false)
   const running = bot.status === 'active'
@@ -345,6 +346,14 @@ function BotTerminalCard({ bot, sc, onSymbolChange, onStop, onStart, onEdit, onA
             {!bot.sourceBotId && (
               <span className="rounded-[3px] border border-[#c14dff]/30 bg-[#c14dff]/[.16] px-1.5 py-px text-[9px] font-bold uppercase tracking-wider text-[#d8a4ff]">
                 Custom
+              </span>
+            )}
+            {hasConflict && (
+              <span
+                title="Символы пересекаются с другим активным ботом"
+                className="rounded-[3px] border border-orange-500/30 bg-orange-500/[.16] px-1.5 py-px text-[9px] font-bold text-orange-400 cursor-help"
+              >
+                ⚡ конфликт
               </span>
             )}
           </div>
@@ -477,6 +486,24 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
   const [scanBot, setScanBot]     = useState<Bot | null>(null)
   const [hidden, setHidden] = useState<Set<string>>(loadHidden)
 
+  const conflictingBotIds = useMemo((): Set<string> => {
+    const active = mine.filter(b => b.status === 'active' && b.symbolWhitelist.length > 0)
+    const result = new Set<string>()
+    for (let i = 0; i < active.length; i++) {
+      const a = active[i]
+      const aSet = new Set(a.symbolWhitelist.filter(s => !s.includes('*')))
+      if (aSet.size === 0) continue
+      for (let j = i + 1; j < active.length; j++) {
+        const b = active[j]
+        if (b.symbolWhitelist.filter(s => !s.includes('*')).some(s => aSet.has(s))) {
+          result.add(a.id)
+          result.add(b.id)
+        }
+      }
+    }
+    return result
+  }, [mine])
+
   // Боты текущего аккаунта + непривязанные боты пользователя
   const accountBots   = mine.filter(b => b.accountId === selectedAccountId)
   const unassignedBots = mine.filter(b => !b.accountId)
@@ -564,6 +591,7 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
             onArchive={() => archive(bot.id)}
             onScan={() => setScanBot(bot)}
             onToggleAuto={() => action({ type: 'update', botId: bot.id, data: { autoMode: !bot.autoMode } })}
+            hasConflict={conflictingBotIds.has(bot.id)}
           />
         ))}
       </div>
