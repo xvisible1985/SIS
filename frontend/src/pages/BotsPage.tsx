@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { BotsPage as BotsPageUI } from '../features/bots/BotsPage';
 import { BotForm } from '../features/bots/components/BotForm';
 import { HedgeBotForm } from '../features/bots/components/HedgeBotForm';
@@ -87,6 +87,19 @@ export function BotsPage() {
   const { catalog, mine, loading, action } = useBots();
   const signalCounts = useBotSignalCounts(!loading);
 
+  const takenSymbols = useMemo((): Map<string, string> => {
+    const map = new Map<string, string>()
+    for (const b of mine) {
+      if (b.status !== 'active') continue
+      for (const sym of b.symbolWhitelist) {
+        if (!sym.includes('*') && !map.has(sym)) {
+          map.set(sym, b.name)
+        }
+      }
+    }
+    return map
+  }, [mine])
+
   const [formMode, setFormMode] = useState<'create' | 'edit' | null>(null);
   const [editBot, setEditBot] = useState<Bot | null>(null);
   const [kindPickerOpen, setKindPickerOpen] = useState(false);
@@ -161,6 +174,7 @@ export function BotsPage() {
       {formMode !== null && selectedKind === 'hedge' && (
         <HedgeBotForm
           bot={editBot ?? undefined}
+          takenSymbols={takenSymbols}
           onSubmit={handleFormSubmit}
           onClose={handleFormClose}
         />
@@ -169,6 +183,7 @@ export function BotsPage() {
       {formMode !== null && selectedKind === 'matrix' && (
         <MatrixBotForm
           bot={editBot ?? undefined}
+          takenSymbols={takenSymbols}
           onSubmit={handleFormSubmit}
           onClose={handleFormClose}
         />

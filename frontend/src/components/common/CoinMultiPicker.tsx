@@ -147,9 +147,10 @@ interface Props {
   onChange: (v: string[]) => void
   color?: 'blue' | 'red'
   placeholder?: string
+  takenSymbols?: Map<string, string>  // symbol → "Имя бота"
 }
 
-export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder = 'Добавить монету...' }: Props) {
+export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder = 'Добавить монету...', takenSymbols }: Props) {
   const [open, setOpen]             = useState(false)
   const [rows, setRows]             = useState<TickerRow[]>([])
   const [query, setQuery]           = useState('')
@@ -362,6 +363,9 @@ export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder 
                 {val.replace(/USDT$/i, '')}
                 {!isPattern(val) && flaggedMap.has(val) && (
                   <span title={flaggedMap.get(val)} className="text-amber-400 text-[9px] cursor-help">⚠️</span>
+                )}
+                {!isPattern(val) && takenSymbols?.has(val) && (
+                  <span title={`Конфликт: ${takenSymbols.get(val)}`} className="text-orange-400 text-[9px] cursor-help">⚡</span>
                 )}
                 <button type="button" onClick={() => remove(val)} className="opacity-60 hover:opacity-100"><X size={9} /></button>
               </span>
@@ -669,6 +673,9 @@ export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder 
                         <span className="ml-1 text-[10px] text-slate-500">USDT</span>
                         {flaggedMap.has(row.symbol) && (
                           <span title={flaggedMap.get(row.symbol)} className="ml-1 text-amber-400 text-[10px] cursor-help">⚠️</span>
+                        )}
+                        {takenSymbols?.has(row.symbol) && (
+                          <span title={`Конфликт: ${takenSymbols.get(row.symbol)}`} className="text-orange-400 text-[10px] cursor-help ml-1">⚡</span>
                         )}
                       </span>
                       <span className={`text-[10px] font-mono ${pos ? 'text-emerald-400' : 'text-rose-400'}`}>

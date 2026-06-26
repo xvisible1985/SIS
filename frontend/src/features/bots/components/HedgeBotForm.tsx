@@ -20,6 +20,7 @@ type Props = {
   onSubmit: (data: CreateBotInput) => Promise<void> | void;
   onClose: () => void;
   mode?: 'user' | 'admin';
+  takenSymbols?: Map<string, string>;
 };
 
 type OuterTab = 'basic' | 'activation' | 'strategy';
@@ -117,6 +118,7 @@ function defaultStratConfig(bot?: BotType): StrategyConfig {
     matrix_rebuild_on_sl:    s.matrix_rebuild_on_sl    ?? false,
     matrix_rebuild_from_entry: s.matrix_rebuild_from_entry ?? false,
     size_as_main:            s.size_as_main            ?? false,
+    hedge_tp_main_mode:      s.hedge_tp_main_mode      ?? 'cancel',
   };
 }
 
@@ -143,7 +145,7 @@ function compressImage(file: File, maxPx = 300, quality = 0.82): Promise<string>
 
 // ─── HedgeBotForm ──────────────────────────────────────────────────────────────
 
-export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
+export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbols }: Props) {
   const [outerTab, setOuterTab] = useState<OuterTab>('basic');
   const [stratTab, setStratTab] = useState<StratTab>('entry');
 
@@ -692,6 +694,7 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
                     onChange={setWhitelist}
                     color="blue"
                     placeholder="Выбрать монеты для whitelist..."
+                    takenSymbols={takenSymbols}
                   />
                 </div>
                 <div>

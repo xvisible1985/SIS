@@ -18,6 +18,7 @@ type Props = {
   onSubmit: (data: CreateBotInput) => Promise<void> | void;
   onClose: () => void;
   mode?: 'user' | 'admin';
+  takenSymbols?: Map<string, string>;
 };
 
 type OuterTab = 'basic' | 'strategy' | 'close';
@@ -65,6 +66,7 @@ function defaultStratConfig(bot?: BotType): StrategyConfig {
     matrix_rebuild_from_entry: s.matrix_rebuild_from_entry ?? false,
     hedge_deact_close_type:  s.hedge_deact_close_type  ?? 0,
     hedge_deact_close_value: s.hedge_deact_close_value ?? 50,
+    hedge_breakeven_profit:  s.hedge_breakeven_profit  ?? 0,
     hedge_profit_lazy:       s.hedge_profit_lazy       ?? false,
     hedge_profit_lazy_pct:   s.hedge_profit_lazy_pct   ?? 2,
   };
@@ -91,7 +93,7 @@ function compressImage(file: File, maxPx = 300, quality = 0.82): Promise<string>
 
 // ─── MatrixBotForm ─────────────────────────────────────────────────────────────
 
-export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) {
+export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbols }: Props) {
   const [outerTab, setOuterTab] = useState<OuterTab>('basic');
   const [stratTab, setStratTab] = useState<StratTab>('entry');
 
@@ -113,7 +115,8 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) 
   const [whitelist, setWhitelist] = useState<string[]>(bot?.symbolWhitelist ?? []);
   const [blacklist, setBlacklist] = useState<string[]>(bot?.symbolBlacklist ?? []);
 
-  const [deactCloseValDraft, setDeactCloseValDraft] = useState<string | null>(null);
+  const [deactCloseValDraft,    setDeactCloseValDraft]    = useState<string | null>(null);
+  const [breakevenProfitDraft,  setBreakevenProfitDraft]  = useState<string | null>(null);
   const [profitLazyPctDraft, setProfitLazyPctDraft] = useState<string | null>(null);
   const [leverageMax,  setLeverageMax]  = useState(false);
 
@@ -163,6 +166,7 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) 
         if (d.matrix_entry_level)  o.matrix_entry_level  = d.matrix_entry_level
         if (d.hedge_deact_close_type !== undefined) o.hedge_deact_close_type  = d.hedge_deact_close_type
         if (d.hedge_deact_close_value !== undefined) o.hedge_deact_close_value = d.hedge_deact_close_value
+        if (d.hedge_breakeven_profit !== undefined) o.hedge_breakeven_profit = d.hedge_breakeven_profit
         if (d.hedge_profit_lazy !== undefined) o.hedge_profit_lazy = d.hedge_profit_lazy
         if (d.hedge_profit_lazy_pct !== undefined) o.hedge_profit_lazy_pct = d.hedge_profit_lazy_pct
         return { ...c, ...o }
@@ -443,7 +447,7 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) 
               {/* Whitelist / Blacklist */}
               <div className="flex flex-col gap-3">
                 <Field label="Whitelist монет" hint="Бот торгует только этими монетами (пусто = все)">
-                  <CoinMultiPicker values={whitelist} onChange={setWhitelist} />
+                  <CoinMultiPicker values={whitelist} onChange={setWhitelist} takenSymbols={takenSymbols} />
                 </Field>
                 <Field label="Blacklist монет" hint="Монеты, исключённые из торговли">
                   <CoinMultiPicker values={blacklist} onChange={setBlacklist} color="red" />
@@ -833,10 +837,10 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) 
                   <EnumPicker
                     options={DEACT_CLOSE_TYPES}
                     value={config.hedge_deact_close_type ?? 0}
-                    onChange={v => patch({ hedge_deact_close_type: v })}
+                    onChange={v => patch({ hedge_deact_close_type: v, ...(v === 2 ? { hedge_breakeven_profit: 0 } : {}) })}
                   />
                 </div>
-                {(config.hedge_deact_close_type ?? 0) !== 2 && (
+                {(config.hedge_deact_close_type ?? 0) !== 2 ? (
                   <div>
                     <label className={labelCls}>
                       {(config.hedge_deact_close_type ?? 0) === 0 ? 'PnL, USDT' : 'ROI, %'}
@@ -858,6 +862,31 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user' }: Props) 
                           const v = parseFloat(deactCloseValDraft);
                           patch({ hedge_deact_close_value: isNaN(v) ? (config.hedge_deact_close_value ?? 50) : v });
                           setDeactCloseValDraft(null);
+                        }
+                      }}
+                      className={inputCls}
+                    />
+                  </div>
+                ) : (
+                  <div>
+                    <label className={labelCls}>Профит цель, USDT</label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={breakevenProfitDraft !== null ? breakevenProfitDraft : String(config.hedge_breakeven_profit ?? 0)}
+                      onChange={e => {
+                        const raw = e.target.value;
+                        setBreakevenProfitDraft(raw);
+                        if (/^-?\d*\.?\d*$/.test(raw) && raw !== '' && raw !== '-') {
+                          const v = parseFloat(raw);
+                          if (!isNaN(v)) patch({ hedge_breakeven_profit: v });
+                        }
+                      }}
+                      onBlur={() => {
+                        if (breakevenProfitDraft !== null) {
+                          const v = parseFloat(breakevenProfitDraft);
+                          patch({ hedge_breakeven_profit: isNaN(v) ? (config.hedge_breakeven_profit ?? 0) : v });
+                          setBreakevenProfitDraft(null);
                         }
                       }}
                       className={inputCls}
