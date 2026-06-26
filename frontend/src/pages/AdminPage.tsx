@@ -15,9 +15,10 @@ import { useAdminUsers } from '../features/admin-users/api'
 import { AdminBotsTab } from '../features/admin-bots/AdminBotsTab'
 import { AdminProxiesTab } from '../features/admin-proxies/AdminProxiesTab'
 import { AdminDefaultsTab } from '../features/admin-defaults/AdminDefaultsTab'
-import { BybitNewsTab } from '../features/bybit-news/BybitNewsTab'
 import { BybitNewsCard } from '../features/bybit-news/BybitNewsCard'
+import { ParsersSection } from '../features/parsers/ParsersSection'
 import { LogVisualizerTab } from '../features/log-visualizer/LogVisualizerTab'
+import { ServicesTab } from '../features/admin-services/ServicesTab'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -1182,8 +1183,9 @@ const TABS = [
   { id: 'signals',    label: 'Сигналы'      },
   { id: 'proxies',    label: 'Прокси'       },
   { id: 'defaults',   label: 'Дефолты'      },
-  { id: 'bybit-news', label: 'Bybit News'   },
+  { id: 'parsers',         label: 'Парсеры'      },
   { id: 'log-visualizer', label: 'Визуализатор' },
+  { id: 'services',       label: 'Сервисы'      },
 ] as const
 
 type TabId = typeof TABS[number]['id']
@@ -1246,14 +1248,19 @@ export function AdminPage() {
           <AdminDefaultsTab />
         </div>
       )}
-      {tab === 'bybit-news' && (
+      {tab === 'parsers' && (
         <div className="flex flex-1 flex-col overflow-hidden">
-          <BybitNewsTab />
+          <ParsersSection />
         </div>
       )}
       {tab === 'log-visualizer' && (
         <div className="flex flex-1 flex-col overflow-hidden">
           <LogVisualizerTab />
+        </div>
+      )}
+      {tab === 'services' && (
+        <div className="flex-1 overflow-auto">
+          <ServicesTab />
         </div>
       )}
 
