@@ -50,25 +50,6 @@ services:
       timeout: 3s
       retries: 10
 
-  api-gateway:
-    build:
-      context: .
-      dockerfile: services/api-gateway/Dockerfile
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      DATABASE_URL: postgres://sis:sis_secret@pgbouncer:5432/sis
-      REDIS_URL: redis://redis:6379/0
-    ports:
-      - "127.0.0.1:8080:8080"
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-      pgbouncer:
-        condition: service_started
-      redis:
-        condition: service_healthy
-
   squid:
     image: sameersbn/squid:3.5.27-2
     restart: unless-stopped
@@ -83,14 +64,30 @@ services:
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_BOT_SECRET: ${TELEGRAM_BOT_SECRET}
-      GATEWAY_URL: ${GATEWAY_URL:-http://api-gateway:8080}
+      GATEWAY_URL: ${GATEWAY_URL:-http://host.docker.internal:8081}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       APP_URL: ${APP_URL:-https://n2.novabot.ru}
       TELEGRAM_GROUP_ID: ${TELEGRAM_GROUP_ID:-}
       WELCOME_ENABLED: ${WELCOME_ENABLED:-false}
     depends_on:
-      - api-gateway
       - redis
+
+  parser:
+    build:
+      context: .
+      dockerfile: services/parser/Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      ETHERSCAN_API_KEY: ${ETHERSCAN_API_KEY:-}
+      TRONGRID_API_KEY: ${TRONGRID_API_KEY:-}
+      WHALE_THRESHOLD_USDT: ${WHALE_THRESHOLD_USDT:-50000}
+    restart: unless-stopped
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   tsdb_data:
