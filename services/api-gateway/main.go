@@ -17,9 +17,9 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
-	"sis/pkg/bybitnews"
 	"sis/pkg/cache"
 	"sis/pkg/db"
+	"sis/pkg/heartbeat"
 	"sis/pkg/proxy"
 	traderPkg "sis/pkg/trader"
 )
@@ -74,10 +74,9 @@ func main() {
 		proxy.InitGlobalManager(pm)
 	}
 
-	ns := bybitnews.NewScraper(pool)
-	go ns.Start(ctx)
+	go heartbeat.Start(ctx, rdb, "api-gateway")
 
-	s := NewServer(ctx, pool, rdb, jwtSecret, encKey, botSecret, tronAddr, adminEmails, pm, ns)
+	s := NewServer(ctx, pool, rdb, jwtSecret, encKey, botSecret, tronAddr, adminEmails, pm)
 	bootstrapAdmins(ctx, pool, adminEmails)
 
 	// Start system health monitor (CPU sampler every 10 s, DB size tracker every 5 min).
@@ -220,6 +219,8 @@ func main() {
 		r.Post("/strategies/{id}/cycle-restart", s.RestartCycle)
 		r.Post("/strategies/{id}/dismiss-alert", s.DismissManualAlert)
 		r.Get("/strategies/{id}/events", s.GetStrategyEvents)
+		r.Get("/events/recent", s.GetRecentEvents)
+		r.Get("/positions/source-log", s.GetPositionSourceLog)
 
 		// Strategy templates
 		r.Get("/strategy-templates", s.ListTemplates)
@@ -336,6 +337,8 @@ func main() {
 
 			// Admin: system health
 			r.Get("/admin/system-health", s.GetSystemHealth)
+			// Admin: services status
+			r.Get("/admin/services", s.GetServices)
 
 				// Admin: sign Bybit trading agreement (disabled — requires master API key permissions)
 				// r.Post("/admin/accounts/{id}/sign-agreement", s.AdminSignAgreement)

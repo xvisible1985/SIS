@@ -46,11 +46,6 @@ func dbToSnapshot(a bybitnews.DBAnnouncement) bybitnews.Snapshot {
 
 // ListBybitAnnouncements returns announcements from the DB.
 func (s *Server) ListBybitAnnouncements(w http.ResponseWriter, r *http.Request) {
-	if s.newsScraper == nil {
-		writeJSON(w, http.StatusOK, []bybitnews.Snapshot{})
-		return
-	}
-
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	if limit <= 0 || limit > 200 {
@@ -60,7 +55,7 @@ func (s *Server) ListBybitAnnouncements(w http.ResponseWriter, r *http.Request) 
 	onlyListings := q.Get("listings") == "1"
 	onlyDelistings := q.Get("delistings") == "1"
 
-	rows, err := s.newsScraper.List(r.Context(), limit, typ, onlyListings, onlyDelistings)
+	rows, err := bybitnews.ListFromDB(r.Context(), s.pool, limit, typ, onlyListings, onlyDelistings)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -75,11 +70,7 @@ func (s *Server) ListBybitAnnouncements(w http.ResponseWriter, r *http.Request) 
 
 // GetLatestBybitNews returns the latest listing/delisting announcements.
 func (s *Server) GetLatestBybitNews(w http.ResponseWriter, r *http.Request) {
-	if s.newsScraper == nil {
-		writeJSON(w, http.StatusOK, []bybitnews.Snapshot{})
-		return
-	}
-	rows, err := s.newsScraper.Latest(r.Context(), 5)
+	rows, err := bybitnews.LatestFromDB(r.Context(), s.pool, 5)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -91,17 +82,10 @@ func (s *Server) GetLatestBybitNews(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// RefreshBybitNews triggers an immediate fetch.
+// RefreshBybitNews is now handled by the parser service.
+// This endpoint is kept for backward compatibility but returns 501.
 func (s *Server) RefreshBybitNews(w http.ResponseWriter, r *http.Request) {
-	if s.newsScraper == nil {
-		writeError(w, http.StatusServiceUnavailable, "news scraper disabled")
-		return
-	}
-	if err := s.newsScraper.ForceFetch(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeError(w, http.StatusNotImplemented, "refresh is handled by the parser service")
 }
 
 // GetDelistingSymbols returns all symbols currently scheduled for delisting.

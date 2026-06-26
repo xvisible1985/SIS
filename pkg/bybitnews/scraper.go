@@ -290,6 +290,141 @@ func (s *Scraper) DelistingSymbols(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
+// ListingAnnouncementsFromDB returns new listings with parsed symbols,
+// filtered by minimum date, without a Scraper instance.
+func ListingAnnouncementsFromDB(ctx context.Context, db *pgxpool.Pool, since time.Time) ([]DBAnnouncement, error) {
+	rows, err := db.Query(ctx, `
+		SELECT id, announcement_id, title, description, type_key, type_title, tags, url,
+			date_ts, start_date_ts, end_date_ts, is_new_listing, is_delisting,
+			symbols, markets, max_leverage, launch_at, is_pre_market, parsed_at, created_at
+		 FROM bybit_announcements
+		 WHERE is_new_listing = true
+		   AND symbols IS NOT NULL AND array_length(symbols, 1) > 0
+		   AND created_at >= $1
+		 ORDER BY date_ts DESC
+		 LIMIT 50
+	`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []DBAnnouncement
+	for rows.Next() {
+		var a DBAnnouncement
+		if err := rows.Scan(&a.ID, &a.AnnouncementID, &a.Title, &a.Description, &a.TypeKey, &a.TypeTitle,
+			&a.Tags, &a.URL, &a.DateTS, &a.StartDateTS, &a.EndDateTS, &a.IsNewListing, &a.IsDelisting,
+			&a.Symbols, &a.Markets, &a.MaxLeverage, &a.LaunchAt, &a.IsPreMarket, &a.ParsedAt, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// ListFromDB returns recent announcements from the DB without a Scraper instance.
+func ListFromDB(ctx context.Context, db *pgxpool.Pool, limit int, typeKey string, onlyListings, onlyDelistings bool) ([]DBAnnouncement, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	query := `SELECT id, announcement_id, title, description, type_key, type_title, tags, url,
+		date_ts, start_date_ts, end_date_ts, is_new_listing, is_delisting,
+		symbols, markets, max_leverage, launch_at, is_pre_market, parsed_at, created_at
+	 FROM bybit_announcements WHERE 1=1`
+	args := []any{}
+	argIdx := 1
+
+	if typeKey != "" {
+		query += fmt.Sprintf(" AND type_key = $%d", argIdx)
+		args = append(args, typeKey)
+		argIdx++
+	}
+	if onlyListings {
+		query += " AND is_new_listing = true"
+	}
+	if onlyDelistings {
+		query += " AND is_delisting = true"
+	}
+
+	query += fmt.Sprintf(" ORDER BY date_ts DESC LIMIT $%d", argIdx)
+	args = append(args, limit)
+
+	rows, err := db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []DBAnnouncement
+	for rows.Next() {
+		var a DBAnnouncement
+		if err := rows.Scan(&a.ID, &a.AnnouncementID, &a.Title, &a.Description, &a.TypeKey, &a.TypeTitle,
+			&a.Tags, &a.URL, &a.DateTS, &a.StartDateTS, &a.EndDateTS, &a.IsNewListing, &a.IsDelisting,
+			&a.Symbols, &a.Markets, &a.MaxLeverage, &a.LaunchAt, &a.IsPreMarket, &a.ParsedAt, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// LatestFromDB returns the most recent listing/delisting announcements without a Scraper instance.
+func LatestFromDB(ctx context.Context, db *pgxpool.Pool, limit int) ([]DBAnnouncement, error) {
+	if limit <= 0 || limit > 20 {
+		limit = 5
+	}
+	rows, err := db.Query(ctx, `
+		SELECT id, announcement_id, title, description, type_key, type_title, tags, url,
+			date_ts, start_date_ts, end_date_ts, is_new_listing, is_delisting,
+			symbols, markets, max_leverage, launch_at, is_pre_market, parsed_at, created_at
+		 FROM bybit_announcements
+		 WHERE is_new_listing = true OR is_delisting = true
+		 ORDER BY date_ts DESC
+		 LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []DBAnnouncement
+	for rows.Next() {
+		var a DBAnnouncement
+		if err := rows.Scan(&a.ID, &a.AnnouncementID, &a.Title, &a.Description, &a.TypeKey, &a.TypeTitle,
+			&a.Tags, &a.URL, &a.DateTS, &a.StartDateTS, &a.EndDateTS, &a.IsNewListing, &a.IsDelisting,
+			&a.Symbols, &a.Markets, &a.MaxLeverage, &a.LaunchAt, &a.IsPreMarket, &a.ParsedAt, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// DelistingSymbolsFromDB returns all unique delisting symbols without a Scraper instance.
+func DelistingSymbolsFromDB(ctx context.Context, db *pgxpool.Pool) ([]string, error) {
+	rows, err := db.Query(ctx, `
+		SELECT DISTINCT unnest(symbols)
+		FROM bybit_announcements
+		WHERE is_delisting = true
+		  AND symbols IS NOT NULL
+		  AND array_length(symbols, 1) > 0
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var sym string
+		if err := rows.Scan(&sym); err != nil {
+			return nil, err
+		}
+		out = append(out, sym)
+	}
+	return out, rows.Err()
+}
+
 // List returns recent announcements from the DB.
 func (s *Scraper) List(ctx context.Context, limit int, typeKey string, onlyListings, onlyDelistings bool) ([]DBAnnouncement, error) {
 	if limit <= 0 || limit > 200 {

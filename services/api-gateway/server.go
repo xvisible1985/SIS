@@ -33,7 +33,6 @@ type Server struct {
 	tronAddr     string        // TRON/USDT TRC20 receiving address
 	coinIcons    *coinicons.Store
 	proxyManager *proxy.Manager
-	newsScraper  *bybitnews.Scraper
 
 	reactiveSignals chan reactiveOpp
 	botSubsMu       sync.Mutex
@@ -69,7 +68,7 @@ type Server struct {
 }
 
 // NewServer creates a Server.
-func NewServer(ctx context.Context, pool *pgxpool.Pool, rdb *redis.Client, jwtSecret, encKey, botSecret, tronAddr string, adminEmails map[string]bool, pm *proxy.Manager, ns *bybitnews.Scraper) *Server {
+func NewServer(ctx context.Context, pool *pgxpool.Pool, rdb *redis.Client, jwtSecret, encKey, botSecret, tronAddr string, adminEmails map[string]bool, pm *proxy.Manager) *Server {
 	exec := signal.ExecFn(func(ctx context.Context, sql string, args ...any) error {
 		_, err := pool.Exec(ctx, sql, args...)
 		return err
@@ -88,7 +87,6 @@ func NewServer(ctx context.Context, pool *pgxpool.Pool, rdb *redis.Client, jwtSe
 		adminEmails:     adminEmails,
 		coinIcons:       coinicons.NewStore(pool),
 		proxyManager:    pm,
-		newsScraper:     ns,
 		reactiveSignals: make(chan reactiveOpp, 1024),
 		botSubs:         make(map[string]bool),
 		botSnapshotCfgs: make(map[string]botCfgJSON),
@@ -111,10 +109,7 @@ func (s *Server) refreshDelistCache(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if s.newsScraper == nil {
-				continue
-			}
-			syms, err := s.newsScraper.DelistingSymbols(ctx)
+			syms, err := bybitnews.DelistingSymbolsFromDB(ctx, s.pool)
 			if err != nil {
 				continue
 			}

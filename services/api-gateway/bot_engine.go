@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"sis/pkg/bybitnews"
 	"sis/pkg/crypto"
 	"sis/pkg/signal"
 	"sis/pkg/trader"
@@ -792,8 +793,9 @@ type botCfgJSON struct {
 	HedgeActValue        float64 `json:"hedge_act_value"`
 	HedgeCloseType       int     `json:"hedge_close_type"`         // 0=wait_cycle, 1=max_loss$
 	HedgeCloseValue      float64 `json:"hedge_close_value"`
-	HedgeDeactCloseType  int     `json:"hedge_deact_close_type"`   // 0=pnl$, 1=roi%, 2=breakeven
-	HedgeDeactCloseValue float64 `json:"hedge_deact_close_value"`
+	HedgeDeactCloseType     int     `json:"hedge_deact_close_type"`     // 0=pnl$, 1=roi%, 2=breakeven
+	HedgeDeactCloseValue    float64 `json:"hedge_deact_close_value"`
+	HedgeBreakevenProfit    float64 `json:"hedge_breakeven_profit"`     // profit target for type=2 (default 0 = true breakeven)
 	HedgeProfitLazy      bool    `json:"hedge_profit_lazy"`
 	HedgeProfitLazyPct   float64 `json:"hedge_profit_lazy_pct"`
 	HedgeDeactType       int     `json:"hedge_deact_type"`         // 0=drawdown%, 1=pnl$, 2=roi%, 3=last_order%, 4=wait_pair
@@ -1203,10 +1205,6 @@ func parseLeverage(s string) int {
 // processNewsBots scans new Bybit listing announcements and creates strategies
 // for bots whose activation_signals include "bybit-news".
 func (s *Server) processNewsBots(ctx context.Context) {
-	if s.newsScraper == nil {
-		return
-	}
-
 	// Load active bots from DB
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, owner_id, account_id,
@@ -1269,7 +1267,7 @@ func (s *Server) processNewsBots(ctx context.Context) {
 
 	// Fetch all recent listing announcements (broad 24 h window).
 	// Per-bot lifetime_minutes filtering happens inside the bot loop below.
-	announcements, err := s.newsScraper.ListingAnnouncements(ctx, time.Now().Add(-24*time.Hour))
+	announcements, err := bybitnews.ListingAnnouncementsFromDB(ctx, s.pool, time.Now().Add(-24*time.Hour))
 	if err != nil {
 		log.Printf("news bot: listing announcements: %v", err)
 		return
