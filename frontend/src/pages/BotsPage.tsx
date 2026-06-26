@@ -87,9 +87,13 @@ export function BotsPage() {
   const { catalog, mine, loading, action } = useBots();
   const signalCounts = useBotSignalCounts(!loading);
 
+  const [formMode, setFormMode] = useState<'create' | 'edit' | null>(null);
+  const [editBot, setEditBot] = useState<Bot | null>(null);
+
   const takenSymbols = useMemo((): Map<string, string> => {
     const map = new Map<string, string>()
     for (const b of mine) {
+      if (b.id === editBot?.id) continue  // exclude the bot being edited
       if (b.status !== 'active') continue
       for (const sym of b.symbolWhitelist) {
         if (!sym.includes('*') && !map.has(sym)) {
@@ -98,10 +102,7 @@ export function BotsPage() {
       }
     }
     return map
-  }, [mine])
-
-  const [formMode, setFormMode] = useState<'create' | 'edit' | null>(null);
-  const [editBot, setEditBot] = useState<Bot | null>(null);
+  }, [mine, editBot?.id])
   const [kindPickerOpen, setKindPickerOpen] = useState(false);
   const [selectedKind, setSelectedKind] = useState<BotKind>('signal');
 

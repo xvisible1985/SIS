@@ -565,7 +565,7 @@ func (s *Server) checkWhitelistConflicts(ctx context.Context, botID, ownerID str
 			}
 		}
 		if len(conflicts) > 0 {
-			warnings = append(warnings, fmt.Sprintf("%v пересекается с ботом «%s» (%s)", conflicts, otherName, otherKind))
+			warnings = append(warnings, fmt.Sprintf("%s пересекается с ботом «%s» (%s)", strings.Join(conflicts, ", "), otherName, otherKind))
 		}
 	}
 	return warnings

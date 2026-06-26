@@ -76,6 +76,11 @@ export function useBots() {
   }, [load]);
 
   const action = useCallback(async (a: BotAction): Promise<Record<string, unknown> | void> => {
+    if (a.type === 'update') {
+      const res = await apiClient.patch<Record<string, unknown>>(`/bots/${a.botId}`, a.data);
+      load(); // fire-and-forget — don't await so transient refresh failure can't discard res.data
+      return res.data;
+    }
     try {
       switch (a.type) {
         case 'start':   await apiClient.post(`/bots/${a.botId}/start`); break;
@@ -87,10 +92,6 @@ export function useBots() {
         case 'fork':    await apiClient.post(`/bots/${a.botId}/fork`); break;
         case 'publish': await apiClient.post(`/bots/${a.botId}/publish`); break;
         case 'request-approval': await apiClient.post(`/bots/${a.botId}/request-approval`); break;
-        case 'update': {
-          const res = await apiClient.patch<Record<string, unknown>>(`/bots/${a.botId}`, a.data);
-          return res.data;
-        }
         case 'delete':  await apiClient.delete(`/bots/${a.botId}`); break;
         case 'create':  await apiClient.post('/bots', a.data); break;
       }

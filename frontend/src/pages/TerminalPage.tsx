@@ -487,14 +487,19 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
   const [hidden, setHidden] = useState<Set<string>>(loadHidden)
 
   const conflictingBotIds = useMemo((): Set<string> => {
-    const active = mine.filter(b => b.status === 'active' && b.symbolWhitelist.length > 0)
+    // Only check bots that could actually compete (same account or unassigned)
+    const eligible = mine.filter(b =>
+      b.status === 'active' &&
+      b.symbolWhitelist.length > 0 &&
+      (b.accountId === selectedAccountId || !b.accountId)
+    )
     const result = new Set<string>()
-    for (let i = 0; i < active.length; i++) {
-      const a = active[i]
+    for (let i = 0; i < eligible.length; i++) {
+      const a = eligible[i]
       const aSet = new Set(a.symbolWhitelist.filter(s => !s.includes('*')))
       if (aSet.size === 0) continue
-      for (let j = i + 1; j < active.length; j++) {
-        const b = active[j]
+      for (let j = i + 1; j < eligible.length; j++) {
+        const b = eligible[j]
         if (b.symbolWhitelist.filter(s => !s.includes('*')).some(s => aSet.has(s))) {
           result.add(a.id)
           result.add(b.id)
@@ -502,7 +507,7 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
       }
     }
     return result
-  }, [mine])
+  }, [mine, selectedAccountId])
 
   // Боты текущего аккаунта + непривязанные боты пользователя
   const accountBots   = mine.filter(b => b.accountId === selectedAccountId)
@@ -511,6 +516,20 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
   const visibleBots    = allVisibleBots.filter(b => !hidden.has(b.id))
   const runningCount   = visibleBots.filter(b => b.status === 'active').length
   const editBot        = editBotId ? allVisibleBots.find(b => b.id === editBotId) ?? null : null
+
+  const takenSymbols = useMemo((): Map<string, string> => {
+    const map = new Map<string, string>()
+    for (const b of mine) {
+      if (b.id === editBot?.id) continue
+      if (b.status !== 'active') continue
+      for (const sym of b.symbolWhitelist) {
+        if (!sym.includes('*') && !map.has(sym)) {
+          map.set(sym, b.name)
+        }
+      }
+    }
+    return map
+  }, [mine, editBot?.id])
 
   const [binding, setBinding] = useState(false)
   const bindAll = async () => {
@@ -599,6 +618,7 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
       {editBot && editBot.strategyConfig.bot_kind === 'hedge' && (
         <HedgeBotForm
           bot={editBot}
+          takenSymbols={takenSymbols}
           onSubmit={async (data) => action({ type: 'update', botId: editBot.id, data }) as Promise<{ warnings?: string[] } | void>}
           onClose={() => setEditBotId(null)}
         />
@@ -606,6 +626,7 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
       {editBot && editBot.strategyConfig.bot_kind === 'matrix' && (
         <MatrixBotForm
           bot={editBot}
+          takenSymbols={takenSymbols}
           onSubmit={async (data) => action({ type: 'update', botId: editBot.id, data }) as Promise<{ warnings?: string[] } | void>}
           onClose={() => setEditBotId(null)}
         />
