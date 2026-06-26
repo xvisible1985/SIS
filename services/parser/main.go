@@ -14,6 +14,7 @@ import (
 	"sis/pkg/cache"
 	"sis/pkg/db"
 	"sis/pkg/heartbeat"
+	"sis/services/parser/whale"
 )
 
 func main() {
@@ -42,18 +43,16 @@ func main() {
 	// Bybit news scraper (migrated from api-gateway)
 	go runBybitNews(ctx, pool)
 
-	// TODO: whale tracker — uncomment after whale package is created
-	// cfg := whale.Config{
-	//     EtherscanKey:    getEnv("ETHERSCAN_API_KEY", ""),
-	//     TronGridKey:     getEnv("TRONGRID_API_KEY", ""),
-	//     ThresholdUSDT:   getEnvFloat("WHALE_THRESHOLD_USDT", 50000),
-	//     PollInterval:    30 * time.Second,
-	//     DiscoveryWeekly: true,
-	// }
-	// tracker := whale.NewTracker(pool, rdb, cfg)
-	// go tracker.Start(ctx)
-
-	_ = time.Second // used by whale tracker (keep import)
+	// Whale tracker
+	cfg := whale.Config{
+		EtherscanKey:    getEnv("ETHERSCAN_API_KEY", ""),
+		TronGridKey:     getEnv("TRONGRID_API_KEY", ""),
+		ThresholdUSDT:   getEnvFloat("WHALE_THRESHOLD_USDT", 50000),
+		PollInterval:    30 * time.Second,
+		DiscoveryWeekly: true,
+	}
+	tracker := whale.NewTracker(pool, rdb, cfg)
+	go tracker.Start(ctx)
 
 	log.Println("parser: started")
 	<-ctx.Done()
