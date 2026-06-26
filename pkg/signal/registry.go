@@ -238,4 +238,8 @@ func init() {
 			mode:      cfg.Str("mode", "trend"),
 		}
 	})
+
+	Register("whale", func(cfg Config) Signal {
+		return &whaleSignal{}
+	})
 }

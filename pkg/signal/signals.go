@@ -927,3 +927,15 @@ func (s *superTrendContinuous) Compute(c []Candle) State {
 	}
 	return base
 }
+
+// ── Whale Signal ──────────────────────────────────────────────────────────
+
+type whaleSignal struct{}
+
+// Compute satisfies Signal interface (symbol unknown here — returns Neutral).
+func (s *whaleSignal) Compute(_ []Candle) State { return Neutral }
+
+// ComputeWithSymbol satisfies SymbolComputer — reads from whale state cache.
+func (s *whaleSignal) ComputeWithSymbol(symbol string, _ []Candle) State {
+	return GetWhaleState(symbol)
+}
