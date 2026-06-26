@@ -58,12 +58,18 @@ func (u *computeUnit) compute(candles []Candle, m *Metrics) {
 	if len(u.signals) == 0 {
 		return
 	}
-	combined := u.signals[0].Compute(candles)
+	computeSig := func(sig Signal) State {
+		if sc, ok := sig.(SymbolComputer); ok {
+			return sc.ComputeWithSymbol(u.symbol, candles)
+		}
+		return sig.Compute(candles)
+	}
+	combined := computeSig(u.signals[0])
 	for _, sig := range u.signals[1:] {
 		if combined == Neutral {
 			break
 		}
-		s := sig.Compute(candles)
+		s := computeSig(sig)
 		if s != combined {
 			combined = Neutral
 		}

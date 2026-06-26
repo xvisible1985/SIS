@@ -76,3 +76,10 @@ type SignalValuer interface {
 type TTLAware interface {
 	TTLRemainingSec() float64
 }
+
+// SymbolComputer is an optional extension for signals that need to know
+// the symbol being computed (e.g. external-data signals like whale tracker).
+type SymbolComputer interface {
+	Signal
+	ComputeWithSymbol(symbol string, candles []Candle) State
+}
