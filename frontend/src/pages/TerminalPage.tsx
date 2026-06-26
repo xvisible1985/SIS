@@ -19,7 +19,7 @@ import { useOrderbook } from '../hooks/terminal/useOrderbook'
 import { useTickerPrices } from '../hooks/terminal/useTickerPrices'
 import { listAccounts } from '../api/accounts'
 import { useSelectedAccount } from '../contexts/AccountContext'
-import { listStrategies, getStrategyState, setStrategyStatus, deleteStrategy } from '../api/strategies'
+import { listStrategies, getStrategyState, setStrategyStatus, deleteStrategy, detachFromBot } from '../api/strategies'
 import { listExecutions, placeOrder } from '../api/trader'
 import { StrategyCard } from '../components/strategies/StrategyCard'
 import { TAKER_FEE } from '../components/common/ClosePositionModal'
@@ -39,6 +39,7 @@ import type { LucideIcon } from 'lucide-react'
 import type { Bot, BotKind, BotAction } from '../features/bots/types'
 import type { Strategy, ExchangeAccount, ActiveOrder, Position, ChartExecution, StrategyLevel } from '../types'
 import { HedgeBotOverlay } from '../components/terminal/HedgeBotOverlay'
+import { RecentEventsModal } from '../components/terminal/RecentEventsModal'
 
 const KIND_ICONS: Record<BotKind, LucideIcon> = {
   signal: TrendingUp,
@@ -61,7 +62,7 @@ const TIMEFRAMES = [
 
 type BottomTab = 'positions' | 'orders' | 'history' | 'executions' | 'log' | 'pnl' | 'debug'
 type RightTab = 'manual' | 'strategies' | 'bots'
-type MobileTab = 'positions' | 'orders' | 'strategies' | 'trade'
+type MobileTab = 'positions' | 'orders' | 'strategies' | 'trade' | 'bots'
 
 const STATUS_ORDER: Record<string, number> = { active: 0, finishing: 1, stopped: 2 }
 function sortStrategies<T extends { status: string; symbol: string }>(list: T[]): T[] {
@@ -468,7 +469,7 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
   onSymbolChange: (sym: string) => void
   mine: Bot[]
   loading: boolean
-  action: (a: BotAction) => Promise<void>
+  action: (a: BotAction) => Promise<Record<string, unknown> | void>
 }) {
   const { selectedAccountId } = useSelectedAccount()
   const signalCounts = useBotSignalCounts(true)
@@ -570,14 +571,14 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
       {editBot && editBot.strategyConfig.bot_kind === 'hedge' && (
         <HedgeBotForm
           bot={editBot}
-          onSubmit={async (data) => { await action({ type: 'update', botId: editBot.id, data }); setEditBotId(null) }}
+          onSubmit={async (data) => action({ type: 'update', botId: editBot.id, data }) as Promise<{ warnings?: string[] } | void>}
           onClose={() => setEditBotId(null)}
         />
       )}
       {editBot && editBot.strategyConfig.bot_kind === 'matrix' && (
         <MatrixBotForm
           bot={editBot}
-          onSubmit={async (data) => { await action({ type: 'update', botId: editBot.id, data }); setEditBotId(null) }}
+          onSubmit={async (data) => action({ type: 'update', botId: editBot.id, data }) as Promise<{ warnings?: string[] } | void>}
           onClose={() => setEditBotId(null)}
         />
       )}
@@ -639,7 +640,7 @@ function countHedgeWatchers(strategy: Strategy, hedgeBots: Bot[]): number {
 // ── Strategies tab ───────────────────────────────────────────────────────────
 type LiveSignal = { signal_state: string; signal_values: Record<string, number> }
 
-function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices, accountId, asAccountId, onStrategySelect, onCycleNumUpdate, onStrategiesChange, onPairTargetUpdate, freeMargin, hedgeBots }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[]; positions: Position[]; tickerPrices?: Map<string, number>; accountId: string | null; asAccountId?: string; onStrategySelect?: (s: Strategy | null) => void; onCycleNumUpdate?: (id: string, cycleNum: number) => void; onStrategiesChange?: (strategies: Strategy[]) => void; onPairTargetUpdate?: (target: number | null) => void; freeMargin?: number | null; hedgeBots: Bot[] }) {
+function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices, accountId, asAccountId, onStrategySelect, onCycleNumUpdate, onStrategiesChange, onPairTargetUpdate, freeMargin, hedgeBots, isMobile }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[]; positions: Position[]; tickerPrices?: Map<string, number>; accountId: string | null; asAccountId?: string; onStrategySelect?: (s: Strategy | null) => void; onCycleNumUpdate?: (id: string, cycleNum: number) => void; onStrategiesChange?: (strategies: Strategy[]) => void; onPairTargetUpdate?: (target: number | null) => void; freeMargin?: number | null; hedgeBots: Bot[]; isMobile?: boolean }) {
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
   const [loading, setLoading] = useState(true)
@@ -808,8 +809,15 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
   })
 
   // Вычисляем hedge-флаги один раз для всего списка
+  // hedgeBotIds — только grid-хедж-боты (bot_kind=hedge, strategy_type≠matrix)
+  // matrixBotIds — матричные боты определяются по strategy_type=matrix (bot_kind у них тоже 'hedge')
   const hedgeBotIds = useMemo(
-    () => new Set(hedgeBots.filter(b => b.strategyConfig.bot_kind === 'hedge').map(b => b.id)),
+    () => new Set(hedgeBots.filter(b => b.strategyConfig.bot_kind === 'hedge' && b.strategyConfig.strategy_type !== 'matrix').map(b => b.id)),
+    [hedgeBots],
+  )
+
+  const matrixBotIds = useMemo(
+    () => new Set(hedgeBots.filter(b => b.strategyConfig.strategy_type === 'matrix').map(b => b.id)),
     [hedgeBots],
   )
 
@@ -840,7 +848,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
     const usedIds = new Set<string>()
     const items: Array<
       | { type: 'single'; strategy: typeof sorted[0] }
-      | { type: 'pair'; main: typeof sorted[0]; hedge: typeof sorted[0] }
+      | { type: 'pair'; main: typeof sorted[0]; hedge: typeof sorted[0]; isMatrixPair?: boolean }
     > = []
 
     for (const s of sorted) {
@@ -878,6 +886,24 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
           usedIds.add(partner.id)
           const [main, hedge] = isMain ? [s, partner] : [partner, s]
           items.push({ type: 'pair', main, hedge })
+          continue
+        }
+      }
+
+      // Method 3: matrix bot pairs — group by bot_id + symbol (long + short)
+      if (s.bot_id && matrixBotIds.has(s.bot_id)) {
+        const partner = sorted.find(h =>
+          !usedIds.has(h.id) &&
+          h.bot_id === s.bot_id &&
+          h.symbol === s.symbol &&
+          h.account_id === s.account_id &&
+          h.direction !== s.direction,
+        )
+        if (partner) {
+          usedIds.add(s.id)
+          usedIds.add(partner.id)
+          const [main, hedge] = s.direction === 'long' ? [s, partner] : [partner, s]
+          items.push({ type: 'pair', main, hedge, isMatrixPair: true })
           continue
         }
       }
@@ -974,7 +1000,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
           </span>
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto p-2 space-y-1.5 strategies-scroll">
+      <div className={`flex-1 overflow-y-auto p-2 strategies-scroll ${isMobile ? 'space-y-3' : 'space-y-1.5'}`}>
         {loading && visibleStrategies.length === 0 && <div className="p-8 text-center text-sm text-gray-400">Загрузка…</div>}
         {!loading && visibleStrategies.length === 0 && (
           <div className="p-8 text-center text-sm text-gray-400">Нет стратегий</div>
@@ -982,7 +1008,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
         {renderItems.map(item => {
           if (item.type === 'pair') {
             return (
-              <div key={`pair-${item.main.id}`} className="origin-top-left scale-[0.96]">
+              <div key={`pair-${item.main.id}`} style={isMobile ? { zoom: '0.82' } : undefined} className={isMobile ? '' : 'origin-top-left scale-[0.96]'}>
                 <HedgePairCard
                   main={item.main}
                   hedge={item.hedge}
@@ -996,13 +1022,18 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
                   onChanged={load}
                   onSelect={handleSelect}
                   onPairTargetUpdate={onPairTargetUpdate}
+                  onSimpleDetach={item.isMatrixPair ? async () => {
+                    await detachFromBot(item.main.id)
+                    await detachFromBot(item.hedge.id)
+                    load()
+                  } : undefined}
                 />
               </div>
             )
           }
           const s = item.strategy
           return (
-            <div key={s.id} className="origin-top-left scale-[0.96]">
+            <div key={s.id} style={isMobile ? { zoom: '0.82' } : undefined} className={isMobile ? '' : 'origin-top-left scale-[0.96]'}>
               <StrategyCard
                 strategy={s}
                 accounts={accounts}
@@ -1143,11 +1174,14 @@ export function TerminalPage() {
     return () => { cancelled = true; clearInterval(t) }
   }, [])
 
+  const [eventsLogOpen, setEventsLogOpen] = useState(false)
+
   const [symbol, setSymbol] = useState(() => searchParams.get('symbol') ?? _cachedSymbol)
   const [tf, setTf] = useState(() => searchParams.get('tf') ?? _cachedTf)
   const [bottomTab, setBottomTab] = useState<BottomTab>(() => (localStorage.getItem('t_bottom') as BottomTab) ?? 'positions')
   const [rightTab, setRightTab] = useState<RightTab>(() => (localStorage.getItem('t_right') as RightTab) ?? 'manual')
-  const [mobileTab, setMobileTab] = useState<MobileTab>(() => (localStorage.getItem('t_mob') as MobileTab) ?? 'positions')
+  const [mobileTab, setMobileTab] = useState<MobileTab>(() => (localStorage.getItem('t_mob') as MobileTab) ?? 'strategies')
+  const [chartVisible, setChartVisible] = useState(true)
 
   function handleBottomTab(tab: BottomTab) { setBottomTab(tab); localStorage.setItem('t_bottom', tab) }
   function handleRightTab(tab: RightTab) {
@@ -1391,18 +1425,38 @@ export function TerminalPage() {
           onChange={s => { setChartSettings(s); localStorage.setItem('t_chart_settings', JSON.stringify(s)) }}
           strategyDir={selectedStrategy?.direction as 'long' | 'short' | null ?? null}
         />
+        <button
+          type="button"
+          onClick={() => setChartVisible(v => !v)}
+          title={chartVisible ? 'Скрыть график' : 'Показать график'}
+          className="w-7 h-7 flex items-center justify-center rounded-lg border border-white/[.08] bg-white/[.04] text-slate-400 hover:text-slate-200 hover:bg-white/[.06] transition-colors"
+        >
+          {chartVisible ? (
+            <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+              <line x1="1" y1="1" x2="23" y2="23"/>
+            </svg>
+          ) : (
+            <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+              <circle cx="12" cy="12" r="3"/>
+            </svg>
+          )}
+        </button>
       </div>
     </div>
   )
 
   const mobileTabs: { key: MobileTab; label: string; count?: number }[] = [
+    { key: 'strategies', label: 'Стратегии' },
+    { key: 'bots', label: 'Боты' },
     { key: 'positions', label: 'Позиции', count: positions.length },
     { key: 'orders', label: 'Ордера', count: orders.length },
-    { key: 'strategies', label: 'Стратегии' },
     { key: 'trade', label: 'Торговля' },
   ]
 
   return (
+    <>
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div
         ref={containerRef}
@@ -1412,12 +1466,17 @@ export function TerminalPage() {
       {/* ── Mobile layout ───────────────────────────────────────── */}
       <div className="flex md:hidden flex-col w-full h-full gap-2">
         {/* Chart */}
-        <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden" style={{ height: '42vh' }}>
+        <div
+          className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden flex-shrink-0"
+          style={{ height: chartVisible ? '25vh' : 'auto' }}
+        >
           {chartToolbar}
-          <div className="flex-1 min-h-0 relative">
-            <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} hedgePairTarget={hedgePairTarget} />
-            <HedgeBotOverlay symbol={symbol} positions={positions} bots={myBots} accountId={accountId} tickerPrices={tickerPrices} strategies={_strategies} />
-          </div>
+          {chartVisible && (
+            <div className="flex-1 min-h-0 relative">
+              <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} hedgePairTarget={hedgePairTarget} />
+              <HedgeBotOverlay symbol={symbol} positions={positions} bots={myBots} accountId={accountId} tickerPrices={tickerPrices} strategies={_strategies} />
+            </div>
+          )}
         </div>
         {/* Mobile tabs */}
         <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden flex-1 min-h-0">
@@ -1441,7 +1500,8 @@ export function TerminalPage() {
           <div className="flex-1 overflow-auto">
             {mobileTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} tickerPrices={tickerPrices} />}
             {mobileTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} onRemoveOrder={removeOrder} strategyLevels={strategyLevels} />}
-            {mobileTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} asAccountId={undefined} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} />}
+            {mobileTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} asAccountId={undefined} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} isMobile />}
+            {mobileTab === 'bots' && <TerminalBotsTab onSymbolChange={setSymbol} mine={myBots} loading={botsLoading} action={botAction} />}
             {mobileTab === 'trade' && (
               <div className="flex flex-col gap-2 p-2 overflow-y-auto">
                 {accountId ? (
@@ -1524,7 +1584,21 @@ export function TerminalPage() {
               </button>
             ))}
             {accountName && <span className="text-xs text-gray-500 dark:text-gray-400 ml-2">{accountName}</span>}
-            <div className="ml-auto flex items-center gap-1.5">
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={() => setEventsLogOpen(v => !v)}
+                title="Лог событий стратегий (последние 30 мин)"
+                style={{
+                  fontSize: 10, padding: '2px 8px', borderRadius: 5, cursor: 'pointer',
+                  border: eventsLogOpen ? '1px solid rgba(74,125,255,.5)' : '1px solid rgba(255,255,255,.1)',
+                  background: eventsLogOpen ? 'rgba(74,125,255,.18)' : 'rgba(255,255,255,.04)',
+                  color: eventsLogOpen ? '#b8c8ff' : '#64748b',
+                  fontWeight: eventsLogOpen ? 700 : 400,
+                  transition: 'all .15s',
+                }}
+              >
+                ▤ Лог
+              </button>
               <span className={`w-2 h-2 rounded-full ${statusColor}`} />
               {(status === 'closed' || status === 'error') && (
                 <button onClick={reconnect} className="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white text-xs">↺</button>
@@ -1614,5 +1688,7 @@ export function TerminalPage() {
     </div>{/* /Desktop layout */}
       </div>
     </div>
+    {eventsLogOpen && <RecentEventsModal onClose={() => setEventsLogOpen(false)} />}
+    </>
   )
 }
