@@ -185,106 +185,115 @@ export function WhaleParserTab() {
         )}
       </section>
 
-      {/* ── Адреса ── */}
-      <section>
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Адреса китов</h3>
-          <button
-            onClick={() => setShowAdd(true)}
-            className="text-xs px-2 py-1 rounded bg-white/[.06] text-slate-300 hover:bg-white/[.09] border border-white/[.08]"
-          >
-            + Добавить
-          </button>
-        </div>
+      {/* ── Адреса + Лента событий (два столбца) ── */}
+      <div className="grid grid-cols-2 gap-4">
 
-        {showAdd && (
-          <div className="mb-3 bg-white/[.04] rounded-xl p-3 space-y-2 border border-white/[.07]">
-            <div className="flex gap-2">
-              <input
-                placeholder="Адрес"
-                className="flex-1 bg-white/[.06] border border-white/[.08] rounded px-2 py-1 text-slate-200 text-xs"
-                value={newAddr}
-                onChange={e => setNewAddr(e.target.value)}
-              />
-              <select
-                className="bg-white/[.06] border border-white/[.08] rounded px-2 py-1 text-slate-200 text-xs"
-                value={newChain}
-                onChange={e => setNewChain(e.target.value as 'eth' | 'tron')}
-              >
-                <option value="eth">ETH</option>
-                <option value="tron">Tron</option>
-              </select>
-            </div>
-            <input
-              placeholder="Лейбл (опционально)"
-              className="w-full bg-white/[.06] border border-white/[.08] rounded px-2 py-1 text-slate-200 text-xs"
-              value={newLabel}
-              onChange={e => setNewLabel(e.target.value)}
-            />
-            <div className="flex gap-2">
-              <button
-                onClick={handleAddAddress}
-                disabled={addLoading || !newAddr}
-                className="px-3 py-1 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-xs disabled:opacity-50"
-              >
-                {addLoading ? 'Сохраняем…' : 'Сохранить'}
-              </button>
-              <button
-                onClick={() => { setShowAdd(false); setNewAddr(''); setNewLabel('') }}
-                className="px-3 py-1 rounded bg-white/[.04] text-slate-400 text-xs"
-              >
-                Отмена
-              </button>
-            </div>
+        {/* Левый: Адреса */}
+        <section className="min-w-0">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+              Адреса китов <span className="text-slate-600 font-mono normal-case">({addresses.length})</span>
+            </h3>
+            <button
+              onClick={() => setShowAdd(true)}
+              className="text-xs px-2 py-1 rounded bg-white/[.06] text-slate-300 hover:bg-white/[.09] border border-white/[.08]"
+            >
+              + Добавить
+            </button>
           </div>
-        )}
 
-        <div className="space-y-1">
-          {addresses.length === 0 && <p className="text-slate-500 text-xs">Адресов нет</p>}
-          {addresses.map(addr => (
-            <div key={addr.id} className={`flex items-center gap-2 px-3 py-2 rounded-lg ${addr.isActive ? 'bg-white/[.03]' : 'bg-white/[.01] opacity-50'}`}>
-              <span className={`w-8 text-[10px] font-semibold uppercase ${addr.chain === 'eth' ? 'text-blue-400' : 'text-purple-400'}`}>{addr.chain}</span>
-              <span className="font-mono text-slate-300 text-xs truncate max-w-[140px]" title={addr.address}>{addr.address.slice(0, 8)}…{addr.address.slice(-6)}</span>
-              <span className="text-slate-400 text-xs truncate flex-1">{addr.label ?? ''}</span>
-              <span className="text-slate-500 text-xs">{fmt(addr.volume30d)}</span>
-              {addr.lastSeenAt && <span className="text-slate-600 text-xs">{timeAgo(addr.lastSeenAt)}</span>}
-              <span className={`w-2 h-2 rounded-full ${addr.isActive ? 'bg-emerald-500' : 'bg-slate-600'}`} />
-              <button onClick={() => handleToggleActive(addr)} className="text-[10px] text-slate-500 hover:text-slate-300 px-1">
-                {addr.isActive ? 'Откл' : 'Вкл'}
-              </button>
-              <button onClick={() => handleDelete(addr)} className="text-[10px] text-slate-600 hover:text-red-400 px-1">✕</button>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* ── Лента событий ── */}
-      <section>
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Лента событий</h3>
-        {events.length === 0 ? (
-          <p className="text-slate-500 text-xs">Событий ещё не было</p>
-        ) : (
-          <div className="space-y-1">
-            {events.map(ev => (
-              <div key={ev.id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/[.02] text-xs">
-                <span className="text-slate-500 w-20 flex-shrink-0">{timeAgo(ev.detectedAt)}</span>
-                <span className="text-slate-300 font-medium w-24 truncate flex-shrink-0">{ev.label || `${ev.address.slice(0, 6)}…`}</span>
-                <span className="font-mono text-slate-200 w-20 flex-shrink-0">{ev.symbol}</span>
-                <DirectionBadge dir={ev.direction} />
-                <span className="text-slate-400 ml-auto">{fmt(ev.amountUsd)}</span>
-                <a
-                  href={explorerLink(ev.txHash, ev.chain)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-indigo-400 hover:text-indigo-300 text-[10px]"
+          {showAdd && (
+            <div className="mb-3 bg-white/[.04] rounded-xl p-3 space-y-2 border border-white/[.07]">
+              <div className="flex gap-2">
+                <input
+                  placeholder="Адрес"
+                  className="flex-1 bg-white/[.06] border border-white/[.08] rounded px-2 py-1 text-slate-200 text-xs"
+                  value={newAddr}
+                  onChange={e => setNewAddr(e.target.value)}
+                />
+                <select
+                  className="bg-white/[.06] border border-white/[.08] rounded px-2 py-1 text-slate-200 text-xs"
+                  value={newChain}
+                  onChange={e => setNewChain(e.target.value as 'eth' | 'tron')}
                 >
-                  tx↗
-                </a>
+                  <option value="eth">ETH</option>
+                  <option value="tron">Tron</option>
+                </select>
+              </div>
+              <input
+                placeholder="Лейбл (опционально)"
+                className="w-full bg-white/[.06] border border-white/[.08] rounded px-2 py-1 text-slate-200 text-xs"
+                value={newLabel}
+                onChange={e => setNewLabel(e.target.value)}
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={handleAddAddress}
+                  disabled={addLoading || !newAddr}
+                  className="px-3 py-1 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-xs disabled:opacity-50"
+                >
+                  {addLoading ? 'Сохраняем…' : 'Сохранить'}
+                </button>
+                <button
+                  onClick={() => { setShowAdd(false); setNewAddr(''); setNewLabel('') }}
+                  className="px-3 py-1 rounded bg-white/[.04] text-slate-400 text-xs"
+                >
+                  Отмена
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-1 max-h-[480px] overflow-y-auto pr-1">
+            {addresses.length === 0 && <p className="text-slate-500 text-xs">Адресов нет</p>}
+            {addresses.map(addr => (
+              <div key={addr.id} className={`flex items-center gap-2 px-3 py-2 rounded-lg ${addr.isActive ? 'bg-white/[.03]' : 'bg-white/[.01] opacity-50'}`}>
+                <span className={`w-8 text-[10px] font-semibold uppercase flex-shrink-0 ${addr.chain === 'eth' ? 'text-blue-400' : 'text-purple-400'}`}>{addr.chain}</span>
+                <span className="font-mono text-slate-300 text-xs truncate" title={addr.address}>{addr.address.slice(0, 8)}…{addr.address.slice(-6)}</span>
+                <span className="text-slate-400 text-xs truncate flex-1 min-w-0">{addr.label ?? ''}</span>
+                <span className="text-slate-500 text-xs flex-shrink-0">{fmt(addr.volume30d)}</span>
+                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${addr.isActive ? 'bg-emerald-500' : 'bg-slate-600'}`} />
+                <button onClick={() => handleToggleActive(addr)} className="text-[10px] text-slate-500 hover:text-slate-300 px-1 flex-shrink-0">
+                  {addr.isActive ? 'Откл' : 'Вкл'}
+                </button>
+                <button onClick={() => handleDelete(addr)} className="text-[10px] text-slate-600 hover:text-red-400 px-1 flex-shrink-0">✕</button>
               </div>
             ))}
           </div>
-        )}
-      </section>
+        </section>
+
+        {/* Правый: Лента событий */}
+        <section className="min-w-0">
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Лента событий</h3>
+          {events.length === 0 ? (
+            <div className="bg-white/[.02] rounded-xl p-6 text-center">
+              <p className="text-slate-500 text-xs">Событий ещё не было</p>
+              <p className="text-slate-600 text-[10px] mt-1">Трекер проверяет адреса каждые 30 сек</p>
+            </div>
+          ) : (
+            <div className="space-y-1 max-h-[480px] overflow-y-auto pr-1">
+              {events.map(ev => (
+                <div key={ev.id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/[.02] text-xs">
+                  <span className="text-slate-500 w-16 flex-shrink-0">{timeAgo(ev.detectedAt)}</span>
+                  <span className="text-slate-300 font-medium w-20 truncate flex-shrink-0">{ev.label || `${ev.address.slice(0, 6)}…`}</span>
+                  <span className="font-mono text-slate-200 w-20 flex-shrink-0">{ev.symbol}</span>
+                  <DirectionBadge dir={ev.direction} />
+                  <span className="text-slate-400 ml-auto flex-shrink-0">{fmt(ev.amountUsd)}</span>
+                  <a
+                    href={explorerLink(ev.txHash, ev.chain)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-indigo-400 hover:text-indigo-300 text-[10px] flex-shrink-0"
+                  >
+                    tx↗
+                  </a>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+      </div>
     </div>
   )
 }
