@@ -58,7 +58,8 @@ func (d *Discovery) run(ctx context.Context) {
 		UPDATE whale_addresses
 		SET is_active = false
 		WHERE is_manual = false
-		  AND (last_seen_at IS NULL OR last_seen_at < now() - interval '90 days')
+		  AND last_seen_at IS NOT NULL
+		  AND last_seen_at < now() - interval '90 days'
 	`)
 	if err != nil {
 		log.Printf("whale discovery: deactivate: %v", err)
