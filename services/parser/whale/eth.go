@@ -54,29 +54,44 @@ func (c *EthClient) TokenTxSince(ctx context.Context, address string, sinceTS in
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 
-	var result struct {
-		Status  string `json:"status"`
-		Message string `json:"message"`
-		Result  []struct {
-			Hash            string `json:"hash"`
-			From            string `json:"from"`
-			To              string `json:"to"`
-			TokenSymbol     string `json:"tokenSymbol"`
-			TokenDecimal    string `json:"tokenDecimal"`
-			Value           string `json:"value"`
-			TimeStamp       string `json:"timeStamp"`
-			ContractAddress string `json:"contractAddress"`
-		} `json:"result"`
+	// Etherscan returns "result" as a string on errors (e.g. rate limit) and as
+	// an array on success. Unmarshal into a raw envelope first to detect this.
+	var envelope struct {
+		Status  string          `json:"status"`
+		Message string          `json:"message"`
+		Result  json.RawMessage `json:"result"`
 	}
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := json.Unmarshal(data, &envelope); err != nil {
 		return nil, fmt.Errorf("etherscan parse: %w", err)
 	}
-	if result.Status != "1" && result.Message != "No transactions found" {
-		return nil, fmt.Errorf("etherscan error: %s", result.Message)
+	if envelope.Status != "1" {
+		if envelope.Message == "No transactions found" {
+			return nil, nil
+		}
+		var msg string
+		_ = json.Unmarshal(envelope.Result, &msg)
+		if msg == "" {
+			msg = envelope.Message
+		}
+		return nil, fmt.Errorf("etherscan error: %s", msg)
+	}
+	var rows []struct {
+		Hash            string `json:"hash"`
+		From            string `json:"from"`
+		To              string `json:"to"`
+		TokenSymbol     string `json:"tokenSymbol"`
+		TokenDecimal    string `json:"tokenDecimal"`
+		Value           string `json:"value"`
+		TimeStamp       string `json:"timeStamp"`
+		ContractAddress string `json:"contractAddress"`
+	}
+	var result = &rows
+	if err := json.Unmarshal(envelope.Result, result); err != nil {
+		return nil, fmt.Errorf("etherscan parse rows: %w", err)
 	}
 
 	var out []TokenTransfer
-	for _, r := range result.Result {
+	for _, r := range rows {
 		ts, _ := strconv.ParseInt(r.TimeStamp, 10, 64)
 		if ts < sinceTS {
 			break // results are desc by time
