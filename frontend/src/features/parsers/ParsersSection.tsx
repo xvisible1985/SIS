@@ -1,3 +1,5 @@
+// frontend/src/features/parsers/ParsersSection.tsx
+
 import { useState } from 'react'
 import { BybitNewsTab } from '../bybit-news/BybitNewsTab'
 import { WhaleParserTab } from '../whale-parser/WhaleParserTab'
