@@ -244,7 +244,9 @@ export function WhaleParserTab() {
         {/* Правый: Лента событий */}
         <section className="min-w-0">
           <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Лента событий</h3>
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+              Лента событий <span className="text-slate-600 font-mono normal-case font-normal">≥{fmt(threshold)}</span>
+            </h3>
             <div className="flex gap-0.5">
               {[1, 4, 24, 72, 168].map(h => (
                 <button
@@ -263,10 +265,12 @@ export function WhaleParserTab() {
           </div>
           {(() => {
             const cutoff = Date.now() - evHours * 3600_000
-            const filtered = events.filter(ev => new Date(ev.detectedAt).getTime() >= cutoff)
+            const filtered = events.filter(ev =>
+              new Date(ev.detectedAt).getTime() >= cutoff && ev.amountUsd >= threshold
+            )
             return filtered.length === 0 ? (
               <div className="bg-white/[.02] rounded-xl p-6 text-center">
-                <p className="text-slate-500 text-xs">Нет событий за последние {evHours < 24 ? `${evHours}ч` : evHours === 168 ? '7 дней' : `${evHours / 24}д`}</p>
+                <p className="text-slate-500 text-xs">Нет событий за {evHours < 24 ? `${evHours}ч` : evHours === 168 ? '7 дней' : `${evHours / 24}д`} ≥ {fmt(threshold)}</p>
                 <p className="text-slate-600 text-[10px] mt-1">Трекер проверяет адреса каждые 30 сек</p>
               </div>
             ) : (
