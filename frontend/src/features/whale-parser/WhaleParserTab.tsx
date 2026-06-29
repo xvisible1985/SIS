@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   listWhaleAddresses, createWhaleAddress, patchWhaleAddress,
-  deleteWhaleAddress, listWhaleEvents, getWhaleState, simulateWhale
+  deleteWhaleAddress, listWhaleEvents, simulateWhale
 } from './api'
-import type { WhaleAddress, WhaleEvent, WhaleStateRow, SimulateResult, WhaleDirection } from './types'
+import type { WhaleAddress, WhaleEvent, SimulateResult, WhaleDirection } from './types'
 
 function DirectionBadge({ dir }: { dir: WhaleDirection }) {
   if (dir === 'buy')  return <span className="text-emerald-400 font-semibold">BUY</span>
@@ -36,8 +36,8 @@ function explorerLink(txHash: string, chain: string) {
 export function WhaleParserTab() {
   const [addresses, setAddresses] = useState<WhaleAddress[]>([])
   const [events, setEvents]       = useState<WhaleEvent[]>([])
-  const [state, setState]         = useState<WhaleStateRow[]>([])
   const [loading, setLoading]     = useState(true)
+  const [evHours, setEvHours]     = useState(24)
 
   // Simulate panel
   const [threshold, setThreshold]   = useState(50000)
@@ -54,14 +54,12 @@ export function WhaleParserTab() {
 
   const load = useCallback(async () => {
     try {
-      const [a, e, s] = await Promise.all([
+      const [a, e] = await Promise.all([
         listWhaleAddresses(),
-        listWhaleEvents(50),
-        getWhaleState(),
+        listWhaleEvents(200),
       ])
       setAddresses(a)
       setEvents(e)
-      setState(s)
     } finally {
       setLoading(false)
     }
@@ -107,25 +105,6 @@ export function WhaleParserTab() {
 
   return (
     <div className="p-4 space-y-5 text-sm">
-
-      {/* ── Текущее состояние ── */}
-      <section>
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Текущее состояние китов</h3>
-        {state.length === 0 ? (
-          <p className="text-slate-500 text-xs">Нет активных whale-сигналов за последние 4ч</p>
-        ) : (
-          <div className="space-y-1">
-            {state.map(row => (
-              <div key={row.symbol} className="flex items-center gap-3 bg-white/[.03] rounded-lg px-3 py-2">
-                <span className="font-mono text-slate-200 w-24">{row.symbol}</span>
-                <DirectionBadge dir={row.direction} />
-                <span className="text-slate-500 text-xs ml-auto">{timeAgo(row.detectedAt)}</span>
-                <span className="text-[10px] text-slate-600 uppercase">{row.source}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
 
       {/* ── Симуляция ── */}
       <section className="bg-white/[.03] rounded-xl p-4 space-y-3">
@@ -264,33 +243,54 @@ export function WhaleParserTab() {
 
         {/* Правый: Лента событий */}
         <section className="min-w-0">
-          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Лента событий</h3>
-          {events.length === 0 ? (
-            <div className="bg-white/[.02] rounded-xl p-6 text-center">
-              <p className="text-slate-500 text-xs">Событий ещё не было</p>
-              <p className="text-slate-600 text-[10px] mt-1">Трекер проверяет адреса каждые 30 сек</p>
-            </div>
-          ) : (
-            <div className="space-y-1 max-h-[480px] overflow-y-auto pr-1">
-              {events.map(ev => (
-                <div key={ev.id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/[.02] text-xs">
-                  <span className="text-slate-500 w-16 flex-shrink-0">{timeAgo(ev.detectedAt)}</span>
-                  <span className="text-slate-300 font-medium w-20 truncate flex-shrink-0">{ev.label || `${ev.address.slice(0, 6)}…`}</span>
-                  <span className="font-mono text-slate-200 w-20 flex-shrink-0">{ev.symbol}</span>
-                  <DirectionBadge dir={ev.direction} />
-                  <span className="text-slate-400 ml-auto flex-shrink-0">{fmt(ev.amountUsd)}</span>
-                  <a
-                    href={explorerLink(ev.txHash, ev.chain)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-indigo-400 hover:text-indigo-300 text-[10px] flex-shrink-0"
-                  >
-                    tx↗
-                  </a>
-                </div>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Лента событий</h3>
+            <div className="flex gap-0.5">
+              {[1, 4, 24, 72, 168].map(h => (
+                <button
+                  key={h}
+                  onClick={() => setEvHours(h)}
+                  className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                    evHours === h
+                      ? 'bg-indigo-500/25 text-indigo-300'
+                      : 'text-slate-500 hover:text-slate-300'
+                  }`}
+                >
+                  {h < 24 ? `${h}ч` : h === 168 ? '7д' : `${h / 24}д`}
+                </button>
               ))}
             </div>
-          )}
+          </div>
+          {(() => {
+            const cutoff = Date.now() - evHours * 3600_000
+            const filtered = events.filter(ev => new Date(ev.detectedAt).getTime() >= cutoff)
+            return filtered.length === 0 ? (
+              <div className="bg-white/[.02] rounded-xl p-6 text-center">
+                <p className="text-slate-500 text-xs">Нет событий за последние {evHours < 24 ? `${evHours}ч` : evHours === 168 ? '7 дней' : `${evHours / 24}д`}</p>
+                <p className="text-slate-600 text-[10px] mt-1">Трекер проверяет адреса каждые 30 сек</p>
+              </div>
+            ) : (
+              <div className="space-y-1 max-h-[480px] overflow-y-auto pr-1">
+                {filtered.map(ev => (
+                  <div key={ev.id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/[.02] text-xs">
+                    <span className="text-slate-500 w-16 flex-shrink-0">{timeAgo(ev.detectedAt)}</span>
+                    <span className="text-slate-300 font-medium w-20 truncate flex-shrink-0">{ev.label || `${ev.address.slice(0, 6)}…`}</span>
+                    <span className="font-mono text-slate-200 w-20 flex-shrink-0">{ev.symbol}</span>
+                    <DirectionBadge dir={ev.direction} />
+                    <span className="text-slate-400 ml-auto flex-shrink-0">{fmt(ev.amountUsd)}</span>
+                    <a
+                      href={explorerLink(ev.txHash, ev.chain)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-indigo-400 hover:text-indigo-300 text-[10px] flex-shrink-0"
+                    >
+                      tx↗
+                    </a>
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
         </section>
 
       </div>
