@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { Check, Flame, Users, Copy, TrendingUp, Search, Shield, Layers, RotateCcw, BookOpen, CheckCircle2 } from 'lucide-react';
+import { Check, Flame, Users, Copy, TrendingUp, Search, Shield, Layers, BookOpen, CheckCircle2 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { FeaturedBot } from '../ui-types';
 import type { BotKind } from '../types';
@@ -19,6 +19,16 @@ type Props = {
   alreadyOwned?: boolean;
   onOpen: () => void;
   onAdd: (sourceRect: DOMRect) => void;
+};
+
+// Inline styles for 3D flip — Tailwind arbitrary props break backface-visibility in Firefox
+const FACE: React.CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  backfaceVisibility: 'hidden',
+  WebkitBackfaceVisibility: 'hidden',
+  overflow: 'hidden',
+  borderRadius: 14,
 };
 
 /** Карточка готового бота с 3D-флипом при клике (если есть fullDescription) */
@@ -48,36 +58,41 @@ export function FeaturedBotCard({ bot, alreadyOwned = false, onOpen, onAdd }: Pr
   return (
     <div
       ref={cardRef}
-      className="relative h-full"
+      className="relative h-full min-h-[280px]"
       style={{ perspective: '1200px' }}
       draggable={!alreadyOwned}
       onDragStart={(e) => {
         e.dataTransfer.setData('botId', bot.id);
         e.dataTransfer.effectAllowed = 'copy';
-        // полупрозрачный ghost по умолчанию от браузера
       }}
     >
 
-      {/* flip container */}
+      {/* flip container — все 3D-свойства инлайн для совместимости с Firefox */}
       <div
-        className={`relative h-full w-full transition-transform duration-700 ease-[cubic-bezier(.4,0,.2,1)] [transform-style:preserve-3d] ${flipped ? '[transform:rotateY(180deg)]' : ''}`}
+        style={{
+          position: 'relative',
+          height: '100%',
+          width: '100%',
+          transformStyle: 'preserve-3d',
+          transform: flipped ? 'rotateY(180deg)' : 'rotateY(0deg)',
+          transition: 'transform 0.7s cubic-bezier(.4,0,.2,1)',
+        }}
       >
 
         {/* ── FRONT ──────────────────────────────────────────────────────── */}
-        <div className="[backface-visibility:hidden] h-full w-full">
+        <div style={{ ...FACE, transform: 'rotateY(0deg)' }}>
           <div
             role="button"
             tabIndex={0}
             onClick={handleCardClick}
             onKeyDown={(e) => e.key === 'Enter' && handleCardClick()}
-            className={`relative flex h-full flex-col overflow-hidden rounded-[14px] border bg-[rgba(255,255,255,.04)] text-left transition-colors hover:brightness-110 ${hasDesc ? 'cursor-pointer' : ''}`}
+            className={`relative flex h-full flex-col border bg-[rgba(255,255,255,.04)] text-left transition-colors hover:brightness-110 ${hasDesc ? 'cursor-pointer' : ''}`}
             style={{ borderColor: iconBorder }}
           >
 
-            {/* ── Шапка: 2 строки ────────────────────────────────────────── */}
+            {/* ── Шапка ──────────────────────────────────────────────────── */}
             <div className="relative px-4 pt-3.5 pb-3" style={{ background: headerBg }}>
 
-              {/* corner: HOT + price */}
               <div className="absolute right-3 top-3 flex items-center gap-1.5">
                 {bot.fire && (
                   <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/32 bg-amber-500/[.18] px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider text-amber-400">
@@ -89,19 +104,17 @@ export function FeaturedBotCard({ bot, alreadyOwned = false, onOpen, onAdd }: Pr
               </div>
 
               <div className="flex items-center gap-3">
-
-                {/* Иконка */}
                 <div
-                  className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[10px] border"
+                  className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[10px] border overflow-hidden"
                   style={{ background: iconBg, borderColor: iconBorder, color: iconColor }}
                 >
-                  <Icon size={17} strokeWidth={2} />
+                  {bot.avatarUrl
+                    ? <img src={bot.avatarUrl} alt="" className="h-full w-full object-cover" />
+                    : <Icon size={17} strokeWidth={2} />
+                  }
                 </div>
 
-                {/* Правая колонка: 2 строки, высота = иконке */}
                 <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 pr-20">
-
-                  {/* Строка 1: название + verified */}
                   <div className="flex items-center gap-1.5">
                     <span className="truncate font-display text-[15px] font-bold tracking-tight text-slate-50">
                       {bot.name}
@@ -116,7 +129,6 @@ export function FeaturedBotCard({ bot, alreadyOwned = false, onOpen, onAdd }: Pr
                     )}
                   </div>
 
-                  {/* Строка 2: тип бота + автор */}
                   <div className="flex items-center gap-1.5">
                     <span
                       className="rounded-[4px] px-1.5 py-px font-semibold"
@@ -133,17 +145,14 @@ export function FeaturedBotCard({ bot, alreadyOwned = false, onOpen, onAdd }: Pr
               </div>
             </div>
 
-            {/* ── Тело карточки ──────────────────────────────────────────── */}
+            {/* ── Тело ───────────────────────────────────────────────────── */}
             <div className="flex flex-1 flex-col bg-[linear-gradient(180deg,rgba(255,255,255,.018)_0%,rgba(255,255,255,.006)_100%)] px-4 pb-4 pt-3">
-
               <p className="mb-3 line-clamp-3 h-[54px] overflow-hidden text-xs leading-[1.5] text-slate-300">{bot.desc}</p>
 
-              {/* spark — фиксированная высота, всегда рендерится */}
               <div className="mb-3 h-[52px] overflow-hidden rounded-[10px] bg-black/20">
                 <Sparkline data={bot.spark} color="#5be0a0" width={280} height={52} />
               </div>
 
-              {/* footer */}
               <div className="mt-auto flex items-center gap-2 border-t border-white/[.05] pt-3">
                 <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
                   <Users size={12} />
@@ -177,27 +186,30 @@ export function FeaturedBotCard({ bot, alreadyOwned = false, onOpen, onAdd }: Pr
         </div>
 
         {/* ── BACK ───────────────────────────────────────────────────────── */}
-        <div className="absolute inset-0 [backface-visibility:hidden] [transform:rotateY(180deg)]">
+        <div style={{ ...FACE, transform: 'rotateY(180deg)' }}>
           <div
-            className="flex h-full flex-col overflow-hidden rounded-[14px] border"
+            className="flex h-full flex-col border"
             style={{ borderColor: iconBorder }}
           >
-            <div className="flex items-center gap-2.5 px-4 py-3" style={{ background: headerBg }}>
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setFlipped(false)}
+              onKeyDown={(e) => e.key === 'Enter' && setFlipped(false)}
+              title="Свернуть"
+              className="flex items-center gap-2.5 px-4 py-3 cursor-pointer transition-[filter] hover:brightness-110"
+              style={{ background: headerBg }}
+            >
               <div
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border overflow-hidden"
                 style={{ background: iconBg, borderColor: iconBorder, color: iconColor }}
               >
-                <Icon size={13} strokeWidth={2} />
+                {bot.avatarUrl
+                  ? <img src={bot.avatarUrl} alt="" className="h-full w-full object-cover" />
+                  : <Icon size={13} strokeWidth={2} />
+                }
               </div>
               <span className="flex-1 truncate font-display text-sm font-bold text-slate-50">{bot.name}</span>
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); setFlipped(false); }}
-                title="Назад"
-                className="flex h-6 w-6 items-center justify-center rounded-md border border-white/[.08] bg-white/[.04] text-slate-400 hover:bg-white/[.08] hover:text-slate-200 transition-colors"
-              >
-                <RotateCcw size={11} />
-              </button>
             </div>
 
             <div className="flex-1 overflow-y-auto bg-[linear-gradient(180deg,rgba(255,255,255,.018)_0%,rgba(255,255,255,.006)_100%)] px-4 py-3.5">

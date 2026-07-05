@@ -84,8 +84,9 @@ func (s *Server) ListAdminUsers(w http.ResponseWriter, r *http.Request) {
 		SELECT id, email, role, is_curator, is_blocked, email_verified,
 		       referrer_id, novabot_balance, block_reason, created_at
 		FROM users
+		WHERE id <> $1
 		ORDER BY created_at DESC
-	`)
+	`, catalogOwnerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return

@@ -21,6 +21,7 @@ import { BalancesPage } from './pages/BalancesPage'
 import { PaymentsPage } from './pages/PaymentsPage'
 import { HelpPage } from './pages/HelpPage'
 import { WelcomePage } from './pages/WelcomePage'
+import { QuickStartPage } from './pages/QuickStartPage'
 
 export default function App() {
   return (
@@ -39,6 +40,7 @@ export default function App() {
                   <Routes>
                     <Route path="" element={<DashboardPage />} />
                     <Route path="welcome" element={<WelcomePage />} />
+                    <Route path="quick-start" element={<QuickStartPage />} />
                     <Route path="signals/new" element={<SignalBuilderPage />} />
                     <Route path="signals/:id/edit" element={<SignalBuilderPage />} />
                     <Route path="signals/:id/backtest" element={<BacktestPage />} />

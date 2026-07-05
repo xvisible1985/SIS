@@ -12,6 +12,54 @@ interface Props {
   onFilterChange: (f: EventListFilter) => void
 }
 
+const SOURCE_STYLES: Record<string, { label: string; color: string }> = {
+  // top-level sources
+  'strategy-runner':    { label: 'runner',        color: 'bg-blue-900/20 border-blue-500/30 text-blue-300' },
+  'hedge-engine':       { label: 'hedge',          color: 'bg-violet-900/20 border-violet-400/30 text-violet-300' },
+  'api':                { label: 'api',            color: 'bg-slate-800/40 border-slate-500/30 text-slate-400' },
+  // reconcile / maintenance
+  'reconcile':          { label: 'reconcile',      color: 'bg-cyan-900/20 border-cyan-500/30 text-cyan-300' },
+  'sweep-orphans':      { label: 'sweep',          color: 'bg-cyan-900/20 border-cyan-500/30 text-cyan-300' },
+  'reprice-from-fills': { label: 'reprice-fills',  color: 'bg-cyan-900/20 border-cyan-500/30 text-cyan-300' },
+  'reprice-stale':      { label: 'reprice-stale',  color: 'bg-cyan-900/20 border-cyan-500/30 text-cyan-300' },
+  'trim-excess':        { label: 'trim-excess',    color: 'bg-cyan-900/20 border-cyan-500/30 text-cyan-300' },
+  'reset-cancelled':    { label: 'reset-cancel',   color: 'bg-cyan-900/20 border-cyan-500/30 text-cyan-300' },
+  // cancel operations
+  'cancel-all':         { label: 'cancel-all',     color: 'bg-red-900/20 border-red-500/30 text-red-300' },
+  'cancel-levels':      { label: 'cancel-lvls',    color: 'bg-red-900/20 border-red-500/30 text-red-300' },
+  'cancel-all-placed':  { label: 'cancel-placed',  color: 'bg-red-900/20 border-red-500/30 text-red-300' },
+  'stop-request':       { label: 'stop-req',       color: 'bg-red-900/20 border-red-500/30 text-red-300' },
+  'tp-sl-cancelled':    { label: 'tp-sl-cancel',   color: 'bg-red-900/20 border-red-500/30 text-red-300' },
+  'level-cancelled':    { label: 'lvl-cancel',     color: 'bg-red-900/20 border-red-500/30 text-red-300' },
+  // TP/SL
+  'update-tp':          { label: 'update-tp',      color: 'bg-emerald-900/20 border-emerald-500/30 text-emerald-300' },
+  'update-sl':          { label: 'update-sl',      color: 'bg-emerald-900/20 border-emerald-500/30 text-emerald-300' },
+  'trailing-stop':      { label: 'trailing',       color: 'bg-emerald-900/20 border-emerald-500/30 text-emerald-300' },
+  // cycle restarts
+  'restart-cycle':      { label: 'restart',        color: 'bg-amber-900/20 border-amber-500/30 text-amber-300' },
+  'restart-matrix':     { label: 'restart-mtx',    color: 'bg-amber-900/20 border-amber-500/30 text-amber-300' },
+  'restart-grid':       { label: 'restart-grid',   color: 'bg-amber-900/20 border-amber-500/30 text-amber-300' },
+  // matrix
+  'matrix-replace-slots': { label: 'mtx-slots',   color: 'bg-purple-900/20 border-purple-500/30 text-purple-300' },
+  'matrix-update-tp':     { label: 'mtx-tp',      color: 'bg-purple-900/20 border-purple-500/30 text-purple-300' },
+  'matrix-reprice':       { label: 'mtx-reprice',  color: 'bg-purple-900/20 border-purple-500/30 text-purple-300' },
+  'matrix-cancel-sls':    { label: 'mtx-sls',     color: 'bg-purple-900/20 border-purple-500/30 text-purple-300' },
+}
+
+function SourceBadge({ source }: { source: string }) {
+  const s = SOURCE_STYLES[source]
+  const label = s?.label ?? source
+  const color = s?.color ?? 'rgba(100,116,139,.15) border-slate-500/30 text-slate-400'
+  return (
+    <span
+      style={{ fontSize: 8, padding: '1px 4px', borderRadius: 3, border: '1px solid', lineHeight: '1.4' }}
+      className={color}
+    >
+      {label}
+    </span>
+  )
+}
+
 const CHIPS: { label: string; value: EventListFilter }[] = [
   { label: 'Все',      value: 'all'    },
   { label: 'Ордера',   value: 'orders' },
@@ -106,7 +154,12 @@ export function LogVisualizerEventsList({ events, currentIndex, onJump, filter, 
                         : ev.log?.level === 'warn' ? 'bg-amber-500' : 'bg-slate-500'
                   }`} />
                   <div className="min-w-0 flex-1">
-                    <div className="text-[9px] text-slate-500 font-mono">{fmtTime(ev.tsMs)}</div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] text-slate-500 font-mono">{fmtTime(ev.tsMs)}</span>
+                      {ev.kind === 'log' && ev.log?.source && (
+                        <SourceBadge source={ev.log.source} />
+                      )}
+                    </div>
                     <div className={`text-[10px] leading-tight truncate ${
                       isCurrent ? 'text-amber-200' : 'text-slate-400'
                     }`}>

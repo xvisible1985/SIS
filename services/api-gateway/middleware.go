@@ -59,6 +59,18 @@ func (s *Server) isAdmin(ctx context.Context, userID string) bool {
 	return err == nil && role == "admin"
 }
 
+// resolveIsAdmin reports the admin flag returned to clients. It matches the
+// authoritative authorization source (DB role='admin', same as RequireAdmin) and
+// also honors the ADMIN_EMAILS bootstrap list — so an admin granted via the admin
+// panel (DB role, not in the env list) still receives the admin UI, and a brand-new
+// env admin is recognized before bootstrapAdmins promotes them at next startup.
+func (s *Server) resolveIsAdmin(ctx context.Context, userID, email string) bool {
+	if s.adminEmails[email] {
+		return true
+	}
+	return s.isAdmin(ctx, userID)
+}
+
 // RequireAdmin checks that the authenticated user has role='admin' in the DB.
 // Must be used after RequireAuth.
 func (s *Server) RequireAdmin(next http.Handler) http.Handler {

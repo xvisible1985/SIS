@@ -56,7 +56,7 @@ export function AuthPage({ defaultTab = 'login' }: Props) {
       const res = tab === 'login'
         ? await login(email, password)
         : await register(email, password)
-      authLogin(res.token, res.user_id, res.email, tab === 'login' ? remember : true)
+      authLogin(res.token, res.user_id, res.email, res.is_admin ?? false, tab === 'login' ? remember : true)
       navigate('/')
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : tab === 'login' ? 'Ошибка входа' : 'Ошибка регистрации')

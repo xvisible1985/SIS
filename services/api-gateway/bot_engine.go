@@ -293,6 +293,9 @@ func (s *Server) RunBotEngine(ctx context.Context) {
 	// Start the news bot ticker (fast polling of local DB for new listings).
 	go s.runNewsBotTicker(ctx)
 
+	// Start the whale bot ticker (polls whale_events every 60 s).
+	go s.runWhaleBotTicker(ctx)
+
 	ticker := time.NewTicker(botEngineInterval)
 	defer ticker.Stop()
 	s.botEngineTick(ctx)
@@ -1427,6 +1430,208 @@ func (s *Server) runNewsBotTicker(ctx context.Context) {
 					s.processNewsBots(ctx)
 				}()
 			default: // previous call still running, skip tick
+			}
+		}
+	}
+}
+
+// processWhaleBots scans whale_events and creates strategies for bots
+// whose activation_signals include "whale".
+func (s *Server) processWhaleBots(ctx context.Context) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, owner_id, account_id,
+		       symbol_whitelist, symbol_blacklist,
+		       strategy_config, max_strategies, max_margin_usdt, auto_mode,
+		       max_long_strategies, max_short_strategies
+		FROM bots
+		WHERE status = 'active' AND account_id IS NOT NULL`)
+	if err != nil {
+		log.Printf("whale bot: load bots: %v", err)
+		return
+	}
+	var bots []botEngineRow
+	for rows.Next() {
+		var b botEngineRow
+		if err := rows.Scan(
+			&b.id, &b.ownerID, &b.accountID,
+			&b.whitelist, &b.blacklist,
+			&b.stratCfg, &b.maxStrat, &b.maxMargin, &b.autoMode,
+			&b.maxLong, &b.maxShort,
+		); err == nil {
+			bots = append(bots, b)
+		}
+	}
+	rows.Close()
+
+	if len(bots) == 0 {
+		return
+	}
+
+	allSymbols, _ := trader.FetchAllLinearSymbols(ctx)
+	allSymSet := make(map[string]bool, len(allSymbols))
+	for _, sym := range allSymbols {
+		allSymSet[sym] = true
+	}
+
+	delistSymbols := s.GetDelistingSymbols()
+
+	type whaleBot struct {
+		row           botEngineRow
+		cfg           botCfgJSON
+		thresholdUSDT float64
+		minWallets    int
+		ttlHours      float64
+	}
+
+	var whaleBots []whaleBot
+	for _, b := range bots {
+		var cfg botCfgJSON
+		if err := json.Unmarshal(b.stratCfg, &cfg); err != nil {
+			continue
+		}
+		for _, a := range cfg.ActivationSignals {
+			if a.Name != "whale" {
+				continue
+			}
+			threshold := 50000.0
+			if v, ok := a.Params["threshold_usdt"]; ok {
+				if n, ok := v.(float64); ok && n > 0 {
+					threshold = n
+				}
+			}
+			minW := 3
+			if v, ok := a.Params["min_wallets"]; ok {
+				if n, ok := v.(float64); ok && n >= 1 {
+					minW = int(n)
+				}
+			}
+			ttl := 1.0
+			if v, ok := a.Params["ttl_hours"]; ok {
+				if n, ok := v.(float64); ok && n > 0 {
+					ttl = n
+				}
+			}
+			whaleBots = append(whaleBots, whaleBot{
+				row: b, cfg: cfg,
+				thresholdUSDT: threshold,
+				minWallets:    minW,
+				ttlHours:      ttl,
+			})
+			break
+		}
+	}
+
+	if len(whaleBots) == 0 {
+		return
+	}
+
+	for _, wb := range whaleBots {
+		b := wb.row
+		cfg := wb.cfg
+		if !b.autoMode {
+			continue
+		}
+
+		type whaleSignal struct {
+			symbol    string
+			direction string
+			count     int
+		}
+		sigRows, err := s.pool.Query(ctx, `
+			SELECT symbol, direction, COUNT(DISTINCT address) AS cnt
+			FROM whale_events
+			WHERE detected_at >= now() - ($1 * interval '1 hour')
+			  AND amount_usd >= $2
+			GROUP BY symbol, direction
+			HAVING COUNT(DISTINCT address) >= $3
+			ORDER BY cnt DESC`,
+			wb.ttlHours, wb.thresholdUSDT, wb.minWallets)
+		if err != nil {
+			log.Printf("whale bot: query events: %v", err)
+			continue
+		}
+		var whaleSignals []whaleSignal
+		for sigRows.Next() {
+			var ws whaleSignal
+			if err := sigRows.Scan(&ws.symbol, &ws.direction, &ws.count); err == nil {
+				whaleSignals = append(whaleSignals, ws)
+			}
+		}
+		sigRows.Close()
+
+		if len(whaleSignals) == 0 {
+			continue
+		}
+
+		s.ensureBotWorker(ctx, b.id)
+
+		for _, ws := range whaleSignals {
+			if len(allSymbols) > 0 && !allSymSet[ws.symbol] {
+				continue // symbol not listed on Bybit
+			}
+			if !symbolPassesHedgeFilter(ws.symbol, b.whitelist, b.blacklist, delistSymbols) {
+				continue
+			}
+
+			var openDir string
+			switch {
+			case cfg.Direction == "long" && ws.direction == "buy":
+				openDir = "long"
+			case cfg.Direction == "short" && ws.direction == "sell":
+				openDir = "short"
+			case cfg.Direction == "both":
+				if ws.direction == "buy" {
+					openDir = "long"
+				} else if ws.direction == "sell" {
+					openDir = "short"
+				}
+			}
+			if openDir == "" {
+				continue
+			}
+
+			// Skip if strategy already open for this bot+symbol+direction
+			var existing int
+			if err := s.pool.QueryRow(ctx,
+				`SELECT COUNT(*) FROM strategies
+				 WHERE bot_id = $1 AND symbol = $2 AND direction = $3
+				   AND status IN ('active','finishing')`,
+				b.id, ws.symbol, openDir,
+			).Scan(&existing); err == nil && existing > 0 {
+				continue
+			}
+
+			s.logBotEvent(ctx, b.id,
+				fmt.Sprintf("Кит: %s %s — %d кошельков (порог=$%.0f, окно=%.1fч)",
+					ws.symbol, openDir, ws.count, wb.thresholdUSDT, wb.ttlHours),
+				"info", "whale")
+			s.sendBotOpportunity(b.id, botOpportunity{
+				sym:    ws.symbol,
+				dir:    openDir,
+				score:  float64(ws.count),
+				source: "whale",
+			})
+		}
+	}
+}
+
+// runWhaleBotTicker polls whale_events every 60 seconds and triggers whale bots.
+func (s *Server) runWhaleBotTicker(ctx context.Context) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	running := make(chan struct{}, 1)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			select {
+			case running <- struct{}{}:
+				go func() {
+					defer func() { <-running }()
+					s.processWhaleBots(ctx)
+				}()
+			default:
 			}
 		}
 	}

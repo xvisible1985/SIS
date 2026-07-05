@@ -73,12 +73,12 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 
-	var userID, hash string
+	var userID, hash, role string
 	var isBlocked bool
 	err := s.pool.QueryRow(r.Context(),
-		`SELECT id, password_hash, is_blocked FROM users WHERE email = $1`,
+		`SELECT id, password_hash, is_blocked, role FROM users WHERE email = $1`,
 		req.Email,
-	).Scan(&userID, &hash, &isBlocked)
+	).Scan(&userID, &hash, &isBlocked, &role)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
@@ -101,6 +101,6 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token": token, "user_id": userID, "email": req.Email,
-		"is_admin": s.adminEmails[req.Email],
+		"is_admin": role == "admin" || s.adminEmails[req.Email],
 	})
 }

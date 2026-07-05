@@ -84,6 +84,84 @@ func (s *Server) GetSystemHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, LatestSystemHealth())
 }
 
+// serviceInfo describes a Go service in the system.
+type serviceInfo struct {
+	Name        string `json:"name"`
+	Binary      string `json:"binary"`
+	Description string `json:"description"`
+	StartCond   string `json:"startCond"`
+	Online      bool   `json:"online"`
+	LastSeenMs  *int64 `json:"lastSeenMs"`
+}
+
+var knownServices = []struct {
+	name        string
+	binary      string
+	description string
+	startCond   string
+}{
+	{
+		name:        "api-gateway",
+		binary:      "api-gateway",
+		description: "HTTP-сервер, движок стратегий (grid/matrix), bot engine, TG-уведомления, WebSocket стримы",
+		startCond:   "Всегда — основной сервис",
+	},
+	{
+		name:        "ingester",
+		binary:      "ingester",
+		description: "Сборщик свечей (OHLCV) с Bybit и Binance → TimescaleDB + Redis-кэш",
+		startCond:   "Всегда — фоновый процесс",
+	},
+	{
+		name:        "signal-engine",
+		binary:      "signal-engine",
+		description: "Обработчик backtest/optimize задач: читает Redis-очередь, пишет результаты в БД",
+		startCond:   "Всегда — слушает Redis-очередь",
+	},
+	{
+		name:        "tg-bot",
+		binary:      "tg-bot",
+		description: "Telegram-бот: уведомления пользователям, команды /status /pause /resume",
+		startCond:   "Если задан TELEGRAM_BOT_TOKEN",
+	},
+	{
+		name:        "webhook",
+		binary:      "webhook",
+		description: "Диспетчер исходящих webhook-ов к внешним сервисам пользователей",
+		startCond:   "Всегда — слушает Redis-очередь",
+	},
+	{
+		name:        "migrate",
+		binary:      "migrate",
+		description: "Применяет SQL-миграции к БД при деплое",
+		startCond:   "Один раз при деплое",
+	},
+}
+
+// GetServices returns descriptions and live heartbeat status for all Go services.
+// GET /admin/services
+func (s *Server) GetServices(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	out := make([]serviceInfo, 0, len(knownServices))
+	for _, svc := range knownServices {
+		info := serviceInfo{
+			Name:        svc.name,
+			Binary:      svc.binary,
+			Description: svc.description,
+			StartCond:   svc.startCond,
+		}
+		key := "service:heartbeat:" + svc.name
+		res := s.rdb.Get(ctx, key)
+		if res.Err() == nil {
+			info.Online = true
+			now := time.Now().UnixMilli()
+			info.LastSeenMs = &now
+		}
+		out = append(out, info)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 /*
 // AdminSignAgreement manually signs the Bybit trading agreement for an exchange account.
 // POST /admin/accounts/{id}/sign-agreement  body: {"categoryV2": 0} (optional)

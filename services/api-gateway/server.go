@@ -49,6 +49,10 @@ type Server struct {
 	allSymbolsSnapMu sync.RWMutex
 	allSymbolsSnap   []string
 
+	exchangeSymsMu      sync.RWMutex
+	exchangeSyms        map[string][]string // trading-pair → exchange list
+	exchangeSymsUpdated time.Time
+
 	delistMu        sync.RWMutex
 	delistSymbols   []string
 	delistUpdatedAt time.Time

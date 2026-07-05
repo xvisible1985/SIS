@@ -2,9 +2,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -196,6 +200,123 @@ func (s *Server) GetWhaleState(w http.ResponseWriter, r *http.Request) {
 		result = []stateRow{}
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// GET /admin/whale/exchange-symbols returns symbol→exchanges map (cached 1h).
+func (s *Server) GetWhaleExchangeSymbols(w http.ResponseWriter, r *http.Request) {
+	s.refreshExchangeSymsIfNeeded(r.Context())
+	s.exchangeSymsMu.RLock()
+	result := s.exchangeSyms
+	s.exchangeSymsMu.RUnlock()
+	if result == nil {
+		result = map[string][]string{}
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) refreshExchangeSymsIfNeeded(ctx context.Context) {
+	s.exchangeSymsMu.RLock()
+	stale := s.exchangeSyms == nil || time.Since(s.exchangeSymsUpdated) > time.Hour
+	s.exchangeSymsMu.RUnlock()
+	if !stale {
+		return
+	}
+
+	m := make(map[string][]string)
+
+	s.allSymbolsSnapMu.RLock()
+	bybit := make([]string, len(s.allSymbolsSnap))
+	copy(bybit, s.allSymbolsSnap)
+	s.allSymbolsSnapMu.RUnlock()
+	for _, sym := range bybit {
+		m[sym] = append(m[sym], "bybit")
+	}
+
+	if syms := fetchBinanceFuturesSymbols(ctx); len(syms) > 0 {
+		for _, sym := range syms {
+			m[sym] = append(m[sym], "binance")
+		}
+	}
+	if syms := fetchOKXSwapSymbols(ctx); len(syms) > 0 {
+		for _, sym := range syms {
+			m[sym] = append(m[sym], "okx")
+		}
+	}
+
+	s.exchangeSymsMu.Lock()
+	s.exchangeSyms = m
+	s.exchangeSymsUpdated = time.Now()
+	s.exchangeSymsMu.Unlock()
+}
+
+func fetchBinanceFuturesSymbols(ctx context.Context) []string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://fapi.binance.com/fapi/v1/exchangeInfo", nil)
+	if err != nil {
+		return nil
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("whale exchange: binance fetch: %v", err)
+		return nil
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var data struct {
+		Symbols []struct {
+			Symbol       string `json:"symbol"`
+			Status       string `json:"status"`
+			ContractType string `json:"contractType"`
+		} `json:"symbols"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil
+	}
+	var out []string
+	for _, s := range data.Symbols {
+		if s.Status == "TRADING" && s.ContractType == "PERPETUAL" {
+			out = append(out, s.Symbol)
+		}
+	}
+	return out
+}
+
+func fetchOKXSwapSymbols(ctx context.Context) []string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://www.okx.com/api/v5/public/instruments?instType=SWAP", nil)
+	if err != nil {
+		return nil
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("whale exchange: okx fetch: %v", err)
+		return nil
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var data struct {
+		Data []struct {
+			InstID string `json:"instId"` // e.g. "BTC-USDT-SWAP"
+			State  string `json:"state"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil
+	}
+	var out []string
+	for _, inst := range data.Data {
+		if inst.State != "live" {
+			continue
+		}
+		// "BTC-USDT-SWAP" → "BTCUSDT"
+		parts := strings.Split(inst.InstID, "-")
+		if len(parts) >= 2 {
+			out = append(out, parts[0]+parts[1])
+		}
+	}
+	return out
 }
 
 // POST /admin/whale/simulate

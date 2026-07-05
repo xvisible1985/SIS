@@ -142,7 +142,7 @@ function LogLine({ e }: { e: DebugEvent }) {
 
       {/* Source badge */}
       {e.source === 'strategy' ? (
-        <span className="shrink-0 text-blue-500/80 w-[58px] truncate" title={e.source_id}>{e.source_id}</span>
+        <span className="shrink-0 text-blue-500/80 w-[58px] truncate" title={e.bot_name || e.source_id}>{e.bot_name || e.source_id}</span>
       ) : (
         <span className="shrink-0 text-purple-400/80 w-[58px] truncate" title={e.bot_name}>{e.bot_name || e.source_id}</span>
       )}

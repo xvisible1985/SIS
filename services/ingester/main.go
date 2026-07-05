@@ -13,6 +13,7 @@ import (
 	"sis/pkg/cache"
 	"sis/pkg/db"
 	"sis/pkg/exchange"
+	"sis/pkg/heartbeat"
 	binanceclient "sis/pkg/exchange/binance"
 	bybitclient "sis/pkg/exchange/bybit"
 	"sis/pkg/models"
@@ -63,6 +64,8 @@ func main() {
 		binanceclient.New(),
 		bybitclient.New(),
 	}
+
+	go heartbeat.Start(ctx, rdb, "ingester")
 
 	ingester := NewIngester(pool, rdb, symbols, markets, tfs)
 	log.Println("ingester: starting")

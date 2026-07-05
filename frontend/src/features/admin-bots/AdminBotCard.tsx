@@ -44,7 +44,10 @@ export function AdminBotCard({ bot, onEdit, onTogglePublic, onDelete, onApprove,
             className="h-9 w-9 shrink-0 overflow-hidden rounded-[9px] border flex items-center justify-center"
             style={{ background: km.iconBg, borderColor: km.border, color: km.color }}
           >
-            <Icon size={16} strokeWidth={2} />
+            {bot.avatarUrl
+              ? <img src={bot.avatarUrl} alt="" className="h-full w-full object-cover" />
+              : <Icon size={16} strokeWidth={2} />
+            }
           </div>
 
           {/* имя + бейдж + автор */}

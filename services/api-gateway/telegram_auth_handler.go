@@ -136,6 +136,6 @@ func (s *Server) TelegramLoginCallback(w http.ResponseWriter, r *http.Request) {
 		"token":    token,
 		"user_id":  userID,
 		"email":    email,
-		"is_admin": s.adminEmails[email],
+		"is_admin": s.resolveIsAdmin(ctx, userID, email),
 	})
 }

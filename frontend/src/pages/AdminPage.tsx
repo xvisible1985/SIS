@@ -13,6 +13,7 @@ import type { IndicatorDef, BaseParams, SignalDef } from '../features/indicators
 import { AdminUsersPage } from '../features/admin-users'
 import { useAdminUsers } from '../features/admin-users/api'
 import { AdminBotsTab } from '../features/admin-bots/AdminBotsTab'
+import { PresetsAdminTab } from '../features/admin-bots/PresetsAdminTab'
 import { AdminProxiesTab } from '../features/admin-proxies/AdminProxiesTab'
 import { AdminDefaultsTab } from '../features/admin-defaults/AdminDefaultsTab'
 import { BybitNewsCard } from '../features/bybit-news/BybitNewsCard'
@@ -1190,6 +1191,36 @@ const TABS = [
 
 type TabId = typeof TABS[number]['id']
 
+type BotsSubTab = 'library' | 'presets'
+
+function BotsAdminSection() {
+  const [subTab, setSubTab] = useState<BotsSubTab>('library')
+  return (
+    <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex gap-1 border-b border-white/[.06] px-4 pt-2">
+        {([
+          { id: 'library', label: 'Библиотека' },
+          { id: 'presets', label: 'Пресеты' },
+        ] as { id: BotsSubTab; label: string }[]).map(t => (
+          <button
+            key={t.id}
+            onClick={() => setSubTab(t.id)}
+            className={`rounded-t px-3 py-1.5 text-xs font-medium transition-colors ${
+              subTab === t.id
+                ? 'border-b-2 border-[#5b8cff] text-[#b8c8ff]'
+                : 'text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {subTab === 'library' && <AdminBotsTab />}
+      {subTab === 'presets' && <PresetsAdminTab />}
+    </div>
+  )
+}
+
 export function AdminPage() {
   const [tab, setTab] = useState<TabId>('users')
   const { metrics, error } = useAdminMetrics()
@@ -1229,9 +1260,7 @@ export function AdminPage() {
         </div>
       )}
       {tab === 'bots' && (
-        <div className="flex flex-1 flex-col overflow-hidden">
-          <AdminBotsTab />
-        </div>
+        <BotsAdminSection />
       )}
       {tab === 'signals' && (
         <div className="flex flex-1 flex-col overflow-hidden p-2.5">

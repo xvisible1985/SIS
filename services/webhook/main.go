@@ -11,6 +11,7 @@ import (
 	"github.com/joho/godotenv"
 	"sis/pkg/cache"
 	"sis/pkg/db"
+	"sis/pkg/heartbeat"
 )
 
 func main() {
@@ -33,6 +34,8 @@ func main() {
 		log.Fatalf("redis connect: %v", err)
 	}
 	defer rdb.Close()
+
+	go heartbeat.Start(ctx, rdb, "webhook")
 
 	d := NewDispatcher(pool, rdb)
 	log.Println("webhook-dispatcher: starting")

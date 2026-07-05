@@ -68,7 +68,7 @@ func (s *Server) RequestBotApproval(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ApproveBotPublication(w http.ResponseWriter, r *http.Request) {
 	botID := chi.URLParam(r, "id")
 	tag, err := s.pool.Exec(r.Context(),
-		`UPDATE bots SET approval_status = 'approved', updated_at = NOW()
+		`UPDATE bots SET approval_status = 'approved', is_public = true, updated_at = NOW()
 		 WHERE id = $1 AND approval_status = 'pending'`,
 		botID)
 	if err != nil {

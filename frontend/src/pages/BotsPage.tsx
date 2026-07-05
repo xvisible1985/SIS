@@ -57,6 +57,7 @@ function toFeaturedBot(b: Bot): FeaturedBot {
     id:        b.id,
     name:      b.name,
     author:    b.isOfficial ? 'NovaBot' : b.ownerName,
+    avatarUrl: b.avatarUrl,
     botKind:   (b.strategyConfig?.bot_kind as BotKind) ?? 'signal',
     strategy:  (b.strategyConfig?.strategy_type as BotStrategy) ?? 'grid',
     risk:      'medium' as RiskLevel,

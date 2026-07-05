@@ -15,7 +15,7 @@ describe('makeMergedEventLabel', () => {
   })
 
   it('formats log event', () => {
-    const log: LVEvent = { message: 'TP placed', level: 'info', tsMs: 0 }
+    const log: LVEvent = { message: 'TP placed', level: 'info', tsMs: 0, source: null }
     expect(makeMergedEventLabel('log', log, undefined)).toBe('TP placed')
   })
 
@@ -37,7 +37,7 @@ function makeLevelEvent(side: 'Buy' | 'Sell' = 'Buy', sizeUsdt = 100): MergedEve
 function makeLogEvent(level: 'info' | 'warn' | 'error' = 'info'): MergedEvent {
   return {
     tsMs: 0, kind: 'log',
-    log: { message: 'test', level, tsMs: 0 },
+    log: { message: 'test', level, tsMs: 0, source: null },
     label: '',
   }
 }
@@ -127,7 +127,7 @@ function makeSlClosedLevel(): MergedEvent {
 function makeLogWithMsg(level: 'info' | 'warn' | 'error', message: string): MergedEvent {
   return {
     tsMs: 0, kind: 'log',
-    log: { message, level, tsMs: 0 },
+    log: { message, level, tsMs: 0, source: null },
     label: '',
   }
 }

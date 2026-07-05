@@ -71,8 +71,9 @@ export type StrategyConfig = {
   hedge_sig_dt_hours?: number;
   hedge_close_type?: number;        // 0=at_cycle_end, 1=max_loss$
   hedge_close_value?: number;
-  hedge_deact_close_type?: number;  // 0=pnl$, 1=roi%, 2=breakeven
+  hedge_deact_close_type?: number;  // 0=pnl$, 1=roi%, 2=breakeven+profit
   hedge_deact_close_value?: number;
+  hedge_breakeven_profit?: number;  // profit target for type=2 (0 = true breakeven)
   hedge_profit_lazy?: boolean;
   hedge_profit_lazy_pct?: number;
   hedge_deact_type?: number;        // 0=drawdown%, 1=pnl$, 2=roi%, 3=last_order%, 4=wait_pair

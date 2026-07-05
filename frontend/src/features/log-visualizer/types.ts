@@ -19,6 +19,7 @@ export interface LVStrategy {
 export interface LVEvent {
   message: string
   level: 'info' | 'warn' | 'error'
+  source: string | null
   tsMs: number
 }
 

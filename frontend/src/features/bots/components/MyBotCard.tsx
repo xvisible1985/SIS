@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Play, Pause, Settings, Trash2, TrendingUp, Search, Shield, Layers } from 'lucide-react';
+import { Play, Pause, Settings, Trash2, TrendingUp, Search, Shield, Layers, Send, Clock } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { MyBot } from '../ui-types';
 import type { BotKind } from '../types';
@@ -18,10 +18,11 @@ type Props = {
   onToggle: (next: 'running' | 'paused') => void;
   onEdit:  () => void;
   onDelete: () => void;
+  onRequestApproval?: () => void;
 };
 
 /** Карточка бота пользователя — в секции «Мои боты» */
-export function MyBotCard({ bot, onToggle, onEdit, onDelete }: Props) {
+export function MyBotCard({ bot, onToggle, onEdit, onDelete, onRequestApproval }: Props) {
   const [optimisticRunning, setOptimisticRunning] = useState(bot.status === 'running');
   const running = optimisticRunning;
 
@@ -173,6 +174,24 @@ export function MyBotCard({ bot, onToggle, onEdit, onDelete }: Props) {
           >
             {running ? <><Pause size={12} />Остановить</> : <><Play size={11} fill="currentColor" />Запустить</>}
           </button>
+          {bot.custom && bot.approvalStatus === 'pending' && (
+            <div
+              title="Ожидает проверки администратором"
+              className="flex h-[34px] w-[34px] items-center justify-center rounded-md border border-amber-400/30 bg-amber-400/[.10] text-amber-300"
+            >
+              <Clock size={13} />
+            </div>
+          )}
+          {bot.custom && (bot.approvalStatus === null || bot.approvalStatus === 'rejected') && onRequestApproval && (
+            <button
+              type="button"
+              onClick={onRequestApproval}
+              title="Отправить в библиотеку на проверку"
+              className="flex h-[34px] w-[34px] items-center justify-center rounded-md border border-[#4a7dff]/30 bg-[#4a7dff]/[.08] text-[#7ba4ff] hover:bg-[#4a7dff]/[.16] transition-colors"
+            >
+              <Send size={13} />
+            </button>
+          )}
           <button
             type="button"
             onClick={onEdit}

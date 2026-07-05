@@ -35,6 +35,7 @@ type lvStrategy struct {
 type lvEvent struct {
 	Message string  `json:"message"`
 	Level   string  `json:"level"`
+	Source  *string `json:"source"`
 	TsMs    float64 `json:"tsMs"`
 }
 
@@ -143,7 +144,7 @@ func (s *Server) LVGetEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := s.pool.Query(r.Context(), `
-		SELECT message, level,
+		SELECT message, level, source,
 		       EXTRACT(EPOCH FROM created_at) * 1000 AS ts_ms
 		FROM strategy_events
 		WHERE strategy_id = $1
@@ -160,7 +161,7 @@ func (s *Server) LVGetEvents(w http.ResponseWriter, r *http.Request) {
 	var out []lvEvent
 	for rows.Next() {
 		var e lvEvent
-		if err := rows.Scan(&e.Message, &e.Level, &e.TsMs); err != nil {
+		if err := rows.Scan(&e.Message, &e.Level, &e.Source, &e.TsMs); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}

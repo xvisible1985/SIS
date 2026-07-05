@@ -305,6 +305,7 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 		StartedAt: time.Now(),
 	}
 	sr.levels = nil
+	sr.logPositionSource(ctx, cycleID, maxCycle+1, price)
 
 	above := filterMatrixLevels(sr.strategy.MatrixLevels, "above")
 	below := filterMatrixLevels(sr.strategy.MatrixLevels, "below")
@@ -611,6 +612,7 @@ placed:
 	l.Status = LevelPlaced
 	l.ExchangeOrderID = result.OrderId
 	l.ExchangeLinkID = linkID
+	l.PlacedAt = time.Now()
 	sr.runner.RegisterOrder(result.OrderId, ref)
 	if l.TargetPrice == 0 {
 		sr.info(ctx, fmt.Sprintf("Matrix %s %s MARKET (%.0f USDT)", slotLabel(l.Slot), l.Side, l.SizeUSDT))
@@ -997,6 +999,7 @@ func (sr *StrategyRunner) matrixTriggerVirtualLevel(ctx context.Context, l *Grid
 // matrixReplaceSlots re-places levels for any slot that has no active (pending/placed/filled) row.
 // Called after safe zone clears. Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixReplaceSlots(ctx context.Context, currentPrice float64) {
+	defer sr.setOp("matrix-replace-slots")()
 	sr.info(ctx, fmt.Sprintf("[SZ RE-ENTRY] matrixReplaceSlots: price=%.4f startPrice=%.4f — пересоздаём все слоты",
 		currentPrice, sr.cycle.StartPrice))
 
@@ -1199,6 +1202,14 @@ func (sr *StrategyRunner) handleMatrixLevelFill(ctx context.Context, levelID str
 		return
 	}
 
+	// Record fill time/qty for stale-position-snapshot detection in handlePartialPositionChange.
+	// When a level fills and ADDS to the position (all matrix entries do this), Bybit may fire
+	// a position WS snapshot that still reflects the pre-fill size — causing false "partial close" alerts.
+	if qty, _ := strconv.ParseFloat(filled.Qty, 64); qty > 0 {
+		sr.lastLevelFillTime = time.Now()
+		sr.lastLevelFillQty = qty
+	}
+
 	// Place per-level SL if configured for this slot
 	if filled.Slot != nil {
 		_, stopPct, _, _ := sr.matrixLevelConfig(*filled.Slot)
@@ -1300,6 +1311,7 @@ func (sr *StrategyRunner) matrixPlacePerLevelSL(ctx context.Context, l *GridLeve
 // latest active filled level's fill_price and that level's tp_pct config.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
+	defer sr.setOp("matrix-update-tp")()
 	if sr.instr.QtyStep == 0 {
 		return
 	}
@@ -1455,6 +1467,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 // currentPrice is the live mark price, used as qty reference when targetPrice == 0 (market entry).
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) applyNewMatrixPrices(ctx context.Context, basePrice, currentPrice float64) {
+	defer sr.setOp("matrix-reprice")()
 	if basePrice <= 0 {
 		basePrice = currentPrice
 	}
@@ -1553,8 +1566,17 @@ func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string
 		slTrigger = filledPrice
 	}
 
+	var levelPnl float64
+	if closed.FilledPrice > 0 && closed.SizeUSDT > 0 {
+		qty := closed.SizeUSDT / closed.FilledPrice
+		if sr.strategy.Direction == DirectionShort {
+			levelPnl = (closed.FilledPrice - slTrigger) * qty
+		} else {
+			levelPnl = (slTrigger - closed.FilledPrice) * qty
+		}
+	}
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
-		`UPDATE strategy_levels SET status='sl_closed' WHERE id=$1`, levelID,
+		`UPDATE strategy_levels SET status='sl_closed', realized_pnl=$1, sl_closed_at=NOW() WHERE id=$2`, levelPnl, levelID,
 	)
 	closed.Status = LevelSLClosed
 	closed.SLOrderID = ""
@@ -1657,6 +1679,7 @@ func (sr *StrategyRunner) handleMatrixSLCancelled(ctx context.Context, levelID s
 // matrixCancelPerLevelSLs cancels all active per-level SL orders.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixCancelPerLevelSLs(ctx context.Context) {
+	defer sr.setOp("matrix-cancel-sls")()
 	for i := range sr.levels {
 		l := &sr.levels[i]
 		if l.SLOrderID == "" {

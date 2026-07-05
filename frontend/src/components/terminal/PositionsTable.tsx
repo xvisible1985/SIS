@@ -1,6 +1,7 @@
 import type { Position, Strategy } from '../../types'
 import { placeOrder } from '../../api/trader'
 import { createStrategy, listStrategies } from '../../api/strategies'
+import { apiClient } from '../../api/client'
 import { useState, useEffect, useRef } from 'react'
 import { ClosePositionModal, makeCloseConfirm, type CloseConfirm } from '../common/ClosePositionModal'
 import { getBotKindMeta } from '../../features/bots/botKindMeta'
@@ -20,18 +21,48 @@ function coinIcon(s: string) {
 interface PositionOwner {
   name: string
   botKind: string | null
+  fromLog?: boolean
 }
 
-function getPositionOwner(pos: Position, strategies: Strategy[], accountId: string): PositionOwner | null {
+interface SourceLogEntry {
+  symbol: string
+  direction: string
+  account_id: string
+  strategy_id: string | null
+  bot_id: string | null
+  bot_name: string | null
+  cycle_id: string
+  cycle_num: number
+  start_price: number | null
+  created_at: string
+}
+
+function getPositionOwner(
+  pos: Position,
+  strategies: Strategy[],
+  accountId: string,
+  sourceLog: SourceLogEntry[],
+): PositionOwner | null {
   const posDir = pos.side === 'Buy' ? 'long' : 'short'
   const match = strategies.find(s =>
     s.account_id === accountId &&
     s.symbol === pos.symbol &&
     (s.direction === posDir || s.direction === 'both')
   )
-  if (!match) return null
-  if (!match.bot_id) return { name: 'Manual', botKind: null }
-  return { name: match.bot_name ?? match.bot_id, botKind: match.bot_kind ?? null }
+  if (match) {
+    if (!match.bot_id) return { name: 'Manual', botKind: null }
+    return { name: match.bot_name ?? match.bot_id, botKind: match.bot_kind ?? null }
+  }
+
+  // Фолбэк: ищем в логе — стратегия могла быть удалена
+  const logEntry = sourceLog.find(e =>
+    e.account_id === accountId &&
+    e.symbol === pos.symbol &&
+    e.direction === posDir
+  )
+  if (!logEntry) return null
+  const name = logEntry.bot_name ?? logEntry.bot_id ?? 'Удалена'
+  return { name: `${name} (удал.)`, botKind: null, fromLog: true }
 }
 
 export function PositionsTable({ accountId, positions, onSelect, loading, tickerPrices }: Props) {
@@ -41,11 +72,15 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
   const [creatingFor, setCreatingFor] = useState<string | null>(null)
   const [flashMsg, setFlashMsg] = useState<{ text: string; ok: boolean } | null>(null)
   const [strategies, setStrategies] = useState<Strategy[]>([])
+  const [sourceLog, setSourceLog] = useState<SourceLogEntry[]>([])
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!accountId) return
     listStrategies().then(setStrategies).catch(() => {})
+    apiClient.get<SourceLogEntry[]>('/positions/source-log')
+      .then(r => setSourceLog(Array.isArray(r.data) ? r.data : []))
+      .catch(() => {})
   }, [accountId])
 
   useEffect(() => {
@@ -235,7 +270,7 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
               ? (pos.side === 'Buy' ? (mark - entry) : (entry - mark)) * size
               : parseFloat(pos.unrealisedPnl)
             const pnlPct = entry > 0 && size > 0 ? (pnl / (size * entry)) * 100 : 0
-            const owner = getPositionOwner(pos, strategies, accountId)
+            const owner = getPositionOwner(pos, strategies, accountId, sourceLog)
             const ownerMeta = owner?.botKind ? getBotKindMeta(owner.botKind) : null
             return (
               <tr

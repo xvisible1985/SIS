@@ -18,7 +18,7 @@ import (
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	ctx := context.Background()
-	pool, err := db.Connect(ctx, "postgres://sis:sis_secret@localhost:5432/sis")
+	pool, err := db.Connect(ctx, "postgres://sis:sis_secret@localhost:6432/sis")
 	if err != nil {
 		t.Skipf("timescaledb unavailable: %v", err)
 	}
@@ -34,7 +34,7 @@ func newTestServer(t *testing.T) *Server {
 		t.Skipf("redis unavailable: %v", err)
 	}
 	t.Cleanup(func() { rdb.Close() })
-	return NewServer(ctx, pool, rdb, "test-secret", "0000000000000000000000000000000000000000000000000000000000000000", "bot-test-secret", "", map[string]bool{}, nil, nil)
+	return NewServer(ctx, pool, rdb, "test-secret", "0000000000000000000000000000000000000000000000000000000000000000", "bot-test-secret", "", map[string]bool{}, nil)
 }
 
 func TestRegister_Success(t *testing.T) {

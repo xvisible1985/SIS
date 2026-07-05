@@ -611,9 +611,11 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         const levelLabel = label || (isBuy ? 'Buy' : 'Sell')
         // Matrix slot entries (L(N) label): merge fills of the same slot into one line.
         const isMatrixSlot = /^L\(-?\d+\)$/.test(label)
-        // For matrix slots: only include fills from levels that are currently 'filled'.
-        // Filters out: old fills from SL'd levels, doubled volume from re-entry merging.
         if (isMatrixSlot) {
+          // When strategyLevels is loaded, matrix fill lines are rendered directly from
+          // strategyLevels below — skip them here to avoid duplicates and cycle mismatches.
+          if (strategyLevels && strategyLevels.length > 0) continue
+          // Fallback when strategyLevels not yet loaded: filter by filledLevelIdxs.
           const linkMatch = (e.orderLinkId ?? '').match(/^(?:SIS_STR|STR)-[a-f0-9]+-\d+-(\d+)/)
           const execLevelIdx = linkMatch ? parseInt(linkMatch[1]) : null
           if (execLevelIdx === null || !filledLevelIdxs.has(execLevelIdx)) continue
@@ -640,6 +642,29 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         priceLineTitlesRef.current.push({ price: avgPrice, color, text: gText, filled: true })
         priceLines.current.push(series.createPriceLine({
           price: avgPrice,
+          color,
+          lineWidth: 1,
+          lineStyle: 0,
+          axisLabelVisible: false,
+          title: '',
+        }))
+      }
+
+      // Matrix fills: render directly from strategyLevels so stripes always reflect
+      // the current cycle regardless of activeCycles / historicalExecs / reprice history.
+      for (const l of (strategyLevels ?? [])) {
+        if (l.status !== 'filled' || l.slot == null || !l.filled_price || l.filled_price <= 0) continue
+        const isBuy = l.side === 'Buy'
+        const color = isBuy ? '#059669' : '#dc2626'
+        const pct = currentPrice > 0 ? ` ${pctFromPrice(l.filled_price, currentPrice, isBuy)}` : ''
+        priceLineTitlesRef.current.push({
+          price: l.filled_price,
+          color,
+          text: `L(${l.slot}) ${l.size_usdt.toFixed(0)}$${pct}`,
+          filled: true,
+        })
+        priceLines.current.push(series.createPriceLine({
+          price: l.filled_price,
           color,
           lineWidth: 1,
           lineStyle: 0,

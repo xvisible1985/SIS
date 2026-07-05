@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import type { Position } from '../../types'
 
 export const TAKER_FEE = 0.00055 // Bybit linear taker fee
@@ -27,8 +28,8 @@ export function ClosePositionModal({ confirm, onConfirm, onCancel, closing }: {
   const pnl = parseFloat(pos.unrealisedPnl)
   const isLong = pos.side === 'Buy'
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onCancel}>
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60" onClick={onCancel}>
       <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl w-80 p-5" onClick={e => e.stopPropagation()}>
         <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-4">Закрыть позицию</h3>
 
@@ -88,6 +89,7 @@ export function ClosePositionModal({ confirm, onConfirm, onCancel, closing }: {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

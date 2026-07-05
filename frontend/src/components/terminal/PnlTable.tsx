@@ -96,7 +96,7 @@ export function PnlTable({ accountId }: Props) {
                   const fee = calcFee(item)
                   return (
                     <tr key={i} className="border-b border-gray-200 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-800/40">
-                      <td className="px-3 py-2 text-gray-500 dark:text-gray-400 whitespace-nowrap">{formatTime(item.createdTime)}</td>
+                      <td className="px-3 py-2 text-gray-500 dark:text-gray-400 whitespace-nowrap">{formatTime(item.updatedTime)}</td>
                       <td className="px-3 py-2 font-mono font-medium text-gray-900 dark:text-white">{item.symbol}</td>
                       <td className="px-3 py-2">
                         <span className={`text-[10px] px-1.5 py-0.5 rounded ${isLong ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>

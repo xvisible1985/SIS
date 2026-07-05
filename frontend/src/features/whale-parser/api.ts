@@ -45,3 +45,8 @@ export async function simulateWhale(params: {
   const res = await apiClient.post<SimulateResult>('/admin/whale/simulate', params)
   return res.data
 }
+
+export async function getWhaleExchangeSymbols(): Promise<Record<string, string[]>> {
+  const res = await apiClient.get<Record<string, string[]>>('/admin/whale/exchange-symbols')
+  return res.data
+}

@@ -115,3 +115,12 @@ export async function getHedgeSession(strategyId: string): Promise<HedgeSession 
     return null
   }
 }
+
+export async function getStrategyCumulativePnl(strategyId: string): Promise<number | null> {
+  try {
+    const res = await apiClient.get<{ cumulative_pnl: number }>(`/strategies/${strategyId}/cumulative-pnl`)
+    return res.data.cumulative_pnl
+  } catch {
+    return null
+  }
+}

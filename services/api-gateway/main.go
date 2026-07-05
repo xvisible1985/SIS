@@ -90,8 +90,22 @@ func main() {
 		}
 	}
 
-	// Start strategy engine
-	go s.engine.Start(ctx)
+	// Trading-engine leadership: ensure only one api-gateway instance runs the
+	// order-managing engines (strategy/bot/hedge). Prevents a second instance
+	// (accidental double-start, overlapping deploy) from double-managing accounts
+	// and placing duplicate orders on the exchange. See leader.go for the design.
+	leader := NewTradingLeader(rdb)
+	isTradingLeader := leader.Acquire(ctx)
+	if isTradingLeader {
+		go leader.RenewLoop(ctx)
+	} else {
+		log.Printf("WARNING: another api-gateway instance holds trading leadership — order-managing engines (strategy/bot/hedge) will NOT start on this instance")
+	}
+
+	// Start strategy engine (order-managing — leader only)
+	if isTradingLeader {
+		go s.engine.Start(ctx)
+	}
 
 	// Start coin icon cache refresher
 	s.coinIcons.StartRefresher(ctx)
@@ -107,11 +121,11 @@ func main() {
 	// Start max-leverage DB refresher (every 10 min, covers all active strategy symbols)
 	RunLeverageRefresher(ctx, pool)
 
-	// Start bot automation engine
-	go s.RunBotEngine(ctx)
-
-	// Start hedge bot automation engine
-	go s.runHedgeEngine(ctx)
+	// Start bot + hedge automation engines (order-managing — leader only)
+	if isTradingLeader {
+		go s.RunBotEngine(ctx)
+		go s.runHedgeEngine(ctx)
+	}
 
 	// Start Telegram notification polling
 	go s.startTgNotifier(ctx)
@@ -141,9 +155,10 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	// Auth routes — no JWT required
-	r.Post("/auth/register", s.Register)
-	r.Post("/auth/login", s.Login)
+	// Auth routes — no JWT required. Rate-limited per client IP to blunt
+	// credential brute-force and account enumeration.
+	r.With(s.rateLimitAuth("register", registerRateLimit, registerRateWindow)).Post("/auth/register", s.Register)
+	r.With(s.rateLimitAuth("login", loginRateLimit, loginRateWindow)).Post("/auth/login", s.Login)
 	r.Post("/auth/telegram-callback", s.TelegramLoginCallback)
 
 	// Bot-to-gateway internal routes — authenticated via TELEGRAM_BOT_SECRET
@@ -215,6 +230,7 @@ func main() {
 		// Strategy state and events
 		r.Get("/strategies/{id}/state", s.GetStrategyState)
 		r.Get("/strategies/{id}/hedge-session", s.GetHedgeSession)
+		r.Get("/strategies/{id}/cumulative-pnl", s.GetStrategyCumulativePnl)
 		r.Get("/strategies/{id}/cycle-audit", s.GetCycleAudit)
 		r.Post("/strategies/{id}/cycle-restart", s.RestartCycle)
 		r.Post("/strategies/{id}/dismiss-alert", s.DismissManualAlert)
@@ -272,6 +288,9 @@ func main() {
 		r.Post("/bots/{id}/blacklist-add", s.AddBotBlacklist)
 		r.Post("/bots/signal-scan", s.ScanSignals)
 
+		// Bot presets (public read)
+		r.Get("/bot-presets", s.ListBotPresets)
+
 			// Dashboard
 			r.Get("/dashboard", s.GetDashboard)
 
@@ -301,6 +320,13 @@ func main() {
 			r.Post("/admin/bots/{id}/reject",  s.RejectBotPublication)
 			r.Post("/admin/bots/{id}/publish-to-catalog", s.PublishBotToCatalog)
 			r.Delete("/admin/bots/{id}", s.DeleteAdminBot)
+			// Admin: bot presets management
+			r.Get("/admin/bot-presets", s.ListAdminBotPresets)
+			r.Post("/admin/bot-presets", s.CreateBotPreset)
+			r.Patch("/admin/bot-presets/{id}", s.PatchBotPreset)
+			r.Delete("/admin/bot-presets/{id}", s.DeleteBotPreset)
+			r.Post("/admin/bot-presets/{id}/bots", s.AddBotToPreset)
+			r.Delete("/admin/bot-presets/{id}/bots/{entryId}", s.RemoveBotFromPreset)
 			// Admin: signal and indicator types management
 			r.Get("/admin/signal-types", s.ListSignalTypes)
 			r.Patch("/admin/signal-types/{id}", s.ToggleSignalType)
@@ -347,6 +373,7 @@ func main() {
 			r.Delete("/admin/whale/addresses/{id}", s.DeleteWhaleAddress)
 			r.Get("/admin/whale/events", s.ListWhaleEvents)
 			r.Get("/admin/whale/state", s.GetWhaleState)
+			r.Get("/admin/whale/exchange-symbols", s.GetWhaleExchangeSymbols)
 			r.Post("/admin/whale/simulate", s.SimulateWhale)
 
 				// Admin: sign Bybit trading agreement (disabled — requires master API key permissions)

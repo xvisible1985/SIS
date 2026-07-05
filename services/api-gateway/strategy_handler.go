@@ -354,6 +354,17 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "account_id and symbol are required")
 		return
 	}
+
+	// Verify the account belongs to the current user.
+	var accountOwned bool
+	if err := s.pool.QueryRow(r.Context(),
+		`SELECT true FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
+		req.AccountID, userID,
+	).Scan(&accountOwned); err != nil || !accountOwned {
+		writeError(w, http.StatusForbidden, "account not found")
+		return
+	}
+
 	req.applyDefaults()
 
 	// Prevent duplicate active/finishing strategies for same account+symbol+direction.
@@ -706,7 +717,7 @@ func (s *Server) GetStrategyEvents(w http.ResponseWriter, r *http.Request) {
 	queryArgs := append([]interface{}{}, args...)
 	queryArgs = append(queryArgs, limit, offset)
 	rows, err := s.pool.Query(r.Context(),
-		fmt.Sprintf(`SELECT message, level, created_at
+		fmt.Sprintf(`SELECT message, level, source, created_at
 			FROM strategy_events
 			WHERE %s
 			ORDER BY created_at DESC LIMIT $%d OFFSET $%d`, whereSQL, argIdx+1, argIdx+2),
@@ -721,12 +732,13 @@ func (s *Server) GetStrategyEvents(w http.ResponseWriter, r *http.Request) {
 	type eventRow struct {
 		Message   string    `json:"message"`
 		Level     string    `json:"level"`
+		Source    *string   `json:"source"`
 		CreatedAt time.Time `json:"created_at"`
 	}
 	var events []eventRow
 	for rows.Next() {
 		var e eventRow
-		if rows.Scan(&e.Message, &e.Level, &e.CreatedAt) == nil {
+		if rows.Scan(&e.Message, &e.Level, &e.Source, &e.CreatedAt) == nil {
 			events = append(events, e)
 		}
 	}
@@ -734,6 +746,70 @@ func (s *Server) GetStrategyEvents(w http.ResponseWriter, r *http.Request) {
 		events = []eventRow{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"total": total, "events": events})
+}
+
+// GetRecentEvents returns strategy events across ALL of the user's strategies
+// for the last N minutes (default 30). Each row includes strategy symbol and name
+// so the frontend can group/filter without extra requests.
+// GET /events/recent?minutes=30&level=warn
+func (s *Server) GetRecentEvents(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+
+	minutes := 30
+	if v, _ := strconv.Atoi(r.URL.Query().Get("minutes")); v > 0 && v <= 1440 {
+		minutes = v
+	}
+	levelFilter := r.URL.Query().Get("level")
+
+	args := []interface{}{userID, minutes}
+	levelClause := ""
+	if levelFilter != "" && levelFilter != "all" {
+		args = append(args, levelFilter)
+		levelClause = fmt.Sprintf("AND se.level = $%d", len(args))
+	}
+
+	rows, err := s.pool.Query(r.Context(), fmt.Sprintf(`
+		SELECT se.created_at, se.level, se.source, se.message,
+		       s.symbol, s.strategy_type,
+		       COALESCE(b.name, s.id::text) AS strategy_name
+		FROM strategy_events se
+		JOIN strategies s ON s.id = se.strategy_id
+		LEFT JOIN bots b ON b.id = s.bot_id
+		WHERE s.owner_id = $1
+		  AND se.created_at >= NOW() - ($2 * INTERVAL '1 minute')
+		  %s
+		ORDER BY se.created_at DESC
+		LIMIT 500`, levelClause),
+		args...,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type recentEvent struct {
+		CreatedAt    time.Time `json:"created_at"`
+		Level        string    `json:"level"`
+		Source       *string   `json:"source"`
+		Message      string    `json:"message"`
+		Symbol       string    `json:"symbol"`
+		StrategyType string    `json:"strategy_type"`
+		StrategyName string    `json:"strategy_name"`
+	}
+
+	var events []recentEvent
+	for rows.Next() {
+		var e recentEvent
+		if err := rows.Scan(&e.CreatedAt, &e.Level, &e.Source, &e.Message,
+			&e.Symbol, &e.StrategyType, &e.StrategyName); err == nil {
+			events = append(events, e)
+		}
+	}
+	if events == nil {
+		events = []recentEvent{}
+	}
+	writeJSON(w, http.StatusOK, events)
 }
 
 // GetStrategyState returns the active cycle's levels plus computed volume and avg entry.
@@ -997,7 +1073,7 @@ func (s *Server) DetachFromBot(w http.ResponseWriter, r *http.Request) {
 		).Scan(&newID); err == nil {
 			go s.engine.Notify(context.Background(), newID)
 			s.pool.Exec(r.Context(), //nolint:errcheck
-				`INSERT INTO strategy_events (strategy_id, message, level) VALUES ($1, $2, 'info')`,
+				`INSERT INTO strategy_events (strategy_id, message, level, source) VALUES ($1, $2, 'info', 'api')`,
 				newID, fmt.Sprintf("Создана в режиме adopt — поглощение позиции @ %s", adoptEntry))
 			if botID != nil {
 				s.logBotEvent(r.Context(), *botID,
@@ -1051,7 +1127,7 @@ func (s *Server) DetachFromBot(w http.ResponseWriter, r *http.Request) {
 			s.logBotEvent(r.Context(), *botID, closeMsg, "info", "user")
 		}
 		s.pool.Exec(r.Context(), //nolint:errcheck
-			`INSERT INTO strategy_events (strategy_id, message, level) VALUES ($1, $2, 'info')`,
+			`INSERT INTO strategy_events (strategy_id, message, level, source) VALUES ($1, $2, 'info', 'api')`,
 			id, "Откреплена от бота (close) — позиция закрыта рыночным ордером")
 
 	default: // "leave"
@@ -1068,7 +1144,7 @@ func (s *Server) DetachFromBot(w http.ResponseWriter, r *http.Request) {
 				"info", "user")
 		}
 		s.pool.Exec(r.Context(), //nolint:errcheck
-			`INSERT INTO strategy_events (strategy_id, message, level) VALUES ($1, $2, 'info')`,
+			`INSERT INTO strategy_events (strategy_id, message, level, source) VALUES ($1, $2, 'info', 'api')`,
 			id, "Откреплена от бота (leave) — продолжает работу независимо")
 		go s.engine.Notify(context.Background(), id)
 	}
@@ -1344,6 +1420,14 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 		CumulativeHedgePnl float64    `json:"cumulative_hedge_pnl"`
 	}
 
+	// The cumulative counter must include every closed trade (TP, SL — both
+	// full-cycle via trade_history and per-level matrix SL via
+	// strategy_levels.realized_pnl — and manual closes, which land in
+	// trade_history through the same closeCycle() path) for the requested
+	// leg (main or hedge — whichever stratID refers to), and it must reset
+	// ONLY when a genuine paired-close previously happened for this
+	// hedge_strategy_id — not on deactivation/trailing-profit/position_gone
+	// stops, which restart the pair without zeroing the counter.
 	var resp sessionResp
 	err := s.pool.QueryRow(r.Context(), `
 		SELECT
@@ -1356,7 +1440,32 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 			hs.gap_at_start,
 			hs.started_at,
 			hs.ended_at,
-			0::float8
+			(
+				WITH floor_time AS (
+					SELECT COALESCE(MAX(ended_at), '-infinity'::timestamptz) AS t
+					FROM hedge_sessions
+					WHERE hedge_strategy_id = hs.hedge_strategy_id
+					  AND end_reason = 'paired_close'
+				),
+				leg AS (
+					SELECT CASE WHEN hs.main_strategy_id = $1 THEN hs.main_strategy_id ELSE hs.hedge_strategy_id END AS id
+				)
+				SELECT
+					COALESCE((
+						SELECT SUM(th.net_pnl)
+						FROM trade_history th, floor_time, leg
+						WHERE th.strategy_id = leg.id
+						  AND th.closed_at >= floor_time.t
+					), 0)
+					+
+					COALESCE((
+						SELECT SUM(sl.realized_pnl)
+						FROM strategy_levels sl, floor_time, leg
+						WHERE sl.strategy_id = leg.id
+						  AND sl.realized_pnl IS NOT NULL
+						  AND sl.sl_closed_at >= floor_time.t
+					), 0)
+			)::float8
 		FROM hedge_sessions hs
 		WHERE (hs.main_strategy_id = $1 OR hs.hedge_strategy_id = $1)
 		  AND hs.bot_id IN (SELECT id FROM bots WHERE owner_id = $2)
@@ -1374,5 +1483,104 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// GetStrategyCumulativePnl returns the total net PnL from trade_history for a strategy.
+// GET /strategies/{id}/cumulative-pnl
+func (s *Server) GetStrategyCumulativePnl(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	stratID := chi.URLParam(r, "id")
+
+	var pnl float64
+	err := s.pool.QueryRow(r.Context(), `
+		SELECT
+		    COALESCE(
+		        (SELECT SUM(th.net_pnl)
+		         FROM trade_history th
+		         JOIN strategies st ON st.id = th.strategy_id
+		         WHERE th.strategy_id = $1 AND st.owner_id = $2),
+		        0
+		    )
+		    +
+		    COALESCE(
+		        (SELECT SUM(sl.realized_pnl)
+		         FROM strategy_levels sl
+		         JOIN strategy_cycles sc ON sc.id = sl.cycle_id
+		         JOIN strategies st ON st.id = sc.strategy_id
+		         WHERE st.id = $1 AND st.owner_id = $2
+		           AND sl.realized_pnl IS NOT NULL),
+		        0
+		    )`,
+		stratID, userID,
+	).Scan(&pnl)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]float64{"cumulative_pnl": pnl})
+}
+
+// GetPositionSourceLog returns the most recent position_source_log entry per
+// (symbol, direction) for the requesting user's accounts.
+// Used by the frontend to show bot/strategy origin for positions that have no
+// live strategy (e.g. after the strategy was deleted).
+func (s *Server) GetPositionSourceLog(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+
+	type LogEntry struct {
+		Symbol     string     `json:"symbol"`
+		Direction  string     `json:"direction"`
+		AccountID  string     `json:"account_id"`
+		StrategyID *string    `json:"strategy_id"`
+		BotID      *string    `json:"bot_id"`
+		BotName    *string    `json:"bot_name"`
+		CycleID    string     `json:"cycle_id"`
+		CycleNum   int        `json:"cycle_num"`
+		StartPrice *float64   `json:"start_price"`
+		CreatedAt  time.Time  `json:"created_at"`
+	}
+
+	// Latest entry per (account_id, symbol, direction) across all user's accounts.
+	rows, err := s.pool.Query(r.Context(), `
+		SELECT DISTINCT ON (psl.account_id, psl.symbol, psl.direction)
+			psl.symbol,
+			psl.direction,
+			psl.account_id::text,
+			psl.strategy_id::text,
+			psl.bot_id::text,
+			psl.bot_name,
+			psl.cycle_id::text,
+			psl.cycle_num,
+			psl.start_price,
+			psl.created_at
+		FROM position_source_log psl
+		JOIN exchange_accounts ea ON ea.id = psl.account_id
+		WHERE ea.owner_id = $1
+		ORDER BY psl.account_id, psl.symbol, psl.direction, psl.created_at DESC`,
+		userID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	var results []LogEntry
+	for rows.Next() {
+		var e LogEntry
+		if err := rows.Scan(
+			&e.Symbol, &e.Direction, &e.AccountID,
+			&e.StrategyID, &e.BotID, &e.BotName,
+			&e.CycleID, &e.CycleNum, &e.StartPrice, &e.CreatedAt,
+		); err != nil {
+			continue
+		}
+		results = append(results, e)
+	}
+	if results == nil {
+		results = []LogEntry{}
+	}
+	writeJSON(w, http.StatusOK, results)
 }
 

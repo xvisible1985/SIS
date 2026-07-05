@@ -310,10 +310,14 @@ export const SIGNALS: SignalDef<any>[] = [
   {
     id: 'whale', abbr: 'WH', name: 'Whale Tracker', cat: 'fundamental', state: 'buy' as const,
     desc: 'Сигнал по активности крупных кошельков на ETH/Tron',
-    about: 'Отслеживает депозиты крупных кошельков на горячие кошельки Bybit. Направление определяется по 30-дневному профилю кошелька: если кит накапливал токен (больше получил чем отправил) — Buy, если распределял — Sell. Порог score: ±0.3. Сигнал обновляется каждые 30 секунд через Redis. Не требует свечей — работает на уровне символа.',
-    defaults: {},
-    params: [],
-    formula: () => <>{name('Whale')} {op('→')} {name('buy')} {op('/')} {name('sell')}</>,
+    about: 'Сигнал активируется когда N и более различных кошельков совершают однонаправленные транзакции по одному символу в рамках заданного временного окна. Кошелёк задепозитил токен на Bybit — Buy; вывел — Sell. Порог USDT фильтрует мелкие транзакции. Бот проверяет сигнал каждую минуту.',
+    defaults: { threshold_usdt: 50000, min_wallets: 3, ttl_hours: 1 },
+    params: [
+      { kind: 'number', key: 'threshold_usdt', label: 'Порог USDT',      hint: 'Минимальный размер транзакции в USD. События ниже порога игнорируются.', min: 1000, step: 1000 },
+      { kind: 'number', key: 'min_wallets',    label: 'Мин. кошельков',  hint: 'Сколько разных кошельков должны дать одинаковый сигнал по символу в рамках окна.', min: 1, step: 1, decimals: 0 },
+      { kind: 'number', key: 'ttl_hours',      label: 'Окно (ч)',        hint: 'Временное окно назад от текущего момента. События старше окна не учитываются.', min: 0.5, step: 0.5, decimals: 1 },
+    ],
+    formula: (p: any) => <>{name('Whale')} {op('≥')} {num(p.min_wallets)} {op('кошельков за')} {num(`${p.ttl_hours}ч`)} {op('≥')} {num(`$${((p.threshold_usdt ?? 0) / 1000).toFixed(0)}K`)}</>,
     compute: (): SignalState => 'neutral',
   },
   {

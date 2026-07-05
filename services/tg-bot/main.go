@@ -13,6 +13,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
+	"sis/pkg/heartbeat"
 )
 
 // Config holds all configuration for the bot.
@@ -65,6 +66,8 @@ func main() {
 
 	// Gateway client
 	gw := NewGatewayClient(cfg.GatewayURL, cfg.BotSecret)
+
+	go heartbeat.Start(ctx, rdb, "tg-bot")
 
 	// Start notification subscriber
 	go startNotifier(ctx, bot, rdb)

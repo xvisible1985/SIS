@@ -16,7 +16,7 @@ type Props = {
 
 /** Секция «Мои боты» — заголовок + сетка карточек или empty state */
 export const MyBotsSection = forwardRef<HTMLElement, Props>(function MyBotsSection(
-  { bots, onCreate, onExport, onToggle, onEdit, onDelete, onDropBot },
+  { bots, onCreate, onExport, onToggle, onEdit, onDelete, onRequestApproval, onDropBot },
   ref,
 ) {
   const [dragOver, setDragOver] = useState(false);
@@ -81,6 +81,7 @@ export const MyBotsSection = forwardRef<HTMLElement, Props>(function MyBotsSecti
               onToggle={(next: RunStatus | 'paused') => onToggle(b.id, next as 'running' | 'paused')}
               onEdit={() => onEdit(b.id)}
               onDelete={() => onDelete(b.id)}
+              onRequestApproval={() => onRequestApproval(b.id)}
             />
           ))}
         </div>

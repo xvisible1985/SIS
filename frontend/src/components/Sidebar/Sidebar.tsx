@@ -17,14 +17,16 @@ import {
   History,
   Wallet,
   BookOpen,
+  Zap,
 } from 'lucide-react';
 import { NovaMark } from './NovaMark';
 import { Sparkline } from './Sparkline';
 import type { SidebarProps } from './Sidebar.types';
 
 const NAV = [
-  { to: '/accounts',  label: 'Api keys',   icon: Users,    badge: 'count' as const, key: 'accounts' },
-  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { to: '/accounts',     label: 'Api keys',       icon: Users,          badge: 'count' as const, key: 'accounts' },
+  { to: '/dashboard',    label: 'Dashboard',      icon: LayoutDashboard },
+  { to: '/quick-start',  label: 'Быстрый старт',  icon: Zap },
   { to: '/terminal',  label: 'Terminal',  icon: Terminal, badge: 'live' as const },
   { to: '/signals',   label: 'Сигналы',   icon: BarChart2 },
   { to: '/bots',           label: 'Боты',           icon: Bot },

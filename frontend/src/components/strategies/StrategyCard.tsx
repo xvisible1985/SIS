@@ -119,7 +119,7 @@ const STATUS_ITEMS = [
 
 function StatusPicker({ value, acting, onChange, onInteract }: { value: StratStatus; acting: boolean; onChange: (v: StratStatus) => void; onInteract?: () => void }) {
   const [open, setOpen] = useState(false)
-  const [menuPos, setMenuPos] = useState({ top: 0, right: 0 })
+  const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; right: number }>({ top: 0, right: 0 })
   const wrapRef = useRef<HTMLDivElement>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -140,7 +140,12 @@ function StatusPicker({ value, acting, onChange, onInteract }: { value: StratSta
   const handleToggle = () => {
     if (!open && btnRef.current) {
       const r = btnRef.current.getBoundingClientRect()
-      setMenuPos({ top: r.bottom + 4, right: window.innerWidth - r.right })
+      const right = window.innerWidth - r.right
+      if (window.innerHeight - r.bottom < 130) {
+        setMenuPos({ bottom: window.innerHeight - r.top + 4, right })
+      } else {
+        setMenuPos({ top: r.bottom + 4, right })
+      }
     }
     setOpen(o => !o)
   }
@@ -165,6 +170,7 @@ function StatusPicker({ value, acting, onChange, onInteract }: { value: StratSta
           className="fixed z-[9999] min-w-[156px] rounded-[9px] p-1 flex flex-col gap-px"
           style={{
             top: menuPos.top,
+            bottom: menuPos.bottom,
             right: menuPos.right,
             background: '#181b28',
             border: '1px solid rgba(255,255,255,.22)',
@@ -205,7 +211,7 @@ function BotBadge({ botName, botId, symbol, strategyId, onDetached, onInteract, 
   isHedge?: boolean
 }) {
   const [open, setOpen] = useState(false)
-  const [menuPos, setMenuPos] = useState({ top: 0, right: 0 })
+  const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; right: number }>({ top: 0, right: 0 })
   const [acting, setActing] = useState(false)
   // 'menu' | 'confirm-blacklist' — step after detach
   const [step, setStep] = useState<'menu' | 'confirm-blacklist'>('menu')
@@ -228,7 +234,12 @@ function BotBadge({ botName, botId, symbol, strategyId, onDetached, onInteract, 
   const handleToggle = () => {
     if (!open && btnRef.current) {
       const r = btnRef.current.getBoundingClientRect()
-      setMenuPos({ top: r.bottom + 4, right: window.innerWidth - r.right })
+      const right = window.innerWidth - r.right
+      if (window.innerHeight - r.bottom < 160) {
+        setMenuPos({ bottom: window.innerHeight - r.top + 4, right })
+      } else {
+        setMenuPos({ top: r.bottom + 4, right })
+      }
     }
     setOpen(o => !o)
   }
@@ -287,6 +298,7 @@ function BotBadge({ botName, botId, symbol, strategyId, onDetached, onInteract, 
           className="fixed z-[9999] rounded-[9px] p-1"
           style={{
             top: menuPos.top,
+            bottom: menuPos.bottom,
             right: menuPos.right,
             minWidth: step === 'confirm-blacklist' ? 220 : 156,
             background: '#181b28',
@@ -395,7 +407,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
   const [auditOpen, setAuditOpen] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
-  const [menuPos, setMenuPos] = useState({ top: 0, right: 0 })
+  const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; right: number }>({ top: 0, right: 0 })
   const menuBtnRef = useRef<HTMLButtonElement>(null)
   const menuDropRef = useRef<HTMLDivElement>(null)
 
@@ -639,7 +651,12 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
     if (!bulkMode) onSelect?.(s)
     if (!menuOpen && menuBtnRef.current) {
       const r = menuBtnRef.current.getBoundingClientRect()
-      setMenuPos({ top: r.bottom + 4, right: window.innerWidth - r.right })
+      const right = window.innerWidth - r.right
+      if (window.innerHeight - r.bottom < 260) {
+        setMenuPos({ bottom: window.innerHeight - r.top + 4, right })
+      } else {
+        setMenuPos({ top: r.bottom + 4, right })
+      }
     }
     setMenuOpen(o => !o)
   }
@@ -843,6 +860,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
               className="fixed z-[9999] min-w-[164px] rounded-[9px] p-1 flex flex-col gap-px"
               style={{
                 top: menuPos.top,
+                bottom: menuPos.bottom,
                 right: menuPos.right,
                 background: '#181b28',
                 border: '1px solid rgba(255,255,255,.22)',

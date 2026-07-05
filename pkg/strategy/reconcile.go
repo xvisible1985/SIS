@@ -108,6 +108,31 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 	}
 	rows.Close()
 
+	// --- 1b. Query placed matrix entry levels ---
+	// Matrix has its own fill/repair semantics, so it is queried and handled
+	// separately from grid (see block 6b). This closes the gap where a matrix
+	// entry order fills on the exchange but the WS fill event is lost — grid
+	// self-heals via block 6, matrix previously had no equivalent.
+	mRows, mErr := ar.pool.Query(ctx,
+		`SELECT sl.id, sl.exchange_order_id, sl.strategy_id, s.symbol, s.category
+		 FROM strategy_levels sl
+		 JOIN strategies s ON s.id = sl.strategy_id
+		 WHERE s.account_id = $1 AND s.strategy_type = 'matrix' AND sl.status = 'placed'`,
+		ar.accountID,
+	)
+	var matrixDbLevels []placedLevel
+	if mErr != nil {
+		log.Printf("strategy reconcile %s: query matrix levels: %v", ar.accountID, mErr)
+	} else {
+		for mRows.Next() {
+			var p placedLevel
+			if err := mRows.Scan(&p.levelID, &p.orderID, &p.strategyID, &p.symbol, &p.category); err == nil {
+				matrixDbLevels = append(matrixDbLevels, p)
+			}
+		}
+		mRows.Close()
+	}
+
 	// --- 2. Query active Grid cycles with TP/SL order IDs ---
 	type cycleTPSL struct {
 		cycleID, strategyID, tpOrderID, slOrderID string
@@ -133,10 +158,12 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 	}
 	cycleRows.Close()
 
-	// --- 3. Query ALL Grid strategy IDs (any status) for orphan scan ---
+	// --- 3. Query ALL strategy IDs (any status, any type) for orphan scan ---
 	// This covers stopped strategies whose orders might still be on the exchange.
+	// Matrix strategies use the same SIS_STR-{id8}-{cycleNum}-... linkId format and
+	// must be included so their active orders are not misidentified as orphans.
 	allStratRows, err := ar.pool.Query(ctx,
-		`SELECT id FROM strategies WHERE account_id=$1 AND strategy_type='grid'`,
+		`SELECT id FROM strategies WHERE account_id=$1`,
 		ar.accountID,
 	)
 	if err != nil {
@@ -281,6 +308,81 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 			}
 			sr.placeNextLevels(ctx) //nolint:errcheck
 			sr.mu.Unlock()
+		})
+	}
+
+	// --- 6b. Matrix entry levels: placed in DB but missing from exchange ---
+	// Mirror of block 6 for matrix strategies (kept separate — matrix fill/repair
+	// semantics differ from grid). If a placed matrix entry order is no longer on
+	// the exchange, first check whether it was actually Filled (filled orders also
+	// disappear from open orders): if so, record the fill through handleLevelFill,
+	// which routes matrix strategies to handleMatrixLevelFill. Otherwise reset the
+	// level to pending so matrixPriceTick / block 8b re-places it.
+	for _, p := range matrixDbLevels {
+		if live[p.orderID] {
+			continue
+		}
+		id8 := p.strategyID
+		if len(id8) > 8 {
+			id8 = id8[:8]
+		}
+		snap, ok := stratByID8[id8]
+		if !ok {
+			// No live runner — reset DB record; a future load will re-place.
+			log.Printf("strategy reconcile: matrix level %s order %s missing from exchange — resetting to pending (no runner)", p.levelID, p.orderID)
+			ar.pool.Exec(ctx, //nolint:errcheck
+				`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL, placed_at=NULL WHERE id=$1`,
+				p.levelID,
+			)
+			ar.UnregisterOrder(p.orderID)
+			continue
+		}
+
+		// Was it actually Filled? Filled orders vanish from open orders like cancelled ones.
+		if hist, _, err := trader.FetchOrderById(ctx, ar.creds, p.category, p.symbol, p.orderID); err == nil && hist.OrderStatus == "Filled" {
+			filledPrice, _ := strconv.ParseFloat(hist.AvgPrice, 64)
+			filledQty, _ := strconv.ParseFloat(hist.CumExecQty, 64)
+			log.Printf("strategy reconcile: matrix level %s order %s was Filled @ %.4f qty=%.6f — recording fill", p.levelID, p.orderID, filledPrice, filledQty)
+			levelID := p.levelID
+			fp, fq := filledPrice, filledQty
+			snap.sr.submit(func(ctx context.Context) {
+				snap.sr.handleLevelFill(ctx, levelID, fp, fq)
+			})
+			continue
+		}
+
+		// Missing but not filled → reset to pending; block 8b will re-place it.
+		sr := snap.sr
+		p := p // capture for closure
+		sr.submit(func(ctx context.Context) {
+			sr.mu.Lock()
+			defer sr.mu.Unlock()
+			// Guard: skip if the level's order changed since our DB snapshot (rebuild race).
+			stale := false
+			for i := range sr.levels {
+				if sr.levels[i].ID == p.levelID {
+					if sr.levels[i].ExchangeOrderID != p.orderID {
+						stale = true
+					}
+					break
+				}
+			}
+			if stale {
+				return
+			}
+			log.Printf("strategy reconcile: matrix level %s order %s missing from exchange — resetting to pending", p.levelID, p.orderID)
+			ar.pool.Exec(ctx, //nolint:errcheck
+				`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL, placed_at=NULL WHERE id=$1`,
+				p.levelID,
+			)
+			ar.UnregisterOrder(p.orderID)
+			for i := range sr.levels {
+				if sr.levels[i].ID == p.levelID {
+					sr.levels[i].Status = LevelPending
+					sr.levels[i].ExchangeOrderID = ""
+					break
+				}
+			}
 		})
 	}
 

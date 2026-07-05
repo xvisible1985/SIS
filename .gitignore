@@ -4,3 +4,8 @@ bin/
 vendor/
 .worktrees/
 frontend/tsconfig.tsbuildinfo
+
+# Agent scratch / logs (added before feature branch)
+.claude/
+.superpowers/
+*.log

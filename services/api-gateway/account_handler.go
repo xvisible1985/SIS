@@ -20,15 +20,15 @@ var usernameRe = regexp.MustCompile(`^[a-zA-Z0-9_]{3,30}$`)
 // GET /account/profile
 func (s *Server) GetProfile(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
-	var email, plan string
+	var email, plan, role string
 	var username, telegramUsername *string
 	var novabotBalance float64
 	err := s.pool.QueryRow(r.Context(),
-		`SELECT u.email, u.plan, u.username, tc.username, u.novabot_balance
+		`SELECT u.email, u.plan, u.username, tc.username, u.novabot_balance, u.role
 		 FROM users u
 		 LEFT JOIN telegram_connections tc ON tc.user_id = u.id
 		 WHERE u.id = $1`, userID,
-	).Scan(&email, &plan, &username, &telegramUsername, &novabotBalance)
+	).Scan(&email, &plan, &username, &telegramUsername, &novabotBalance, &role)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -39,6 +39,7 @@ func (s *Server) GetProfile(w http.ResponseWriter, r *http.Request) {
 		"plan":              plan,
 		"telegram_username": telegramUsername,
 		"novabot_balance":   novabotBalance,
+		"is_admin":          role == "admin" || s.adminEmails[email],
 	})
 }
 

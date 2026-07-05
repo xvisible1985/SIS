@@ -258,7 +258,7 @@ function formatVolume(v: string): string {
   return n.toFixed(2)
 }
 
-function BotTerminalCard({ bot, sc, onSymbolChange, onStop, onStart, onEdit, onArchive, onScan, onToggleAuto, hasConflict }: {
+function BotTerminalCard({ bot, sc, onSymbolChange, onStop, onStart, onEdit, onArchive, onScan, onToggleAuto, hasConflict, wrongAccount }: {
   bot: Bot
   sc: { signalCount: number; totalCount: number } | undefined
   onSymbolChange: (s: string) => void
@@ -269,6 +269,7 @@ function BotTerminalCard({ bot, sc, onSymbolChange, onStop, onStart, onEdit, onA
   onScan: () => void
   onToggleAuto: () => void
   hasConflict?: boolean
+  wrongAccount?: boolean
 }) {
   const [logOpen, setLogOpen] = useState(false)
   const running = bot.status === 'active'
@@ -354,6 +355,14 @@ function BotTerminalCard({ bot, sc, onSymbolChange, onStop, onStart, onEdit, onA
                 className="rounded-[3px] border border-orange-500/30 bg-orange-500/[.16] px-1.5 py-px text-[9px] font-bold text-orange-400 cursor-help"
               >
                 ⚡ конфликт
+              </span>
+            )}
+            {wrongAccount && (
+              <span
+                title="Бот привязан к другому аккаунту"
+                className="rounded-[3px] border border-slate-500/30 bg-slate-500/[.12] px-1.5 py-px text-[9px] font-bold text-slate-500 cursor-help"
+              >
+                др. аккаунт
               </span>
             )}
           </div>
@@ -485,6 +494,7 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
   const [editBotId, setEditBotId] = useState<string | null>(null)
   const [scanBot, setScanBot]     = useState<Bot | null>(null)
   const [hidden, setHidden] = useState<Set<string>>(loadHidden)
+  const [showHidden, setShowHidden] = useState(false)
 
   const conflictingBotIds = useMemo((): Set<string> => {
     // Only check bots that could actually compete (same account or unassigned)
@@ -509,11 +519,10 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
     return result
   }, [mine, selectedAccountId])
 
-  // Боты текущего аккаунта + непривязанные боты пользователя
-  const accountBots   = mine.filter(b => b.accountId === selectedAccountId)
   const unassignedBots = mine.filter(b => !b.accountId)
-  const allVisibleBots = [...accountBots, ...unassignedBots]
+  const allVisibleBots = mine
   const visibleBots    = allVisibleBots.filter(b => !hidden.has(b.id))
+  const hiddenBots     = allVisibleBots.filter(b => hidden.has(b.id))
   const runningCount   = visibleBots.filter(b => b.status === 'active').length
   const editBot        = editBotId ? allVisibleBots.find(b => b.id === editBotId) ?? null : null
 
@@ -555,6 +564,15 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
     })
   }
 
+  function unarchive(botId: string) {
+    setHidden(prev => {
+      const next = new Set(prev)
+      next.delete(botId)
+      saveHidden(next)
+      return next
+    })
+  }
+
   const visibleUnassigned = unassignedBots.filter(b => !hidden.has(b.id))
 
   return (
@@ -563,9 +581,17 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
         <span className="text-xs text-gray-500 dark:text-gray-400">
           {runningCount} активно · {visibleBots.length} всего
         </span>
-        <Link to="/bots" className="text-xs text-blue-400 hover:text-blue-300 transition-colors">
-          Все боты →
-        </Link>
+        <div className="flex items-center gap-2">
+          {hiddenBots.length > 0 && (
+            <button type="button" onClick={() => setShowHidden(v => !v)}
+              className={`text-xs transition-colors ${showHidden ? 'text-blue-400' : 'text-slate-600 hover:text-slate-400'}`}>
+              архив: {hiddenBots.length}
+            </button>
+          )}
+          <Link to="/bots" className="text-xs text-blue-400 hover:text-blue-300 transition-colors">
+            Все боты →
+          </Link>
+        </div>
       </div>
 
       {/* Баннер: есть непривязанные боты */}
@@ -611,8 +637,32 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
             onScan={() => setScanBot(bot)}
             onToggleAuto={() => action({ type: 'update', botId: bot.id, data: { autoMode: !bot.autoMode } })}
             hasConflict={conflictingBotIds.has(bot.id)}
+            wrongAccount={!!(bot.accountId && bot.accountId !== selectedAccountId)}
           />
         ))}
+        {showHidden && hiddenBots.length > 0 && (
+          <div className="mt-1 border-t border-white/[.05] pt-2">
+            <div className="px-1 mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-600">Архив</div>
+            {hiddenBots.map(bot => {
+              const km = getBotKindMeta(bot.strategyConfig.bot_kind)
+              const Icon = KIND_ICONS[bot.strategyConfig.bot_kind ?? 'signal']
+              return (
+                <div key={bot.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/[.03]">
+                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border"
+                    style={{ background: km.iconBg, borderColor: km.border, color: km.color }}>
+                    <Icon size={11} strokeWidth={2} />
+                  </div>
+                  <span className="flex-1 truncate text-[12px] text-slate-500">{bot.name}</span>
+                  <button type="button" onClick={() => unarchive(bot.id)}
+                    title="Восстановить из архива"
+                    className="shrink-0 text-[11px] text-slate-500 hover:text-blue-400 transition-colors px-2 py-0.5 rounded border border-white/[.06] hover:border-blue-400/30">
+                    ↩
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       {editBot && editBot.strategyConfig.bot_kind === 'hedge' && (
@@ -842,7 +892,14 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
     localStorage.setItem('t_sel', s.id)
     onSymbolChange(s.symbol)
     onStrategySelect?.(s)
-    setExpandedId(prev => (prev !== null && prev !== s.id ? null : prev))
+    setExpandedId(prev => {
+      if (prev === null || prev === s.id) return prev
+      if (prev.startsWith('pair-')) {
+        const found = renderItems.find(i => i.type === 'pair' && i.main.id === prev.slice(5))
+        if (found?.type === 'pair' && (found.main.id === s.id || found.hedge.id === s.id)) return prev
+      }
+      return null
+    })
     onPairTargetUpdate?.(null)
   }
 
@@ -858,10 +915,10 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
   })
 
   // Вычисляем hedge-флаги один раз для всего списка
-  // hedgeBotIds — только grid-хедж-боты (bot_kind=hedge, strategy_type≠matrix)
+  // hedgeBotIds — все хедж-боты (bot_kind=hedge), включая матричные (GoncharSAFE)
   // matrixBotIds — матричные боты определяются по strategy_type=matrix (bot_kind у них тоже 'hedge')
   const hedgeBotIds = useMemo(
-    () => new Set(hedgeBots.filter(b => b.strategyConfig.bot_kind === 'hedge' && b.strategyConfig.strategy_type !== 'matrix').map(b => b.id)),
+    () => new Set(hedgeBots.filter(b => b.strategyConfig.bot_kind === 'hedge').map(b => b.id)),
     [hedgeBots],
   )
 
@@ -1071,6 +1128,9 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
                   onChanged={load}
                   onSelect={handleSelect}
                   onPairTargetUpdate={onPairTargetUpdate}
+                  isOpen={expandedId === `pair-${item.main.id}`}
+                  onToggleOpen={() => setExpandedId(prev => prev === `pair-${item.main.id}` ? null : `pair-${item.main.id}`)}
+                  isMatrixPair={item.isMatrixPair}
                   onSimpleDetach={item.isMatrixPair ? async () => {
                     await detachFromBot(item.main.id)
                     await detachFromBot(item.hedge.id)

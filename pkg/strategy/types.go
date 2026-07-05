@@ -172,8 +172,9 @@ type GridLevel struct {
 	SLOrderID    string
 	SLPrice      float64
 	SLReplaced   bool
-	Slot         *int // nil = grid; matrix slot index: -N…0…+N
-	ForceVirtual bool // set at runtime when exchange rejected placement (e.g. 110007)
+	Slot         *int      // nil = grid; matrix slot index: -N…0…+N
+	ForceVirtual bool      // set at runtime when exchange rejected placement (e.g. 110007)
+	PlacedAt     time.Time // in-memory: when order was last placed (for interference detection)
 }
 
 // AdoptPositionData carries the exchange-position snapshot that the next matrix

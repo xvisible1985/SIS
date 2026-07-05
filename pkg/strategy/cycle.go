@@ -19,7 +19,7 @@ import (
 
 // StrategyRunner holds the runtime state of one strategy.
 type StrategyRunner struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	startMu  sync.Mutex // serializes loadOrStart and restartCycle to prevent duplicate placement
 	strategy Strategy
 	runner   *AccountRunner
@@ -57,6 +57,8 @@ type StrategyRunner struct {
 	matrixWaitingSlots  map[int]float64 // positive slot → SL trigger price when SL'd and waiting to re-enter
 	matrixLastSLSlot    int             // slot number of the most recently SL'd level (for SZ display)
 	lastMatrixPrice     float64         // last mark price seen by matrixPriceTick; used to re-trigger virtual levels after a fill
+	lastLevelFillTime   time.Time       // time of most recent matrix level fill that adds to position
+	lastLevelFillQty    float64         // qty of that fill; used to detect stale position snapshots
 
 	lastVirtualPrice float64 // last mark price seen by gridVirtualPriceTick; 0 = not yet seen
 
@@ -66,6 +68,7 @@ type StrategyRunner struct {
 	//   b) position is zero (TP fill WS event was dropped) and every new TP is immediately cancelled.
 	// Reset to 0 on TP fill or cycle close.
 	tpCancelStreak int
+	tpPlacedAt     time.Time // when TP was last placed (for interference detection)
 
 	// tradingHaltReason is non-empty when order placement is suppressed because the
 	// instrument's trading session is closed (e.g. tokenized stocks outside market hours).
@@ -76,6 +79,10 @@ type StrategyRunner struct {
 	// pendingDelete is set (under sr.mu) before the delete goroutine fires so that
 	// a concurrent Notify cannot submit a loadOrStart and restart the strategy.
 	pendingDelete bool
+
+	// currentOp tags the active operation for log attribution (used by info/warn/errlog).
+	// Safe to access without a lock because all tasks run on the single worker goroutine.
+	currentOp string
 
 	// Per-strategy worker goroutine — serializes all tasks and provides panic isolation.
 	taskCh       chan func(context.Context) // buffered task queue (capacity 64)
@@ -156,6 +163,13 @@ func (sr *StrategyRunner) runWorker(ctx context.Context) {
 }
 
 // submit enqueues a task on the worker. Returns false (and logs) if the queue is full.
+//
+// This is intentionally non-blocking: the worker goroutine is the sole consumer of
+// taskCh, and worker tasks themselves call submit(). A blocking send from within a
+// running task would deadlock when the buffer is full (the only consumer is busy
+// executing that very task). Overflow therefore drops the task and increments
+// tasksDropped (exposed via WorkerStats for monitoring/alerting); the reconcile loop
+// re-derives and repairs any state a dropped task would have set, within ~20s.
 func (sr *StrategyRunner) submit(task func(context.Context)) bool {
 	select {
 	case sr.taskCh <- task:
@@ -291,6 +305,20 @@ func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 		if err2 != nil {
 			log.Printf("strategy %s: start cycle: %v", sr.strategy.ID, err2)
 		}
+		sr.launchExitSignalMonitors(ctx)
+		return
+	}
+
+	// Before resuming, verify the position still exists on the exchange.
+	// If it disappeared while the gateway was down, close the zombie cycle and
+	// start a fresh one — same logic as for stopped strategies, but applied at
+	// startup for active strategies whose WS close event was missed.
+	if sr.checkPositionGone(ctx) {
+		sr.startMu.Lock()
+		if err := sr.startCycleByType(ctx); err != nil {
+			log.Printf("strategy %s: start cycle after zombie position_gone: %v", sr.strategy.ID, err)
+		}
+		sr.startMu.Unlock()
 		sr.launchExitSignalMonitors(ctx)
 		return
 	}
@@ -803,6 +831,7 @@ func (sr *StrategyRunner) closeDustPosition(ctx context.Context) {
 // Returns true if the cycle was closed (caller should return immediately).
 // Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
+	defer sr.setOp("reconcile")()
 	// Fast path: skip two REST calls if there is nothing to check.
 	sr.mu.Lock()
 	hasWork := sr.tpOrderID != "" || sr.slOrderID != ""
@@ -1078,6 +1107,7 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 // Also cancels orders from PREVIOUS cycles that were left behind by incomplete
 // closeCycle sweeps (server restarted before async sweep finished).
 func (sr *StrategyRunner) sweepOrphanOrders(ctx context.Context) {
+	defer sr.setOp("sweep-orphans")()
 	sr.mu.Lock()
 	if sr.cycle == nil {
 		sr.mu.Unlock()
@@ -1204,6 +1234,7 @@ func (sr *StrategyRunner) sweepOrphanOrders(ctx context.Context) {
 // orders from previous cycles remain on the exchange.
 // Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) cancelAllStrategyOrders(ctx context.Context) {
+	defer sr.setOp("cancel-all")()
 	sr.mu.Lock()
 	stratID8 := sr.strategy.ID
 	if len(stratID8) > 8 {
@@ -1600,6 +1631,7 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 		CycleNum: maxCycle + 1, StartPrice: price, StartedAt: time.Now(),
 	}
 	sr.levels = nil
+	sr.logPositionSource(ctx, cycleID, maxCycle+1, price)
 
 	sides := sidesForDirection(sr.strategy.Direction)
 	levelIdx := 1
@@ -2196,6 +2228,7 @@ func (sr *StrategyRunner) handleLevelFill(ctx context.Context, levelID string, f
 // TrailingCallbackPct (how far price can pull back before close).
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) updateTrailingStop(ctx context.Context) error {
+	defer sr.setOp("trailing-stop")()
 	if !sr.strategy.TrailingStopEnabled {
 		return nil
 	}
@@ -2261,6 +2294,7 @@ func (sr *StrategyRunner) updateTrailingStop(ctx context.Context) error {
 // When TrailingStopEnabled=true, delegates to updateTrailingStop instead of placing a limit order.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) updateTP(ctx context.Context) error {
+	defer sr.setOp("update-tp")()
 	// Trailing stop mode — use Bybit's native trailing stop instead of a TP limit order.
 	if sr.strategy.TrailingStopEnabled {
 		return sr.updateTrailingStop(ctx)
@@ -2407,6 +2441,7 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 		return fmt.Errorf("place TP: %w", err)
 	}
 	sr.tpOrderID = result.OrderId
+	sr.tpPlacedAt = time.Now()
 	sr.lastTPSLQty = totalQty
 	sr.lastTPSLAvg = avg
 	sr.lastTPPrice = tpPrice
@@ -2460,6 +2495,7 @@ func slParams(dir Direction, avg, slPct float64) (side string, triggerPrice floa
 // already past the SL level — the position is closed at market immediately.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) updateSL(ctx context.Context) error {
+	defer sr.setOp("update-sl")()
 	if sr.strategy.StrategyType == "matrix" {
 		return nil // Matrix manages SL per-level via matrixPlacePerLevelSL
 	}
@@ -2916,6 +2952,7 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 // leaving orders of other strategies on the same symbol untouched.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) cancelPlacedLevels(ctx context.Context) {
+	defer sr.setOp("cancel-levels")()
 	var items []trader.BatchCancelItem
 	var stopItems []trader.BatchCancelItem // Matrix stop market orders need OrderFilter:"StopOrder"
 	var cancelLines []string
@@ -3710,6 +3747,7 @@ func (sr *StrategyRunner) resumeGridAfterSignal(ctx context.Context) {
 // current cycle ends naturally. Called when status transitions to stopped.
 // Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) handleStopRequest(ctx context.Context) {
+	defer sr.setOp("stop-request")()
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 
@@ -3791,6 +3829,7 @@ func (sr *StrategyRunner) handleStopRequest(ctx context.Context) {
 
 // cancelAllPlaced is called when a strategy is stopped (removeStrategy goroutine).
 func (sr *StrategyRunner) cancelAllPlaced(ctx context.Context) {
+	defer sr.setOp("cancel-all-placed")()
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	sr.cancelPlacedLevels(ctx)
@@ -3808,6 +3847,7 @@ func (sr *StrategyRunner) cancelAllPlaced(ctx context.Context) {
 // restartCycle applies updated strategy settings to a running cycle.
 // Dispatches to the type-specific implementation so matrix and grid logic stay separate.
 func (sr *StrategyRunner) restartCycle(ctx context.Context) {
+	defer sr.setOp("restart-cycle")()
 	sr.startMu.Lock()
 	defer sr.startMu.Unlock()
 	sr.clearManualAlert(ctx)
@@ -3823,6 +3863,7 @@ func (sr *StrategyRunner) restartCycle(ctx context.Context) {
 // If no position, closes the cycle and starts a fresh one with the new config.
 // Must be called with startMu held and WITHOUT sr.mu held.
 func (sr *StrategyRunner) restartMatrixCycle(ctx context.Context) {
+	defer sr.setOp("restart-matrix")()
 	sr.mu.Lock()
 	if sr.strategy.Status != StatusActive {
 		hasFills := false
@@ -3931,6 +3972,7 @@ func (sr *StrategyRunner) restartMatrixCycle(ctx context.Context) {
 // If no position, closes the cycle and starts a fresh one with the new config.
 // Must be called with startMu held and WITHOUT sr.mu held.
 func (sr *StrategyRunner) restartGridCycle(ctx context.Context) {
+	defer sr.setOp("restart-grid")()
 	sr.mu.Lock()
 	if sr.strategy.Status != StatusActive {
 		hasFills := false
@@ -4074,6 +4116,7 @@ func (sr *StrategyRunner) restartGridCycle(ctx context.Context) {
 // level's fill price using the updated strategy.Steps, preserving the compound chain.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) repriceRemainingFromFills(ctx context.Context) {
+	defer sr.setOp("reprice-from-fills")()
 	if len(sr.strategy.Steps) == 0 {
 		return
 	}
@@ -4264,7 +4307,10 @@ func (sr *StrategyRunner) handlePositionClose(ctx context.Context) {
 		}
 	}
 
-	sr.closeManualPosition(ctx)
+	// Route the close through the retry path so it is confirmed against the
+	// exchange before terminating the strategy. A single WS size=0 event is not
+	// trusted on its own — see handlePositionCloseRetry.
+	sr.submit(func(ctx context.Context) { sr.handlePositionCloseRetry(ctx) })
 }
 
 // handlePositionCloseRetry is queued by handlePositionClose when a TP/SL fill race
@@ -4273,9 +4319,9 @@ func (sr *StrategyRunner) handlePositionClose(ctx context.Context) {
 // the fill. If position is now accounted for (cycle==nil), return silently; otherwise close.
 func (sr *StrategyRunner) handlePositionCloseRetry(ctx context.Context) {
 	sr.mu.Lock()
-	defer sr.mu.Unlock()
 
 	if sr.cycle == nil {
+		sr.mu.Unlock()
 		return // already handled (closeCycle was called by handleMatrixSLFill path)
 	}
 
@@ -4287,10 +4333,48 @@ func (sr *StrategyRunner) handlePositionCloseRetry(ctx context.Context) {
 		}
 	}
 	if !hasPosition {
+		sr.mu.Unlock()
 		return // SL fill processed correctly — no open position in our books
 	}
+	symbol := sr.strategy.Symbol
+	hedgeMode := sr.strategy.HedgeMode
+	dir := sr.strategy.Direction
+	sr.mu.Unlock()
 
-	// Still has position after retry → treat as genuine manual close.
+	// Confirm against the exchange before terminating the strategy. Bybit can emit
+	// spurious/stale size=0 position snapshots (notably during WS reconnects or a
+	// gateway restart); closing on such a false signal wrongly stops a strategy whose
+	// position is actually still open (observed on XLM). FetchPositions must run
+	// WITHOUT sr.mu held.
+	positions, err := trader.FetchPositions(ctx, sr.runner.creds)
+	if err != nil {
+		// Cannot confirm → do not close on an unconfirmed signal. The next position
+		// event or the reconcile loop will re-evaluate.
+		log.Printf("strategy %s: handlePositionCloseRetry: fetch positions failed (%v) — deferring close", sr.strategy.ID, err)
+		return
+	}
+	if positionOpenOnExchange(positions, symbol, hedgeMode, dir) {
+		log.Printf("strategy %s: position still open on exchange — ignoring spurious size=0 event", sr.strategy.ID)
+		return
+	}
+
+	// Confirmed gone → treat as genuine external close. Re-check in-memory state
+	// under the lock (a fill event may have been processed meanwhile).
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	if sr.cycle == nil {
+		return
+	}
+	stillHas := sr.tpOrderID != "" || sr.slOrderID != ""
+	for _, l := range sr.levels {
+		if l.Status == LevelFilled {
+			stillHas = true
+			break
+		}
+	}
+	if !stillHas {
+		return
+	}
 	sr.closeManualPosition(ctx)
 }
 
@@ -4309,12 +4393,12 @@ func (sr *StrategyRunner) closePositionExternal(ctx context.Context, source stri
 	sr.warn(ctx, fmt.Sprintf("Позиция закрыта %s — цикл %d | avg=%.4f | qty=%.4f",
 		source, sr.cycle.CycleNum, avg, posQty))
 
+	cycleID := sr.cycle.ID // capture before closeCycle nils sr.cycle
 	sr.cancelPlacedLevels(ctx)
 	// closeCycle must run BEFORE filled levels are marked cancelled in DB.
 	// RecordStrategyTrade (spawned by closeCycle) queries strategy_levels WHERE status='filled'
 	// after an 8-second sleep; marking them cancelled first yields zero rows → zero avg/qty in trade_history.
 	sr.closeCycle(ctx, "manual_close")
-	cycleID := sr.cycle.ID
 	if _, err := sr.runner.pool.Exec(ctx,
 		`UPDATE strategy_levels SET status='cancelled' WHERE cycle_id=$1 AND status='filled'`, cycleID,
 	); err != nil {
@@ -4435,6 +4519,7 @@ func (sr *StrategyRunner) recoverDuplicateLevel(ctx context.Context, idx int, li
 // Filled levels are never removed — they represent real position.
 // Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) trimExcessLevels(ctx context.Context) {
+	defer sr.setOp("trim-excess")()
 	sr.mu.Lock()
 
 	expectedPerSide := sr.strategy.GridLevels
@@ -4592,6 +4677,7 @@ func (sr *StrategyRunner) reopenCycleIfPositionOpen(ctx context.Context) bool {
 // that was used when the cycle was started.
 // Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) repriceStale(ctx context.Context) {
+	defer sr.setOp("reprice-stale")()
 	sr.mu.Lock()
 	var hasPending bool
 	for _, l := range sr.levels {
@@ -4687,6 +4773,7 @@ func (sr *StrategyRunner) repriceStale(ctx context.Context) {
 // loadOrStart those DB-cancelled levels must become pending again.
 // Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) resetCancelledLevels(ctx context.Context) {
+	defer sr.setOp("reset-cancelled")()
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	for i := range sr.levels {
@@ -5023,6 +5110,15 @@ func (sr *StrategyRunner) handlePartialPositionChange(ctx context.Context, excha
 	if sr.partialCloseQty > 0 && math.Abs(exchangeSize-sr.partialCloseQty) < exchangeSize*0.01 {
 		return
 	}
+	// Guard: matrix level fill that ADDS to position increases ourQty, but the Bybit position
+	// WS snapshot triggered by concurrent order activity (e.g. external cancels) may still show
+	// the pre-fill size. If the apparent "reduction" matches the recently filled qty within 10 s,
+	// treat it as a stale snapshot — not a real manual partial close.
+	if !sr.lastLevelFillTime.IsZero() && time.Since(sr.lastLevelFillTime) < 10*time.Second {
+		if reduction := ourQty - exchangeSize; reduction > 0 && math.Abs(reduction-sr.lastLevelFillQty) < sr.lastLevelFillQty*0.02 {
+			return // stale position snapshot — ignore
+		}
+	}
 	// If the position was reduced by our own system (closedBySelf=true), log the actual
 	// reason instead of "вручную". This handles the race where the position WS event
 	// fires before the order-fill WS event.
@@ -5070,6 +5166,7 @@ func (sr *StrategyRunner) handlePartialPositionChange(ctx context.Context, excha
 // cancelledOrderID is the Bybit order ID of the cancelled order.
 // Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType string, cancelType string, cancelledOrderID string) {
+	defer sr.setOp("tp-sl-cancelled")()
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	if sr.cycle == nil || sr.strategy.Status == StatusStopped {
@@ -5108,6 +5205,32 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 			return
 		}
 		sr.tpOrderID = "" // already unregistered by OnOrderEvent
+
+		// When a hedge bot is suppressing TP, the cancel is intentional — do not re-place.
+		// Also covers the async-Notify race: the hedge engine sets hedge_tp_suppressed=true in DB
+		// and sends an async Notify, but the WS cancel event may arrive before the in-memory flag
+		// is updated. In that case we fall back to a DB read to catch the race.
+		if sr.strategy.HedgeTpSuppressed {
+			sr.info(ctx, fmt.Sprintf("TP отменён хеджем (cancelType=%s) — подавление активно, не перевыставляем", cancelType))
+			return
+		}
+		var dbHedgeSuppressed bool
+		if err := sr.runner.pool.QueryRow(ctx,
+			`SELECT COALESCE(hedge_tp_suppressed,false) FROM strategies WHERE id=$1`,
+			sr.strategy.ID,
+		).Scan(&dbHedgeSuppressed); err == nil && dbHedgeSuppressed {
+			sr.strategy.HedgeTpSuppressed = true // sync in-memory with DB
+			sr.info(ctx, fmt.Sprintf("TP отменён хеджем (cancelType=%s, DB hedge_tp_suppressed=true) — не перевыставляем", cancelType))
+			return
+		}
+
+		// Interference detection: TP cancelled within 2 seconds of placement → external API client.
+		if !sr.tpPlacedAt.IsZero() && time.Since(sr.tpPlacedAt) < 2*time.Second {
+			sr.warn(ctx, fmt.Sprintf(
+				"⚠️ ИНТЕРФЕРЕНЦИЯ: TP отменён через %dms (cancelType=%s) — внешний API-клиент на том же ключе",
+				time.Since(sr.tpPlacedAt).Milliseconds(), cancelType,
+			))
+		}
 		sr.tpCancelStreak++
 		// Circuit breaker: Bybit cancelling our TP repeatedly without a fill means either
 		// (a) a reduce-only race — WS cancel arrives before Bybit frees the budget, so the
@@ -5126,6 +5249,10 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 			sr.submit(func(ctx context.Context) { sr.checkPositionAfterTPCircuitBreaker(ctx) })
 			return
 		}
+		aliveInfo := ""
+		if !sr.tpPlacedAt.IsZero() {
+			aliveInfo = fmt.Sprintf(", жил %ds", int(time.Since(sr.tpPlacedAt).Seconds()))
+		}
 		if err := sr.updateTPByType(ctx); err != nil {
 			if isPositionZero(err) {
 				// Race: TP cancel event arrived before position-0 event.
@@ -5141,7 +5268,7 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 			if cancelType != "" {
 				ctInfo = fmt.Sprintf(" (cancelType=%s)", cancelType)
 			}
-			sr.warn(ctx, fmt.Sprintf("TP ордер отменён биржей или вручную%s — выставляем повторно", ctInfo))
+			sr.warn(ctx, fmt.Sprintf("TP ордер отменён биржей или вручную%s%s — выставляем повторно", ctInfo, aliveInfo))
 		}
 	case "sl":
 		// Same stale-event guard as for TP above.
@@ -5165,7 +5292,8 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 	}
 }
 
-func (sr *StrategyRunner) handleLevelCancelled(ctx context.Context, levelID string, cancelledOrderID string) {
+func (sr *StrategyRunner) handleLevelCancelled(ctx context.Context, levelID string, cancelledOrderID string, cancelType string) {
+	defer sr.setOp("level-cancelled")()
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 
@@ -5205,7 +5333,17 @@ func (sr *StrategyRunner) handleLevelCancelled(ctx context.Context, levelID stri
 			`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL WHERE id=$1`, lvl.ID)
 	}
 
-	msg := fmt.Sprintf("Уровень L%d был отменён вручную на бирже — перевыставляем, так как стратегия активна", lvl.LevelIdx)
+	// Interference detection: if an order is cancelled within 2 seconds of being placed,
+	// this is not a human action — it is an external API client (e.g. another bot using
+	// the same API key) calling cancel-all on this symbol.
+	if !lvl.PlacedAt.IsZero() && time.Since(lvl.PlacedAt) < 2*time.Second {
+		sr.warn(ctx, fmt.Sprintf(
+			"⚠️ ИНТЕРФЕРЕНЦИЯ: L%d отменён через %dms — внешний API-клиент на том же ключе",
+			lvl.LevelIdx, time.Since(lvl.PlacedAt).Milliseconds(),
+		))
+	}
+
+	msg := fmt.Sprintf("Уровень L%d был отменён на бирже (cancelType=%s) — перевыставляем, так как стратегия активна", lvl.LevelIdx, cancelType)
 	sr.warn(ctx, msg)
 	sr.setManualAlert(ctx, msg)
 
@@ -5480,4 +5618,24 @@ func (sr *StrategyRunner) checkPositionAfterTPCircuitBreaker(ctx context.Context
 	if tpErr := sr.updateTPByType(ctx); tpErr != nil {
 		sr.errlog(ctx, fmt.Sprintf("TP circuit breaker: ошибка выставления TP: %v", tpErr))
 	}
+}
+
+// logPositionSource records which strategy/bot started this cycle into a persistent
+// table that survives strategy and bot deletion. Used to trace the origin of exchange
+// positions after the strategy has been removed.
+func (sr *StrategyRunner) logPositionSource(ctx context.Context, cycleID string, cycleNum int, startPrice float64) {
+	_, _ = sr.runner.pool.Exec(ctx,
+		`INSERT INTO position_source_log
+		 (account_id, symbol, direction, strategy_id, bot_id, bot_name, cycle_id, cycle_num, start_price)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		sr.strategy.AccountID,
+		sr.strategy.Symbol,
+		string(sr.strategy.Direction),
+		sr.strategy.ID,
+		sr.strategy.BotID,
+		nil, // bot_name not in Strategy struct — resolved via bot_id if needed
+		cycleID,
+		cycleNum,
+		startPrice,
+	)
 }

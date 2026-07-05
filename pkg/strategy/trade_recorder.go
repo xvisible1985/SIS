@@ -89,19 +89,20 @@ func RecordStrategyTrade(pool *pgxpool.Pool, creds trader.Credentials, in TradeR
 				break
 			}
 		}
-		// Fallback: take the most recent close for this symbol+direction.
+		// Fallback: take the most recent close for this symbol+direction within the cycle.
 		// Bybit returns results newest-first.
 		if bybitPnl == nil && len(pnls) > 0 {
-			wantSide := "Buy" // closing a long = buy close (Bybit side of closing trade)
-			if in.Strategy.Direction == DirectionLong {
-				wantSide = "Sell" // to close a long, the closing order is Sell
+			wantSide := "Sell" // closing a long = Sell on Bybit
+			if in.Strategy.Direction == DirectionShort {
+				wantSide = "Buy" // closing a short = Buy on Bybit
 			}
 			for i, p := range pnls {
 				if p.Side == wantSide {
-					// Accept only if close time is within 5 minutes of our cycle end.
 					ms, _ := strconv.ParseInt(p.CreatedTime, 10, 64)
 					closeTime := time.UnixMilli(ms)
-					if time.Since(closeTime) < 5*time.Minute {
+					// Accept any close that happened at or after the cycle started —
+					// covers ghost_close where the gateway was down for >5 minutes.
+					if !closeTime.Before(in.StartedAt) {
 						bybitPnl = &pnls[i]
 						break
 					}
@@ -174,6 +175,15 @@ func RecordStrategyTrade(pool *pgxpool.Pool, creds trader.Credentials, in TradeR
 	pnlPct := 0.0
 	if totalUSDT > 0 {
 		pnlPct = grossPnl / totalUSDT * 100
+	}
+
+	// ── 7a. Backfill cycle realized_pnl ──────────────────────────────────────
+	// ghost_close sets ended_at but not realized_pnl; fix it here so the terminal
+	// P&L column reflects the correct value.
+	if grossPnl != 0 && in.CycleID != "" {
+		_, _ = pool.Exec(ctx,
+			`UPDATE strategy_cycles SET realized_pnl = $1 WHERE id = $2 AND realized_pnl IS NULL`,
+			grossPnl, in.CycleID)
 	}
 
 	// ── 8. Write to trade_history ────────────────────────────────────────────

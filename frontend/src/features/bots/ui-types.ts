@@ -12,6 +12,7 @@ export type FeaturedBot = {
   name: string;
   /** автор: 'NovaBot' для официальных, username для коммьюнити */
   author: string;
+  avatarUrl?: string;
   botKind?: BotKind;
   strategy: BotStrategy;
   risk: RiskLevel;

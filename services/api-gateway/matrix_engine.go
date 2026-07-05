@@ -70,6 +70,17 @@ func (s *Server) checkMatrixPairedClose(ctx context.Context, botID string, cfg b
 		if p.longID == "" || p.shortID == "" {
 			continue
 		}
+		// Ensure a session row exists for this pair (idempotent — matches the
+		// hedge_sessions bootstrap pattern used for grid+matrix hedge pairs).
+		// long=main, short=hedge by convention; GetHedgeSession sums whichever
+		// leg's own strategy_id is requested using this row's started_at/end_reason
+		// as the accumulation window boundary.
+		s.pool.Exec(ctx, //nolint:errcheck
+			`INSERT INTO hedge_sessions (bot_id, main_strategy_id, hedge_strategy_id)
+			 VALUES ($1, $2, $3)
+			 ON CONFLICT (hedge_strategy_id) WHERE ended_at IS NULL DO NOTHING`,
+			botID, p.longID, p.shortID)
+
 		bySymbol, ok := posMap[sym]
 		if !ok {
 			continue
@@ -90,7 +101,9 @@ func (s *Server) checkMatrixPairedClose(ctx context.Context, botID string, cfg b
 	}
 }
 
-// stopMatrixPair stops both legs of a matrix strategy pair and notifies the engine.
+// stopMatrixPair stops both legs of a matrix strategy pair, notifies the engine,
+// and closes the pair's session with end_reason='paired_close' — the only
+// genuine reset trigger for the "Накоплено матрикс" cumulative counter.
 func (s *Server) stopMatrixPair(ctx context.Context, botID, symbol, longID, shortID string) {
 	for _, id := range []string{longID, shortID} {
 		if _, err := s.pool.Exec(ctx,
@@ -102,6 +115,10 @@ func (s *Server) stopMatrixPair(ctx context.Context, botID, symbol, longID, shor
 			go s.engine.Notify(context.Background(), id)
 		}
 	}
+	s.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE hedge_sessions SET ended_at=NOW(), end_reason='paired_close'
+		 WHERE hedge_strategy_id=$1 AND ended_at IS NULL`,
+		shortID)
 	s.logBotEvent(ctx, botID,
 		fmt.Sprintf("Матрикс: %s — пара остановлена", symbol),
 		"info", "matrix")
@@ -124,12 +141,16 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 		}
 		for _, dir := range []string{"long", "short"} {
 			var existingID string
+			// Skip if bot already owns an active strategy for this slot,
+			// or if a detached (bot_id=NULL) strategy is still active on this account —
+			// the user detached it intentionally, don't create a duplicate.
 			if err := s.pool.QueryRow(ctx,
 				`SELECT id FROM strategies
-				 WHERE bot_id=$1 AND symbol=$2 AND direction=$3
+				 WHERE account_id=$1 AND symbol=$2 AND direction=$3
 				   AND status IN ('active','finishing')
+				   AND (bot_id=$4 OR bot_id IS NULL)
 				 LIMIT 1`,
-				botID, symbol, dir).Scan(&existingID); err == nil {
+				accountID, symbol, dir, botID).Scan(&existingID); err == nil {
 				continue
 			}
 

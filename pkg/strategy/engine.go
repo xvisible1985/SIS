@@ -157,7 +157,7 @@ func (e *Engine) loadStrategy(ctx context.Context, s Strategy) {
 
 // LogUserAction writes a user-initiated action to the strategy event log.
 func (e *Engine) LogUserAction(ctx context.Context, strategyID, msg string) {
-	logEvent(ctx, e.pool, strategyID, "info", msg)
+	logEvent(ctx, e.pool, strategyID, "info", "api", msg)
 }
 
 // ForceRemoveStrategy cancels all exchange orders for a strategy and removes its
@@ -333,10 +333,10 @@ func (e *Engine) GetTradingHaltReason(strategyID string) string {
 		sr, ok := runner.strategies[strategyID]
 		runner.mu.RUnlock()
 		if ok {
-			sr.mu.Lock()
+			sr.mu.RLock()
 			reason := sr.tradingHaltReason
 			streak := sr.tpCancelStreak
-			sr.mu.Unlock()
+			sr.mu.RUnlock()
 			if reason != "" {
 				return reason
 			}
@@ -365,9 +365,9 @@ func (e *Engine) GetSignalState(strategyID string) string {
 		sr, ok := runner.strategies[strategyID]
 		runner.mu.RUnlock()
 		if ok {
-			sr.mu.Lock()
+			sr.mu.RLock()
 			state := sr.currentSignalState
-			sr.mu.Unlock()
+			sr.mu.RUnlock()
 			return state
 		}
 	}
@@ -388,12 +388,12 @@ func (e *Engine) GetMatrixSafeZone(strategyID string) *MatrixSafeZone {
 		if !ok {
 			continue
 		}
-		sr.mu.Lock()
+		sr.mu.RLock()
 		szPct := sr.strategy.SafeZonePct
 		dir := sr.strategy.Direction
 		slots := sr.matrixWaitingSlots
 		lastSlot := sr.matrixLastSLSlot
-		sr.mu.Unlock()
+		sr.mu.RUnlock()
 
 		if szPct <= 0 || len(slots) == 0 {
 			return nil
@@ -504,10 +504,10 @@ func (e *Engine) GetSignalValues(strategyID string) map[string]float64 {
 		if !ok {
 			continue
 		}
-		sr.mu.Lock()
+		sr.mu.RLock()
 		configs := sr.strategy.SignalConfigs
 		symbol := sr.strategy.Symbol
-		sr.mu.Unlock()
+		sr.mu.RUnlock()
 		if len(configs) == 0 || runner.signalEngine == nil {
 			return nil
 		}
@@ -858,7 +858,11 @@ func (ar *AccountRunner) addStrategy(s Strategy) {
 	// after a restart never collide with ones from previous runs (Bybit 110072).
 	seqBase := int(time.Now().Unix()) - 1_700_000_000 // ~47M today, 8 digits, safe for 36-char linkId limit
 	sr := &StrategyRunner{strategy: s, runner: ar, tpPlaceSeq: seqBase, slPlaceSeq: seqBase}
-	sr.taskCh = make(chan func(context.Context), 64)
+	// Buffer sized for bursts (storm markets, mass fills + position events +
+	// reconcile tasks arriving together). submit() is intentionally non-blocking
+	// and drops on overflow — see submit() for the deadlock-avoidance rationale —
+	// so a comfortable buffer minimises drops; the reconcile loop is the backstop.
+	sr.taskCh = make(chan func(context.Context), 256)
 	ar.strategies[s.ID] = sr
 	ar.mu.Unlock()
 	sr.startWorker()
@@ -1032,8 +1036,8 @@ func (ar *AccountRunner) OnOrderEvent(ev trader.OrderEvent) {
 				cancelledOrderID := ev.OrderID
 				sr.submit(func(ctx context.Context) { sr.handleTPSLCancelled(ctx, refType, cancelType, cancelledOrderID) })
 			case "level":
-				levelID, orderID := ref.levelID, ev.OrderID
-				sr.submit(func(ctx context.Context) { sr.handleLevelCancelled(ctx, levelID, orderID) })
+				levelID, orderID, cancelType := ref.levelID, ev.OrderID, ev.CancelType
+				sr.submit(func(ctx context.Context) { sr.handleLevelCancelled(ctx, levelID, orderID, cancelType) })
 			case "matrix_sl":
 				levelID := ref.levelID
 				sr.submit(func(ctx context.Context) { sr.handleMatrixSLCancelled(ctx, levelID) })
@@ -1055,8 +1059,8 @@ func (ar *AccountRunner) OnOrderEvent(ev trader.OrderEvent) {
 		sr := ar.strategies[ref.strategyID]
 		ar.mu.Unlock()
 		if hasRef && sr != nil && ref.refType == "level" {
-			levelID, orderID := ref.levelID, ev.OrderID
-			sr.submit(func(ctx context.Context) { sr.handleLevelCancelled(ctx, levelID, orderID) })
+			levelID, orderID, cancelType := ref.levelID, ev.OrderID, ev.CancelType
+			sr.submit(func(ctx context.Context) { sr.handleLevelCancelled(ctx, levelID, orderID, cancelType) })
 		}
 		return
 	}

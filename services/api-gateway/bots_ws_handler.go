@@ -118,14 +118,8 @@ func (s *Server) computeOneBotSignalCount(
 	}
 
 	sigCfgs := make([]signal.Config, len(cfg.ActivationSignals))
-	interval := "15"
 	for i, a := range cfg.ActivationSignals {
 		sigCfgs[i] = signal.Config{Name: a.Name, Params: a.Params}
-		if v, ok := a.Params["tf"]; ok {
-			if sv, ok2 := v.(string); ok2 && sv != "" {
-				interval = sv
-			}
-		}
 	}
 	direction := cfg.Direction
 
@@ -152,7 +146,12 @@ func (s *Server) computeOneBotSignalCount(
 			case sem <- struct{}{}:
 			}
 			defer func() { <-sem }()
-			st := s.signalEngine.ComputeStateForce(sym, interval, sigCfgs)
+			// Use the SAME multi-timeframe evaluation as ScanBot and the bot
+			// entry engine (bot_engine.go) so the card "Сигнал" count matches the
+			// bot-check overlay and what actually triggers a strategy. The previous
+			// ComputeStateForce evaluated every signal against a single timeframe
+			// snapshot (and could serve cached state), overcounting multi-TF bots.
+			st := s.signalEngine.ComputeMultiTFState(sym, sigCfgs)
 			match := false
 			switch direction {
 			case "long":

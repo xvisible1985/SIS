@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { Shield } from 'lucide-react'
+import { Shield, Layers } from 'lucide-react'
+import { getBotKindMeta } from '../../features/bots/botKindMeta'
 import {
   getStrategyState, getStrategyEvents,
   setStrategyStatus, detachWithAction, getHedgeSession, deleteStrategy,
@@ -24,6 +25,10 @@ export interface HedgePairCardProps {
   onChanged: () => void
   onSelect?: (s: Strategy) => void
   onPairTargetUpdate?: (target: number | null) => void
+  onSimpleDetach?: () => Promise<void>
+  isOpen?: boolean
+  onToggleOpen?: () => void
+  isMatrixPair?: boolean
 }
 
 // ── tiny icons ─────────────────────────────────────────────────────────────────
@@ -88,6 +93,14 @@ function fmtPnl(v: number | null): string {
   if (v === null) return '—'
   const sign = v > 0 ? '+' : ''
   return `${sign}${v.toFixed(2)}$`
+}
+
+// Накоплено-counters can legitimately be a few thousandths of a dollar (a
+// single small SL/TP) — 2 decimals would round them away to "+0.00$".
+function fmtPnlPrecise(v: number | null): string {
+  if (v === null) return '—'
+  const sign = v > 0 ? '+' : ''
+  return `${sign}${v.toFixed(4)}$`
 }
 
 function pnlClass(v: number | null): string {
@@ -264,7 +277,8 @@ function StrategyRow({
 
 export function HedgePairCard({
   main, hedge, positions, tickerPrices, selectedStrategyId,
-  hedgeBot, onEdit, onChanged, onSelect, onPairTargetUpdate,
+  hedgeBot, onEdit, onChanged, onSelect, onPairTargetUpdate, onSimpleDetach,
+  isOpen, onToggleOpen, isMatrixPair,
 }: HedgePairCardProps) {
   const mainPos  = findPosition(main,  positions)
   const hedgePos = findPosition(hedge, positions)
@@ -274,9 +288,10 @@ export function HedgePairCard({
     ? (mainPnl ?? 0) + (hedgePnl ?? 0)
     : null
 
-  const symbol  = main.symbol
-  const botName = hedge.bot_name ?? main.bot_name ?? null
-  const botId   = hedge.bot_id ?? null
+  const symbol      = main.symbol
+  const botName     = hedge.bot_name ?? main.bot_name ?? null
+  const botId       = hedge.bot_id ?? null
+  const botKindMeta = getBotKindMeta(hedgeBot?.strategyConfig.bot_kind)
   const isAnyActive = main.status === 'active' || hedge.status === 'active'
 
   // ── menu ──────────────────────────────────────────────────────────────────
@@ -374,7 +389,9 @@ export function HedgePairCard({
   }
 
   // ── expand ────────────────────────────────────────────────────────────────
-  const [expanded, setExpanded]       = useState(false)
+  const [internalExpanded, setInternalExpanded] = useState(false)
+  const expanded = isOpen !== undefined ? isOpen : internalExpanded
+  const toggleExpanded = () => isOpen !== undefined ? onToggleOpen?.() : setInternalExpanded(v => !v)
   const [expandTab, setExpandTab]     = useState<'stats' | 'log'>('stats')
   const [mainState, setMainState]     = useState<StrategyState | null>(null)
   const [hedgeState, setHedgeState]   = useState<StrategyState | null>(null)
@@ -382,24 +399,33 @@ export function HedgePairCard({
   const [hedgeEvents, setHedgeEvents] = useState<StrategyEvent[]>([])
   const [dataLoading, setDataLoading] = useState(false)
   const [hedgeSession, setHedgeSession] = useState<HedgeSession | null>(null)
+  const [matrixPnl, setMatrixPnl] = useState<number | null>(null)
 
   useEffect(() => {
     if (!expanded) return
     setDataLoading(true)
+    const pnlPromise = isMatrixPair
+      ? Promise.all([
+          getHedgeSession(main.id).catch(() => null),
+          getHedgeSession(hedge.id).catch(() => null),
+        ]).then(([a, b]) => (a?.cumulative_hedge_pnl ?? 0) + (b?.cumulative_hedge_pnl ?? 0))
+      : Promise.resolve(null)
     Promise.all([
       getStrategyState(main.id).catch(() => null),
       getStrategyState(hedge.id).catch(() => null),
       getStrategyEvents(main.id,  { limit: 60 }).catch(() => ({ total: 0, events: [] as StrategyEvent[] })),
       getStrategyEvents(hedge.id, { limit: 60 }).catch(() => ({ total: 0, events: [] as StrategyEvent[] })),
-      getHedgeSession(hedge.id).catch(() => null),
-    ]).then(([ms, hs, me, he, session]) => {
+      isMatrixPair ? Promise.resolve(null) : getHedgeSession(hedge.id).catch(() => null),
+      pnlPromise,
+    ]).then(([ms, hs, me, he, session, pnl]) => {
       setMainState(ms)
       setHedgeState(hs)
       setMainEvents(me.events)
       setHedgeEvents(he.events)
       setHedgeSession(session)
+      if (pnl !== null) setMatrixPnl(pnl)
     }).finally(() => setDataLoading(false))
-  }, [expanded, main.id, hedge.id])
+  }, [expanded, main.id, hedge.id, isMatrixPair])
 
   // ── stats computation ─────────────────────────────────────────────────────
   const mainEntry  = (mainState?.avg_entry  ?? 0) > 0 ? (mainState?.avg_entry  ?? null) : null
@@ -414,18 +440,26 @@ export function HedgePairCard({
   useEffect(() => {
     if (!expanded) return
     const id = setInterval(() => {
+      const pnlPromise = isMatrixPair
+        ? Promise.all([
+            getHedgeSession(main.id).catch(() => null),
+            getHedgeSession(hedge.id).catch(() => null),
+          ]).then(([a, b]) => (a?.cumulative_hedge_pnl ?? 0) + (b?.cumulative_hedge_pnl ?? 0))
+        : Promise.resolve(null)
       Promise.all([
         getStrategyState(main.id).catch(() => null),
         getStrategyState(hedge.id).catch(() => null),
-        getHedgeSession(hedge.id).catch(() => null),
-      ]).then(([ms, hs, session]) => {
+        isMatrixPair ? Promise.resolve(null) : getHedgeSession(hedge.id).catch(() => null),
+        pnlPromise,
+      ]).then(([ms, hs, session, pnl]) => {
         if (ms) setMainState(ms)
         if (hs) setHedgeState(hs)
         if (session) setHedgeSession(session)
+        if (pnl !== null) setMatrixPnl(pnl)
       }).catch(() => { /* ignore transient poll errors */ })
     }, 30_000)
     return () => clearInterval(id)
-  }, [expanded, main.id, hedge.id])
+  }, [expanded, main.id, hedge.id, isMatrixPair])
 
   // ── Paired close target ───────────────────────────────────────────────────
   // Uses live position data (real-time WebSocket) + hedge bot config (close condition).
@@ -521,8 +555,10 @@ export function HedgePairCard({
         {botName && (
           <>
             <div className="w-px h-3 bg-white/[.10] shrink-0 ml-1" />
-            <span className="inline-flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-[.5px] text-amber-400/80 truncate max-w-[140px]">
-              <Shield size={17} className="shrink-0" style={{ color: '#f59e0b' }} strokeWidth={2} />
+            <span className="inline-flex items-center gap-1.5 text-[13px] font-bold uppercase tracking-[.5px] truncate max-w-[140px]" style={{ color: botKindMeta.color }}>
+              {hedgeBot?.strategyConfig.bot_kind === 'matrix'
+                ? <Layers size={15} className="shrink-0" strokeWidth={2} />
+                : <Shield size={17} className="shrink-0" strokeWidth={2} />}
               {botName}
             </span>
           </>
@@ -554,7 +590,7 @@ export function HedgePairCard({
                 {botId && (
                   <button
                     type="button"
-                    onClick={() => { setMenuOpen(false); setDetachBlacklist(false); setStep('detach-dialog') }}
+                    onClick={() => { setMenuOpen(false); if (onSimpleDetach) { onSimpleDetach() } else { setDetachBlacklist(false); setStep('detach-dialog') } }}
                     className="w-full text-left px-3 py-2 text-[12px] text-slate-300 hover:bg-white/[.06] transition-colors flex items-center gap-2"
                   >
                     <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" style={{ display: 'block' }}>
@@ -565,7 +601,7 @@ export function HedgePairCard({
                 )}
                 <button
                   type="button"
-                  onClick={() => { setMenuOpen(false); setExpanded(v => !v) }}
+                  onClick={() => { setMenuOpen(false); toggleExpanded() }}
                   className="w-full text-left px-3 py-2 text-[12px] text-slate-300 hover:bg-white/[.06] transition-colors flex items-center gap-2"
                 >
                   <IcChevron up={expanded} />
@@ -708,51 +744,62 @@ export function HedgePairCard({
                   label="Разрыв сейчас"
                   value={fmtPrice(currentGap, dec)}
                 />
-                <StatRow
-                  label="Разрыв на старте"
-                  value={hedgeSession?.gap_at_start != null ? fmtPrice(hedgeSession.gap_at_start, dec) : '—'}
-                />
-                <StatRow
-                  label="Сокращение разрыва"
-                  value={gapReduced !== null
-                    ? `${gapReduced >= 0 ? '▼ ' : '▲ '}${fmtPrice(Math.abs(gapReduced), dec)}`
-                    : '—'}
-                  color={gapReduced !== null ? (gapReduced >= 0 ? '#6ee7b7' : '#fca5a5') : undefined}
-                />
-
-                <div className="h-px bg-white/[.05] my-1.5" />
-
-                <StatRow
-                  label={(() => {
-                    const ct = hedgeBot?.strategyConfig?.hedge_deact_close_type ?? 0
-                    const cv = hedgeBot?.strategyConfig?.hedge_deact_close_value ?? 0
-                    if (ct === 2) return 'Цель закрытия (безубыток)'
-                    if (ct === 1) return `Цель закрытия (ROI ${cv}%)`
-                    return `Цель закрытия (P&L ${cv > 0 ? '+' : ''}${cv}$)`
-                  })()}
-                  value={fmtPrice(pairedCloseTarget, dec)}
-                />
-                {pairedCloseTarget !== null && (
+                {!isMatrixPair && <>
                   <StatRow
-                    label="До цели"
-                    value={distanceToClose !== null
-                      ? `${distanceToClose >= 0 ? '+' : ''}${fmtPrice(distanceToClose, dec)}`
-                      : '—'}
-                    color={distanceToClose !== null ? (distanceToClose >= 0 ? '#6ee7b7' : '#fca5a5') : undefined}
+                    label="Разрыв на старте"
+                    value={hedgeSession?.gap_at_start != null ? fmtPrice(hedgeSession.gap_at_start, dec) : '—'}
                   />
-                )}
+                  <StatRow
+                    label="Сокращение разрыва"
+                    value={gapReduced !== null
+                      ? `${gapReduced >= 0 ? '▼ ' : '▲ '}${fmtPrice(Math.abs(gapReduced), dec)}`
+                      : '—'}
+                    color={gapReduced !== null ? (gapReduced >= 0 ? '#6ee7b7' : '#fca5a5') : undefined}
+                  />
+                </>}
 
                 <div className="h-px bg-white/[.05] my-1.5" />
 
-                <StatRow
-                  label="Накоплено хеджем"
-                  value={hedgeSession != null ? fmtPnl(hedgeSession.cumulative_hedge_pnl) : '—'}
-                  color={hedgeSession != null ? (hedgeSession.cumulative_hedge_pnl > 0 ? '#6ee7b7' : hedgeSession.cumulative_hedge_pnl < 0 ? '#fca5a5' : undefined) : undefined}
-                />
-                <StatRow
-                  label="Сессия начата"
-                  value={hedgeSession != null ? fmtDateTime(hedgeSession.started_at) : '—'}
-                />
+                {!isMatrixPair && <>
+                  <StatRow
+                    label={(() => {
+                      const ct = hedgeBot?.strategyConfig?.hedge_deact_close_type ?? 0
+                      const cv = hedgeBot?.strategyConfig?.hedge_deact_close_value ?? 0
+                      if (ct === 2) return 'Цель закрытия (безубыток)'
+                      if (ct === 1) return `Цель закрытия (ROI ${cv}%)`
+                      return `Цель закрытия (P&L ${cv > 0 ? '+' : ''}${cv}$)`
+                    })()}
+                    value={fmtPrice(pairedCloseTarget, dec)}
+                  />
+                  {pairedCloseTarget !== null && (
+                    <StatRow
+                      label="До цели"
+                      value={distanceToClose !== null
+                        ? `${distanceToClose >= 0 ? '+' : ''}${fmtPrice(distanceToClose, dec)}`
+                        : '—'}
+                      color={distanceToClose !== null ? (distanceToClose >= 0 ? '#6ee7b7' : '#fca5a5') : undefined}
+                    />
+                  )}
+                  <div className="h-px bg-white/[.05] my-1.5" />
+                </>}
+
+                {isMatrixPair ? (
+                  <StatRow
+                    label="Накоплено матрикс"
+                    value={matrixPnl !== null ? fmtPnlPrecise(matrixPnl) : '—'}
+                    color={matrixPnl !== null ? (matrixPnl > 0 ? '#6ee7b7' : matrixPnl < 0 ? '#fca5a5' : undefined) : undefined}
+                  />
+                ) : (<>
+                  <StatRow
+                    label="Накоплено хеджем"
+                    value={hedgeSession != null ? fmtPnlPrecise(hedgeSession.cumulative_hedge_pnl) : '—'}
+                    color={hedgeSession != null ? (hedgeSession.cumulative_hedge_pnl > 0 ? '#6ee7b7' : hedgeSession.cumulative_hedge_pnl < 0 ? '#fca5a5' : undefined) : undefined}
+                  />
+                  <StatRow
+                    label="Сессия начата"
+                    value={hedgeSession != null ? fmtDateTime(hedgeSession.started_at) : '—'}
+                  />
+                </>)}
               </div>
 
               {/* ── Правая колонка ── */}

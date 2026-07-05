@@ -57,15 +57,18 @@ function periodFullLabel(day: string, granularity: 'day' | 'hour'): string {
   return fmtDay(day)
 }
 
-// ─── Mobile hook ─────────────────────────────────────────────────────────────
-function useWindowWidth() {
-  const [w, setW] = useState(() => typeof window !== 'undefined' ? window.innerWidth : 1200)
+// ─── Mobile hook (CSS matchMedia — same breakpoint as Tailwind md:768px) ─────
+function useIsMobile() {
+  const [val, setVal] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false
+  )
   useEffect(() => {
-    const h = () => setW(window.innerWidth)
-    window.addEventListener('resize', h)
-    return () => window.removeEventListener('resize', h)
+    const mq = window.matchMedia('(max-width: 767px)')
+    const h = (e: MediaQueryListEvent) => setVal(e.matches)
+    mq.addEventListener('change', h)
+    return () => mq.removeEventListener('change', h)
   }, [])
-  return w
+  return val
 }
 
 // ─── Catmull-Rom → cubic Bezier ───────────────────────────────────────────────
@@ -169,11 +172,7 @@ function DailyBarsChart({ items, xLabels }: { items: DailyPnL[]; xLabels: string
   const clipId = id + 'c'
 
   if (vals.length === 0) {
-    return (
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ display: 'block' }}>
-        <text x={W / 2} y={H / 2} textAnchor="middle" fill={T.dim} fontSize="13">нет данных</text>
-      </svg>
-    )
+    return <NoData height={H} />
   }
   return (
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" style={{ display: 'block' }}>
@@ -231,11 +230,7 @@ function DrawdownChart({ daily }: { daily: DailyPnL[] }) {
   }, [daily])
 
   if (daily.length < 2) {
-    return (
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ display: 'block' }}>
-        <text x={W / 2} y={H / 2} textAnchor="middle" fill={T.dim} fontSize="13">нет данных</text>
-      </svg>
-    )
+    return <NoData height={H} />
   }
 
   const minDD = Math.min(...dd, -0.01)
@@ -370,6 +365,14 @@ function SmRow({ label, value, c = T.body }: { label: string; value: string; c?:
     <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
       <span style={{ fontSize: 12, color: T.dim }}>{label}</span>
       <span style={{ ...mono, fontSize: 13, fontWeight: 600, color: c }}>{value}</span>
+    </div>
+  )
+}
+
+function NoData({ text = 'Нет данных', height = 200 }: { text?: string; height?: number }) {
+  return (
+    <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.dim, fontSize: 13, fontFamily: 'Inter, sans-serif' }}>
+      {text}
     </div>
   )
 }
@@ -517,7 +520,7 @@ function HeroCard({ data, period, equity, equityChange, isMobile = false }: {
         </div>
         {cumSeries.length >= 2
           ? <AreaChart data={cumSeries} width={540} height={170} color="#b8c8ff" fullHeight />
-          : <div style={{ flex: 1, minHeight: 140, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.dim, fontSize: 13 }}>нет данных</div>
+          : <NoData height={140} />
         }
       </div>
 
@@ -734,9 +737,7 @@ function PnLCurveCard({ data, period }: { data: DashboardData; period: Period })
           )}
         </svg>
       ) : (
-        <div style={{ height: 280, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.dim, fontSize: 13 }}>
-          {data.stats.total === 0 ? 'Нет закрытых сделок за период' : 'Недостаточно данных'}
-        </div>
+        <NoData height={280} text={data.stats.total === 0 ? 'Нет закрытых сделок за период' : 'Недостаточно данных'} />
       )}
     </Card>
   )
@@ -812,8 +813,8 @@ function OpenPositionsCard({ positions, accountLabel, isMobile = false }: { posi
         )}
       </div>
       {positions.length === 0 ? (
-        <div style={{ padding: '24px 14px', textAlign: 'center', color: T.dim, fontSize: 13, borderTop: `1px solid ${T.border}` }}>
-          Нет открытых позиций
+        <div style={{ borderTop: `1px solid ${T.border}` }}>
+          <NoData text="Нет открытых позиций" />
         </div>
       ) : (
         <div style={{ borderTop: `1px solid ${T.border}`, flex: 1, overflowY: 'auto' }}>
@@ -889,7 +890,7 @@ function AssetAllocationCard({ positions }: { positions: Position[] }) {
     <Card pad="16px 18px">
       <SHead title="Позиции по активам" sub={fmt$(totalSize, 0) + ' в работе'} />
       {assets.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '28px 0', color: T.dim, fontSize: 13 }}>Нет открытых позиций</div>
+        <NoData text="Нет открытых позиций" />
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <div style={{ position: 'relative', width: 130, height: 130, flexShrink: 0 }}>
@@ -931,8 +932,8 @@ function RecentTradesCard({ data, isMobile = false }: { data: DashboardData; isM
         <span style={{ fontSize: 10, color: T.dim }}>{recent_trades.length}</span>
       </div>
       {recent_trades.length === 0 ? (
-        <div style={{ padding: '24px 14px', textAlign: 'center', color: T.dim, fontSize: 13, borderTop: `1px solid ${T.border}` }}>
-          Нет закрытых сделок
+        <div style={{ borderTop: `1px solid ${T.border}` }}>
+          <NoData text="Нет закрытых сделок" />
         </div>
       ) : (
         <div style={{ borderTop: `1px solid ${T.border}`, flex: 1, overflowY: 'auto' }}>
@@ -1015,7 +1016,7 @@ function BotsCard({ data, period }: { data: DashboardData; period: Period }) {
     <Card pad="16px 18px">
       <SHead title="Лидерборд ботов" sub={`P&L за ${pLabel}`} />
       {bot_stats.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '20px 0', color: T.dim, fontSize: 13 }}>Нет ботов</div>
+        <NoData text="Нет ботов" />
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: 8 }}>
           {bot_stats.map((b) => {
@@ -1057,7 +1058,7 @@ function BotsCard({ data, period }: { data: DashboardData; period: Period }) {
 export function DashboardPage() {
   const navigate = useNavigate()
   const { selectedAccountId } = useSelectedAccount()
-  const isMobile = useWindowWidth() < 768
+  const isMobile = useIsMobile()
   const [period, setPeriod] = useState<Period>('30d')
   const [animKey, setAnimKey] = useState(0)
   const [data, setData] = useState<DashboardData | null>(null)
@@ -1109,7 +1110,7 @@ export function DashboardPage() {
     Promise.all([
       loadDash(period),
       listAccounts().then(a => {
-        if (a.length === 0 && !localStorage.getItem('sis_onboarding_done')) { navigate('/welcome', { replace: true }); return }
+        if (a.length === 0) { /* welcome modal disabled — see /quick-start */ }
         setAccounts(a.filter(x => x.is_active))
       }).catch(() => {}),
     ]).finally(() => setLoading(false))

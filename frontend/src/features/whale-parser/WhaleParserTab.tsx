@@ -1,9 +1,33 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   listWhaleAddresses, createWhaleAddress, patchWhaleAddress,
-  deleteWhaleAddress, listWhaleEvents, simulateWhale
+  deleteWhaleAddress, listWhaleEvents, simulateWhale, getWhaleExchangeSymbols
 } from './api'
 import type { WhaleAddress, WhaleEvent, SimulateResult, WhaleDirection } from './types'
+
+const EXCHANGE_META: Record<string, { label: string; cls: string }> = {
+  bybit:   { label: 'BYB', cls: 'bg-indigo-500/20 text-indigo-300' },
+  binance: { label: 'BNB', cls: 'bg-yellow-500/20 text-yellow-300' },
+  okx:     { label: 'OKX', cls: 'bg-slate-400/20 text-slate-300'  },
+}
+
+function ExchangeBadges({ symbol, exchMap }: { symbol: string; exchMap: Record<string, string[]> }) {
+  const exs = exchMap[symbol]
+  if (!exs || exs.length === 0) return <span className="w-16 flex-shrink-0" />
+  return (
+    <span className="flex gap-0.5 w-16 flex-shrink-0">
+      {exs.map(ex => {
+        const m = EXCHANGE_META[ex]
+        if (!m) return null
+        return (
+          <span key={ex} className={`text-[9px] font-semibold px-1 py-0.5 rounded ${m.cls}`}>
+            {m.label}
+          </span>
+        )
+      })}
+    </span>
+  )
+}
 
 function DirectionBadge({ dir }: { dir: WhaleDirection }) {
   if (dir === 'buy')  return <span className="text-emerald-400 font-semibold">BUY</span>
@@ -37,7 +61,8 @@ export function WhaleParserTab() {
   const [addresses, setAddresses] = useState<WhaleAddress[]>([])
   const [events, setEvents]       = useState<WhaleEvent[]>([])
   const [loading, setLoading]     = useState(true)
-  const [evHours, setEvHours]     = useState(24)
+  const [evHours, setEvHours]         = useState(24)
+  const [exchMap, setExchMap]         = useState<Record<string, string[]>>({})
 
   // Simulate panel
   const [threshold, setThreshold]   = useState(50000)
@@ -63,6 +88,10 @@ export function WhaleParserTab() {
     } finally {
       setLoading(false)
     }
+  }, [])
+
+  useEffect(() => {
+    getWhaleExchangeSymbols().then(setExchMap).catch(() => {})
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -281,6 +310,7 @@ export function WhaleParserTab() {
                     <span className="text-slate-300 font-medium w-20 truncate flex-shrink-0">{ev.label || `${ev.address.slice(0, 6)}…`}</span>
                     <span className="font-mono text-slate-200 w-20 flex-shrink-0">{ev.symbol}</span>
                     <DirectionBadge dir={ev.direction} />
+                    <ExchangeBadges symbol={ev.symbol} exchMap={exchMap} />
                     <span className="text-slate-400 ml-auto flex-shrink-0">{fmt(ev.amountUsd)}</span>
                     <a
                       href={explorerLink(ev.txHash, ev.chain)}

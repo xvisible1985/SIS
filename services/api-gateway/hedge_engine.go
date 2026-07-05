@@ -325,8 +325,8 @@ func meetsPairedCloseCriteria(mainPos, hPos hedgePosInfo, cfg botCfgJSON) bool {
 			return false
 		}
 		return combined/totalMargin*100 >= cfg.HedgeDeactCloseValue
-	case 2: // breakeven (combined pnl ≥ 0)
-		return combined >= 0
+	case 2: // breakeven + optional profit target
+		return combined >= cfg.HedgeBreakevenProfit
 	}
 	return false
 }
@@ -895,7 +895,7 @@ func (s *Server) applyHedgeMainControls(ctx context.Context, botID, mainStrategy
 	}
 	stratMsg := "Хедж активирован: " + strings.Join(parts, ", ")
 	s.pool.Exec(ctx, //nolint:errcheck
-		`INSERT INTO strategy_events (strategy_id, message, level) VALUES ($1, $2, 'info')`,
+		`INSERT INTO strategy_events (strategy_id, message, level, source) VALUES ($1, $2, 'info', 'hedge-engine')`,
 		mainStrategyID, stratMsg)
 
 	go s.engine.Notify(context.Background(), mainStrategyID)
@@ -948,7 +948,7 @@ func (s *Server) restoreHedgeMainControls(ctx context.Context, botID, hedgeStrat
 					restoreMsg = "Хедж деактивирован: бот возобновлён, TP/SL восстановлены"
 				}
 				s.pool.Exec(ctx, //nolint:errcheck
-					`INSERT INTO strategy_events (strategy_id, message, level) VALUES ($1, $2, 'info')`,
+					`INSERT INTO strategy_events (strategy_id, message, level, source) VALUES ($1, $2, 'info', 'hedge-engine')`,
 					mainStrategyID, restoreMsg)
 				go s.engine.Notify(context.Background(), mainStrategyID)
 				s.logBotEvent(ctx, botID,
@@ -993,7 +993,7 @@ func (s *Server) restoreHedgeMainControls(ctx context.Context, botID, hedgeStrat
 			continue
 		}
 		s.pool.Exec(ctx, //nolint:errcheck
-			`INSERT INTO strategy_events (strategy_id, message, level) VALUES ($1, $2, 'info')`,
+			`INSERT INTO strategy_events (strategy_id, message, level, source) VALUES ($1, $2, 'info', 'hedge-engine')`,
 			slotID, "Хедж деактивирован: стратегия слота возобновлена, новый цикл")
 		go s.engine.Notify(context.Background(), slotID)
 		s.logBotEvent(ctx, botID,
@@ -1125,7 +1125,7 @@ func (s *Server) resolveHedgeSlotConflict(ctx context.Context, botID, accountID,
 				symbol, hedgeDir, conflictID[:8], cancelled, cancelErrors),
 			"info", "hedge")
 		s.pool.Exec(ctx, //nolint:errcheck
-			`INSERT INTO strategy_events (strategy_id, message, level) VALUES ($1, $2, 'info')`,
+			`INSERT INTO strategy_events (strategy_id, message, level, source) VALUES ($1, $2, 'info', 'hedge-engine')`,
 			conflictID, "Приостановлена хедж-ботом — будет восстановлена после деактивации хеджа")
 
 		return conflictID, true
@@ -1322,14 +1322,15 @@ func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID st
 					"warn", "hedge")
 				continue
 			}
-			if isStandalone && s.hedgeHasPendingOrders(ctx, h.id) {
+			if s.hedgeHasPendingOrders(ctx, h.id) {
 				// Entry order placed but not filled yet — exchange position will appear soon.
+				// Applies to both standalone and regular hedges: stop only once entry fills.
 				continue
 			}
 			if isStandalone {
-				s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "хедж-позиция закрыта")
+				s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "position_gone", "хедж-позиция закрыта")
 			} else {
-				s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "нет позиций на бирже")
+				s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "position_gone", "нет позиций на бирже")
 			}
 			continue
 		}
@@ -1343,13 +1344,41 @@ func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID st
 				// Main position gone. Same guard: if the hedge still has an open cycle with
 				// filled levels, be conservative and skip rather than risk a false stop.
 				if s.hedgeHasOpenFilledLevels(ctx, h.id) {
+					// In flip mode: if the main strategy is definitively stopped and its last
+					// cycle closed via TP, the flip trigger was missed (restart or prior bug).
+					// Promote the hedge to standalone now as a recovery path.
+					if cfg.HedgeTpMainMode == "flip" && h.linkedMainID != "" {
+						var mainStatus, lastResult string
+						s.pool.QueryRow(ctx,
+							`SELECT status FROM strategies WHERE id=$1`, h.linkedMainID,
+						).Scan(&mainStatus) //nolint:errcheck
+						if mainStatus == "stopped" {
+							s.pool.QueryRow(ctx,
+								`SELECT COALESCE(result,'') FROM strategy_cycles
+								 WHERE strategy_id=$1 AND ended_at IS NOT NULL
+								 ORDER BY ended_at DESC LIMIT 1`,
+								h.linkedMainID,
+							).Scan(&lastResult) //nolint:errcheck
+							if lastResult == "tp" {
+								hedgeSidePos, hasHedgeSidePos := bySymbol[hedgeSide]
+								if hasHedgeSidePos {
+									s.logBotEvent(ctx, botID,
+										fmt.Sprintf("Хедж: мейн %s закрылся по TP — восстанавливаем переворот хеджа", h.symbol),
+										"info", "hedge")
+									s.releaseHedgeToGrid(ctx, botID, h.id, h.symbol, hedgeSidePos,
+										"переворот (восстановление): мейн закрылся по TP")
+									continue
+								}
+							}
+						}
+					}
 					s.logBotEvent(ctx, botID,
 						fmt.Sprintf("Хедж: основная позиция %s не найдена, но хедж имеет заполненные уровни — пропускаем тик", h.symbol),
 						"warn", "hedge")
 					continue
 				}
 				// Main position gone — no reason to keep hedge.
-				s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "основная позиция закрыта")
+				s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "main_closed", "основная позиция закрыта")
 				continue
 			}
 		}
@@ -1382,15 +1411,17 @@ func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID st
 				// simple grid (1 level, TP=0.5%, no SL) rather than stopping cold.
 				s.releaseHedgeToGrid(ctx, botID, h.id, h.symbol, hedgePos, deactReason)
 			} else {
-				s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, deactReason)
+				s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "deactivation", deactReason)
 			}
 			continue
 		}
 
 		// Paired close: combined P&L condition (requires both positions).
+		// This is the ONLY genuine paired-close trigger — the cumulative PnL
+		// counter (GetHedgeSession) resets here and nowhere else.
 		if hasMain && hasHedge && meetsPairedCloseCriteria(mainPos, hedgePos, cfg) {
 			combined := mainPos.UnrealisedPnl + hedgePos.UnrealisedPnl
-			s.stopHedgeStrategy(ctx, botID, h.id, h.symbol,
+			s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "paired_close",
 				fmt.Sprintf("парное закрытие: суммарный PnL %.4g (тип=%d, порог=%.4g)",
 					combined, cfg.HedgeDeactCloseType, cfg.HedgeDeactCloseValue))
 
@@ -1417,7 +1448,7 @@ func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID st
 		if cfg.HedgeProfitLazy && hasHedge {
 			hROI := hedgeROI(hedgePos)
 			if hROI >= cfg.HedgeProfitLazyPct {
-				s.stopHedgeStrategy(ctx, botID, h.id, h.symbol,
+				s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "trailing_profit",
 					fmt.Sprintf("трейлинг профит: ROI хеджа %.4g%% ≥ шаг %.4g%%", hROI, cfg.HedgeProfitLazyPct))
 				continue
 			}
@@ -1430,35 +1461,45 @@ func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID st
 // recorded via adopt_position_data so the new cycle treats it as the filled L0
 // and only needs to place the exit TP — no new entry order is placed.
 func (s *Server) releaseHedgeToGrid(ctx context.Context, botID, strategyID, symbol string, hedgePos hedgePosInfo, reason string) {
-	sizeStr := strconv.FormatFloat(hedgePos.Size, 'f', -1, 64)
-	entryStr := strconv.FormatFloat(hedgePos.EntryPrice, 'f', -1, 64)
-	adoptBytes, _ := json.Marshal(struct {
-		Size       string `json:"size"`
-		EntryPrice string `json:"entry_price"`
-	}{Size: sizeStr, EntryPrice: entryStr})
 	sizeUsdt := hedgePos.Size * hedgePos.EntryPrice
 
+	// Remember the old main ID before clearing the link — we'll delete it below.
+	var oldMainID string
+	s.pool.QueryRow(ctx, //nolint:errcheck
+		`SELECT COALESCE(hedged_strategy_id::text,'') FROM strategies WHERE id=$1`, strategyID,
+	).Scan(&oldMainID)
+
+	// Convert the hedge strategy to a standalone single-level grid with TP=0.5% and no SL.
+	// hedged_strategy_id is cleared so the old stopped main is fully detached.
+	// We do NOT end the active cycle here — the engine's restartGridCycle handler will:
+	//   1. Cancel placed matrix entry orders on the exchange.
+	//   2. Trim excess unfilled levels (only 1 step configured).
+	//   3. Re-place TP at 0.5% on the still-active cycle.
+	//   4. Skip new DCA orders (grid_active=0).
+	// This keeps the TP associated with a live (ended_at IS NULL) cycle so the
+	// reconcile loop can maintain it if the order is ever cancelled externally.
 	if _, err := s.pool.Exec(ctx, `
 		UPDATE strategies SET
-		    bot_id              = NULL,
-		    strategy_type       = 'grid',
-		    tp_pct              = 0.5,
-		    tp_mode             = 'total',
-		    sl_pct              = NULL,
-		    sl_type             = 'conditional',
-		    grid_levels         = 1,
-		    grid_active         = 0,
-		    grid_step_pct       = 0,
-		    grid_size_usdt      = $2,
-		    steps               = '[{"price_move_pct":0,"size_pct":100}]'::jsonb,
-		    matrix_levels       = NULL,
-		    matrix_entry_level  = NULL,
-		    signal_filter       = false,
-		    signal_configs      = '[]'::jsonb,
-		    adopt_position_data = $3::jsonb,
-		    updated_at          = NOW()
+		    bot_id               = NULL,
+		    hedged_strategy_id   = NULL,
+		    strategy_type        = 'grid',
+		    tp_pct               = 0.5,
+		    tp_mode              = 'total',
+		    sl_pct               = 0,
+		    sl_type              = 'conditional',
+		    grid_levels          = 1,
+		    grid_active          = 0,
+		    grid_step_pct        = 0,
+		    grid_size_usdt       = $2,
+		    steps                = '[{"price_move_pct":0,"size_pct":100}]'::jsonb,
+		    matrix_levels        = NULL,
+		    matrix_entry_level   = NULL,
+		    signal_filter        = false,
+		    signal_configs       = '[]'::jsonb,
+		    adopt_position_data  = NULL,
+		    updated_at           = NOW()
 		WHERE id = $1`,
-		strategyID, sizeUsdt, string(adoptBytes),
+		strategyID, sizeUsdt,
 	); err != nil {
 		s.logBotEvent(ctx, botID,
 			fmt.Sprintf("Хедж: %s — ошибка передачи в грид: %v", symbol, err),
@@ -1466,22 +1507,60 @@ func (s *Server) releaseHedgeToGrid(ctx context.Context, botID, strategyID, symb
 		return
 	}
 
-	// End the active cycle so the engine starts a fresh grid cycle that
-	// consumes adopt_position_data and places only the TP.
-	s.pool.Exec(ctx, //nolint:errcheck
-		`UPDATE strategy_cycles SET ended_at=NOW() WHERE strategy_id=$1 AND ended_at IS NULL`,
-		strategyID)
-
 	go s.engine.Notify(context.Background(), strategyID)
 
 	s.pool.Exec(ctx, //nolint:errcheck
-		`UPDATE hedge_sessions SET ended_at=NOW() WHERE hedge_strategy_id=$1 AND ended_at IS NULL`,
+		`UPDATE hedge_sessions SET ended_at=NOW(), end_reason='deactivation' WHERE hedge_strategy_id=$1 AND ended_at IS NULL`,
 		strategyID)
 	s.restoreHedgeMainControls(ctx, botID, strategyID)
 
 	s.logBotEvent(ctx, botID,
 		fmt.Sprintf("Хедж: %s — позиция передана в грид (TP=0.5%%, без СЛ): %s", symbol, reason),
 		"info", "hedge")
+
+	// Delete the old stopped main (it has zero exchange position — TP already fired).
+	// ON DELETE CASCADE removes its cycles, levels and events automatically.
+	if oldMainID != "" {
+		var acctID string
+		if err := s.pool.QueryRow(ctx,
+			`DELETE FROM strategies WHERE id=$1 AND status='stopped' RETURNING account_id`,
+			oldMainID,
+		).Scan(&acctID); err == nil {
+			go s.engine.ForceRemoveStrategy(context.Background(), oldMainID, acctID)
+			s.logBotEvent(ctx, botID,
+				fmt.Sprintf("Хедж: старый мейн %s удалён после переворота", oldMainID[:8]),
+				"info", "hedge")
+		}
+	}
+
+	// Immediately create a new matrix hedge for the promoted standalone position.
+	// Direction is the opposite of the promoted strategy's side.
+	newHedgeDir := "short"
+	if hedgePos.Side == "Sell" {
+		newHedgeDir = "long"
+	}
+	var ownerID, acctID string
+	var wl, bl []string
+	var cfgRaw []byte
+	if err := s.pool.QueryRow(ctx,
+		`SELECT owner_id, account_id, symbol_whitelist, symbol_blacklist, strategy_config
+		 FROM bots WHERE id=$1`, botID,
+	).Scan(&ownerID, &acctID, &wl, &bl, &cfgRaw); err == nil {
+		var cfg botCfgJSON
+		if json.Unmarshal(cfgRaw, &cfg) == nil {
+			b := botEngineRow{id: botID, ownerID: ownerID, accountID: acctID, whitelist: wl, blacklist: bl}
+			s.cleanupStoppedHedgeCards(ctx, botID, symbol, newHedgeDir)
+			if newID, err := s.createBotStrategy(ctx, b, cfg, symbol, newHedgeDir, 0, strategyID, nil); err != nil {
+				s.logBotEvent(ctx, botID,
+					fmt.Sprintf("Хедж: ошибка создания нового хеджа %s после переворота: %v", symbol, err),
+					"error", "hedge")
+			} else {
+				s.logBotEvent(ctx, botID,
+					fmt.Sprintf("Хедж: новый %s хедж создан после переворота %s → %s", newHedgeDir, symbol, newID[:8]),
+					"info", "hedge")
+			}
+		}
+	}
 }
 
 // handleMainTpFlip is called when a main strategy closes at TP.
@@ -1526,8 +1605,8 @@ func (s *Server) handleMainTpFlip(ctx context.Context, mainStrategyID string) {
 	// Compute total filled size and weighted-average entry from DB.
 	var hedgeSize, hedgeEntry float64
 	s.pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(sl.filled_qty), 0),
-		       COALESCE(SUM(sl.filled_qty * sl.fill_price) / NULLIF(SUM(sl.filled_qty), 0), 0)
+		SELECT COALESCE(SUM(sl.qty::numeric), 0),
+		       COALESCE(SUM(sl.qty::numeric * sl.filled_price) / NULLIF(SUM(sl.qty::numeric), 0), 0)
 		FROM strategy_levels sl
 		JOIN strategy_cycles sc ON sl.cycle_id = sc.id
 		WHERE sc.strategy_id = $1
@@ -1559,7 +1638,14 @@ func (s *Server) handleMainTpFlip(ctx context.Context, mainStrategyID string) {
 }
 
 // stopHedgeStrategy sets a hedge strategy to 'stopped' and notifies the engine.
-func (s *Server) stopHedgeStrategy(ctx context.Context, botID, strategyID, symbol, reason string) {
+// stopHedgeStrategy stops a hedge strategy and closes its current session row.
+// endReason records WHY the session ended — only "paired_close" represents the
+// genuine configured paired-close target; all other reasons (position_gone,
+// main_closed, deactivation, trailing_profit) are intermediate stops after
+// which the pair is expected to reactivate, so the cumulative PnL counter
+// (see GetHedgeSession) keeps summing across the session chain until it hits
+// a session whose end_reason is "paired_close".
+func (s *Server) stopHedgeStrategy(ctx context.Context, botID, strategyID, symbol, endReason, reason string) {
 	if _, err := s.pool.Exec(ctx,
 		`UPDATE strategies SET status='stopped', updated_at=NOW() WHERE id=$1`,
 		strategyID); err != nil {
@@ -1571,9 +1657,9 @@ func (s *Server) stopHedgeStrategy(ctx context.Context, botID, strategyID, symbo
 	go s.engine.Notify(context.Background(), strategyID)
 	// Close the hedge session.
 	s.pool.Exec(ctx, //nolint:errcheck
-		`UPDATE hedge_sessions SET ended_at = NOW()
+		`UPDATE hedge_sessions SET ended_at = NOW(), end_reason = $2
 		 WHERE hedge_strategy_id = $1 AND ended_at IS NULL`,
-		strategyID)
+		strategyID, endReason)
 	// Restore main strategy controls when this hedge deactivates.
 	s.restoreHedgeMainControls(ctx, botID, strategyID)
 	s.logBotEvent(ctx, botID,

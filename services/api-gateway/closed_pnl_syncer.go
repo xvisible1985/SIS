@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"sis/pkg/crypto"
+	"sis/pkg/strategy"
 	"sis/pkg/trader"
 )
 
@@ -154,7 +155,7 @@ func (s *ClosedPnlSyncer) syncAccount(ctx context.Context, a closedPnlAccount, c
 			if closeTime.After(newLast) {
 				newLast = closeTime
 			}
-			s.processClosedPnl(ctx, a, p, closeTime)
+			s.processClosedPnl(ctx, a, creds, p, closeTime)
 		}
 	}
 
@@ -163,7 +164,7 @@ func (s *ClosedPnlSyncer) syncAccount(ctx context.Context, a closedPnlAccount, c
 	s.mu.Unlock()
 }
 
-func (s *ClosedPnlSyncer) processClosedPnl(ctx context.Context, a closedPnlAccount, p trader.ClosedPnl, closeTime time.Time) {
+func (s *ClosedPnlSyncer) processClosedPnl(ctx context.Context, a closedPnlAccount, creds trader.Credentials, p trader.ClosedPnl, closeTime time.Time) {
 	if p.OrderId == "" {
 		return
 	}
@@ -214,7 +215,66 @@ func (s *ClosedPnlSyncer) processClosedPnl(ctx context.Context, a closedPnlAccou
 		return
 	}
 
-	// 3. Manual trade — write to trade_history.
+	// 3. Zombie cycle — open cycle whose closeCycle was missed (gateway was down).
+	// Ghost-close it and record as a strategy trade instead of manual.
+	var zc struct {
+		cycleID   string
+		cycleNum  int
+		startedAt time.Time
+		tpOrderID string
+		slOrderID string
+		stratID   string
+		botID     *string
+		category  string
+		hedgeMode bool
+	}
+	zombieErr := s.pool.QueryRow(ctx, `
+		SELECT sc.id, sc.cycle_num, sc.started_at,
+		       COALESCE(sc.tp_order_id,''), COALESCE(sc.sl_order_id,''),
+		       st.id, st.bot_id, st.category, COALESCE(st.hedge_mode, true)
+		FROM strategy_cycles sc
+		JOIN strategies st ON st.id = sc.strategy_id
+		WHERE st.account_id = $1
+		  AND st.symbol     = $2
+		  AND st.direction  = $3
+		  AND sc.ended_at IS NULL
+		ORDER BY sc.started_at DESC
+		LIMIT 1`,
+		a.id, p.Symbol, dir,
+	).Scan(&zc.cycleID, &zc.cycleNum, &zc.startedAt,
+		&zc.tpOrderID, &zc.slOrderID,
+		&zc.stratID, &zc.botID, &zc.category, &zc.hedgeMode)
+	if zombieErr == nil {
+		tag, _ := s.pool.Exec(ctx,
+			`UPDATE strategy_cycles SET ended_at=$1, result='ghost_close'
+			 WHERE id=$2 AND ended_at IS NULL`,
+			closeTime, zc.cycleID)
+		if tag.RowsAffected() > 0 {
+			log.Printf("closed_pnl_syncer: %s %s zombie цикл %s → ghost_close, запись сделки...", p.Symbol, dir, zc.cycleID[:8])
+			in := strategy.TradeRecordInput{
+				Strategy: strategy.Strategy{
+					ID:        zc.stratID,
+					AccountID: a.id,
+					OwnerID:   a.ownerID,
+					Symbol:    p.Symbol,
+					Category:  zc.category,
+					Direction: strategy.Direction(dir),
+					BotID:     zc.botID,
+					HedgeMode: zc.hedgeMode,
+				},
+				CycleID:   zc.cycleID,
+				CycleNum:  zc.cycleNum,
+				StartedAt: zc.startedAt,
+				Result:    "ghost_close",
+				TPOrderID: zc.tpOrderID,
+				SLOrderID: zc.slOrderID,
+			}
+			go strategy.RecordStrategyTrade(s.pool, creds, in)
+		}
+		return
+	}
+
+	// 4. Manual trade — write to trade_history.
 	grossPnl, _ := strconv.ParseFloat(p.ClosedPnl, 64)
 	avgEntry, _ := strconv.ParseFloat(p.AvgEntryPrice, 64)
 	avgExit, _ := strconv.ParseFloat(p.AvgExitPrice, 64)

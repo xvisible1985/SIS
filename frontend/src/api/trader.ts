@@ -79,6 +79,7 @@ export interface ClosedPnlItem {
   closedPnl: string
   leverage: string
   createdTime: string
+  updatedTime: string
   category: string
 }
 

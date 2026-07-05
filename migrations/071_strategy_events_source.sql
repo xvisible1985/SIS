@@ -1,0 +1,1 @@
+ALTER TABLE strategy_events ADD COLUMN IF NOT EXISTS source VARCHAR(50);

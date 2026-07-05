@@ -91,6 +91,7 @@ export interface MatrixBotDefaults {
   matrix_entry_level?: MatrixEntryLevel
   hedge_deact_close_type?: number
   hedge_deact_close_value?: number
+  hedge_breakeven_profit?: number
   hedge_profit_lazy?: boolean
   hedge_profit_lazy_pct?: number
 }
