@@ -832,6 +832,7 @@ type botCfgJSON struct {
 	ProtectedBuild        bool            `json:"protected_build"`
 	MatrixRebuildOnSL     bool            `json:"matrix_rebuild_on_sl"`
 	MatrixRebuildFromEntry bool           `json:"matrix_rebuild_from_entry"`
+	RelativeSlots         bool            `json:"relative_slots"`
 }
 
 // computeOpportunityScore returns a ranking score for a symbol based on the bot's
@@ -1014,7 +1015,7 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		   trailing_stop_enabled, trailing_activation_pct, trailing_callback_pct,
 		   cycle_count, max_cycles, size_as_main,
 		   matrix_levels, matrix_entry_level, safe_zone_pct,
-		   protected_build, matrix_rebuild_on_sl, matrix_rebuild_from_entry,
+		   protected_build, matrix_rebuild_on_sl, matrix_rebuild_from_entry, relative_slots,
 		   hedged_strategy_id, adopt_position_data)
 		VALUES ($1,$2,$3,$4,$5,$6,'active',
 		        $7,$8,$9,$10,
@@ -1024,8 +1025,8 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		        $23,$24,$25,
 		        $26, $27, $28,
 		        ($29::text)::jsonb, ($30::text)::jsonb, $31,
-		        $32, $33, $34,
-		        NULLIF($35,'')::uuid, ($36::text)::jsonb)
+		        $32, $33, $34, $35,
+		        NULLIF($36,'')::uuid, ($37::text)::jsonb)
 		ON CONFLICT DO NOTHING
 		RETURNING id`,
 		b.ownerID, b.accountID, b.id, sym, category, dir,
@@ -1036,7 +1037,7 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		cfg.TrailingEnabled, trailingActPct, trailingCallPct,
 		0, cfg.MaxCycles, cfg.SizeAsMain,
 		matrixLevelsParam, matrixEntryParam, cfg.SafeZonePct,
-		cfg.ProtectedBuild, cfg.MatrixRebuildOnSL, cfg.MatrixRebuildFromEntry,
+		cfg.ProtectedBuild, cfg.MatrixRebuildOnSL, cfg.MatrixRebuildFromEntry, cfg.RelativeSlots,
 		hedgedStrategyID, adoptJSON,
 	).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {

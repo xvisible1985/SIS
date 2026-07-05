@@ -119,6 +119,7 @@ type strategyPayload struct {
 	ProtectedBuild          bool            `json:"protected_build"`
 	MatrixRebuildOnSL       bool            `json:"matrix_rebuild_on_sl"`
 	MatrixRebuildFromEntry  bool            `json:"matrix_rebuild_from_entry"`
+	RelativeSlots           bool            `json:"relative_slots"`
 	SizeAsMain              bool            `json:"size_as_main"`
 	TPSignalName            *string         `json:"tp_signal_name"`
 	TPSignalDir             *string         `json:"tp_signal_dir"`
@@ -177,7 +178,7 @@ const listStrategiesQuery = `
 		s.trailing_stop_enabled, s.trailing_activation_pct, s.trailing_callback_pct,
 		(s.matrix_levels::text), COALESCE(s.safe_zone_pct,0), (s.matrix_entry_level::text),
 		COALESCE(s.protected_build,false), COALESCE(s.matrix_rebuild_on_sl,false),
-		COALESCE(s.matrix_rebuild_from_entry,false), COALESCE(s.size_as_main,false),
+		COALESCE(s.matrix_rebuild_from_entry,false), COALESCE(s.relative_slots,false), COALESCE(s.size_as_main,false),
 		s.hedged_strategy_id,
 		s.tp_signal_name, s.tp_signal_dir, s.sl_signal_name, s.sl_signal_dir,
 		COALESCE(s.tp_signal_configs::text,'[]'), COALESCE(s.sl_signal_configs::text,'[]'),
@@ -271,6 +272,7 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 		ProtectedBuild          bool            `json:"protected_build"`
 		MatrixRebuildOnSL       bool            `json:"matrix_rebuild_on_sl"`
 		MatrixRebuildFromEntry  bool            `json:"matrix_rebuild_from_entry"`
+		RelativeSlots           bool            `json:"relative_slots"`
 		SizeAsMain              bool            `json:"size_as_main"`
 		HedgedStrategyID        *string         `json:"hedged_strategy_id"`
 		CreatedAt               time.Time       `json:"created_at"`
@@ -304,7 +306,7 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 			&scStr, &stepsStr,
 			&r.TrailingStopEnabled, &r.TrailingActivationPct, &r.TrailingCallbackPct,
 			&matrixStr, &r.SafeZonePct, &entryLevelStr, &r.ProtectedBuild, &r.MatrixRebuildOnSL,
-			&r.MatrixRebuildFromEntry, &r.SizeAsMain,
+			&r.MatrixRebuildFromEntry, &r.RelativeSlots, &r.SizeAsMain,
 			&r.HedgedStrategyID,
 			&r.TPSignalName, &r.TPSignalDir, &r.SLSignalName, &r.SLSignalDir,
 			&tpSigCfgStr, &slSigCfgStr,

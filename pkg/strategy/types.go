@@ -116,6 +116,7 @@ type Strategy struct {
 	ProtectedBuild        bool
 	RebuildOnSL           bool // Перестройка сетки от SZ: после SL немедленно переставить уровни от нижней границы SZ
 	RebuildFromEntry      bool // Якорь на точку входа: все уровни строятся от цены заполнения L(0); SL L(0) тоже ждёт SZ и перезаходит
+	RelativeSlots         bool // Novabot-style: после SL слоты перенумеровываются к точке входа; взаимоисключимо с RebuildOnSL/RebuildFromEntry
 	SizeAsMain            bool // Deposit = Main-position volume: each slot sized against opposite-direction position's USDT value
 
 	// AdoptPositionData — when non-nil, startMatrixCycle marks L(0) as already-filled

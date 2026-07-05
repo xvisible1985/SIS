@@ -705,8 +705,9 @@ func (s *Server) syncBotStrategies(ctx context.Context, botID string) {
 		   safe_zone_pct      = CASE WHEN $20::float8 > 0 THEN $20 ELSE safe_zone_pct END,
 		   protected_build    = $21,
 		   matrix_rebuild_on_sl      = $22,
-		   matrix_rebuild_from_entry = $23
-		 WHERE bot_id = $24 AND status IN ('active','finishing')
+		   matrix_rebuild_from_entry = $23,
+		   relative_slots            = $24
+		 WHERE bot_id = $25 AND status IN ('active','finishing')
 		 RETURNING id`,
 		gridLevels, gridActive, gridStep, gridSize,
 		tpMode, tpPct, slType, slPct, syncSignalFilter,
@@ -714,7 +715,7 @@ func (s *Server) syncBotStrategies(ctx context.Context, botID string) {
 		string(scJSON), stepsParam,
 		cfg.TrailingEnabled, trailingActPct, trailingCallPct,
 		matrixLevelsParam, matrixEntryParam, cfg.SafeZonePct,
-		cfg.ProtectedBuild, cfg.MatrixRebuildOnSL, cfg.MatrixRebuildFromEntry,
+		cfg.ProtectedBuild, cfg.MatrixRebuildOnSL, cfg.MatrixRebuildFromEntry, cfg.RelativeSlots,
 		botID,
 	)
 	if err != nil {
