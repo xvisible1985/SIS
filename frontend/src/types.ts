@@ -279,6 +279,7 @@ export interface Strategy {
   protected_build?: boolean | null
   matrix_rebuild_on_sl?: boolean | null
   matrix_rebuild_from_entry?: boolean | null
+  relative_slots?: boolean | null
   size_as_main?: boolean | null
   hedged_strategy_id?: string | null
   matrix_entry_level?: MatrixEntryLevel | null
@@ -312,6 +313,7 @@ export interface StrategyLevel {
   filled_price: number
   exchange_order_id: string
   slot?: number | null
+  relative_slot?: number
   sl_order_id?: string
   sl_price?: number
   sl_replaced?: boolean

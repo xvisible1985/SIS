@@ -28,6 +28,7 @@ interface Props {
   stratIdShort?: string | null
   currentCycleNum?: number | null
   strategyLevels?: StrategyLevel[]
+  relativeSlots?: boolean
   tickerPrices?: Map<string, number>
   safeZone?: { low: number; high: number } | null
   hedgePairTarget?: number | null
@@ -107,7 +108,7 @@ function isOtherStrategyLinkId(linkId: string | undefined, stratIdShort: string 
   return /^(?:SIS_STR|STP|STR)-[a-f0-9]/.test(linkId) && !linkId.includes(stratIdShort)
 }
 
-export function Chart({ candles, candleSymbol, positions, orders, executions, symbol, lastPrice, onLoadMore, overlaySettings, strategyDir, stratIdShort, currentCycleNum, strategyLevels, tickerPrices, safeZone, hedgePairTarget }: Props) {
+export function Chart({ candles, candleSymbol, positions, orders, executions, symbol, lastPrice, onLoadMore, overlaySettings, strategyDir, stratIdShort, currentCycleNum, strategyLevels, relativeSlots, tickerPrices, safeZone, hedgePairTarget }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -444,10 +445,22 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         .filter(l => l.slot != null)
         .map(l => [l.level_idx, l.slot as number])
     )
+    // Relative-slots (Novabot) mode: label by the renumbered relative_slot instead of
+    // the absolute slot. Falls back to the absolute slot when a relative number is absent.
+    const levelRelSlotMap = new Map<number, number>(
+      (strategyLevels ?? [])
+        .filter(l => l.relative_slot != null && l.relative_slot !== 0)
+        .map(l => [l.level_idx, l.relative_slot as number])
+    )
     const resolveLabel = (lbl: string): string => {
       const m = lbl.match(/^L(\d+)$/)
       if (!m) return lbl
-      const slot = levelSlotMap.get(parseInt(m[1]))
+      const idx = parseInt(m[1])
+      if (relativeSlots) {
+        const rel = levelRelSlotMap.get(idx)
+        if (rel != null) return `L(${rel})`
+      }
+      const slot = levelSlotMap.get(idx)
       return slot != null ? `L(${slot})` : lbl
     }
 

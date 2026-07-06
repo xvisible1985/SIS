@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -867,6 +868,7 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 		SLPrice         float64 `json:"sl_price,omitempty"`
 		SLReplaced      bool    `json:"sl_replaced,omitempty"`
 		ForceVirtual    bool    `json:"force_virtual,omitempty"`
+		RelativeSlot    int     `json:"relative_slot,omitempty"`
 	}
 	var levels []levelInfo
 	var volumeUSDT, totalCost, totalCoins float64
@@ -899,6 +901,45 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 	var avgEntry float64
 	if totalCoins > 0 && !cycleEnded {
 		avgEntry = totalCost / totalCoins
+	}
+
+	// Relative slot labels (Novabot relative_slots mode): rank filled accumulation
+	// slots by distance from entry (closest = 1 → L(-1)). Additive and harmless in
+	// absolute mode; the frontend renders it only when the strategy is in relative mode.
+	{
+		entryPrice := 0.0
+		for i := range levels {
+			if levels[i].Slot != nil && *levels[i].Slot == 0 && levels[i].FilledPrice > 0 {
+				entryPrice = levels[i].FilledPrice
+			}
+		}
+		type rl struct {
+			i    int
+			dist float64
+		}
+		var acc []rl
+		for i := range levels {
+			l := &levels[i]
+			if l.Slot == nil || *l.Slot == 0 || l.Status != "filled" {
+				continue
+			}
+			price := l.FilledPrice
+			if price == 0 {
+				price = l.TargetPrice
+			}
+			if price <= 0 {
+				continue
+			}
+			d := price - entryPrice
+			if d < 0 {
+				d = -d
+			}
+			acc = append(acc, rl{i, d})
+		}
+		sort.Slice(acc, func(a, b int) bool { return acc[a].dist < acc[b].dist })
+		for r, a := range acc {
+			levels[a.i].RelativeSlot = -(r + 1)
+		}
 	}
 
 	// Compute safe zone from the engine's in-memory state (matrix only).
