@@ -420,6 +420,7 @@ export interface StrategyFormData {
   protected_build: boolean
   matrix_rebuild_on_sl: boolean
   matrix_rebuild_from_entry: boolean
+  relative_slots: boolean
   size_as_main: boolean
   matrix_entry_level: MatrixEntryLevel
   adopt_position_data?: { size: string; entry_price: string } | null

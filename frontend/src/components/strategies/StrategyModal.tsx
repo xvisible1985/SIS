@@ -53,6 +53,7 @@ function defaultForm(): StrategyFormData {
     protected_build: false,
     matrix_rebuild_on_sl: false,
     matrix_rebuild_from_entry: false,
+    relative_slots: false,
     size_as_main: false,
     matrix_entry_level: DEFAULT_MATRIX_ENTRY,
     tp_signal_configs: null,
@@ -105,6 +106,7 @@ function strategyToForm(s: Strategy): StrategyFormData {
     protected_build: s.protected_build ?? false,
     matrix_rebuild_on_sl: s.matrix_rebuild_on_sl ?? false,
     matrix_rebuild_from_entry: s.matrix_rebuild_from_entry ?? false,
+    relative_slots: s.relative_slots ?? false,
     size_as_main: s.size_as_main ?? false,
     matrix_entry_level: s.matrix_entry_level ?? DEFAULT_MATRIX_ENTRY,
     tp_signal_configs: s.tp_signal_configs ?? null,
@@ -1158,7 +1160,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                   <Toggle
                     options={[{ label: 'Выкл', value: 'false' }, { label: '⟳ Вкл', value: 'true' }]}
                     value={String(form.matrix_rebuild_on_sl ?? false)}
-                    onChange={v => patch({ matrix_rebuild_on_sl: v === 'true' })}
+                    onChange={v => patch(v === 'true' ? { matrix_rebuild_on_sl: true, relative_slots: false } : { matrix_rebuild_on_sl: false })}
                     optionColors={{ true: 'bg-blue-700 text-white' }}
                     className="h-[34px]"
                     btnClassName="h-full"
@@ -1172,8 +1174,22 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                   <Toggle
                     options={[{ label: 'Выкл', value: 'false' }, { label: '⚓ Вкл', value: 'true' }]}
                     value={String(form.matrix_rebuild_from_entry ?? false)}
-                    onChange={v => patch({ matrix_rebuild_from_entry: v === 'true' })}
+                    onChange={v => patch(v === 'true' ? { matrix_rebuild_from_entry: true, relative_slots: false } : { matrix_rebuild_from_entry: false })}
                     optionColors={{ true: 'bg-violet-700 text-white' }}
+                    className="h-[34px]"
+                    btnClassName="h-full"
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>
+                    ↻ Относительные слоты (Novabot)
+                    <Tip text="После срабатывания SL внутреннего слота остальные перенумеровываются к входу, а следующий слот берётся по параметрам освободившейся глубины. Взаимоисключимо с перестройкой сетки." />
+                  </label>
+                  <Toggle
+                    options={[{ label: 'Выкл', value: 'false' }, { label: '↻ Вкл', value: 'true' }]}
+                    value={String(form.relative_slots ?? false)}
+                    onChange={v => patch(v === 'true' ? { relative_slots: true, matrix_rebuild_on_sl: false, matrix_rebuild_from_entry: false } : { relative_slots: false })}
+                    optionColors={{ true: 'bg-emerald-700 text-white' }}
                     className="h-[34px]"
                     btnClassName="h-full"
                   />

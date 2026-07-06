@@ -174,6 +174,7 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
         matrix_entry_level: { size_pct: 100, stop_pct: null, stop_cond_pct: null, stop_replace_pct: null, tp_pct: 1.5 },
         matrix_rebuild_on_sl: false,
         matrix_rebuild_from_entry: false,
+        relative_slots: false,
         size_as_main: false,
       })
       listStrategies().then(setStrategies).catch(() => {})

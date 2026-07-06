@@ -395,7 +395,7 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		   matrix_rebuild_from_entry, size_as_main,
 		   tp_signal_name, tp_signal_dir, sl_signal_name, sl_signal_dir,
 		   tp_signal_configs, sl_signal_configs,
-		   adopt_position_data)
+		   adopt_position_data, relative_slots)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
 		        $16,$17,$18,$19,$20,
 		        $21::jsonb, ($22::text)::jsonb,
@@ -403,7 +403,7 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		        ($26::text)::jsonb, $27, ($28::text)::jsonb, $29, $30, $31, $32,
 		        $33,$34,$35,$36,
 		        ($37::text)::jsonb, ($38::text)::jsonb,
-		        ($39::text)::jsonb)
+		        ($39::text)::jsonb, $40)
 		RETURNING id`,
 		userID, req.AccountID, req.Symbol, req.Category, req.Direction,
 		req.GridLevels, req.GridActive, req.MaxStopActive, req.GridStepPct, req.GridSizeUSDT,
@@ -415,7 +415,7 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		req.ProtectedBuild, req.MatrixRebuildOnSL, req.MatrixRebuildFromEntry, req.SizeAsMain,
 		req.TPSignalName, req.TPSignalDir, req.SLSignalName, req.SLSignalDir,
 		nullableJSONB(req.TPSignalConfigs), nullableJSONB(req.SLSignalConfigs),
-		nullableJSONB(req.AdoptPositionData),
+		nullableJSONB(req.AdoptPositionData), req.RelativeSlots,
 	).Scan(&id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -491,6 +491,7 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		  matrix_rebuild_from_entry=$29, size_as_main=$30,
 		  tp_signal_name=$31, tp_signal_dir=$32, sl_signal_name=$33, sl_signal_dir=$34,
 		  tp_signal_configs=($35::text)::jsonb, sl_signal_configs=($36::text)::jsonb,
+		  relative_slots=$39,
 		  updated_at=NOW()
 		WHERE id=$37 AND owner_id=$38`,
 		req.Symbol, req.Category, req.Direction,
@@ -504,7 +505,7 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		req.ProtectedBuild, req.MatrixRebuildOnSL, req.MatrixRebuildFromEntry, req.SizeAsMain,
 		req.TPSignalName, req.TPSignalDir, req.SLSignalName, req.SLSignalDir,
 		nullableJSONB(req.TPSignalConfigs), nullableJSONB(req.SLSignalConfigs),
-		id, userID,
+		id, userID, req.RelativeSlots,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

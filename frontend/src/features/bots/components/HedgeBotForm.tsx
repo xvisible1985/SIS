@@ -117,6 +117,7 @@ function defaultStratConfig(bot?: BotType): StrategyConfig {
     protected_build:         s.protected_build         ?? false,
     matrix_rebuild_on_sl:    s.matrix_rebuild_on_sl    ?? false,
     matrix_rebuild_from_entry: s.matrix_rebuild_from_entry ?? false,
+    relative_slots:          s.relative_slots          ?? false,
     size_as_main:            s.size_as_main            ?? false,
     hedge_tp_main_mode:      s.hedge_tp_main_mode      ?? 'cancel',
   };
@@ -259,6 +260,7 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
         if (d.protected_build !== undefined) o.protected_build = d.protected_build
         if (d.matrix_rebuild_on_sl !== undefined) o.matrix_rebuild_on_sl = d.matrix_rebuild_on_sl
         if (d.matrix_rebuild_from_entry !== undefined) o.matrix_rebuild_from_entry = d.matrix_rebuild_from_entry
+        if (d.relative_slots !== undefined) o.relative_slots = d.relative_slots
         if (d.matrix_levels)       o.matrix_levels       = d.matrix_levels
         if (d.matrix_entry_level)  o.matrix_entry_level  = d.matrix_entry_level
         return { ...c, ...o }
@@ -1493,7 +1495,7 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
                         <Toggle
                           options={[{ label: 'Выкл', value: 'false' }, { label: '⟳ Вкл', value: 'true' }]}
                           value={String(config.matrix_rebuild_on_sl ?? false)}
-                          onChange={v => patch({ matrix_rebuild_on_sl: v === 'true' })}
+                          onChange={v => patch(v === 'true' ? { matrix_rebuild_on_sl: true, relative_slots: false } : { matrix_rebuild_on_sl: false })}
                           optionColors={{ true: 'bg-blue-700 text-white' }}
                         />
                       </div>
@@ -1505,8 +1507,20 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
                         <Toggle
                           options={[{ label: 'Выкл', value: 'false' }, { label: '⚓ Вкл', value: 'true' }]}
                           value={String(config.matrix_rebuild_from_entry ?? false)}
-                          onChange={v => patch({ matrix_rebuild_from_entry: v === 'true' })}
+                          onChange={v => patch(v === 'true' ? { matrix_rebuild_from_entry: true, relative_slots: false } : { matrix_rebuild_from_entry: false })}
                           optionColors={{ true: 'bg-violet-700 text-white' }}
+                        />
+                      </div>
+                      <div>
+                        <label className={labelCls}>
+                          ↻ Относительные слоты (Novabot)
+                          <Tip text="После срабатывания SL внутреннего слота остальные перенумеровываются к входу, а следующий слот берётся по параметрам освободившейся глубины. Взаимоисключимо с перестройкой сетки." />
+                        </label>
+                        <Toggle
+                          options={[{ label: 'Выкл', value: 'false' }, { label: '↻ Вкл', value: 'true' }]}
+                          value={String(config.relative_slots ?? false)}
+                          onChange={v => patch(v === 'true' ? { relative_slots: true, matrix_rebuild_on_sl: false, matrix_rebuild_from_entry: false } : { relative_slots: false })}
+                          optionColors={{ true: 'bg-emerald-700 text-white' }}
                         />
                       </div>
                     </div>
