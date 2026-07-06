@@ -871,6 +871,13 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 	}
 	sr.lastMatrixPrice = currentPrice
 
+	// Relative-slots mode: progressive expansion replaces the absolute waiting/virtual/
+	// stop-cond logic below. See matrixRelativeExpand and the design doc.
+	if sr.strategy.RelativeSlots {
+		sr.matrixRelativeExpand(ctx, currentPrice)
+		return
+	}
+
 	// 1. Check waiting slots for re-entry
 	if len(sr.matrixWaitingSlots) > 0 {
 		sr.matrixCheckWaitingReentry(ctx, currentPrice)
@@ -1582,6 +1589,15 @@ func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string
 	closed.SLOrderID = ""
 	sr.warn(ctx, fmt.Sprintf("Matrix SL сработал %s @ %.4f",
 		slotLabel(closed.Slot), slTrigger))
+
+	// Relative-slots mode: the slot is closed for good. Skip the absolute re-entry /
+	// rebuild paths below (matrixWaitingSlots, matrixRebuildFromSZLow, RebuildFromEntry) —
+	// the drop in open-slot count makes the next relative slot recompute on the next
+	// price tick (see matrixRelativeExpand). Other slots' SLs are untouched.
+	if sr.strategy.RelativeSlots {
+		sr.matrixUpdateTP(ctx) // recompute global TP from the new average entry
+		return
+	}
 
 	// Mark slot as waiting for re-entry.
 	// RebuildFromEntry: L(0) SL also triggers waiting — it re-enters at market after SZ clears.
