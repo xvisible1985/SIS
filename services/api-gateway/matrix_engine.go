@@ -29,7 +29,67 @@ func (s *Server) processMatrixBot(ctx context.Context, botID, ownerID, accountID
 	posMap, _ := buildHedgePosMap(rawPositions)
 
 	s.checkMatrixPairedClose(ctx, botID, cfg, posMap)
+	s.checkMatrixZombieStrategies(ctx, botID, posMap)
 	s.ensureMatrixStrategies(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, creds, posMap)
+}
+
+// checkMatrixZombieStrategies stops bot matrix strategies stuck in status='active'
+// with no active cycle — a "zombie". maybeRestart stops bot strategies after a cycle
+// closes and relies on the bot to recreate them, but ensureMatrixStrategies only
+// recreates when NO active strategy exists for the direction. So a strategy left
+// 'active' with a dead cycle (e.g. a dropped restart task, or a ghost_close that did
+// not set 'stopped') never reopens on its own. Stopping it here lets
+// ensureMatrixStrategies recreate a fresh leg on the same tick.
+//
+// Safety: a leg whose exchange position is still open is skipped — the strategy engine
+// reopens/adopts an existing position; stopping it would let ensureMatrixStrategies open
+// a SECOND position. A 2-minute grace period avoids racing a normal in-flight restart.
+func (s *Server) checkMatrixZombieStrategies(ctx context.Context, botID string, posMap map[string]map[string]hedgePosInfo) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT s.id, s.symbol, s.direction
+		 FROM strategies s
+		 WHERE s.bot_id=$1 AND s.strategy_type='matrix' AND s.status='active'
+		   AND NOT EXISTS (SELECT 1 FROM strategy_cycles c WHERE c.strategy_id=s.id AND c.ended_at IS NULL)
+		   AND COALESCE(
+		         (SELECT MAX(ended_at) FROM strategy_cycles c WHERE c.strategy_id=s.id),
+		         s.created_at
+		       ) < NOW() - INTERVAL '2 minutes'`,
+		botID)
+	if err != nil {
+		return
+	}
+	type zombie struct{ id, symbol, dir string }
+	var zombies []zombie
+	for rows.Next() {
+		var z zombie
+		if rows.Scan(&z.id, &z.symbol, &z.dir) == nil {
+			zombies = append(zombies, z)
+		}
+	}
+	rows.Close()
+
+	for _, z := range zombies {
+		side := "Buy"
+		if z.dir == "short" {
+			side = "Sell"
+		}
+		if bySym, ok := posMap[z.symbol]; ok {
+			if p, ok := bySym[side]; ok && p.Size > 0 {
+				continue // position still open — leave it for the engine to reopen/adopt
+			}
+		}
+		if _, err := s.pool.Exec(ctx,
+			`UPDATE strategies SET status='stopped', updated_at=NOW() WHERE id=$1 AND status='active'`, z.id,
+		); err != nil {
+			continue
+		}
+		if s.engine != nil {
+			go s.engine.Notify(context.Background(), z.id)
+		}
+		s.logBotEvent(ctx, botID,
+			fmt.Sprintf("Матрикс: %s %s — зомби-стратегия (active без цикла) остановлена для пересоздания", z.symbol, z.dir),
+			"warn", "matrix")
+	}
 }
 
 // checkMatrixPairedClose inspects all active strategy pairs (long+short) for this bot
