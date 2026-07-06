@@ -61,6 +61,7 @@ export type StrategyConfig = {
   protected_build?: boolean;
   matrix_rebuild_on_sl?: boolean;
   matrix_rebuild_from_entry?: boolean;
+  relative_slots?: boolean;
   size_as_main?: boolean;
   // Hedge bot activation (see HedgeBotForm)
   hedge_act_type?: number;          // 0=last_order%, 1=drawdown%, 2=pnl$, 3=roi%

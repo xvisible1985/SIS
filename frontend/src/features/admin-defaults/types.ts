@@ -40,6 +40,7 @@ export interface MatrixDefaults {
   protected_build?: boolean
   matrix_rebuild_on_sl?: boolean
   matrix_rebuild_from_entry?: boolean
+  relative_slots?: boolean
   matrix_levels?: MatrixLevel[]
   matrix_entry_level?: MatrixEntryLevel
 }
@@ -57,6 +58,7 @@ export interface HedgeBotDefaults {
   protected_build?: boolean
   matrix_rebuild_on_sl?: boolean
   matrix_rebuild_from_entry?: boolean
+  relative_slots?: boolean
   matrix_levels?: MatrixLevel[]
   matrix_entry_level?: MatrixEntryLevel
   // Hedge activation/deactivation
@@ -87,6 +89,7 @@ export interface MatrixBotDefaults {
   protected_build?: boolean
   matrix_rebuild_on_sl?: boolean
   matrix_rebuild_from_entry?: boolean
+  relative_slots?: boolean
   matrix_levels?: MatrixLevel[]
   matrix_entry_level?: MatrixEntryLevel
   hedge_deact_close_type?: number
