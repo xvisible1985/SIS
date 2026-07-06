@@ -337,13 +337,19 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 	}
 
 	// Build slot list: entry (0), below (-1, -2, ...), above (+1, +2, ...)
+	// Relative-slots mode: pre-place ONLY the L(0) entry. Accumulation slots
+	// (L(-1), L(-2)… / L(+1)…) are placed progressively by matrixRelativeExpand as
+	// price reaches each relative level — pre-placing them here would make the
+	// expander's "already pending/placed" guard always true and kill progression.
 	var slots []int
 	slots = append(slots, 0)
-	for i := range below {
-		slots = append(slots, -(i + 1))
-	}
-	for i := range above {
-		slots = append(slots, i+1)
+	if !sr.strategy.RelativeSlots {
+		for i := range below {
+			slots = append(slots, -(i + 1))
+		}
+		for i := range above {
+			slots = append(slots, i+1)
+		}
 	}
 
 	for _, slot := range slots {
