@@ -1,4 +1,4 @@
-﻿// services/api-gateway/hedge_engine.go
+// services/api-gateway/hedge_engine.go
 package main
 
 import (
@@ -64,6 +64,11 @@ func (s *Server) runHedgeEngine(ctx context.Context) {
 
 // hedgeEngineTick loads all active hedge and matrix bots and processes each one.
 func (s *Server) hedgeEngineTick(ctx context.Context) {
+	defer recoverEngine("hedgeEngineTick")
+	// Bound the whole tick so a hung ctx-aware call (slow Bybit request, DB row lock)
+	// aborts instead of freezing the engine loop indefinitely.
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, owner_id, account_id,
 		       symbol_whitelist, symbol_blacklist,
@@ -98,16 +103,21 @@ func (s *Server) hedgeEngineTick(ctx context.Context) {
 
 	newWatches := make(map[string]hedgeWatchEntry)
 	for _, b := range bots {
-		var cfg botCfgJSON
-		if err := json.Unmarshal(b.stratCfg, &cfg); err != nil {
-			continue
-		}
-		switch cfg.BotKind {
-		case "hedge":
-			s.processHedgeBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg, newWatches)
-		case "matrix":
-			s.processMatrixBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg)
-		}
+		// Per-bot recovery: a panic while processing one bot must not abort the whole
+		// tick (which would freeze every other hedge/matrix bot until restart).
+		func() {
+			defer recoverEngine("hedge/matrix bot " + b.id)
+			var cfg botCfgJSON
+			if err := json.Unmarshal(b.stratCfg, &cfg); err != nil {
+				return
+			}
+			switch cfg.BotKind {
+			case "hedge":
+				s.processHedgeBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg, newWatches)
+			case "matrix":
+				s.processMatrixBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg)
+			}
+		}()
 	}
 	s.applyHedgeWatches(newWatches)
 }
@@ -504,7 +514,7 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 				if mainDir != "short" {
 					continue
 				}
-			// "both": accept any direction
+				// "both": accept any direction
 			}
 
 			hedgeDir := oppositeHedgeDir(mainDir)
@@ -1568,6 +1578,7 @@ func (s *Server) releaseHedgeToGrid(ctx context.Context, botID, strategyID, symb
 // the hedge has an open filled position, the hedge is promoted to standalone main
 // via releaseHedgeToGrid (TP=0.5%, no SL).
 func (s *Server) handleMainTpFlip(ctx context.Context, mainStrategyID string) {
+	defer recoverEngine("handleMainTpFlip")
 	// Find the active hedge strategy linked to this main.
 	var hedgeID, botID, symbol, direction string
 	err := s.pool.QueryRow(ctx, `

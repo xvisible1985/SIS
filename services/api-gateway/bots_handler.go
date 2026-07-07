@@ -1468,8 +1468,10 @@ func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Hedge bots: show monitored/hedged positions instead of signal scan
-	if cfg.BotKind == "hedge" {
+	// Hedge and matrix bots don't scan for signals — they manage positions/pairs
+	// directly. Show the monitored/open positions instead of erroring on missing
+	// activation signals (a matrix bot legitimately has none).
+	if cfg.BotKind == "hedge" || cfg.BotKind == "matrix" {
 		accountID := ""
 		if accountIDPtr != nil {
 			accountID = *accountIDPtr

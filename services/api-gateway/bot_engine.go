@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,9 +50,9 @@ var globalBotMetrics botEngineMetrics
 // botOpportunity is a candidate strategy opening produced by signal workers
 // and sent to the bot's dedicated goroutine for limit-aware, ranked processing.
 type botOpportunity struct {
-	sym    string  // trading symbol
-	dir    string  // "long" | "short"
-	score  float64 // ranking metric — higher = preferred when limit applies.
+	sym   string  // trading symbol
+	dir   string  // "long" | "short"
+	score float64 // ranking metric — higher = preferred when limit applies.
 	// Currently 1.0 for all; replace with e.g. 24h volume for quality ranking.
 	source string // "tick" | "reactive" (for event log)
 }
@@ -276,6 +277,16 @@ func botEngineStats() (lastAt time.Time, ms int64, bots, groups, opps int) {
 // checks activation signals, and creates/starts strategies accordingly.
 // It also registers a reactive callback on the signal engine so that
 // trading opportunities are processed immediately when a signal fires.
+// recoverEngine recovers a panic inside an engine tick (or per-bot processing) so one
+// bad tick/bot does not kill the whole engine goroutine — an unrecovered panic there
+// silently freezes all automation until api-gateway is restarted. Logs the stack so the
+// offending panic is diagnosable. Use as `defer recoverEngine("label")`.
+func recoverEngine(label string) {
+	if r := recover(); r != nil {
+		log.Printf("ENGINE PANIC [%s]: %v\n%s", label, r, debug.Stack())
+	}
+}
+
 func (s *Server) RunBotEngine(ctx context.Context) {
 	// Register global signal callback once before the ticker loop.
 	s.signalEngine.OnStateChange(func(sym, iv, h string, st signal.State) {
@@ -304,24 +315,27 @@ func (s *Server) RunBotEngine(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.botEngineTick(ctx)
+			func() {
+				defer recoverEngine("botEngineTick")
+				s.botEngineTick(ctx)
+			}()
 		}
 	}
 }
 
 type botEngineRow struct {
-	id        string
-	ownerID   string
-	accountID string
-	whitelist []string
-	blacklist []string
-	stratCfg  []byte
-	maxStrat  int
-	maxLong   int
-	maxShort  int
+	id                string
+	ownerID           string
+	accountID         string
+	whitelist         []string
+	blacklist         []string
+	stratCfg          []byte
+	maxStrat          int
+	maxLong           int
+	maxShort          int
 	maxSymConsecutive int
 	maxMargin         float64
-	autoMode  bool
+	autoMode          bool
 }
 
 // groupKey identifies a unique (interval, signal-config-hash) pair.
@@ -342,6 +356,9 @@ type groupEntry struct {
 }
 
 func (s *Server) botEngineTick(ctx context.Context) {
+	// Bound the tick so a hung ctx-aware call cannot freeze the bot engine loop.
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
 	tickStart := time.Now()
 
 	// ── STEP 1: Load bots from DB ─────────────────────────────────────────
@@ -722,9 +739,9 @@ func (s *Server) botEngineTick(ctx context.Context) {
 								continue
 							}
 							score := computeOpportunityScore(s.signalEngine, r.sym, key.interval, entry.sigCfgs, cfg.PrioritySignal)
-						s.sendBotOpportunity(b.id, botOpportunity{
-							sym: r.sym, dir: openDir, score: score, source: "tick",
-						})
+							s.sendBotOpportunity(b.id, botOpportunity{
+								sym: r.sym, dir: openDir, score: score, source: "tick",
+							})
 						}
 					} else {
 						s.logBotEvent(ctx, b.id,
@@ -752,28 +769,28 @@ func (s *Server) botEngineTick(ctx context.Context) {
 
 // botCfgJSON mirrors the strategy_config JSONB for bot automation.
 type botCfgJSON struct {
-	Direction      string  `json:"direction"`
-	Category       string  `json:"category"`
-	StrategyType   string  `json:"strategy_type"`
-	EntryOrderType string  `json:"entry_order_type"`
-	Leverage       int     `json:"leverage"`
-	MarginType     string  `json:"margin_type"`
-	HedgeMode      bool    `json:"hedge_mode"`
-	GridLevels     int     `json:"grid_levels"`
-	GridActive     int     `json:"grid_active"`
-	GridStepPct    float64 `json:"grid_step_pct"`
-	GridSizeUSDT   float64 `json:"grid_size_usdt"`
-	TPMode         string   `json:"tp_mode"`
-	TPPct          *float64 `json:"tp_pct"`
-	SLType         string   `json:"sl_type"`
-	SLPct          *float64 `json:"sl_pct"`
-	SignalFilter   bool    `json:"signal_filter"`
-	TrailingEnabled  bool    `json:"trailing_stop_enabled"`
-	TrailingActPct   float64 `json:"trailing_activation_pct"`
-	TrailingCallPct  float64 `json:"trailing_callback_pct"`
-	AfterStopMode    string  `json:"after_stop_mode"`
-	MaxCycles        int     `json:"max_cycles"`
-	PrioritySignal string `json:"priority_signal"`
+	Direction         string   `json:"direction"`
+	Category          string   `json:"category"`
+	StrategyType      string   `json:"strategy_type"`
+	EntryOrderType    string   `json:"entry_order_type"`
+	Leverage          int      `json:"leverage"`
+	MarginType        string   `json:"margin_type"`
+	HedgeMode         bool     `json:"hedge_mode"`
+	GridLevels        int      `json:"grid_levels"`
+	GridActive        int      `json:"grid_active"`
+	GridStepPct       float64  `json:"grid_step_pct"`
+	GridSizeUSDT      float64  `json:"grid_size_usdt"`
+	TPMode            string   `json:"tp_mode"`
+	TPPct             *float64 `json:"tp_pct"`
+	SLType            string   `json:"sl_type"`
+	SLPct             *float64 `json:"sl_pct"`
+	SignalFilter      bool     `json:"signal_filter"`
+	TrailingEnabled   bool     `json:"trailing_stop_enabled"`
+	TrailingActPct    float64  `json:"trailing_activation_pct"`
+	TrailingCallPct   float64  `json:"trailing_callback_pct"`
+	AfterStopMode     string   `json:"after_stop_mode"`
+	MaxCycles         int      `json:"max_cycles"`
+	PrioritySignal    string   `json:"priority_signal"`
 	ActivationSignals []struct {
 		Name   string                 `json:"name"`
 		Params map[string]interface{} `json:"params"`
@@ -792,16 +809,16 @@ type botCfgJSON struct {
 	BotKind string `json:"bot_kind"`
 
 	// Hedge bot configuration fields.
-	HedgeActType         int     `json:"hedge_act_type"`          // 0=last_order%, 1=drawdown%, 2=pnl$, 3=roi%
+	HedgeActType         int     `json:"hedge_act_type"` // 0=last_order%, 1=drawdown%, 2=pnl$, 3=roi%
 	HedgeActValue        float64 `json:"hedge_act_value"`
-	HedgeCloseType       int     `json:"hedge_close_type"`         // 0=wait_cycle, 1=max_loss$
+	HedgeCloseType       int     `json:"hedge_close_type"` // 0=wait_cycle, 1=max_loss$
 	HedgeCloseValue      float64 `json:"hedge_close_value"`
-	HedgeDeactCloseType     int     `json:"hedge_deact_close_type"`     // 0=pnl$, 1=roi%, 2=breakeven
-	HedgeDeactCloseValue    float64 `json:"hedge_deact_close_value"`
-	HedgeBreakevenProfit    float64 `json:"hedge_breakeven_profit"`     // profit target for type=2 (default 0 = true breakeven)
+	HedgeDeactCloseType  int     `json:"hedge_deact_close_type"` // 0=pnl$, 1=roi%, 2=breakeven
+	HedgeDeactCloseValue float64 `json:"hedge_deact_close_value"`
+	HedgeBreakevenProfit float64 `json:"hedge_breakeven_profit"` // profit target for type=2 (default 0 = true breakeven)
 	HedgeProfitLazy      bool    `json:"hedge_profit_lazy"`
 	HedgeProfitLazyPct   float64 `json:"hedge_profit_lazy_pct"`
-	HedgeDeactType       int     `json:"hedge_deact_type"`         // 0=drawdown%, 1=pnl$, 2=roi%, 3=last_order%, 4=wait_pair
+	HedgeDeactType       int     `json:"hedge_deact_type"` // 0=drawdown%, 1=pnl$, 2=roi%, 3=last_order%, 4=wait_pair
 	HedgeDeactValue      float64 `json:"hedge_deact_value"`
 
 	// Bot whitelist/blacklist: which bots' strategies are eligible for hedging.
@@ -814,9 +831,9 @@ type botCfgJSON struct {
 	SizeAsMain bool `json:"size_as_main"`
 
 	// Hedge → Main control actions (hedge bots only).
-	HedgeCancelMainTp bool   `json:"hedge_cancel_main_tp"` // cancel TP on main at hedge activation
-	HedgeCancelMainSl bool   `json:"hedge_cancel_main_sl"` // cancel all SL on main at hedge activation
-	HedgeStopMain     bool   `json:"hedge_stop_main"`      // hard-stop main at hedge activation
+	HedgeCancelMainTp bool `json:"hedge_cancel_main_tp"` // cancel TP on main at hedge activation
+	HedgeCancelMainSl bool `json:"hedge_cancel_main_sl"` // cancel all SL on main at hedge activation
+	HedgeStopMain     bool `json:"hedge_stop_main"`      // hard-stop main at hedge activation
 	// HedgeTpMainMode controls what happens when main closes at TP while hedge is active.
 	// "cancel" (default) = suppress TP on main; "flip" = TP fires, hedge promoted to main.
 	HedgeTpMainMode string `json:"hedge_tp_main_mode"`
@@ -826,13 +843,13 @@ type botCfgJSON struct {
 	HedgeForceActivation bool `json:"hedge_force_activation"`
 
 	// Matrix-specific strategy config (used when StrategyType="matrix").
-	MatrixLevels          json.RawMessage `json:"matrix_levels"`
-	MatrixEntryLevel      json.RawMessage `json:"matrix_entry_level"`
-	SafeZonePct           float64         `json:"safe_zone_pct"`
-	ProtectedBuild        bool            `json:"protected_build"`
-	MatrixRebuildOnSL     bool            `json:"matrix_rebuild_on_sl"`
-	MatrixRebuildFromEntry bool           `json:"matrix_rebuild_from_entry"`
-	RelativeSlots         bool            `json:"relative_slots"`
+	MatrixLevels           json.RawMessage `json:"matrix_levels"`
+	MatrixEntryLevel       json.RawMessage `json:"matrix_entry_level"`
+	SafeZonePct            float64         `json:"safe_zone_pct"`
+	ProtectedBuild         bool            `json:"protected_build"`
+	MatrixRebuildOnSL      bool            `json:"matrix_rebuild_on_sl"`
+	MatrixRebuildFromEntry bool            `json:"matrix_rebuild_from_entry"`
+	RelativeSlots          bool            `json:"relative_slots"`
 }
 
 // computeOpportunityScore returns a ranking score for a symbol based on the bot's
@@ -1209,6 +1226,7 @@ func parseLeverage(s string) int {
 // processNewsBots scans new Bybit listing announcements and creates strategies
 // for bots whose activation_signals include "bybit-news".
 func (s *Server) processNewsBots(ctx context.Context) {
+	defer recoverEngine("processNewsBots")
 	// Load active bots from DB
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, owner_id, account_id,
@@ -1407,6 +1425,7 @@ func (s *Server) runReactiveProcessor(ctx context.Context) {
 			sem <- struct{}{}
 			go func(o reactiveOpp) {
 				defer func() { <-sem }()
+				defer recoverEngine("processBotSymbol " + o.symbol)
 				s.processBotSymbol(ctx, o.symbol, o.interval, o.hash, o.state)
 			}(opp)
 		}
@@ -1439,6 +1458,7 @@ func (s *Server) runNewsBotTicker(ctx context.Context) {
 // processWhaleBots scans whale_events and creates strategies for bots
 // whose activation_signals include "whale".
 func (s *Server) processWhaleBots(ctx context.Context) {
+	defer recoverEngine("processWhaleBots")
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, owner_id, account_id,
 		       symbol_whitelist, symbol_blacklist,

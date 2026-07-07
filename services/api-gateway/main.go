@@ -155,6 +155,11 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
+	// pprof on /debug/pprof/* (localhost only — not proxied by nginx). Lets us capture a
+	// live goroutine dump when an engine loop freezes, to pinpoint the blocking call:
+	//   curl 'http://127.0.0.1:8081/debug/pprof/goroutine?debug=2'
+	r.Mount("/debug", middleware.Profiler())
+
 	// Auth routes — no JWT required. Rate-limited per client IP to blunt
 	// credential brute-force and account enumeration.
 	r.With(s.rateLimitAuth("register", registerRateLimit, registerRateWindow)).Post("/auth/register", s.Register)
