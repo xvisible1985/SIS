@@ -2290,6 +2290,31 @@ func (sr *StrategyRunner) updateTrailingStop(ctx context.Context) error {
 	return nil
 }
 
+// resolveExchangeAvgEntry returns the position's average entry price, preferring the
+// authoritative exchange value over the internally computed VWAP. It first checks the
+// WS-cached exchange avg; if that is cold (0 — e.g. right after a restart, before a
+// position event arrives, or after a hedge→grid conversion), it does a synchronous
+// FetchPositions rather than trusting the internal books, which can drift from the real
+// position (a drift once closed a MIRAUSDT short at a loss while the books showed a
+// profit). The computed VWAP is used only as a last resort — when the exchange cannot be
+// reached or reports no open position. Must be called with sr.mu held.
+func (sr *StrategyRunner) resolveExchangeAvgEntry(ctx context.Context, wantIdx int, computed float64) float64 {
+	if wsAvg := sr.runner.GetPositionAvgEntry(sr.strategy.Symbol, wantIdx); wsAvg > 0 {
+		sr.info(ctx, fmt.Sprintf("ТВХ биржи (WS) %.6f (расчётная %.6f)", wsAvg, computed))
+		return wsAvg
+	}
+	positions, err := trader.FetchPositions(ctx, sr.runner.creds)
+	if err != nil {
+		sr.warn(ctx, fmt.Sprintf("resolveExchangeAvgEntry: FetchPositions: %v — резерв: расчётная ТВХ %.6f", err, computed))
+		return computed
+	}
+	avg := exchangeAvgEntry(positions, sr.strategy.Symbol, sr.strategy.HedgeMode, wantIdx, computed)
+	if avg != computed {
+		sr.info(ctx, fmt.Sprintf("ТВХ биржи (FetchPositions) %.6f (расчётная %.6f)", avg, computed))
+	}
+	return avg
+}
+
 // updateTP cancels the existing TP order (if any) and places a new one for the full position.
 // When TrailingStopEnabled=true, delegates to updateTrailingStop instead of placing a limit order.
 // Must be called with sr.mu held.
@@ -2336,15 +2361,12 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 		return nil
 	}
 
-	// Prefer the WS-cached exchange position data over our internally calculated values.
-	// Falls back to avgEntry() values if no WS data received yet (e.g. first fill before
-	// the position event arrives, or after service restart).
+	// Anchor the TP to the exchange's real average entry (source of truth), not the
+	// internally computed VWAP — the latter can drift from the actual position. Prefers
+	// the WS cache, else fetches from the exchange; computed avg is only the last resort.
 	{
 		wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
-		if wsAvg := sr.runner.GetPositionAvgEntry(sr.strategy.Symbol, wantIdx); wsAvg > 0 {
-			sr.info(ctx, fmt.Sprintf("updateTP: ТВХ биржи %.4f (расчётная %.4f)", wsAvg, avg))
-			avg = wsAvg
-		}
+		avg = sr.resolveExchangeAvgEntry(ctx, wantIdx, avg)
 		// Use the actual exchange position size for TP qty to handle partial closes and
 		// rounding differences. Only override when wsQty is smaller — a larger wsQty means
 		// there is an orphan position from a deleted strategy that must not inflate the TP

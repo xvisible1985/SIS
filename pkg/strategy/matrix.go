@@ -1381,13 +1381,12 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	if avgEntryPrice == 0 {
 		return
 	}
-	// Prefer the WS-cached exchange avg entry over the internal avgEntry() calculation.
+	// Anchor to the exchange's real average entry (source of truth). Prefers the WS
+	// cache, else fetches from the exchange; the computed VWAP is only the last resort —
+	// trusting it while cold once closed a MIRAUSDT short at a loss.
 	{
 		wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
-		if wsAvg := sr.runner.GetPositionAvgEntry(sr.strategy.Symbol, wantIdx); wsAvg > 0 {
-			sr.info(ctx, fmt.Sprintf("matrixUpdateTP: ТВХ биржи %.4f (расчётная %.4f)", wsAvg, avgEntryPrice))
-			avgEntryPrice = wsAvg
-		}
+		avgEntryPrice = sr.resolveExchangeAvgEntry(ctx, wantIdx, avgEntryPrice)
 	}
 	var tpPrice float64
 	var tpSide string
