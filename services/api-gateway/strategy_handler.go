@@ -874,7 +874,11 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 	var levels []levelInfo
 	var volumeUSDT, totalCost, totalCoins float64
 
-	if err == nil {
+	// Only return levels for an ACTIVE (not-yet-ended) cycle. Once a cycle ends
+	// (TP/SL/close), its filled levels stay in the DB for history, but the chart must
+	// not keep drawing their lines — otherwise "taken order" bars linger on the chart
+	// for a stopped strategy. An empty level set clears them on the next poll.
+	if err == nil && !cycleEnded {
 		lrows, lErr := s.pool.Query(r.Context(), `
 			SELECT level_idx, side, target_price, size_usdt, status, COALESCE(filled_price,0), COALESCE(exchange_order_id,''),
 			       slot, COALESCE(sl_order_id,''), COALESCE(sl_price,0), COALESCE(sl_replaced,false), COALESCE(force_virtual,false)
