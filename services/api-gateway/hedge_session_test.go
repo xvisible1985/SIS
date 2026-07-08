@@ -108,6 +108,64 @@ func TestGetHedgeSession_IncludesRealizedPnl(t *testing.T) {
 	}
 }
 
+// TestGetHedgeSession_IncludesMatrixTPProfits verifies that global matrix-TP
+// re-arm profits (matrix_tp_profits rows) count toward the cumulative counter and
+// respect the paired-close reset boundary — the matrix TP path never writes to
+// trade_history, so without this source the counter would miss all TP profit.
+func TestGetHedgeSession_IncludesMatrixTPProfits(t *testing.T) {
+	s := newTestServer(t)
+	userID := createWHUser(t, s, "hstp1")
+	accID := createTestAccount(t, s, userID)
+	botID, stratID := createHSFixture(t, s, userID, accID, "tp1")
+	ctx := context.Background()
+
+	now := time.Now()
+	pairedCloseAt := now.Add(-time.Hour)
+
+	// Session #1 ended via paired_close (sets the floor), session #2 active.
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO hedge_sessions (bot_id, hedge_strategy_id, started_at, ended_at, end_reason)
+		 VALUES ($1,$2,$3,$4,'paired_close')`,
+		botID, stratID, now.Add(-2*time.Hour), pairedCloseAt); err != nil {
+		t.Fatalf("insert session1: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO hedge_sessions (bot_id, hedge_strategy_id, started_at) VALUES ($1,$2,$3)`,
+		botID, stratID, pairedCloseAt); err != nil {
+		t.Fatalf("insert session2: %v", err)
+	}
+
+	// A matrix-TP profit BEFORE the paired close — must be excluded.
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO matrix_tp_profits (strategy_id, bot_id, account_id, cycle_num, symbol, net_pnl, bybit_order_id, closed_at)
+		 VALUES ($1,$2,$3,1,'HSUSDT',9.0,'old-tp',$4)`,
+		stratID, botID, accID, pairedCloseAt.Add(-5*time.Minute)); err != nil {
+		t.Fatalf("insert old matrix tp: %v", err)
+	}
+	// Two matrix-TP profits AFTER the paired close — must count.
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO matrix_tp_profits (strategy_id, bot_id, account_id, cycle_num, symbol, net_pnl, bybit_order_id, closed_at)
+		 VALUES ($1,$2,$3,1,'HSUSDT',0.30,'tp-a',$4),
+		        ($1,$2,$3,1,'HSUSDT',0.20,'tp-b',$5)`,
+		stratID, botID, accID, now.Add(-40*time.Minute), now.Add(-20*time.Minute)); err != nil {
+		t.Fatalf("insert new matrix tp: %v", err)
+	}
+	// A full-cycle trade to confirm sources add together.
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO trade_history (strategy_id, account_id, owner_id, symbol, category, direction,
+		    cycle_num, result, opened_at, closed_at, net_pnl)
+		 VALUES ($1,$2,$3,'HSUSDT','linear','short',2,'tp',$4,$5,1.0)`,
+		stratID, accID, userID, now.Add(-time.Hour), now.Add(-15*time.Minute)); err != nil {
+		t.Fatalf("insert trade_history: %v", err)
+	}
+
+	got := getHedgeSessionPnl(t, s, userID, stratID)
+	want := 1.0 + 0.30 + 0.20 // excludes the 9.0 before paired_close
+	if diff := got - want; diff > 0.0001 || diff < -0.0001 {
+		t.Errorf("cumulative_hedge_pnl = %v, want %v (trade_history + matrix TP profits after paired_close)", got, want)
+	}
+}
+
 // TestGetHedgeSession_ResetsOnlyOnPairedClose verifies that trades closed
 // before a "paired_close" session boundary are excluded, while trades from
 // non-paired-close stops (deactivation, trailing_profit, position_gone) keep

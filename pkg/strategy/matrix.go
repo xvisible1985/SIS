@@ -298,11 +298,11 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 		return fmt.Errorf("insert cycle: %w", err)
 	}
 	sr.cycle = &Cycle{
-		ID:        cycleID,
+		ID:         cycleID,
 		StrategyID: sr.strategy.ID,
-		CycleNum:  maxCycle + 1,
+		CycleNum:   maxCycle + 1,
 		StartPrice: price,
-		StartedAt: time.Now(),
+		StartedAt:  time.Now(),
 	}
 	sr.levels = nil
 	sr.logPositionSource(ctx, cycleID, maxCycle+1, price)
@@ -1728,7 +1728,7 @@ func (sr *StrategyRunner) matrixCancelPerLevelSLs(ctx context.Context) {
 // pending, re-anchors the grid at the TP fill price, and re-places all non-virtual
 // levels so the matrix can immediately start re-entering.
 // Must be called with sr.mu held.
-func (sr *StrategyRunner) handleMatrixTPFill(ctx context.Context, fillPrice, fillQty float64) {
+func (sr *StrategyRunner) handleMatrixTPFill(ctx context.Context, orderID string, fillPrice, fillQty float64) {
 	if sr.cycle == nil {
 		return
 	}
@@ -1753,6 +1753,18 @@ func (sr *StrategyRunner) handleMatrixTPFill(ctx context.Context, fillPrice, fil
 
 	sr.info(ctx, fmt.Sprintf("✅ Matrix TP исполнен @ %.4f | qty=%.4f | PnL +%.2f USDT (+%.2f%%)",
 		fillPrice, fillQty, pnl, pnlPct))
+
+	// Persist this TP's realized PnL so the cumulative "Накоплено" counter includes it.
+	// A matrix TP re-arms in place (same cycle), so closeCycle never records it. Async —
+	// waits for Bybit to finalize before reading the authoritative closed PnL.
+	go RecordMatrixTPProfit(sr.runner.pool, sr.runner.creds, MatrixTPRecordInput{
+		Strategy:  sr.strategy,
+		CycleNum:  sr.cycle.CycleNum,
+		OrderID:   orderID,
+		AvgEntry:  avg,
+		FillPrice: fillPrice,
+		FillQty:   fillQty,
+	})
 
 	// 1. Cancel all per-level SL orders — position closed by global TP.
 	sr.matrixCancelPerLevelSLs(ctx)

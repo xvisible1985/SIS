@@ -52,13 +52,13 @@ type StrategyRunner struct {
 	exitSLSignalSubID       string    // non-empty while exit SL signal gate is active
 
 	// Matrix strategy runtime state
-	matrixMonitorStop   context.CancelFunc
-	matrixSLSeq         int             // increments on each per-level SL placement for unique linkIds
-	matrixWaitingSlots  map[int]float64 // positive slot → SL trigger price when SL'd and waiting to re-enter
-	matrixLastSLSlot    int             // slot number of the most recently SL'd level (for SZ display)
-	lastMatrixPrice     float64         // last mark price seen by matrixPriceTick; used to re-trigger virtual levels after a fill
-	lastLevelFillTime   time.Time       // time of most recent matrix level fill that adds to position
-	lastLevelFillQty    float64         // qty of that fill; used to detect stale position snapshots
+	matrixMonitorStop  context.CancelFunc
+	matrixSLSeq        int             // increments on each per-level SL placement for unique linkIds
+	matrixWaitingSlots map[int]float64 // positive slot → SL trigger price when SL'd and waiting to re-enter
+	matrixLastSLSlot   int             // slot number of the most recently SL'd level (for SZ display)
+	lastMatrixPrice    float64         // last mark price seen by matrixPriceTick; used to re-trigger virtual levels after a fill
+	lastLevelFillTime  time.Time       // time of most recent matrix level fill that adds to position
+	lastLevelFillQty   float64         // qty of that fill; used to detect stale position snapshots
 
 	lastVirtualPrice float64 // last mark price seen by gridVirtualPriceTick; 0 = not yet seen
 
@@ -2709,11 +2709,11 @@ func (sr *StrategyRunner) logBotStrategy(ctx context.Context, msg string) {
 }
 
 // handleTPFill is called when the TP order is filled.
-func (sr *StrategyRunner) handleTPFill(ctx context.Context, fillPrice, fillQty float64) {
+func (sr *StrategyRunner) handleTPFill(ctx context.Context, orderID string, fillPrice, fillQty float64) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	if sr.strategy.StrategyType == "matrix" {
-		sr.handleMatrixTPFill(ctx, fillPrice, fillQty)
+		sr.handleMatrixTPFill(ctx, orderID, fillPrice, fillQty)
 		return
 	}
 	// Guard against duplicate fill events (e.g. WS reconnect replay): if the

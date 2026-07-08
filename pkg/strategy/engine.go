@@ -680,25 +680,25 @@ type AccountRunner struct {
 	// Key for both: "SYMBOL:positionIdx" (e.g. "BTCUSDT:1").
 	// discrepancyLoggedAt tracks when a position discrepancy was last logged per symbol
 	// to prevent log spam when Bybit sends high-frequency position snapshots.
-	posMu                sync.RWMutex
-	positions            map[string]float64
-	posAvgEntry          map[string]float64
-	discrepancyLoggedAt  map[string]time.Time
+	posMu               sync.RWMutex
+	positions           map[string]float64
+	posAvgEntry         map[string]float64
+	discrepancyLoggedAt map[string]time.Time
 }
 
 func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trader.Credentials, pool *pgxpool.Pool, signalEngine *signal.Engine, eng *Engine, cancel context.CancelFunc) *AccountRunner {
 	return &AccountRunner{
-		accountID:     accountID,
-		accountLabel:  accountLabel,
-		ownerUsername: ownerUsername,
-		creds:         creds,
-		pool:          pool,
-		signalEngine:  signalEngine,
-		engine:        eng,
-		strategies:    make(map[string]*StrategyRunner),
-		orderIndex:    make(map[string]orderRef),
-		tradeStream:   trader.NewTradeStream(creds),
-		cancel:        cancel,
+		accountID:           accountID,
+		accountLabel:        accountLabel,
+		ownerUsername:       ownerUsername,
+		creds:               creds,
+		pool:                pool,
+		signalEngine:        signalEngine,
+		engine:              eng,
+		strategies:          make(map[string]*StrategyRunner),
+		orderIndex:          make(map[string]orderRef),
+		tradeStream:         trader.NewTradeStream(creds),
+		cancel:              cancel,
 		positions:           make(map[string]float64),
 		posAvgEntry:         make(map[string]float64),
 		discrepancyLoggedAt: make(map[string]time.Time),
@@ -1099,7 +1099,8 @@ func (ar *AccountRunner) OnOrderEvent(ev trader.OrderEvent) {
 	case "tp":
 		fillPrice, _ := strconv.ParseFloat(ev.AvgPrice, 64)
 		fillQty, _ := strconv.ParseFloat(ev.CumExecQty, 64)
-		sr.submit(func(ctx context.Context) { sr.handleTPFill(ctx, fillPrice, fillQty) })
+		tpOrderID := ev.OrderID
+		sr.submit(func(ctx context.Context) { sr.handleTPFill(ctx, tpOrderID, fillPrice, fillQty) })
 	case "sl":
 		fillPrice, _ := strconv.ParseFloat(ev.AvgPrice, 64)
 		fillQty, _ := strconv.ParseFloat(ev.CumExecQty, 64)

@@ -14,13 +14,96 @@ import (
 // TradeRecordInput carries all data needed to write one trade_history row.
 // Captured at closeCycle() time before in-memory state is cleared.
 type TradeRecordInput struct {
-	Strategy    Strategy
-	CycleID     string
-	CycleNum    int
-	StartedAt   time.Time
-	Result      string // "tp","sl","ghost_close","manual_close","position_gone", …
-	TPOrderID   string // tpOrderID at cycle close (may be empty)
-	SLOrderID   string // slOrderID at cycle close (may be empty)
+	Strategy  Strategy
+	CycleID   string
+	CycleNum  int
+	StartedAt time.Time
+	Result    string // "tp","sl","ghost_close","manual_close","position_gone", …
+	TPOrderID string // tpOrderID at cycle close (may be empty)
+	SLOrderID string // slOrderID at cycle close (may be empty)
+}
+
+// MatrixTPRecordInput carries the data needed to record one global matrix-TP re-arm.
+// Captured in handleMatrixTPFill before the grid is re-armed.
+type MatrixTPRecordInput struct {
+	Strategy  Strategy
+	CycleNum  int
+	OrderID   string  // filled global-TP order id (for Bybit ClosedPnl matching)
+	AvgEntry  float64 // position VWAP at TP time
+	FillPrice float64 // TP fill price
+	FillQty   float64 // TP fill quantity
+}
+
+// RecordMatrixTPProfit records the realized PnL of one global matrix-TP fill into
+// matrix_tp_profits so the cumulative "Накоплено" counter includes it. A matrix TP
+// re-arms in place (same cycle) rather than ending the cycle, so this profit is never
+// captured by closeCycle — which records only the single final close event. Must be
+// called as a goroutine: it waits for Bybit to finalize before reading the closed PnL.
+func RecordMatrixTPProfit(pool *pgxpool.Pool, creds trader.Credentials, in MatrixTPRecordInput) {
+	time.Sleep(8 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Authoritative gross PnL from Bybit, matched by the closing order id.
+	grossPnl := 0.0
+	matched := false
+	for attempt := 0; attempt < 3 && !matched; attempt++ {
+		if attempt > 0 {
+			time.Sleep(10 * time.Second)
+		}
+		pnls, err := trader.FetchClosedPnlForSymbol(ctx, creds, in.Strategy.Category, in.Strategy.Symbol, 20)
+		if err != nil {
+			log.Printf("matrix tp recorder [%s cy%d]: fetch closed pnl (attempt %d): %v",
+				in.Strategy.Symbol, in.CycleNum, attempt+1, err)
+			continue
+		}
+		for _, p := range pnls {
+			if in.OrderID != "" && p.OrderId == in.OrderID {
+				grossPnl, _ = strconv.ParseFloat(p.ClosedPnl, 64)
+				matched = true
+				break
+			}
+		}
+	}
+
+	// Fallback: compute from avg vs fill price when Bybit has no matching entry.
+	if !matched {
+		grossPnl = (in.FillPrice - in.AvgEntry) * in.FillQty
+		if in.Strategy.Direction == DirectionShort {
+			grossPnl = (in.AvgEntry - in.FillPrice) * in.FillQty
+		}
+	}
+
+	// Closing-order fees for this TP order.
+	var fees float64
+	if in.OrderID != "" {
+		_ = pool.QueryRow(ctx, `
+			SELECT COALESCE(SUM(ABS(exec_fee)), 0)
+			FROM trader_executions
+			WHERE account_id = $1 AND order_id = $2 AND exec_type = 'Trade'`,
+			in.Strategy.AccountID, in.OrderID,
+		).Scan(&fees)
+	}
+	netPnl := grossPnl - fees
+
+	var orderIDPtr *string
+	if in.OrderID != "" {
+		orderIDPtr = &in.OrderID
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO matrix_tp_profits
+			(strategy_id, bot_id, account_id, cycle_num, symbol, gross_pnl, fees, net_pnl, bybit_order_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT (account_id, bybit_order_id) WHERE bybit_order_id IS NOT NULL
+		DO NOTHING`,
+		in.Strategy.ID, in.Strategy.BotID, in.Strategy.AccountID, in.CycleNum, in.Strategy.Symbol,
+		grossPnl, fees, netPnl, orderIDPtr,
+	); err != nil {
+		log.Printf("matrix tp recorder [%s cy%d]: insert: %v", in.Strategy.Symbol, in.CycleNum, err)
+		return
+	}
+	log.Printf("matrix tp recorder [%s cy%d]: записано — gross=%.4f fees=%.4f net=%.4f (order=%s)",
+		in.Strategy.Symbol, in.CycleNum, grossPnl, fees, netPnl, in.OrderID)
 }
 
 // RecordStrategyTrade writes a trade_history row for a closed strategy cycle.

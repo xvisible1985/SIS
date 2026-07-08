@@ -1513,6 +1513,13 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 						  AND sl.realized_pnl IS NOT NULL
 						  AND sl.sl_closed_at >= floor_time.t
 					), 0)
+					+
+					COALESCE((
+						SELECT SUM(mtp.net_pnl)
+						FROM matrix_tp_profits mtp, floor_time, leg
+						WHERE mtp.strategy_id = leg.id
+						  AND mtp.closed_at >= floor_time.t
+					), 0)
 			)::float8
 		FROM hedge_sessions hs
 		WHERE (hs.main_strategy_id = $1 OR hs.hedge_strategy_id = $1)
@@ -1557,6 +1564,14 @@ func (s *Server) GetStrategyCumulativePnl(w http.ResponseWriter, r *http.Request
 		         JOIN strategies st ON st.id = sc.strategy_id
 		         WHERE st.id = $1 AND st.owner_id = $2
 		           AND sl.realized_pnl IS NOT NULL),
+		        0
+		    )
+		    +
+		    COALESCE(
+		        (SELECT SUM(mtp.net_pnl)
+		         FROM matrix_tp_profits mtp
+		         JOIN strategies st ON st.id = mtp.strategy_id
+		         WHERE mtp.strategy_id = $1 AND st.owner_id = $2),
 		        0
 		    )`,
 		stratID, userID,
