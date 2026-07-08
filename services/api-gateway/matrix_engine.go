@@ -45,24 +45,32 @@ func (s *Server) processMatrixBot(ctx context.Context, botID, ownerID, accountID
 // reopens/adopts an existing position; stopping it would let ensureMatrixStrategies open
 // a SECOND position. A 2-minute grace period avoids racing a normal in-flight restart.
 func (s *Server) checkMatrixZombieStrategies(ctx context.Context, botID string, posMap map[string]map[string]hedgePosInfo) {
+	// Latest cycle (cycle_id/num) is pulled alongside so a split-brain leg — one whose
+	// latest cycle is ended but whose position is still open — can be revived, not stopped.
 	rows, err := s.pool.Query(ctx,
-		`SELECT s.id, s.symbol, s.direction
+		`SELECT s.id, s.symbol, s.direction, lc.cycle_id, lc.cycle_num
 		 FROM strategies s
+		 LEFT JOIN LATERAL (
+		     SELECT c.id AS cycle_id, c.cycle_num, c.ended_at
+		     FROM strategy_cycles c WHERE c.strategy_id=s.id
+		     ORDER BY c.cycle_num DESC LIMIT 1
+		 ) lc ON true
 		 WHERE s.bot_id=$1 AND s.strategy_type='matrix' AND s.status='active'
-		   AND NOT EXISTS (SELECT 1 FROM strategy_cycles c WHERE c.strategy_id=s.id AND c.ended_at IS NULL)
-		   AND COALESCE(
-		         (SELECT MAX(ended_at) FROM strategy_cycles c WHERE c.strategy_id=s.id),
-		         s.created_at
-		       ) < NOW() - INTERVAL '2 minutes'`,
+		   AND (lc.cycle_id IS NULL OR lc.ended_at IS NOT NULL)
+		   AND COALESCE(lc.ended_at, s.created_at) < NOW() - INTERVAL '2 minutes'`,
 		botID)
 	if err != nil {
 		return
 	}
-	type zombie struct{ id, symbol, dir string }
+	type zombie struct {
+		id, symbol, dir string
+		cycleID         *string
+		cycleNum        *int
+	}
 	var zombies []zombie
 	for rows.Next() {
 		var z zombie
-		if rows.Scan(&z.id, &z.symbol, &z.dir) == nil {
+		if rows.Scan(&z.id, &z.symbol, &z.dir, &z.cycleID, &z.cycleNum) == nil {
 			zombies = append(zombies, z)
 		}
 	}
@@ -73,10 +81,21 @@ func (s *Server) checkMatrixZombieStrategies(ctx context.Context, botID string, 
 		if z.dir == "short" {
 			side = "Sell"
 		}
+		posOpen := false
 		if bySym, ok := posMap[z.symbol]; ok {
 			if p, ok := bySym[side]; ok && p.Size > 0 {
-				continue // position still open — leave it for the engine to reopen/adopt
+				posOpen = true
 			}
+		}
+		if posOpen {
+			// Position still open on the exchange while the latest cycle is marked ended:
+			// a false close (ghost_close) left the position live and trading continued on
+			// the ended cycle. Revive it so the DB matches reality — stopping instead would
+			// let ensureMatrixStrategies open a SECOND position on top of the existing one.
+			if z.cycleID != nil {
+				s.reviveMatrixSplitBrain(ctx, botID, z.id, *z.cycleID, z.cycleNum, z.symbol, z.dir)
+			}
+			continue
 		}
 		if _, err := s.pool.Exec(ctx,
 			`UPDATE strategies SET status='stopped', updated_at=NOW() WHERE id=$1 AND status='active'`, z.id,
@@ -90,6 +109,39 @@ func (s *Server) checkMatrixZombieStrategies(ctx context.Context, botID string, 
 			fmt.Sprintf("Матрикс: %s %s — зомби-стратегия (active без цикла) остановлена для пересоздания", z.symbol, z.dir),
 			"warn", "matrix")
 	}
+}
+
+// reviveMatrixSplitBrain repairs a matrix leg whose latest cycle is marked ended while its
+// exchange position is still open (a false ghost_close). It clears the cycle's ended_at so
+// loadActiveCycle picks it up again and the chart/counters match the live position, and it
+// removes the phantom ghost_close trade recorded for that false close so realised PnL is not
+// double-counted when the position eventually closes for real. Notify makes the runner adopt
+// the revived cycle's existing orders without placing a duplicate entry.
+func (s *Server) reviveMatrixSplitBrain(ctx context.Context, botID, stratID, cycleID string, cycleNum *int, symbol, dir string) {
+	// Only revive a cycle that actually holds a filled level — otherwise there is no cycle
+	// state to preserve and ensureMatrixStrategies' adopt path is the right handler.
+	var hasFilled bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM strategy_levels WHERE cycle_id=$1 AND status='filled')`, cycleID,
+	).Scan(&hasFilled); err != nil || !hasFilled {
+		return
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE strategy_cycles SET ended_at=NULL, result=NULL WHERE id=$1 AND ended_at IS NOT NULL`, cycleID)
+	if err != nil || tag.RowsAffected() == 0 {
+		return
+	}
+	if cycleNum != nil {
+		s.pool.Exec(ctx, //nolint:errcheck
+			`DELETE FROM trade_history WHERE strategy_id=$1 AND cycle_num=$2 AND result='ghost_close'`,
+			stratID, *cycleNum)
+	}
+	if s.engine != nil {
+		go s.engine.Notify(context.Background(), stratID)
+	}
+	s.logBotEvent(ctx, botID,
+		fmt.Sprintf("Матрикс: %s %s — цикл оживлён (был помечен завершённым, но позиция открыта — ложное закрытие)", symbol, dir),
+		"warn", "matrix")
 }
 
 // checkMatrixPairedClose inspects all active strategy pairs (long+short) for this bot

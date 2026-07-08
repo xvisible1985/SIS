@@ -89,6 +89,61 @@ func TestMatrixZombie_SkipsWhenPositionOpen(t *testing.T) {
 	}
 }
 
+// TestMatrixZombie_RevivesSplitBrainWhenPositionOpen: a matrix leg whose latest cycle is
+// marked ended (ghost_close) but whose exchange position is still open, with a filled level
+// in that cycle, is a split-brain — a false close that left the position live. It must be
+// REVIVED (ended_at cleared) rather than stopped, and the phantom ghost_close trade removed.
+func TestMatrixZombie_RevivesSplitBrainWhenPositionOpen(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	userID := createWHUser(t, s, "zomb4")
+	accID := createTestAccount(t, s, userID)
+	botID := createZombieBot(t, s, userID, "4")
+	stratID := seedZombieMatrixStrategy(t, s, botID, accID, userID, "ZMBUSDT", "long")
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM trade_history WHERE strategy_id=$1", stratID) })
+
+	var cycleID string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT id FROM strategy_cycles WHERE strategy_id=$1 ORDER BY cycle_num DESC LIMIT 1`, stratID,
+	).Scan(&cycleID); err != nil {
+		t.Fatalf("cycle id: %v", err)
+	}
+	// A filled level in the ended cycle — the real, still-open position.
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, status, filled_price, slot)
+		 VALUES ($1,$2,0,'Buy',1.0,10,'10','filled',1.0,0)`, stratID, cycleID); err != nil {
+		t.Fatalf("insert level: %v", err)
+	}
+	// Phantom ghost_close trade recorded for this cycle — must be removed on revive.
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO trade_history (strategy_id, account_id, owner_id, symbol, category, direction, cycle_num, result, opened_at)
+		 VALUES ($1,$2,$3,'ZMBUSDT','linear','long',1,'ghost_close',NOW())`, stratID, accID, userID); err != nil {
+		t.Fatalf("insert phantom trade: %v", err)
+	}
+
+	// Open long (Buy) position exists → split-brain, not a dead zombie.
+	posMap := map[string]map[string]hedgePosInfo{
+		"ZMBUSDT": {"Buy": {Symbol: "ZMBUSDT", Side: "Buy", Size: 100}},
+	}
+	s.checkMatrixZombieStrategies(ctx, botID, posMap)
+
+	if got := statusOf(t, s, stratID); got != "active" {
+		t.Errorf("split-brain status = %q, want active", got)
+	}
+	var endedAt *time.Time
+	if err := s.pool.QueryRow(ctx, `SELECT ended_at FROM strategy_cycles WHERE id=$1`, cycleID).Scan(&endedAt); err != nil {
+		t.Fatalf("ended_at: %v", err)
+	}
+	if endedAt != nil {
+		t.Errorf("cycle ended_at = %v, want NULL (revived)", *endedAt)
+	}
+	var phantom int
+	s.pool.QueryRow(ctx, `SELECT count(*) FROM trade_history WHERE strategy_id=$1 AND result='ghost_close'`, stratID).Scan(&phantom)
+	if phantom != 0 {
+		t.Errorf("phantom ghost_close trades = %d, want 0", phantom)
+	}
+}
+
 // TestMatrixZombie_SkipsWithinGrace: a leg whose cycle ended recently (within grace) is
 // not stopped — avoids racing a normal in-flight restart.
 func TestMatrixZombie_SkipsWithinGrace(t *testing.T) {
