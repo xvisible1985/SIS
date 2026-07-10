@@ -783,7 +783,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
             )}
             <CoinIcon symbol={s.symbol} className="w-5 h-5 shrink-0" />
             <span className={`font-display font-bold text-[15px] tracking-[-0.2px] leading-none truncate ${s.status === 'stopped' || s.status === 'paused' ? 'text-slate-500' : 'text-[#f2f5fb]'}`}>{s.symbol}</span>
-            {s.status === 'stopped' ? (
+            {s.status === 'stopped' || s.status === 'paused' ? (
               <span
                 className="shrink-0 inline-flex items-center gap-[3px] px-1.5 py-[2px] rounded-[4px] text-[10px] font-bold uppercase tracking-[.5px] leading-none"
                 style={{ background: 'rgba(148,163,184,.12)', color: '#94a3b8' }}
