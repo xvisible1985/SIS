@@ -197,7 +197,7 @@ func (s *Server) checkMatrixPairedClose(ctx context.Context, botID string, cfg b
 		if !ok {
 			continue
 		}
-		longPos, hasLong   := bySymbol["Buy"]
+		longPos, hasLong := bySymbol["Buy"]
 		shortPos, hasShort := bySymbol["Sell"]
 		if !hasLong || !hasShort {
 			continue
@@ -236,6 +236,24 @@ func (s *Server) stopMatrixPair(ctx context.Context, botID, symbol, longID, shor
 		"info", "matrix")
 }
 
+// directionHasLiveStrategy сообщает, есть ли по (account, symbol, direction) стратегия,
+// которая должна блокировать пересоздание боту: активная/завершающаяся, ПРИОСТАНОВЛЕННАЯ
+// пользователем (paused), либо отцепленная (bot_id IS NULL — пользователь оставил её сам).
+func (s *Server) directionHasLiveStrategy(ctx context.Context, accountID, symbol, dir, botID string) bool {
+	var exists bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(
+			SELECT 1 FROM strategies
+			WHERE account_id=$1 AND symbol=$2 AND direction=$3
+			  AND status IN ('active','finishing','paused')
+			  AND (bot_id=$4 OR bot_id IS NULL))`,
+		accountID, symbol, dir, botID,
+	).Scan(&exists); err != nil {
+		return false
+	}
+	return exists
+}
+
 // ensureMatrixStrategies creates long and short strategies for each whitelisted symbol
 // if they are not already active. Called every tick so the pair restarts automatically
 // after a paired-close completes.
@@ -252,17 +270,10 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 			continue
 		}
 		for _, dir := range []string{"long", "short"} {
-			var existingID string
-			// Skip if bot already owns an active strategy for this slot,
-			// or if a detached (bot_id=NULL) strategy is still active on this account —
-			// the user detached it intentionally, don't create a duplicate.
-			if err := s.pool.QueryRow(ctx,
-				`SELECT id FROM strategies
-				 WHERE account_id=$1 AND symbol=$2 AND direction=$3
-				   AND status IN ('active','finishing')
-				   AND (bot_id=$4 OR bot_id IS NULL)
-				 LIMIT 1`,
-				accountID, symbol, dir, botID).Scan(&existingID); err == nil {
+			// Skip if the bot already owns a live strategy for this slot, if the user
+			// paused this leg (manual close → paused, don't recreate), or if a detached
+			// (bot_id=NULL) strategy is still live on this account.
+			if s.directionHasLiveStrategy(ctx, accountID, symbol, dir, botID) {
 				continue
 			}
 
