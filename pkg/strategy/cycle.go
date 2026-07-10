@@ -4404,13 +4404,23 @@ func (sr *StrategyRunner) handlePositionCloseRetry(ctx context.Context) {
 // (not by our own TP/SL fill). The source parameter describes the trigger for the log.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) closeManualPosition(ctx context.Context) {
-	sr.closePositionExternal(ctx, "вручную")
+	sr.closePositionExternal(ctx, "вручную", true)
+}
+
+// manualCloseStatus возвращает статус, в который переводится нога после ПОДТВЕРЖДЁННОГО
+// ручного/внешнего закрытия. Нога matrix-бота уходит в paused (пользователь закрыл — бот
+// не пересоздаёт), всё остальное — в stopped (прежнее поведение).
+func manualCloseStatus(strategy Strategy) Status {
+	if strategy.BotID != nil && strategy.StrategyType == "matrix" {
+		return StatusPaused
+	}
+	return StatusStopped
 }
 
 // closePositionExternal closes the cycle and stops the strategy because the position
 // disappeared unexpectedly. source is appended to the log line, e.g. "вручную" or
 // "биржей при отмене TP". Must be called with sr.mu held.
-func (sr *StrategyRunner) closePositionExternal(ctx context.Context, source string) {
+func (sr *StrategyRunner) closePositionExternal(ctx context.Context, source string, pauseEligible bool) {
 	avg, posQty := sr.avgEntry()
 	sr.warn(ctx, fmt.Sprintf("Позиция закрыта %s — цикл %d | avg=%.4f | qty=%.4f",
 		source, sr.cycle.CycleNum, avg, posQty))
@@ -4431,11 +4441,25 @@ func (sr *StrategyRunner) closePositionExternal(ctx context.Context, source stri
 			sr.levels[i].Status = LevelCancelled
 		}
 	}
-	sr.strategy.Status = StatusStopped
-	if _, err := sr.runner.pool.Exec(ctx,
-		`UPDATE strategies SET status='stopped', updated_at=NOW() WHERE id=$1`, sr.strategy.ID,
-	); err != nil {
-		sr.errlog(ctx, fmt.Sprintf("closePositionExternal: DB update status→stopped: %v", err))
+	newStatus := StatusStopped
+	if pauseEligible {
+		newStatus = manualCloseStatus(sr.strategy)
+	}
+	sr.strategy.Status = newStatus
+	if newStatus == StatusPaused {
+		// Пауза только пока нога ещё active — иначе не перетираем stopped, который мог
+		// проставить paired-close (тогда пара штатно пересоздастся).
+		if _, err := sr.runner.pool.Exec(ctx,
+			`UPDATE strategies SET status='paused', updated_at=NOW() WHERE id=$1 AND status='active'`, sr.strategy.ID,
+		); err != nil {
+			sr.errlog(ctx, fmt.Sprintf("closePositionExternal: DB update status→paused: %v", err))
+		}
+	} else {
+		if _, err := sr.runner.pool.Exec(ctx,
+			`UPDATE strategies SET status='stopped', updated_at=NOW() WHERE id=$1`, sr.strategy.ID,
+		); err != nil {
+			sr.errlog(ctx, fmt.Sprintf("closePositionExternal: DB update status→stopped: %v", err))
+		}
 	}
 }
 
@@ -5281,7 +5305,7 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 				// Position is already gone — close the cycle now; the incoming
 				// position event will see cycle==nil and exit silently.
 				sr.tpCancelStreak = 0
-				sr.closePositionExternal(ctx, "биржей (TP отменён, позиция уже закрыта)")
+				sr.closePositionExternal(ctx, "биржей (TP отменён, позиция уже закрыта)", false)
 				return
 			}
 			sr.errlog(ctx, fmt.Sprintf("Ошибка повторного выставления TP: %v", err))
@@ -5300,7 +5324,7 @@ func (sr *StrategyRunner) handleTPSLCancelled(ctx context.Context, refType strin
 		sr.slOrderID = ""
 		if err := sr.updateSL(ctx); err != nil {
 			if isPositionZero(err) {
-				sr.closePositionExternal(ctx, "биржей (SL отменён, позиция уже закрыта)")
+				sr.closePositionExternal(ctx, "биржей (SL отменён, позиция уже закрыта)", false)
 				return
 			}
 			sr.errlog(ctx, fmt.Sprintf("Ошибка повторного выставления SL: %v", err))
@@ -5611,7 +5635,7 @@ func (sr *StrategyRunner) checkPositionAfterTPCircuitBreaker(ctx context.Context
 
 	if exchangeSize <= 0 {
 		sr.info(ctx, "TP circuit breaker: позиция на бирже закрыта — закрываю цикл")
-		sr.closePositionExternal(ctx, "позиция закрыта на бирже")
+		sr.closePositionExternal(ctx, "позиция закрыта на бирже", false)
 		return
 	}
 
