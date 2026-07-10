@@ -803,7 +803,10 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
                 {isLong ? <IcUp s={11} w={2.6} /> : <IcDown s={11} w={2.6} />}
               </span>
             )}
-            {s.status === 'paused' && (
+            {/* Возобновление paused-ноги: handleStatus('active') → POST /strategies/{id}/status →
+                engine.Notify → addStrategy → loadOrStart стартует свежий цикл (позиция плоская).
+                Отдельный resume-endpoint не нужен — это тот же путь, что кнопка «Активировать». */}
+            {s.status === 'paused' && !bulkMode && (
               <button
                 onClick={e => { e.stopPropagation(); handleStatus('active') }}
                 disabled={cs.acting}
@@ -849,6 +852,8 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
             ? <BotBadge botName={s.bot_name ?? 'Bot'} botId={s.bot_id ?? ''} symbol={s.symbol} strategyId={s.id} onDetached={onChanged} onInteract={() => { if (!bulkMode) onSelect?.(s) }} isHedge={!!isHedgeItself} />
             : (
               <div className="flex flex-col items-end gap-0.5">
+                {/* У 'paused' нет своего пункта в пикере — показываем как 'stopped' (label "PAUSED"),
+                    это только отображение; возобновление идёт через отдельную кнопку «Возобновить» выше. */}
                 <StatusPicker value={s.status === 'paused' ? 'stopped' : s.status} acting={cs.acting} onChange={handleStatus} onInteract={() => { if (!bulkMode) onSelect?.(s) }} />
                 {cs.actionError && (
                   <span className="text-[9px] text-red-400 max-w-[140px] text-right leading-tight">{cs.actionError}</span>
