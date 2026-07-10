@@ -256,7 +256,7 @@ export interface Strategy {
   symbol: string
   category: string
   direction: 'long' | 'short' | 'both'
-  status: 'active' | 'finishing' | 'stopped'
+  status: 'active' | 'finishing' | 'stopped' | 'paused'
   grid_levels: number
   grid_active: number
   max_stop_active: number

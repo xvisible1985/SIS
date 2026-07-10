@@ -782,7 +782,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
               </span>
             )}
             <CoinIcon symbol={s.symbol} className="w-5 h-5 shrink-0" />
-            <span className={`font-display font-bold text-[15px] tracking-[-0.2px] leading-none truncate ${s.status === 'stopped' ? 'text-slate-500' : 'text-[#f2f5fb]'}`}>{s.symbol}</span>
+            <span className={`font-display font-bold text-[15px] tracking-[-0.2px] leading-none truncate ${s.status === 'stopped' || s.status === 'paused' ? 'text-slate-500' : 'text-[#f2f5fb]'}`}>{s.symbol}</span>
             {s.status === 'stopped' ? (
               <span
                 className="shrink-0 inline-flex items-center gap-[3px] px-1.5 py-[2px] rounded-[4px] text-[10px] font-bold uppercase tracking-[.5px] leading-none"
@@ -802,6 +802,17 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
               >
                 {isLong ? <IcUp s={11} w={2.6} /> : <IcDown s={11} w={2.6} />}
               </span>
+            )}
+            {s.status === 'paused' && (
+              <button
+                onClick={e => { e.stopPropagation(); handleStatus('active') }}
+                disabled={cs.acting}
+                title="Возобновить монету (пауза после ручного закрытия)"
+                className="shrink-0 inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[10px] font-bold uppercase tracking-[.4px] leading-none disabled:opacity-50"
+                style={{ background: 'rgba(65,210,139,.18)', color: '#5be0a0' }}
+              >
+                ▶ Возобновить
+              </button>
             )}
             {(() => {
               // Синий закрашенный: эта позиция стала мэйн — хедж уже открыт
@@ -838,7 +849,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
             ? <BotBadge botName={s.bot_name ?? 'Bot'} botId={s.bot_id ?? ''} symbol={s.symbol} strategyId={s.id} onDetached={onChanged} onInteract={() => { if (!bulkMode) onSelect?.(s) }} isHedge={!!isHedgeItself} />
             : (
               <div className="flex flex-col items-end gap-0.5">
-                <StatusPicker value={s.status} acting={cs.acting} onChange={handleStatus} onInteract={() => { if (!bulkMode) onSelect?.(s) }} />
+                <StatusPicker value={s.status === 'paused' ? 'stopped' : s.status} acting={cs.acting} onChange={handleStatus} onInteract={() => { if (!bulkMode) onSelect?.(s) }} />
                 {cs.actionError && (
                   <span className="text-[9px] text-red-400 max-w-[140px] text-right leading-tight">{cs.actionError}</span>
                 )}
