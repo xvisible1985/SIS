@@ -8,6 +8,7 @@ const (
 	StatusActive    Status = "active"
 	StatusFinishing Status = "finishing"
 	StatusStopped   Status = "stopped"
+	StatusPaused    Status = "paused"
 )
 
 type Direction string
