@@ -1027,13 +1027,17 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 	// brand-new one — keeps history and the "Накоплено" counter continuous on the same
 	// strategy_id, and stops stopped-row duplicates from accumulating.
 	var reuseID string
-	if selErr := s.pool.QueryRow(ctx,
+	selErr := s.pool.QueryRow(ctx,
 		`SELECT id FROM strategies
 		 WHERE bot_id=$1 AND account_id=$2 AND symbol=$3 AND direction=$4 AND status='stopped'
 		 ORDER BY created_at DESC LIMIT 1`,
 		b.id, b.accountID, sym, dir,
-	).Scan(&reuseID); selErr == nil && reuseID != "" {
+	).Scan(&reuseID)
+	if selErr == nil && reuseID != "" {
 		var rid string
+		// created_at намеренно не трогаем: hideSupersededStopped сравнивает created_at
+		// живой и stopped-строк одного слота; реюз затрагивает только stopped-строки,
+		// поэтому инвариант «одна живая лега на слот» и корректность скрытия сохраняются.
 		reErr := s.pool.QueryRow(ctx, `
 			UPDATE strategies SET
 			   status='active', cycle_count=0, manual_alert=NULL, updated_at=NOW(),
@@ -1076,6 +1080,10 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 			return "", nil
 		}
 		return "", reErr
+	} else if selErr != nil && !errors.Is(selErr, pgx.ErrNoRows) {
+		// Real DB error on the reuse lookup (not "no stopped row") — log it so a genuine
+		// failure isn't silently masked by falling through to the INSERT path below.
+		log.Printf("createBotStrategy %s/%s: reuse SELECT error (fallback to INSERT): %v", sym, dir, selErr)
 	}
 
 	var id string
