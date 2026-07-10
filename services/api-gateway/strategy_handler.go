@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -90,45 +90,45 @@ func ptrStr(p *string) string {
 }
 
 type strategyPayload struct {
-	AccountID             string          `json:"account_id"`
-	Symbol                string          `json:"symbol"`
-	Category              string          `json:"category"`
-	Direction             string          `json:"direction"`
-	GridLevels            int             `json:"grid_levels"`
-	GridActive            int             `json:"grid_active"`
-	MaxStopActive         int             `json:"max_stop_active"`
-	GridStepPct           float64         `json:"grid_step_pct"`
-	GridSizeUSDT          float64         `json:"grid_size_usdt"`
-	TPMode                string          `json:"tp_mode"`
-	TPPct                 float64         `json:"tp_pct"`
-	SLType                string          `json:"sl_type"`
-	SLPct                 float64         `json:"sl_pct"`
-	SignalFilter          bool            `json:"signal_filter"`
-	Leverage              int             `json:"leverage"`
-	MarginType            string          `json:"margin_type"`
-	HedgeMode             bool            `json:"hedge_mode"`
-	StrategyType          string          `json:"strategy_type"`
-	SignalConfigs         json.RawMessage `json:"signal_configs"`
-	Steps                 json.RawMessage `json:"steps"`
-	TrailingStopEnabled   bool            `json:"trailing_stop_enabled"`
-	TrailingActivationPct *float64        `json:"trailing_activation_pct"`
-	TrailingCallbackPct   *float64        `json:"trailing_callback_pct"`
-	EntryOrderType        string          `json:"entry_order_type"`
-	MatrixLevels          json.RawMessage `json:"matrix_levels"`
-	SafeZonePct           float64         `json:"safe_zone_pct"`
-	MatrixEntryLevel      json.RawMessage `json:"matrix_entry_level"`
-	ProtectedBuild          bool            `json:"protected_build"`
-	MatrixRebuildOnSL       bool            `json:"matrix_rebuild_on_sl"`
-	MatrixRebuildFromEntry  bool            `json:"matrix_rebuild_from_entry"`
-	RelativeSlots           bool            `json:"relative_slots"`
-	SizeAsMain              bool            `json:"size_as_main"`
-	TPSignalName            *string         `json:"tp_signal_name"`
-	TPSignalDir             *string         `json:"tp_signal_dir"`
-	SLSignalName            *string         `json:"sl_signal_name"`
-	SLSignalDir             *string         `json:"sl_signal_dir"`
-	TPSignalConfigs         json.RawMessage `json:"tp_signal_configs"`
-	SLSignalConfigs         json.RawMessage `json:"sl_signal_configs"`
-	AdoptPositionData       json.RawMessage `json:"adopt_position_data,omitempty"`
+	AccountID              string          `json:"account_id"`
+	Symbol                 string          `json:"symbol"`
+	Category               string          `json:"category"`
+	Direction              string          `json:"direction"`
+	GridLevels             int             `json:"grid_levels"`
+	GridActive             int             `json:"grid_active"`
+	MaxStopActive          int             `json:"max_stop_active"`
+	GridStepPct            float64         `json:"grid_step_pct"`
+	GridSizeUSDT           float64         `json:"grid_size_usdt"`
+	TPMode                 string          `json:"tp_mode"`
+	TPPct                  float64         `json:"tp_pct"`
+	SLType                 string          `json:"sl_type"`
+	SLPct                  float64         `json:"sl_pct"`
+	SignalFilter           bool            `json:"signal_filter"`
+	Leverage               int             `json:"leverage"`
+	MarginType             string          `json:"margin_type"`
+	HedgeMode              bool            `json:"hedge_mode"`
+	StrategyType           string          `json:"strategy_type"`
+	SignalConfigs          json.RawMessage `json:"signal_configs"`
+	Steps                  json.RawMessage `json:"steps"`
+	TrailingStopEnabled    bool            `json:"trailing_stop_enabled"`
+	TrailingActivationPct  *float64        `json:"trailing_activation_pct"`
+	TrailingCallbackPct    *float64        `json:"trailing_callback_pct"`
+	EntryOrderType         string          `json:"entry_order_type"`
+	MatrixLevels           json.RawMessage `json:"matrix_levels"`
+	SafeZonePct            float64         `json:"safe_zone_pct"`
+	MatrixEntryLevel       json.RawMessage `json:"matrix_entry_level"`
+	ProtectedBuild         bool            `json:"protected_build"`
+	MatrixRebuildOnSL      bool            `json:"matrix_rebuild_on_sl"`
+	MatrixRebuildFromEntry bool            `json:"matrix_rebuild_from_entry"`
+	RelativeSlots          bool            `json:"relative_slots"`
+	SizeAsMain             bool            `json:"size_as_main"`
+	TPSignalName           *string         `json:"tp_signal_name"`
+	TPSignalDir            *string         `json:"tp_signal_dir"`
+	SLSignalName           *string         `json:"sl_signal_name"`
+	SLSignalDir            *string         `json:"sl_signal_dir"`
+	TPSignalConfigs        json.RawMessage `json:"tp_signal_configs"`
+	SLSignalConfigs        json.RawMessage `json:"sl_signal_configs"`
+	AdoptPositionData      json.RawMessage `json:"adopt_position_data,omitempty"`
 }
 
 func (p *strategyPayload) applyDefaults() {
@@ -169,6 +169,25 @@ func (p *strategyPayload) applyDefaults() {
 
 // listStrategiesQuery is the common SELECT body used by ListStrategies.
 // Caller appends the WHERE clause and args.
+// hideSupersededStopped excludes a 'stopped' strategy card when a NEWER active/finishing
+// strategy exists for the same slot (account, symbol, direction). Bots recreate a leg as a
+// brand-new strategy row rather than reusing the old one, so a stopped row with trading
+// history (which cleanupStoppedHedgeCards deliberately keeps) lingers as a duplicate card
+// next to its live replacement. The row stays in the DB for history/PnL — it's only hidden
+// from the list once a newer live strategy supersedes it. Appended to each WHERE below.
+const hideSupersededStopped = `
+	AND NOT (
+		s.status = 'stopped'
+		AND EXISTS (
+			SELECT 1 FROM strategies s2
+			WHERE s2.account_id = s.account_id
+			  AND s2.symbol = s.symbol
+			  AND s2.direction = s.direction
+			  AND s2.status IN ('active','finishing')
+			  AND s2.created_at > s.created_at
+		)
+	)`
+
 const listStrategiesQuery = `
 	SELECT
 		s.id, s.account_id, s.symbol, s.category, s.direction, s.status,
@@ -227,11 +246,11 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rows, err = s.pool.Query(r.Context(),
-			listStrategiesQuery+` WHERE s.account_id = $1 ORDER BY s.created_at DESC`,
+			listStrategiesQuery+` WHERE s.account_id = $1`+hideSupersededStopped+` ORDER BY s.created_at DESC`,
 			asAccountID)
 	} else {
 		rows, err = s.pool.Query(r.Context(),
-			listStrategiesQuery+` WHERE s.owner_id = $1 ORDER BY s.created_at DESC`,
+			listStrategiesQuery+` WHERE s.owner_id = $1`+hideSupersededStopped+` ORDER BY s.created_at DESC`,
 			userID)
 	}
 	if err != nil {
@@ -241,57 +260,57 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type row struct {
-		ID                    string          `json:"id"`
-		AccountID             string          `json:"account_id"`
-		Symbol                string          `json:"symbol"`
-		Category              string          `json:"category"`
-		Direction             string          `json:"direction"`
-		Status                string          `json:"status"`
-		GridLevels            int             `json:"grid_levels"`
-		GridActive            int             `json:"grid_active"`
-		MaxStopActive         int             `json:"max_stop_active"`
-		GridStepPct           float64         `json:"grid_step_pct"`
-		GridSizeUSDT          float64         `json:"grid_size_usdt"`
-		TPMode                string          `json:"tp_mode"`
-		TPPct                 float64         `json:"tp_pct"`
-		SLType                string          `json:"sl_type"`
-		SLPct                 float64         `json:"sl_pct"`
-		SignalFilter          bool            `json:"signal_filter"`
-		Leverage              int             `json:"leverage"`
-		MarginType            string          `json:"margin_type"`
-		HedgeMode             bool            `json:"hedge_mode"`
-		StrategyType          string          `json:"strategy_type"`
-		EntryOrderType        string          `json:"entry_order_type"`
-		SignalConfigs         json.RawMessage `json:"signal_configs"`
-		Steps                 json.RawMessage `json:"steps"`
-		TrailingStopEnabled   bool            `json:"trailing_stop_enabled"`
-		TrailingActivationPct *float64        `json:"trailing_activation_pct"`
-		TrailingCallbackPct   *float64        `json:"trailing_callback_pct"`
-		MatrixLevels          json.RawMessage `json:"matrix_levels,omitempty"`
-		SafeZonePct           float64         `json:"safe_zone_pct"`
-		MatrixEntryLevel      json.RawMessage `json:"matrix_entry_level,omitempty"`
-		ProtectedBuild          bool            `json:"protected_build"`
-		MatrixRebuildOnSL       bool            `json:"matrix_rebuild_on_sl"`
-		MatrixRebuildFromEntry  bool            `json:"matrix_rebuild_from_entry"`
-		RelativeSlots           bool            `json:"relative_slots"`
-		SizeAsMain              bool            `json:"size_as_main"`
-		HedgedStrategyID        *string         `json:"hedged_strategy_id"`
-		CreatedAt               time.Time       `json:"created_at"`
-		UpdatedAt             time.Time       `json:"updated_at"`
-		ManualAlert           *string         `json:"manual_alert"`
-		VolumeUSDT            float64         `json:"volume_usdt"`
-		ActiveLevels          int             `json:"active_levels"`
-		LastPnl               float64         `json:"last_pnl"`
-		BotID                 *string         `json:"bot_id"`
-		BotName               *string         `json:"bot_name"`
-		BotKind               *string         `json:"bot_kind"`
-		LastFilledPrice       float64         `json:"last_filled_price"`
-		TPSignalName          *string         `json:"tp_signal_name"`
-		TPSignalDir           *string         `json:"tp_signal_dir"`
-		SLSignalName          *string         `json:"sl_signal_name"`
-		SLSignalDir           *string         `json:"sl_signal_dir"`
-		TPSignalConfigs       json.RawMessage `json:"tp_signal_configs,omitempty"`
-		SLSignalConfigs       json.RawMessage `json:"sl_signal_configs,omitempty"`
+		ID                     string          `json:"id"`
+		AccountID              string          `json:"account_id"`
+		Symbol                 string          `json:"symbol"`
+		Category               string          `json:"category"`
+		Direction              string          `json:"direction"`
+		Status                 string          `json:"status"`
+		GridLevels             int             `json:"grid_levels"`
+		GridActive             int             `json:"grid_active"`
+		MaxStopActive          int             `json:"max_stop_active"`
+		GridStepPct            float64         `json:"grid_step_pct"`
+		GridSizeUSDT           float64         `json:"grid_size_usdt"`
+		TPMode                 string          `json:"tp_mode"`
+		TPPct                  float64         `json:"tp_pct"`
+		SLType                 string          `json:"sl_type"`
+		SLPct                  float64         `json:"sl_pct"`
+		SignalFilter           bool            `json:"signal_filter"`
+		Leverage               int             `json:"leverage"`
+		MarginType             string          `json:"margin_type"`
+		HedgeMode              bool            `json:"hedge_mode"`
+		StrategyType           string          `json:"strategy_type"`
+		EntryOrderType         string          `json:"entry_order_type"`
+		SignalConfigs          json.RawMessage `json:"signal_configs"`
+		Steps                  json.RawMessage `json:"steps"`
+		TrailingStopEnabled    bool            `json:"trailing_stop_enabled"`
+		TrailingActivationPct  *float64        `json:"trailing_activation_pct"`
+		TrailingCallbackPct    *float64        `json:"trailing_callback_pct"`
+		MatrixLevels           json.RawMessage `json:"matrix_levels,omitempty"`
+		SafeZonePct            float64         `json:"safe_zone_pct"`
+		MatrixEntryLevel       json.RawMessage `json:"matrix_entry_level,omitempty"`
+		ProtectedBuild         bool            `json:"protected_build"`
+		MatrixRebuildOnSL      bool            `json:"matrix_rebuild_on_sl"`
+		MatrixRebuildFromEntry bool            `json:"matrix_rebuild_from_entry"`
+		RelativeSlots          bool            `json:"relative_slots"`
+		SizeAsMain             bool            `json:"size_as_main"`
+		HedgedStrategyID       *string         `json:"hedged_strategy_id"`
+		CreatedAt              time.Time       `json:"created_at"`
+		UpdatedAt              time.Time       `json:"updated_at"`
+		ManualAlert            *string         `json:"manual_alert"`
+		VolumeUSDT             float64         `json:"volume_usdt"`
+		ActiveLevels           int             `json:"active_levels"`
+		LastPnl                float64         `json:"last_pnl"`
+		BotID                  *string         `json:"bot_id"`
+		BotName                *string         `json:"bot_name"`
+		BotKind                *string         `json:"bot_kind"`
+		LastFilledPrice        float64         `json:"last_filled_price"`
+		TPSignalName           *string         `json:"tp_signal_name"`
+		TPSignalDir            *string         `json:"tp_signal_dir"`
+		SLSignalName           *string         `json:"sl_signal_name"`
+		SLSignalDir            *string         `json:"sl_signal_dir"`
+		TPSignalConfigs        json.RawMessage `json:"tp_signal_configs,omitempty"`
+		SLSignalConfigs        json.RawMessage `json:"sl_signal_configs,omitempty"`
 	}
 
 	var result []row
@@ -962,19 +981,19 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"cycle_num":     cycle.CycleNum,
-		"start_price":   cycle.StartPrice,
-		"tp_order_id":   cycle.TPOrderID,
-		"sl_order_id":   cycle.SLOrderID,
-		"started_at":    cycle.StartedAt,
-		"levels":        levels,
-		"volume_usdt":   volumeUSDT,
-		"avg_entry":     avgEntry,
-		"safe_zone":     safeZone,
-		"signal_state":         s.engine.GetSignalState(id),
-		"signal_values":        s.engine.GetSignalValues(id),
-		"tp_halted":            s.engine.GetTPHalted(id),
-		"trading_halt_reason":  s.engine.GetTradingHaltReason(id),
+		"cycle_num":           cycle.CycleNum,
+		"start_price":         cycle.StartPrice,
+		"tp_order_id":         cycle.TPOrderID,
+		"sl_order_id":         cycle.SLOrderID,
+		"started_at":          cycle.StartedAt,
+		"levels":              levels,
+		"volume_usdt":         volumeUSDT,
+		"avg_entry":           avgEntry,
+		"safe_zone":           safeZone,
+		"signal_state":        s.engine.GetSignalState(id),
+		"signal_values":       s.engine.GetSignalValues(id),
+		"tp_halted":           s.engine.GetTPHalted(id),
+		"trading_halt_reason": s.engine.GetTradingHaltReason(id),
 	})
 }
 
@@ -1260,24 +1279,24 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Load DB levels.
 	type levelRow struct {
-		Idx             int     `json:"idx"`
-		Slot            *int    `json:"slot"`
-		Side            string  `json:"side"`
-		TargetPrice     float64 `json:"target_price"`
-		SizeUSDT        float64 `json:"size_usdt"`
-		Qty             string  `json:"qty"`
-		DbStatus        string  `json:"db_status"`
-		FilledPrice     float64 `json:"filled_price"`
-		ExchangeOrderID string  `json:"exchange_order_id"`
-		SlOrderID       string  `json:"sl_order_id"`
-		SlPrice         float64 `json:"sl_price"`
-		SlReplaced      bool    `json:"sl_replaced"`
-		ForceVirtual    bool    `json:"force_virtual"`
-		LiveOnExchange  bool    `json:"live_on_exchange"`
-		SlLiveOnExchange bool   `json:"sl_live_on_exchange"`
-		InOrderIndex    bool    `json:"in_order_index"`
-		SlInOrderIndex  bool    `json:"sl_in_order_index"`
-		Flag            string  `json:"flag"`
+		Idx              int     `json:"idx"`
+		Slot             *int    `json:"slot"`
+		Side             string  `json:"side"`
+		TargetPrice      float64 `json:"target_price"`
+		SizeUSDT         float64 `json:"size_usdt"`
+		Qty              string  `json:"qty"`
+		DbStatus         string  `json:"db_status"`
+		FilledPrice      float64 `json:"filled_price"`
+		ExchangeOrderID  string  `json:"exchange_order_id"`
+		SlOrderID        string  `json:"sl_order_id"`
+		SlPrice          float64 `json:"sl_price"`
+		SlReplaced       bool    `json:"sl_replaced"`
+		ForceVirtual     bool    `json:"force_virtual"`
+		LiveOnExchange   bool    `json:"live_on_exchange"`
+		SlLiveOnExchange bool    `json:"sl_live_on_exchange"`
+		InOrderIndex     bool    `json:"in_order_index"`
+		SlInOrderIndex   bool    `json:"sl_in_order_index"`
+		Flag             string  `json:"flag"`
 	}
 	lrows, err := s.pool.Query(r.Context(),
 		`SELECT level_idx, slot, side, target_price, size_usdt, qty, status,
@@ -1592,16 +1611,16 @@ func (s *Server) GetPositionSourceLog(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 
 	type LogEntry struct {
-		Symbol     string     `json:"symbol"`
-		Direction  string     `json:"direction"`
-		AccountID  string     `json:"account_id"`
-		StrategyID *string    `json:"strategy_id"`
-		BotID      *string    `json:"bot_id"`
-		BotName    *string    `json:"bot_name"`
-		CycleID    string     `json:"cycle_id"`
-		CycleNum   int        `json:"cycle_num"`
-		StartPrice *float64   `json:"start_price"`
-		CreatedAt  time.Time  `json:"created_at"`
+		Symbol     string    `json:"symbol"`
+		Direction  string    `json:"direction"`
+		AccountID  string    `json:"account_id"`
+		StrategyID *string   `json:"strategy_id"`
+		BotID      *string   `json:"bot_id"`
+		BotName    *string   `json:"bot_name"`
+		CycleID    string    `json:"cycle_id"`
+		CycleNum   int       `json:"cycle_num"`
+		StartPrice *float64  `json:"start_price"`
+		CreatedAt  time.Time `json:"created_at"`
 	}
 
 	// Latest entry per (account_id, symbol, direction) across all user's accounts.
@@ -1646,4 +1665,3 @@ func (s *Server) GetPositionSourceLog(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, results)
 }
-
