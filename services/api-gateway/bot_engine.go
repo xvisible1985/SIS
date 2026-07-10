@@ -1044,7 +1044,7 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 			   signal_configs=$17::jsonb, steps=($18::text)::jsonb,
 			   trailing_stop_enabled=$19, trailing_activation_pct=$20, trailing_callback_pct=$21,
 			   max_cycles=$22, size_as_main=$23,
-			   matrix_levels=$24, matrix_entry_level=$25, safe_zone_pct=$26,
+			   matrix_levels=($24::text)::jsonb, matrix_entry_level=($25::text)::jsonb, safe_zone_pct=$26,
 			   protected_build=$27, matrix_rebuild_on_sl=$28, matrix_rebuild_from_entry=$29, relative_slots=$30,
 			   hedged_strategy_id=NULLIF($31,'')::uuid, adopt_position_data=($32::text)::jsonb
 			 WHERE id=$1 AND status='stopped'

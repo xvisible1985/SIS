@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -30,7 +31,16 @@ func TestCreateBotStrategy_ReusesStoppedRow(t *testing.T) {
 		t.Fatalf("seed stopped: %v", err)
 	}
 
-	cfg := botCfgJSON{StrategyType: "matrix", GridSizeUSDT: 20, HedgeMode: true}
+	// Non-empty matrix_levels/matrix_entry_level so the reuse-UPDATE actually binds a
+	// *string into the jsonb columns — this exercises the ($::text)::jsonb cast; without
+	// it pgx v5 (binary protocol) fails to bind *string to a jsonb column.
+	cfg := botCfgJSON{
+		StrategyType:     "matrix",
+		GridSizeUSDT:     20,
+		HedgeMode:        true,
+		MatrixLevels:     json.RawMessage(`[{"pct":-1,"size":10},{"pct":-2,"size":20}]`),
+		MatrixEntryLevel: json.RawMessage(`{"pct":0,"size":5}`),
+	}
 	b := botEngineRow{id: botID, ownerID: userID, accountID: accID}
 
 	// (1) Reuse path: an existing stopped row → reactivate it, no new row.
@@ -54,6 +64,11 @@ func TestCreateBotStrategy_ReusesStoppedRow(t *testing.T) {
 	}
 	if gridSize < 20 {
 		t.Errorf("reused row grid_size_usdt=%v, want config value overwritten (>=20)", gridSize)
+	}
+	var matrixLevels *string
+	s.pool.QueryRow(ctx, `SELECT matrix_levels::text FROM strategies WHERE id=$1`, stoppedID).Scan(&matrixLevels)
+	if matrixLevels == nil {
+		t.Errorf("reused row matrix_levels is NULL, want the config jsonb written")
 	}
 
 	// (2) Insert path: no stopped row for a different slot → a brand-new row is created.
