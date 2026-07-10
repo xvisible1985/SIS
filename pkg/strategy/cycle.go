@@ -4445,16 +4445,22 @@ func (sr *StrategyRunner) closePositionExternal(ctx context.Context, source stri
 	if pauseEligible {
 		newStatus = manualCloseStatus(sr.strategy)
 	}
-	sr.strategy.Status = newStatus
 	if newStatus == StatusPaused {
-		// Пауза только пока нога ещё active — иначе не перетираем stopped, который мог
-		// проставить paired-close (тогда пара штатно пересоздастся).
-		if _, err := sr.runner.pool.Exec(ctx,
-			`UPDATE strategies SET status='paused', updated_at=NOW() WHERE id=$1 AND status='active'`, sr.strategy.ID,
-		); err != nil {
+		// Пауза только пока нога ещё «живая» (active/finishing) — иначе не перетираем
+		// stopped, который мог проставить paired-close (тогда пара штатно пересоздастся).
+		tag, err := sr.runner.pool.Exec(ctx,
+			`UPDATE strategies SET status='paused', updated_at=NOW() WHERE id=$1 AND status IN ('active','finishing')`, sr.strategy.ID)
+		if err != nil {
 			sr.errlog(ctx, fmt.Sprintf("closePositionExternal: DB update status→paused: %v", err))
 		}
+		if err != nil || tag.RowsAffected() == 0 {
+			// Строка уже не «наша» (её застопил paired-close) — держим in-memory статус
+			// в согласии с БД, не выдаём paused, которого в БД нет.
+			newStatus = StatusStopped
+		}
+		sr.strategy.Status = newStatus
 	} else {
+		sr.strategy.Status = newStatus
 		if _, err := sr.runner.pool.Exec(ctx,
 			`UPDATE strategies SET status='stopped', updated_at=NOW() WHERE id=$1`, sr.strategy.ID,
 		); err != nil {
