@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"time"
 
 	"sis/pkg/trader"
 )
@@ -28,9 +29,12 @@ func (s *Server) processMatrixBot(ctx context.Context, botID, ownerID, accountID
 
 	posMap, _ := buildHedgePosMap(rawPositions)
 
-	s.checkMatrixPairedClose(ctx, botID, cfg, posMap)
+	// Symbols whose pair was just closed this tick must NOT be re-opened by
+	// ensureMatrixStrategies using the now-stale posMap (it would re-adopt the closing
+	// position and re-fire the trigger). They reopen fresh on the next tick from flat.
+	closed := s.checkMatrixPairedClose(ctx, botID, cfg, creds, posMap)
 	s.checkMatrixZombieStrategies(ctx, botID, posMap)
-	s.ensureMatrixStrategies(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, creds, posMap)
+	s.ensureMatrixStrategies(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, creds, posMap, closed)
 }
 
 // checkMatrixZombieStrategies stops bot matrix strategies stuck in status='active'
@@ -146,13 +150,18 @@ func (s *Server) reviveMatrixSplitBrain(ctx context.Context, botID, stratID, cyc
 
 // checkMatrixPairedClose inspects all active strategy pairs (long+short) for this bot
 // and fires the paired-close condition when the combined P&L target is met.
-func (s *Server) checkMatrixPairedClose(ctx context.Context, botID string, cfg botCfgJSON, posMap map[string]map[string]hedgePosInfo) {
+func (s *Server) checkMatrixPairedClose(ctx context.Context, botID string, cfg botCfgJSON, creds trader.Credentials, posMap map[string]map[string]hedgePosInfo) map[string]bool {
+	closed := map[string]bool{}
+	category := cfg.Category
+	if category == "" {
+		category = "linear"
+	}
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, symbol, direction FROM strategies
 		 WHERE bot_id=$1 AND status IN ('active','finishing')`,
 		botID)
 	if err != nil {
-		return
+		return closed
 	}
 	type stratRef struct{ id, symbol, dir string }
 	var strats []stratRef
@@ -208,15 +217,61 @@ func (s *Server) checkMatrixPairedClose(ctx context.Context, botID string, cfg b
 				fmt.Sprintf("Матрикс: %s — парное закрытие (PnL=%.4g, тип=%d, порог=%.4g)",
 					sym, combined, cfg.HedgeDeactCloseType, cfg.HedgeDeactCloseValue),
 				"info", "matrix")
-			s.stopMatrixPair(ctx, botID, sym, p.longID, p.shortID)
+			s.stopMatrixPair(ctx, botID, sym, p.longID, p.shortID, creds, category, longPos, shortPos)
+			closed[sym] = true
 		}
 	}
+	return closed
+}
+
+// matrixLegCloseRequest builds a reduce-only market order that flattens one leg of a
+// matrix pair. Side is the OPPOSITE of the position side (a Buy position is closed with a
+// Sell and vice-versa, so it flattens rather than doubles); posIdx is the hedge-mode slot
+// (long=1, short=2); qty is the raw exchange size string. Returns ok=false when there is
+// nothing to close.
+func matrixLegCloseRequest(pos hedgePosInfo, symbol, category string, posIdx int) (trader.OrderRequest, bool) {
+	if pos.Size <= 0 || pos.SizeStr == "" {
+		return trader.OrderRequest{}, false
+	}
+	closeSide := "Sell"
+	if pos.Side == "Sell" {
+		closeSide = "Buy"
+	}
+	return trader.OrderRequest{
+		Category:    category,
+		Symbol:      symbol,
+		Side:        closeSide,
+		OrderType:   "Market",
+		Qty:         pos.SizeStr,
+		ReduceOnly:  true,
+		PositionIdx: posIdx,
+	}, true
 }
 
 // stopMatrixPair stops both legs of a matrix strategy pair, notifies the engine,
 // and closes the pair's session with end_reason='paired_close' — the only
 // genuine reset trigger for the "Накоплено матрикс" cumulative counter.
-func (s *Server) stopMatrixPair(ctx context.Context, botID, symbol, longID, shortID string) {
+func (s *Server) stopMatrixPair(ctx context.Context, botID, symbol, longID, shortID string, creds trader.Credentials, category string, longPos, shortPos hedgePosInfo) {
+	// Realize the combined profit: paired-close must CLOSE both exchange positions.
+	// Stopping the strategies alone does NOT flat a matrix position (the cycle is kept
+	// open by design), so without this the positions linger, ensureMatrixStrategies
+	// re-adopts them, and the trigger re-fires every tick without ever taking profit.
+	for _, leg := range []struct {
+		pos    hedgePosInfo
+		posIdx int
+	}{{longPos, 1}, {shortPos, 2}} {
+		req, ok := matrixLegCloseRequest(leg.pos, symbol, category, leg.posIdx)
+		if !ok {
+			continue
+		}
+		req.OrderLinkId = fmt.Sprintf("SIS_MPC_%d_%d", leg.posIdx, time.Now().UnixMilli())
+		if _, err := trader.PlaceOrder(ctx, creds, req); err != nil {
+			s.logBotEvent(ctx, botID,
+				fmt.Sprintf("Матрикс: %s — ошибка закрытия позиции (%s idx%d): %v", symbol, req.Side, leg.posIdx, err),
+				"error", "matrix")
+		}
+	}
+
 	for _, id := range []string{longID, shortID} {
 		if _, err := s.pool.Exec(ctx,
 			`UPDATE strategies SET status='stopped', updated_at=NOW() WHERE id=$1`, id); err != nil {
@@ -262,10 +317,15 @@ func (s *Server) directionHasLiveStrategy(ctx context.Context, accountID, symbol
 // direction that already has an open exchange position (orphan from a previously failed
 // strategy), the position is adopted so startMatrixCycle does not place a second L(0)
 // market order that would double the exchange position.
-func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, creds trader.Credentials, posMap map[string]map[string]hedgePosInfo) {
+func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, creds trader.Credentials, posMap map[string]map[string]hedgePosInfo, skipSymbols map[string]bool) {
 	delistSymbols := s.GetDelistingSymbols()
 
 	for _, symbol := range whitelist {
+		if skipSymbols[symbol] {
+			// Pair was just closed this tick — posMap still shows the (closing) position;
+			// re-adopting it here would re-fire the trigger. Reopens fresh next tick.
+			continue
+		}
 		if !symbolPassesHedgeFilter(symbol, nil, blacklist, delistSymbols) {
 			continue
 		}

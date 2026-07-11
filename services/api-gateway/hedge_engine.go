@@ -161,6 +161,7 @@ type hedgePosInfo struct {
 	Symbol        string
 	Side          string // "Buy" | "Sell"
 	Size          float64
+	SizeStr       string // raw exchange size string — used verbatim as reduce-only close qty
 	EntryPrice    float64
 	MarkPrice     float64
 	UnrealisedPnl float64
@@ -215,6 +216,7 @@ func parseHedgePos(raw trader.Position) (hedgePosInfo, bool) {
 		Symbol:        raw.Symbol,
 		Side:          raw.Side,
 		Size:          size,
+		SizeStr:       raw.Size,
 		EntryPrice:    entry,
 		MarkPrice:     mark,
 		UnrealisedPnl: pnl,
@@ -270,8 +272,9 @@ func hedgeROI(p hedgePosInfo) float64 {
 // meetsActivationCriteria returns true when the main position should trigger a hedge.
 //
 // Sign convention for threshold:
-//   negative → activate when position is LOSING by |threshold| (drawdown trigger)
-//   positive → activate when position is PROFITABLE by threshold (buffer/profit trigger)
+//
+//	negative → activate when position is LOSING by |threshold| (drawdown trigger)
+//	positive → activate when position is PROFITABLE by threshold (buffer/profit trigger)
 func meetsActivationCriteria(p hedgePosInfo, cfg botCfgJSON) bool {
 	threshold := cfg.HedgeActValue
 	switch cfg.HedgeActType {
