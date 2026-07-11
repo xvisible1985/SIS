@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"sis/pkg/bybitnews"
 	"sis/pkg/crypto"
 	"sis/pkg/signal"
@@ -1021,6 +1022,79 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 
 	// NULLIF converts empty hedgedStrategyID to NULL so the unique partial index
 	// only fires when a real main-strategy ID is provided.
+
+	// Reuse the most-recent stopped strategy row for this slot instead of inserting a
+	// brand-new one — keeps history and the "Накоплено" counter continuous on the same
+	// strategy_id, and stops stopped-row duplicates from accumulating.
+	// Only reuse a fully-dead stopped row: one with NO open cycle (ended_at IS NULL).
+	// A matrix leg stopped via paired-close (stopMatrixPair) or stopped with an open
+	// position keeps its last cycle open; reactivating it would resurrect that stale
+	// cycle (loadActiveCycle keys on ended_at IS NULL), making cycle_count=0 and the
+	// config/adopt_position_data overwrite meaningless. Rows with an open cycle are
+	// skipped here (SELECT → ErrNoRows), falling through to the plain INSERT below.
+	var reuseID string
+	selErr := s.pool.QueryRow(ctx,
+		`SELECT id FROM strategies st
+		 WHERE st.bot_id=$1 AND st.account_id=$2 AND st.symbol=$3 AND st.direction=$4 AND st.status='stopped'
+		   AND NOT EXISTS (
+		     SELECT 1 FROM strategy_cycles c WHERE c.strategy_id=st.id AND c.ended_at IS NULL
+		   )
+		 ORDER BY st.created_at DESC LIMIT 1`,
+		b.id, b.accountID, sym, dir,
+	).Scan(&reuseID)
+	if selErr == nil && reuseID != "" {
+		var rid string
+		// created_at намеренно не трогаем: hideSupersededStopped сравнивает created_at
+		// живой и stopped-строк одного слота; реюз затрагивает только stopped-строки,
+		// поэтому инвариант «одна живая лега на слот» и корректность скрытия сохраняются.
+		reErr := s.pool.QueryRow(ctx, `
+			UPDATE strategies SET
+			   status='active', cycle_count=0, manual_alert=NULL, updated_at=NOW(),
+			   category=$2,
+			   grid_levels=$3, grid_active=$4, grid_step_pct=$5, grid_size_usdt=$6,
+			   tp_mode=$7, tp_pct=$8, sl_type=$9, sl_pct=$10, signal_filter=$11,
+			   leverage=$12, margin_type=$13, hedge_mode=$14, strategy_type=$15, entry_order_type=$16,
+			   signal_configs=$17::jsonb, steps=($18::text)::jsonb,
+			   trailing_stop_enabled=$19, trailing_activation_pct=$20, trailing_callback_pct=$21,
+			   max_cycles=$22, size_as_main=$23,
+			   matrix_levels=($24::text)::jsonb, matrix_entry_level=($25::text)::jsonb, safe_zone_pct=$26,
+			   protected_build=$27, matrix_rebuild_on_sl=$28, matrix_rebuild_from_entry=$29, relative_slots=$30,
+			   hedged_strategy_id=NULLIF($31,'')::uuid, adopt_position_data=($32::text)::jsonb
+			 WHERE id=$1 AND status='stopped'
+			 RETURNING id`,
+			reuseID, category,
+			gridLevels, gridActive, gridStep, gridSize,
+			tpMode, tpPct, slType, slPct, signalFilter,
+			leverage, marginType, cfg.HedgeMode, stratType, entryType,
+			string(scJSON), stepsParam,
+			cfg.TrailingEnabled, trailingActPct, trailingCallPct,
+			cfg.MaxCycles, cfg.SizeAsMain,
+			matrixLevelsParam, matrixEntryParam, cfg.SafeZonePct,
+			cfg.ProtectedBuild, cfg.MatrixRebuildOnSL, cfg.MatrixRebuildFromEntry, cfg.RelativeSlots,
+			hedgedStrategyID, adoptJSON,
+		).Scan(&rid)
+		if reErr == nil {
+			go s.engine.Notify(context.Background(), rid)
+			return rid, nil
+		}
+		// Hedge slot already claimed by another bot (unique partial index on
+		// hedged_strategy_id) — skip, mirroring the INSERT ON CONFLICT DO NOTHING path.
+		var pgErr *pgconn.PgError
+		if errors.As(reErr, &pgErr) && pgErr.Code == "23505" {
+			return "", nil
+		}
+		// Race: another tick reactivated this row first (guard matched 0 rows) — skip
+		// rather than INSERT a duplicate.
+		if errors.Is(reErr, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", reErr
+	} else if selErr != nil && !errors.Is(selErr, pgx.ErrNoRows) {
+		// Real DB error on the reuse lookup (not "no stopped row") — log it so a genuine
+		// failure isn't silently masked by falling through to the INSERT path below.
+		log.Printf("createBotStrategy %s/%s: reuse SELECT error (fallback to INSERT): %v", sym, dir, selErr)
+	}
+
 	var id string
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO strategies
