@@ -1026,11 +1026,20 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 	// Reuse the most-recent stopped strategy row for this slot instead of inserting a
 	// brand-new one — keeps history and the "Накоплено" counter continuous on the same
 	// strategy_id, and stops stopped-row duplicates from accumulating.
+	// Only reuse a fully-dead stopped row: one with NO open cycle (ended_at IS NULL).
+	// A matrix leg stopped via paired-close (stopMatrixPair) or stopped with an open
+	// position keeps its last cycle open; reactivating it would resurrect that stale
+	// cycle (loadActiveCycle keys on ended_at IS NULL), making cycle_count=0 and the
+	// config/adopt_position_data overwrite meaningless. Rows with an open cycle are
+	// skipped here (SELECT → ErrNoRows), falling through to the plain INSERT below.
 	var reuseID string
 	selErr := s.pool.QueryRow(ctx,
-		`SELECT id FROM strategies
-		 WHERE bot_id=$1 AND account_id=$2 AND symbol=$3 AND direction=$4 AND status='stopped'
-		 ORDER BY created_at DESC LIMIT 1`,
+		`SELECT id FROM strategies st
+		 WHERE st.bot_id=$1 AND st.account_id=$2 AND st.symbol=$3 AND st.direction=$4 AND st.status='stopped'
+		   AND NOT EXISTS (
+		     SELECT 1 FROM strategy_cycles c WHERE c.strategy_id=st.id AND c.ended_at IS NULL
+		   )
+		 ORDER BY st.created_at DESC LIMIT 1`,
 		b.id, b.accountID, sym, dir,
 	).Scan(&reuseID)
 	if selErr == nil && reuseID != "" {

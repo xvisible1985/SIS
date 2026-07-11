@@ -79,4 +79,41 @@ func TestCreateBotStrategy_ReusesStoppedRow(t *testing.T) {
 	if newID == "" || newID == stoppedID {
 		t.Errorf("expected a new row id for the short slot, got %q", newID)
 	}
+
+	// (3) Open-cycle guard: a stopped row that still has an OPEN cycle (ended_at IS NULL)
+	// must NOT be reused — reactivating it would resurrect the stale cycle (loadActiveCycle
+	// keys on ended_at IS NULL), making cycle_count=0 and the config/adopt overwrite
+	// meaningless. Expect a brand-new row instead, and the open-cycle row left stopped.
+	var openStopID string
+	if err := s.pool.QueryRow(ctx,
+		`INSERT INTO strategies (owner_id, account_id, bot_id, symbol, category, direction, strategy_type, status, created_at)
+		 VALUES ($1,$2,$3,'OPENUSDT','linear','long','matrix','stopped',NOW()-INTERVAL '2 hours') RETURNING id`,
+		userID, accID, botID,
+	).Scan(&openStopID); err != nil {
+		t.Fatalf("seed open-cycle stopped: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO strategy_cycles (strategy_id, cycle_num, started_at) VALUES ($1,1,NOW()-INTERVAL '2 hours')`,
+		openStopID,
+	); err != nil { // ended_at NULL ⇒ open cycle
+		t.Fatalf("seed open cycle: %v", err)
+	}
+
+	openSlotID, err := s.createBotStrategy(ctx, b, cfg, "OPENUSDT", "long", 0, "", nil)
+	if err != nil {
+		t.Fatalf("createBotStrategy open-cycle slot: %v", err)
+	}
+	if openSlotID == "" || openSlotID == openStopID {
+		t.Errorf("expected a NEW row (not reuse of open-cycle stopped %s), got %q", openStopID[:8], openSlotID)
+	}
+	var openStopStatus string
+	s.pool.QueryRow(ctx, `SELECT status FROM strategies WHERE id=$1`, openStopID).Scan(&openStopStatus)
+	if openStopStatus != "stopped" {
+		t.Errorf("open-cycle stopped row status=%q, want it left stopped (not reactivated)", openStopStatus)
+	}
+	var openSlotCnt int
+	s.pool.QueryRow(ctx, `SELECT count(*) FROM strategies WHERE bot_id=$1 AND symbol='OPENUSDT' AND direction='long'`, botID).Scan(&openSlotCnt)
+	if openSlotCnt != 2 {
+		t.Errorf("expected 2 rows for OPENUSDT/long (open-cycle stopped + new), got %d", openSlotCnt)
+	}
 }
