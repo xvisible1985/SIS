@@ -124,3 +124,15 @@ export async function getStrategyCumulativePnl(strategyId: string): Promise<numb
     return null
   }
 }
+
+export async function bindStrategiesToBot(
+  strategyAId: string,
+  strategyBId: string,
+  botId: string,
+): Promise<void> {
+  await apiClient.post('/strategies/bind', {
+    strategy_a_id: strategyAId,
+    strategy_b_id: strategyBId,
+    bot_id: botId,
+  })
+}
