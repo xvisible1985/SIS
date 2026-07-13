@@ -1665,3 +1665,126 @@ func (s *Server) GetPositionSourceLog(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, results)
 }
+
+// BindStrategiesToBot attaches two standalone strategies (same symbol+account, opposite
+// direction) to a hedge/matrix bot as a pair: applies the bot's config to both, sets
+// bot_id, and for a hedge bot links hedged_strategy_id (hedge→main by position size).
+// POST /strategies/bind  { strategy_a_id, strategy_b_id, bot_id }
+func (s *Server) BindStrategiesToBot(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	var req struct {
+		StrategyAID string `json:"strategy_a_id"`
+		StrategyBID string `json:"strategy_b_id"`
+		BotID       string `json:"bot_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	ctx := r.Context()
+
+	type legRow struct{ id, symbol, dir, accountID string }
+	loadLeg := func(id string) (legRow, bool) {
+		var l legRow
+		err := s.pool.QueryRow(ctx,
+			`SELECT id, symbol, direction, account_id FROM strategies WHERE id=$1 AND owner_id=$2`,
+			id, userID).Scan(&l.id, &l.symbol, &l.dir, &l.accountID)
+		return l, err == nil
+	}
+	a, okA := loadLeg(req.StrategyAID)
+	b, okB := loadLeg(req.StrategyBID)
+	if !okA || !okB {
+		writeError(w, http.StatusNotFound, "strategy not found")
+		return
+	}
+	if a.symbol != b.symbol || a.accountID != b.accountID {
+		writeError(w, http.StatusBadRequest, "стратегии должны быть по одному символу и аккаунту")
+		return
+	}
+	if a.dir == b.dir {
+		writeError(w, http.StatusBadRequest, "нужны противоположные направления (long и short)")
+		return
+	}
+
+	var botAccount, botKind string
+	var stratCfgBytes []byte
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(account_id::text,''), COALESCE(strategy_config->>'bot_kind',''), strategy_config
+		 FROM bots WHERE id=$1 AND owner_id=$2`, req.BotID, userID,
+	).Scan(&botAccount, &botKind, &stratCfgBytes); err != nil {
+		writeError(w, http.StatusNotFound, "бот не найден")
+		return
+	}
+	if botAccount != a.accountID {
+		writeError(w, http.StatusBadRequest, "бот привязан к другому аккаунту")
+		return
+	}
+	if botKind != "hedge" && botKind != "matrix" {
+		writeError(w, http.StatusBadRequest, "бот должен быть hedge или matrix")
+		return
+	}
+	var conflict int
+	s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM strategies
+		 WHERE bot_id=$1 AND symbol=$2 AND status IN ('active','finishing')`,
+		req.BotID, a.symbol).Scan(&conflict)
+	if conflict > 0 {
+		writeError(w, http.StatusConflict, "у бота уже есть пара по этому символу")
+		return
+	}
+
+	var cfg botCfgJSON
+	if err := json.Unmarshal(stratCfgBytes, &cfg); err != nil {
+		writeError(w, http.StatusInternalServerError, "не удалось прочитать конфиг бота")
+		return
+	}
+	cols := s.computeBotStrategyCols(ctx, cfg, a.symbol, 0)
+
+	// Roles. Matrix: long=main, short=hedge. Hedge: bigger position=main.
+	mainLeg, hedgeLeg := a, b
+	if a.dir == "short" {
+		mainLeg, hedgeLeg = b, a
+	}
+	if botKind == "hedge" {
+		if creds, cErr := s.loadBotAccountCreds(ctx, a.accountID); cErr == nil {
+			if positions, pErr := trader.FetchPositions(ctx, creds); pErr == nil {
+				posMap, _ := buildHedgePosMap(positions)
+				sz := func(dir string) float64 {
+					side := "Buy"
+					if dir == "short" {
+						side = "Sell"
+					}
+					if bySym, ok := posMap[a.symbol]; ok {
+						if p, ok := bySym[side]; ok {
+							return p.Size * p.MarkPrice
+						}
+					}
+					return 0
+				}
+				if sz(hedgeLeg.dir) > sz(mainLeg.dir) {
+					mainLeg, hedgeLeg = hedgeLeg, mainLeg
+				}
+			}
+		}
+	}
+
+	if err := s.applyBotConfigToStrategy(ctx, mainLeg.id, req.BotID, cols, "", nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "не удалось привязать main-легу")
+		return
+	}
+	hedgedLink := ""
+	if botKind == "hedge" {
+		hedgedLink = mainLeg.id
+	}
+	if err := s.applyBotConfigToStrategy(ctx, hedgeLeg.id, req.BotID, cols, hedgedLink, nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "не удалось привязать hedge-легу")
+		return
+	}
+
+	go s.engine.Notify(context.Background(), mainLeg.id)
+	go s.engine.Notify(context.Background(), hedgeLeg.id)
+	s.logBotEvent(ctx, req.BotID,
+		fmt.Sprintf("%s — стратегии объединены в пару привязкой к боту", a.symbol), "info", "user")
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}

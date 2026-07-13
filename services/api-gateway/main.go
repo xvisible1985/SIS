@@ -230,6 +230,7 @@ func main() {
 		r.Put("/strategies/{id}", s.UpdateStrategy)
 		r.Post("/strategies/{id}/status", s.SetStrategyStatus)
 		r.Post("/strategies/{id}/detach", s.DetachFromBot)
+		r.Post("/strategies/bind", s.BindStrategiesToBot)
 		r.Delete("/strategies/{id}", s.DeleteStrategy)
 
 		// Strategy state and events
@@ -258,7 +259,7 @@ func main() {
 		r.Post("/trader/order", s.TraderPlaceOrder)
 		r.Delete("/trader/order", s.TraderCancelOrder)
 		r.Post("/trader/leverage", s.TraderSetLeverage)
-			r.Post("/trader/position-mode", s.TraderSwitchPositionMode)
+		r.Post("/trader/position-mode", s.TraderSwitchPositionMode)
 		r.Get("/trader/orders", s.ListTraderOrders)
 		r.Get("/trader/executions", s.ListTraderExecutions)
 		r.Get("/trader/pnl", s.GetClosedPnl)
@@ -296,8 +297,8 @@ func main() {
 		// Bot presets (public read)
 		r.Get("/bot-presets", s.ListBotPresets)
 
-			// Dashboard
-			r.Get("/dashboard", s.GetDashboard)
+		// Dashboard
+		r.Get("/dashboard", s.GetDashboard)
 
 		// Admin
 		r.Get("/admin/metrics", s.GetAdminMetrics)
@@ -322,7 +323,7 @@ func main() {
 			r.Get("/admin/bots", s.ListAdminBots)
 			r.Post("/admin/bots", s.CreateOfficialBot)
 			r.Post("/admin/bots/{id}/approve", s.ApproveBotPublication)
-			r.Post("/admin/bots/{id}/reject",  s.RejectBotPublication)
+			r.Post("/admin/bots/{id}/reject", s.RejectBotPublication)
 			r.Post("/admin/bots/{id}/publish-to-catalog", s.PublishBotToCatalog)
 			r.Delete("/admin/bots/{id}", s.DeleteAdminBot)
 			// Admin: bot presets management
@@ -360,11 +361,11 @@ func main() {
 			r.Post("/admin/bybit-news/refresh", s.RefreshBybitNews)
 
 			// Admin: log visualizer
-			r.Get("/admin/log-visualizer/accounts",   s.LVGetAccounts)
+			r.Get("/admin/log-visualizer/accounts", s.LVGetAccounts)
 			r.Get("/admin/log-visualizer/strategies", s.LVGetStrategies)
-			r.Get("/admin/log-visualizer/events",     s.LVGetEvents)
-			r.Get("/admin/log-visualizer/levels",     s.LVGetLevels)
-			r.Get("/admin/log-visualizer/klines",     s.LVGetKlines)
+			r.Get("/admin/log-visualizer/events", s.LVGetEvents)
+			r.Get("/admin/log-visualizer/levels", s.LVGetLevels)
+			r.Get("/admin/log-visualizer/klines", s.LVGetKlines)
 
 			// Admin: system health
 			r.Get("/admin/system-health", s.GetSystemHealth)
@@ -381,8 +382,8 @@ func main() {
 			r.Get("/admin/whale/exchange-symbols", s.GetWhaleExchangeSymbols)
 			r.Post("/admin/whale/simulate", s.SimulateWhale)
 
-				// Admin: sign Bybit trading agreement (disabled — requires master API key permissions)
-				// r.Post("/admin/accounts/{id}/sign-agreement", s.AdminSignAgreement)
+			// Admin: sign Bybit trading agreement (disabled — requires master API key permissions)
+			// r.Post("/admin/accounts/{id}/sign-agreement", s.AdminSignAgreement)
 		})
 	})
 
