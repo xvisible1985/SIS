@@ -1683,12 +1683,13 @@ func (s *Server) BindStrategiesToBot(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
-	type legRow struct{ id, symbol, dir, accountID string }
+	type legRow struct{ id, symbol, dir, accountID, botID string }
 	loadLeg := func(id string) (legRow, bool) {
 		var l legRow
 		err := s.pool.QueryRow(ctx,
-			`SELECT id, symbol, direction, account_id FROM strategies WHERE id=$1 AND owner_id=$2`,
-			id, userID).Scan(&l.id, &l.symbol, &l.dir, &l.accountID)
+			`SELECT id, symbol, direction, account_id, COALESCE(bot_id::text,'')
+			 FROM strategies WHERE id=$1 AND owner_id=$2`,
+			id, userID).Scan(&l.id, &l.symbol, &l.dir, &l.accountID, &l.botID)
 		return l, err == nil
 	}
 	a, okA := loadLeg(req.StrategyAID)
@@ -1703,6 +1704,12 @@ func (s *Server) BindStrategiesToBot(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.dir == b.dir {
 		writeError(w, http.StatusBadRequest, "нужны противоположные направления (long и short)")
+		return
+	}
+	// Только одиночные/detached леги (bot_id IS NULL) или уже привязанные к ЭТОМУ же боту.
+	// Иначе bind молча увёл бы легу у чужого бота, осиротив его учёт.
+	if (a.botID != "" && a.botID != req.BotID) || (b.botID != "" && b.botID != req.BotID) {
+		writeError(w, http.StatusBadRequest, "одна из стратегий уже привязана к другому боту — сначала открепите её")
 		return
 	}
 
@@ -1724,10 +1731,13 @@ func (s *Server) BindStrategiesToBot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var conflict int
-	s.pool.QueryRow(ctx,
+	if err := s.pool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM strategies
 		 WHERE bot_id=$1 AND symbol=$2 AND status IN ('active','finishing')`,
-		req.BotID, a.symbol).Scan(&conflict)
+		req.BotID, a.symbol).Scan(&conflict); err != nil {
+		writeError(w, http.StatusInternalServerError, "не удалось проверить конфликт пары")
+		return
+	}
 	if conflict > 0 {
 		writeError(w, http.StatusConflict, "у бота уже есть пара по этому символу")
 		return

@@ -66,4 +66,29 @@ func TestBindStrategiesToBot(t *testing.T) {
 	if rec2.Code == http.StatusOK {
 		t.Errorf("same-direction bind should fail, got 200")
 	}
+
+	// Invalid: одна из лег уже привязана к ДРУГОМУ боту → non-200 (нельзя увести).
+	var otherBotID string
+	s.pool.QueryRow(ctx,
+		`INSERT INTO bots (owner_id, name, account_id, status, strategy_config)
+		 VALUES ($1,'otherbot',$2,'active','{"bot_kind":"matrix","hedge_mode":true,"grid_size_usdt":20}'::jsonb) RETURNING id`,
+		userID, accID).Scan(&otherBotID)
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM bots WHERE id=$1", otherBotID) })
+
+	var boundShort string
+	s.pool.QueryRow(ctx,
+		`INSERT INTO strategies (owner_id, account_id, bot_id, symbol, direction, strategy_type, status)
+		 VALUES ($1,$2,$3,'BNDUSDT','short','matrix','active') RETURNING id`,
+		userID, accID, otherBotID).Scan(&boundShort)
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM strategies WHERE id=$1", boundShort) })
+
+	freeLong := ins("long")
+	body3, _ := json.Marshal(map[string]string{"strategy_a_id": freeLong, "strategy_b_id": boundShort, "bot_id": botID})
+	req3 := httptest.NewRequest(http.MethodPost, "/strategies/bind", bytes.NewReader(body3))
+	req3 = withUserID(req3, userID)
+	rec3 := httptest.NewRecorder()
+	s.BindStrategiesToBot(rec3, req3)
+	if rec3.Code == http.StatusOK {
+		t.Errorf("bind of leg attached to another bot should fail, got 200")
+	}
 }
