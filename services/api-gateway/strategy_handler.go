@@ -203,6 +203,7 @@ const listStrategiesQuery = `
 		s.tp_signal_name, s.tp_signal_dir, s.sl_signal_name, s.sl_signal_dir,
 		COALESCE(s.tp_signal_configs::text,'[]'), COALESCE(s.sl_signal_configs::text,'[]'),
 		s.created_at, s.updated_at, s.manual_alert,
+		s.origin_bot_id::text,
 		COALESCE((
 			SELECT SUM(sl.size_usdt)
 			FROM strategy_levels sl
@@ -298,6 +299,7 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 		CreatedAt              time.Time       `json:"created_at"`
 		UpdatedAt              time.Time       `json:"updated_at"`
 		ManualAlert            *string         `json:"manual_alert"`
+		OriginBotID            *string         `json:"origin_bot_id"`
 		VolumeUSDT             float64         `json:"volume_usdt"`
 		ActiveLevels           int             `json:"active_levels"`
 		LastPnl                float64         `json:"last_pnl"`
@@ -331,6 +333,7 @@ func (s *Server) ListStrategies(w http.ResponseWriter, r *http.Request) {
 			&r.TPSignalName, &r.TPSignalDir, &r.SLSignalName, &r.SLSignalDir,
 			&tpSigCfgStr, &slSigCfgStr,
 			&r.CreatedAt, &r.UpdatedAt, &r.ManualAlert,
+			&r.OriginBotID,
 			&r.VolumeUSDT, &r.ActiveLevels, &r.LastPnl,
 			&r.BotID, &r.BotName, &r.BotKind, &r.LastFilledPrice,
 		); err == nil {

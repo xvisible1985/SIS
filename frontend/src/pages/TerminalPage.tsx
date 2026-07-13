@@ -22,6 +22,7 @@ import { useSelectedAccount } from '../contexts/AccountContext'
 import { listStrategies, getStrategyState, setStrategyStatus, deleteStrategy, detachFromBot } from '../api/strategies'
 import { listExecutions, placeOrder } from '../api/trader'
 import { StrategyCard } from '../components/strategies/StrategyCard'
+import { BindToBotModal } from '../components/strategies/BindToBotModal'
 import { TAKER_FEE } from '../components/common/ClosePositionModal'
 import { HedgePairCard } from '../components/strategies/HedgePairCard'
 import { StrategyModal } from '../components/strategies/StrategyModal'
@@ -751,6 +752,11 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null)
   const [bulkAction, setBulkAction] = useState<{ type: 'close' | 'delete'; ids: Set<string> } | null>(null)
+  const [dragStrat, setDragStrat] = useState<Strategy | null>(null)
+  const [bindPair, setBindPair] = useState<{ a: Strategy; b: Strategy } | null>(null)
+
+  const canBind = (a: Strategy, b: Strategy) =>
+    a.id !== b.id && a.symbol === b.symbol && a.account_id === b.account_id && a.direction !== b.direction
 
   // Ref для быстрого доступа к текущему списку из WS-обработчика (без closure-захвата)
   const strategiesRef = useRef<Strategy[]>([])
@@ -1142,7 +1148,20 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
           }
           const s = item.strategy
           return (
-            <div key={s.id} style={isMobile ? { zoom: '0.82' } : undefined} className={isMobile ? '' : 'origin-top-left scale-[0.96]'}>
+            <div
+              key={s.id}
+              draggable
+              onDragStart={() => setDragStrat(s)}
+              onDragEnd={() => setDragStrat(null)}
+              onDragOver={e => { if (dragStrat && canBind(dragStrat, s)) e.preventDefault() }}
+              onDrop={e => {
+                e.preventDefault()
+                if (dragStrat && canBind(dragStrat, s)) setBindPair({ a: dragStrat, b: s })
+                setDragStrat(null)
+              }}
+              style={isMobile ? { zoom: '0.82' } : undefined}
+              className={`${isMobile ? '' : 'origin-top-left scale-[0.96]'} ${dragStrat && dragStrat.id !== s.id && canBind(dragStrat, s) ? 'ring-2 ring-emerald-400/60 rounded-lg' : ''}`}
+            >
               <StrategyCard
                 strategy={s}
                 accounts={accounts}
@@ -1257,6 +1276,18 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
           document.body
         )
       })()}
+
+      {bindPair && (
+        <BindToBotModal
+          stratA={bindPair.a}
+          stratB={bindPair.b}
+          bots={hedgeBots}
+          hasOpenPosition={[bindPair.a, bindPair.b].some(st => positions.some(p => p.symbol === st.symbol))}
+          originBotId={bindPair.a.origin_bot_id ?? bindPair.b.origin_bot_id ?? null}
+          onClose={() => setBindPair(null)}
+          onBound={() => { setBindPair(null); load() }}
+        />
+      )}
     </div>
   )
 }

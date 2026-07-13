@@ -302,6 +302,7 @@ export interface Strategy {
   bot_name?: string | null
   bot_kind?: string | null
   current_cycle_num?: number
+  origin_bot_id?: string | null
 }
 
 export interface StrategyLevel {
