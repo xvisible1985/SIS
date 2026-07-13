@@ -1059,7 +1059,8 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 			   max_cycles=$22, size_as_main=$23,
 			   matrix_levels=($24::text)::jsonb, matrix_entry_level=($25::text)::jsonb, safe_zone_pct=$26,
 			   protected_build=$27, matrix_rebuild_on_sl=$28, matrix_rebuild_from_entry=$29, relative_slots=$30,
-			   hedged_strategy_id=NULLIF($31,'')::uuid, adopt_position_data=($32::text)::jsonb
+			   hedged_strategy_id=NULLIF($31,'')::uuid, adopt_position_data=($32::text)::jsonb,
+			   origin_bot_id=COALESCE(origin_bot_id, $33::uuid)
 			 WHERE id=$1 AND status='stopped'
 			 RETURNING id`,
 			reuseID, category,
@@ -1072,6 +1073,7 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 			matrixLevelsParam, matrixEntryParam, cfg.SafeZonePct,
 			cfg.ProtectedBuild, cfg.MatrixRebuildOnSL, cfg.MatrixRebuildFromEntry, cfg.RelativeSlots,
 			hedgedStrategyID, adoptJSON,
+			b.id,
 		).Scan(&rid)
 		if reErr == nil {
 			go s.engine.Notify(context.Background(), rid)
@@ -1107,7 +1109,7 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		   cycle_count, max_cycles, size_as_main,
 		   matrix_levels, matrix_entry_level, safe_zone_pct,
 		   protected_build, matrix_rebuild_on_sl, matrix_rebuild_from_entry, relative_slots,
-		   hedged_strategy_id, adopt_position_data)
+		   hedged_strategy_id, adopt_position_data, origin_bot_id)
 		VALUES ($1,$2,$3,$4,$5,$6,'active',
 		        $7,$8,$9,$10,
 		        $11,$12,$13,$14,$15,
@@ -1117,7 +1119,7 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		        $26, $27, $28,
 		        ($29::text)::jsonb, ($30::text)::jsonb, $31,
 		        $32, $33, $34, $35,
-		        NULLIF($36,'')::uuid, ($37::text)::jsonb)
+		        NULLIF($36,'')::uuid, ($37::text)::jsonb, $38)
 		ON CONFLICT DO NOTHING
 		RETURNING id`,
 		b.ownerID, b.accountID, b.id, sym, category, dir,
@@ -1129,7 +1131,7 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		0, cfg.MaxCycles, cfg.SizeAsMain,
 		matrixLevelsParam, matrixEntryParam, cfg.SafeZonePct,
 		cfg.ProtectedBuild, cfg.MatrixRebuildOnSL, cfg.MatrixRebuildFromEntry, cfg.RelativeSlots,
-		hedgedStrategyID, adoptJSON,
+		hedgedStrategyID, adoptJSON, b.id,
 	).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Another hedge bot already claimed this main strategy — silently skip.
