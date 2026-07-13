@@ -900,11 +900,25 @@ func join(items []string) string {
 	return result
 }
 
-// createBotStrategy inserts a new bot strategy.
-// hedgedStrategyID (non-empty only for hedge bots) records which main strategy this hedge
-// covers. A unique partial index on hedged_strategy_id prevents two bots from hedging
-// the same main position; if the slot is already taken the INSERT is silently skipped.
-func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botCfgJSON, sym, dir string, leverageOverride int, hedgedStrategyID string, adoptJSON *string) (string, error) {
+// botStrategyCols holds the computed strategy config columns shared by INSERT / reuse /
+// bind — a single source of truth so all three write identical config.
+type botStrategyCols struct {
+	category, tpMode, slType, marginType, stratType, entryType string
+	gridLevels, gridActive, leverage                           int
+	gridStep, gridSize, tpPct, slPct, safeZonePct              float64
+	scJSON                                                     string
+	stepsParam, matrixLevelsParam, matrixEntryParam            *string
+	trailingEnabled, hedgeMode, sizeAsMain, signalFilter       bool
+	protectedBuild, matrixRebuildOnSL, matrixRebuildFromEntry  bool
+	relativeSlots                                              bool
+	trailingActPct, trailingCallPct                            *float64
+	maxCycles                                                  int
+}
+
+// computeBotStrategyCols applies defaults (same as strategyPayload.applyDefaults), raises
+// grid_size_usdt to the exchange minimum for sym, and derives every other config column
+// from cfg. Shared by createBotStrategy's INSERT/reuse paths and the bind endpoint.
+func (s *Server) computeBotStrategyCols(ctx context.Context, cfg botCfgJSON, sym string, leverageOverride int) botStrategyCols {
 	// Apply defaults (same as strategyPayload.applyDefaults)
 	category := cfg.Category
 	if category == "" {
@@ -1020,6 +1034,79 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 	// Ignoring cfg.SignalFilter intentionally — the backend is authoritative here.
 	signalFilter := false
 
+	return botStrategyCols{
+		category:               category,
+		tpMode:                 tpMode,
+		slType:                 slType,
+		marginType:             marginType,
+		stratType:              stratType,
+		entryType:              entryType,
+		gridLevels:             gridLevels,
+		gridActive:             gridActive,
+		leverage:               leverage,
+		gridStep:               gridStep,
+		gridSize:               gridSize,
+		tpPct:                  tpPct,
+		slPct:                  slPct,
+		safeZonePct:            cfg.SafeZonePct,
+		scJSON:                 string(scJSON),
+		stepsParam:             stepsParam,
+		matrixLevelsParam:      matrixLevelsParam,
+		matrixEntryParam:       matrixEntryParam,
+		trailingEnabled:        cfg.TrailingEnabled,
+		hedgeMode:              cfg.HedgeMode,
+		sizeAsMain:             cfg.SizeAsMain,
+		signalFilter:           signalFilter,
+		protectedBuild:         cfg.ProtectedBuild,
+		matrixRebuildOnSL:      cfg.MatrixRebuildOnSL,
+		matrixRebuildFromEntry: cfg.MatrixRebuildFromEntry,
+		relativeSlots:          cfg.RelativeSlots,
+		trailingActPct:         trailingActPct,
+		trailingCallPct:        trailingCallPct,
+		maxCycles:              cfg.MaxCycles,
+	}
+}
+
+// applyBotConfigToStrategy overwrites one strategy row with a bot's config and (re)attaches
+// it to the bot: sets status='active', cycle_count=0, bot_id, origin_bot_id (COALESCE),
+// strategy_type and all config columns. Used by the bind endpoint (and mirrors reuse).
+func (s *Server) applyBotConfigToStrategy(ctx context.Context, strategyID, botID string, cols botStrategyCols, hedgedStrategyID string, adoptJSON *string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE strategies SET
+		   status='active', cycle_count=0, manual_alert=NULL, updated_at=NOW(),
+		   bot_id=$2::uuid, origin_bot_id=COALESCE(origin_bot_id, $2::uuid),
+		   category=$3,
+		   grid_levels=$4, grid_active=$5, grid_step_pct=$6, grid_size_usdt=$7,
+		   tp_mode=$8, tp_pct=$9, sl_type=$10, sl_pct=$11, signal_filter=$12,
+		   leverage=$13, margin_type=$14, hedge_mode=$15, strategy_type=$16, entry_order_type=$17,
+		   signal_configs=$18::jsonb, steps=($19::text)::jsonb,
+		   trailing_stop_enabled=$20, trailing_activation_pct=$21, trailing_callback_pct=$22,
+		   max_cycles=$23, size_as_main=$24,
+		   matrix_levels=($25::text)::jsonb, matrix_entry_level=($26::text)::jsonb, safe_zone_pct=$27,
+		   protected_build=$28, matrix_rebuild_on_sl=$29, matrix_rebuild_from_entry=$30, relative_slots=$31,
+		   hedged_strategy_id=NULLIF($32,'')::uuid, adopt_position_data=($33::text)::jsonb
+		 WHERE id=$1`,
+		strategyID, botID, cols.category,
+		cols.gridLevels, cols.gridActive, cols.gridStep, cols.gridSize,
+		cols.tpMode, cols.tpPct, cols.slType, cols.slPct, cols.signalFilter,
+		cols.leverage, cols.marginType, cols.hedgeMode, cols.stratType, cols.entryType,
+		cols.scJSON, cols.stepsParam,
+		cols.trailingEnabled, cols.trailingActPct, cols.trailingCallPct,
+		cols.maxCycles, cols.sizeAsMain,
+		cols.matrixLevelsParam, cols.matrixEntryParam, cols.safeZonePct,
+		cols.protectedBuild, cols.matrixRebuildOnSL, cols.matrixRebuildFromEntry, cols.relativeSlots,
+		hedgedStrategyID, adoptJSON,
+	)
+	return err
+}
+
+// createBotStrategy inserts a new bot strategy.
+// hedgedStrategyID (non-empty only for hedge bots) records which main strategy this hedge
+// covers. A unique partial index on hedged_strategy_id prevents two bots from hedging
+// the same main position; if the slot is already taken the INSERT is silently skipped.
+func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botCfgJSON, sym, dir string, leverageOverride int, hedgedStrategyID string, adoptJSON *string) (string, error) {
+	cols := s.computeBotStrategyCols(ctx, cfg, sym, leverageOverride)
+
 	// NULLIF converts empty hedgedStrategyID to NULL so the unique partial index
 	// only fires when a real main-strategy ID is provided.
 
@@ -1063,15 +1150,15 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 			   origin_bot_id=COALESCE(origin_bot_id, $33::uuid)
 			 WHERE id=$1 AND status='stopped'
 			 RETURNING id`,
-			reuseID, category,
-			gridLevels, gridActive, gridStep, gridSize,
-			tpMode, tpPct, slType, slPct, signalFilter,
-			leverage, marginType, cfg.HedgeMode, stratType, entryType,
-			string(scJSON), stepsParam,
-			cfg.TrailingEnabled, trailingActPct, trailingCallPct,
-			cfg.MaxCycles, cfg.SizeAsMain,
-			matrixLevelsParam, matrixEntryParam, cfg.SafeZonePct,
-			cfg.ProtectedBuild, cfg.MatrixRebuildOnSL, cfg.MatrixRebuildFromEntry, cfg.RelativeSlots,
+			reuseID, cols.category,
+			cols.gridLevels, cols.gridActive, cols.gridStep, cols.gridSize,
+			cols.tpMode, cols.tpPct, cols.slType, cols.slPct, cols.signalFilter,
+			cols.leverage, cols.marginType, cols.hedgeMode, cols.stratType, cols.entryType,
+			cols.scJSON, cols.stepsParam,
+			cols.trailingEnabled, cols.trailingActPct, cols.trailingCallPct,
+			cols.maxCycles, cols.sizeAsMain,
+			cols.matrixLevelsParam, cols.matrixEntryParam, cols.safeZonePct,
+			cols.protectedBuild, cols.matrixRebuildOnSL, cols.matrixRebuildFromEntry, cols.relativeSlots,
 			hedgedStrategyID, adoptJSON,
 			b.id,
 		).Scan(&rid)
@@ -1122,15 +1209,15 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		        NULLIF($36,'')::uuid, ($37::text)::jsonb, $38)
 		ON CONFLICT DO NOTHING
 		RETURNING id`,
-		b.ownerID, b.accountID, b.id, sym, category, dir,
-		gridLevels, gridActive, gridStep, gridSize,
-		tpMode, tpPct, slType, slPct, signalFilter,
-		leverage, marginType, cfg.HedgeMode, stratType, entryType,
-		string(scJSON), stepsParam,
-		cfg.TrailingEnabled, trailingActPct, trailingCallPct,
-		0, cfg.MaxCycles, cfg.SizeAsMain,
-		matrixLevelsParam, matrixEntryParam, cfg.SafeZonePct,
-		cfg.ProtectedBuild, cfg.MatrixRebuildOnSL, cfg.MatrixRebuildFromEntry, cfg.RelativeSlots,
+		b.ownerID, b.accountID, b.id, sym, cols.category, dir,
+		cols.gridLevels, cols.gridActive, cols.gridStep, cols.gridSize,
+		cols.tpMode, cols.tpPct, cols.slType, cols.slPct, cols.signalFilter,
+		cols.leverage, cols.marginType, cols.hedgeMode, cols.stratType, cols.entryType,
+		cols.scJSON, cols.stepsParam,
+		cols.trailingEnabled, cols.trailingActPct, cols.trailingCallPct,
+		0, cols.maxCycles, cols.sizeAsMain,
+		cols.matrixLevelsParam, cols.matrixEntryParam, cols.safeZonePct,
+		cols.protectedBuild, cols.matrixRebuildOnSL, cols.matrixRebuildFromEntry, cols.relativeSlots,
 		hedgedStrategyID, adoptJSON, b.id,
 	).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
