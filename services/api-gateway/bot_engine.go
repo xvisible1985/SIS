@@ -1067,11 +1067,19 @@ func (s *Server) computeBotStrategyCols(ctx context.Context, cfg botCfgJSON, sym
 	}
 }
 
+// pgxExec is satisfied by both *pgxpool.Pool and pgx.Tx, so callers can run
+// applyBotConfigToStrategy either standalone (pool) or inside a transaction (tx).
+type pgxExec interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
 // applyBotConfigToStrategy overwrites one strategy row with a bot's config and (re)attaches
 // it to the bot: sets status='active', cycle_count=0, bot_id, origin_bot_id (COALESCE),
 // strategy_type and all config columns. Used by the bind endpoint (and mirrors reuse).
-func (s *Server) applyBotConfigToStrategy(ctx context.Context, strategyID, botID string, cols botStrategyCols, hedgedStrategyID string, adoptJSON *string) error {
-	_, err := s.pool.Exec(ctx, `
+// db is the executor — pass s.pool for a standalone update, or a pgx.Tx to make the
+// update part of a larger transaction (the bind endpoint attaches both legs atomically).
+func (s *Server) applyBotConfigToStrategy(ctx context.Context, db pgxExec, strategyID, botID string, cols botStrategyCols, hedgedStrategyID string, adoptJSON *string) error {
+	_, err := db.Exec(ctx, `
 		UPDATE strategies SET
 		   status='active', cycle_count=0, manual_alert=NULL, updated_at=NOW(),
 		   bot_id=$2::uuid, origin_bot_id=COALESCE(origin_bot_id, $2::uuid),

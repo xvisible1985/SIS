@@ -91,4 +91,42 @@ func TestBindStrategiesToBot(t *testing.T) {
 	if rec3.Code == http.StatusOK {
 		t.Errorf("bind of leg attached to another bot should fail, got 200")
 	}
+
+	// Conflict: у бота уже есть активная пара по символу CFLUSDT → bind новых лег того же
+	// символа к тому же боту должен вернуть 409.
+	var confBot string
+	s.pool.QueryRow(ctx,
+		`INSERT INTO bots (owner_id, name, account_id, status, strategy_config)
+		 VALUES ($1,'confbot',$2,'active','{"bot_kind":"matrix","hedge_mode":true,"grid_size_usdt":20}'::jsonb) RETURNING id`,
+		userID, accID).Scan(&confBot)
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM bots WHERE id=$1", confBot) })
+
+	insBound := func(dir string) string {
+		var id string
+		s.pool.QueryRow(ctx,
+			`INSERT INTO strategies (owner_id, account_id, bot_id, symbol, direction, strategy_type, status)
+			 VALUES ($1,$2,$3,'CFLUSDT',$4,'matrix','active') RETURNING id`, userID, accID, confBot, dir).Scan(&id)
+		t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM strategies WHERE id=$1", id) })
+		return id
+	}
+	insBound("long")
+	insBound("short")
+
+	insCfl := func(dir string) string {
+		var id string
+		s.pool.QueryRow(ctx,
+			`INSERT INTO strategies (owner_id, account_id, symbol, direction, strategy_type, status)
+			 VALUES ($1,$2,'CFLUSDT',$3,'matrix','active') RETURNING id`, userID, accID, dir).Scan(&id)
+		t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM strategies WHERE id=$1", id) })
+		return id
+	}
+	newLong, newShort := insCfl("long"), insCfl("short")
+	body4, _ := json.Marshal(map[string]string{"strategy_a_id": newLong, "strategy_b_id": newShort, "bot_id": confBot})
+	req4 := httptest.NewRequest(http.MethodPost, "/strategies/bind", bytes.NewReader(body4))
+	req4 = withUserID(req4, userID)
+	rec4 := httptest.NewRecorder()
+	s.BindStrategiesToBot(rec4, req4)
+	if rec4.Code != http.StatusConflict {
+		t.Errorf("bind when pair already exists should be 409, got %d: %s", rec4.Code, rec4.Body.String())
+	}
 }
