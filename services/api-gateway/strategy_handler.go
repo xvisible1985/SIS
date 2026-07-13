@@ -1122,7 +1122,7 @@ func (s *Server) DetachFromBot(w http.ResponseWriter, r *http.Request) {
 				max_cycles, matrix_levels, safe_zone_pct, matrix_entry_level,
 				protected_build, matrix_rebuild_on_sl, matrix_rebuild_from_entry,
 				strategy_type, size_as_main, hedged_strategy_id,
-				adopt_position_data
+				adopt_position_data, origin_bot_id
 			)
 			SELECT
 				owner_id, account_id, $2, symbol, category, direction, 'active',
@@ -1133,7 +1133,7 @@ func (s *Server) DetachFromBot(w http.ResponseWriter, r *http.Request) {
 				COALESCE(protected_build,false), COALESCE(matrix_rebuild_on_sl,false),
 				COALESCE(matrix_rebuild_from_entry,false),
 				COALESCE(strategy_type,'grid'), COALESCE(size_as_main,false), hedged_strategy_id,
-				$3::jsonb
+				$3::jsonb, origin_bot_id
 			FROM strategies WHERE id=$1
 			RETURNING id`,
 			id, botIDOrNull(botID), adoptJSON,
