@@ -1753,39 +1753,48 @@ func (s *Server) BindStrategiesToBot(w http.ResponseWriter, r *http.Request) {
 	}
 	cols := s.computeBotStrategyCols(ctx, cfg, a.symbol, 0)
 
-	// Roles. Matrix: long=main, short=hedge. Hedge: bigger position=main.
+	// Fetch open positions once — used both to decide hedge roles by notional AND to adopt
+	// any live position on bind, so a bound leg re-configures its existing position instead
+	// of placing a fresh L0 entry on top of it. On any error, proceed with an empty map:
+	// roles fall back to direction (long=main), adopt to nil.
+	posMap := map[string]map[string]hedgePosInfo{}
+	if creds, cErr := s.loadBotAccountCreds(ctx, a.accountID); cErr != nil {
+		s.logBotEvent(ctx, req.BotID, fmt.Sprintf("%s — привязка: не удалось получить ключи для позиций (роли по направлению, без adopt): %v", a.symbol, cErr), "warn", "user")
+	} else if positions, pErr := trader.FetchPositions(ctx, creds); pErr != nil {
+		s.logBotEvent(ctx, req.BotID, fmt.Sprintf("%s — привязка: не удалось получить позиции (роли по направлению, без adopt): %v", a.symbol, pErr), "warn", "user")
+	} else {
+		posMap, _ = buildHedgePosMap(positions)
+	}
+
+	// Roles. Matrix: long=main, short=hedge. Hedge: bigger position (notional) = main.
 	mainLeg, hedgeLeg := a, b
 	if a.dir == "short" {
 		mainLeg, hedgeLeg = b, a
 	}
 	if botKind == "hedge" {
-		// Fetch open positions to decide which leg is main by notional; on any error keep
-		// the direction-based default (long=main) but log a warning so the fallback is visible.
-		if creds, cErr := s.loadBotAccountCreds(ctx, a.accountID); cErr != nil {
-			s.logBotEvent(ctx, req.BotID, fmt.Sprintf("%s — привязка: не удалось получить ключи для размеров позиций, роли по направлению (long=main): %v", a.symbol, cErr), "warn", "user")
-		} else if positions, pErr := trader.FetchPositions(ctx, creds); pErr != nil {
-			s.logBotEvent(ctx, req.BotID, fmt.Sprintf("%s — привязка: не удалось получить позиции, роли по направлению (long=main): %v", a.symbol, pErr), "warn", "user")
-		} else {
-			posMap, _ := buildHedgePosMap(positions)
-			// sz returns the position's notional (Size*MarkPrice в USDT), not the raw
-			// contract count, so legs are compared by value regardless of price.
-			sz := func(dir string) float64 {
-				side := "Buy"
-				if dir == "short" {
-					side = "Sell"
-				}
-				if bySym, ok := posMap[a.symbol]; ok {
-					if p, ok := bySym[side]; ok {
-						return p.Size * p.MarkPrice
-					}
-				}
-				return 0
+		// sz returns the position's notional (Size*MarkPrice in USDT), not the raw contract
+		// count, so legs are compared by value regardless of price.
+		sz := func(dir string) float64 {
+			side := "Buy"
+			if dir == "short" {
+				side = "Sell"
 			}
-			if sz(hedgeLeg.dir) > sz(mainLeg.dir) {
-				mainLeg, hedgeLeg = hedgeLeg, mainLeg
+			if bySym, ok := posMap[a.symbol]; ok {
+				if p, ok := bySym[side]; ok {
+					return p.Size * p.MarkPrice
+				}
 			}
+			return 0
+		}
+		if sz(hedgeLeg.dir) > sz(mainLeg.dir) {
+			mainLeg, hedgeLeg = hedgeLeg, mainLeg
 		}
 	}
+
+	// Adopt any live position on each leg (nil when flat) so the engine reuses the existing
+	// position instead of entering again.
+	adoptMain := buildAdoptData(posMap, a.symbol, mainLeg.dir)
+	adoptHedge := buildAdoptData(posMap, a.symbol, hedgeLeg.dir)
 
 	// Attach both legs atomically: a partial failure would leave a half-bound pair
 	// (main active, hedge not) that the conflict check would then block from retry.
@@ -1795,7 +1804,7 @@ func (s *Server) BindStrategiesToBot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(ctx)
-	if err := s.applyBotConfigToStrategy(ctx, tx, mainLeg.id, req.BotID, cols, "", nil); err != nil {
+	if err := s.applyBotConfigToStrategy(ctx, tx, mainLeg.id, req.BotID, cols, "", adoptMain); err != nil {
 		writeError(w, http.StatusInternalServerError, "не удалось привязать main-легу")
 		return
 	}
@@ -1803,7 +1812,7 @@ func (s *Server) BindStrategiesToBot(w http.ResponseWriter, r *http.Request) {
 	if botKind == "hedge" {
 		hedgedLink = mainLeg.id
 	}
-	if err := s.applyBotConfigToStrategy(ctx, tx, hedgeLeg.id, req.BotID, cols, hedgedLink, nil); err != nil {
+	if err := s.applyBotConfigToStrategy(ctx, tx, hedgeLeg.id, req.BotID, cols, hedgedLink, adoptHedge); err != nil {
 		writeError(w, http.StatusInternalServerError, "не удалось привязать hedge-легу")
 		return
 	}

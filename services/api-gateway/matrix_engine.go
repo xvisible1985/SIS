@@ -148,6 +148,34 @@ func (s *Server) reviveMatrixSplitBrain(ctx context.Context, botID, stratID, cyc
 		"warn", "matrix")
 }
 
+// buildAdoptData returns adopt_position_data JSON ({size, entry_price}) for an open
+// position on the given leg direction, or nil when there is no open position. Used so a
+// leg that gets (re)attached to a bot adopts its live exchange position instead of placing
+// a fresh L0 market entry on top of it (double-entry).
+func buildAdoptData(posMap map[string]map[string]hedgePosInfo, symbol, dir string) *string {
+	side := "Buy"
+	if dir == "short" {
+		side = "Sell"
+	}
+	bySym, ok := posMap[symbol]
+	if !ok {
+		return nil
+	}
+	pos, ok := bySym[side]
+	if !ok || pos.Size <= 0 {
+		return nil
+	}
+	raw, _ := json.Marshal(struct {
+		Size       string `json:"size"`
+		EntryPrice string `json:"entry_price"`
+	}{
+		Size:       strconv.FormatFloat(pos.Size, 'f', -1, 64),
+		EntryPrice: strconv.FormatFloat(pos.EntryPrice, 'f', -1, 64),
+	})
+	s := string(raw)
+	return &s
+}
+
 // checkMatrixPairedClose inspects all active strategy pairs (long+short) for this bot
 // and fires the paired-close condition when the combined P&L target is met.
 func (s *Server) checkMatrixPairedClose(ctx context.Context, botID string, cfg botCfgJSON, creds trader.Credentials, posMap map[string]map[string]hedgePosInfo) map[string]bool {
