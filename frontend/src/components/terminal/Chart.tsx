@@ -71,7 +71,7 @@ function isTPLinkId(linkId?: string): boolean {
 }
 
 // Extracts cycle number from SIS order link IDs. Returns null for unknown formats.
-function extractCycleNum(linkId?: string): number | null {
+export function extractCycleNum(linkId?: string): number | null {
   if (!linkId) return null
   // SIS_STR-{id}-tp[l{slot}]-{cycle}[-{seq}] or SIS_STR-{id}-sl-{cycle}[-{seq}]
   let m = linkId.match(/^(?:SIS_STR|STP)-[a-f0-9]+-(?:tp(?:l[n\d]+)?|sl)-(\d+)/)
@@ -103,9 +103,32 @@ function autoPrecision(price: number): { precision: number; minMove: number } {
 
 // Returns true when a link ID belongs to a different SIS strategy (not the current one).
 // Used to hide ghost orders/executions from deleted strategies that share the same symbol.
-function isOtherStrategyLinkId(linkId: string | undefined, stratIdShort: string | null | undefined): boolean {
+export function isOtherStrategyLinkId(linkId: string | undefined, stratIdShort: string | null | undefined): boolean {
   if (!linkId || !stratIdShort) return false
   return /^(?:SIS_STR|STP|STR)-[a-f0-9]/.test(linkId) && !linkId.includes(stratIdShort)
+}
+
+// Resolves the cycle number to filter chart price lines/markers by. `currentCycleNum`
+// comes from an async per-strategy fetch (TerminalPage.tsx) that is briefly null right
+// after switching strategy cards (or before the initial fetch resolves). During that
+// gap, falling back to "no cycle filter" would let orders/executions from an already-
+// reset old cycle leak through as stale lines. Instead, derive the effective cycle from
+// the max cycle number seen among this strategy's own orders — the same live data the
+// chart is about to render — so stale-cycle data never renders even during that window.
+export function deriveEffectiveCycleNum(
+  currentCycleNum: number | null | undefined,
+  stratIdShort: string | null | undefined,
+  orders: { orderLinkId?: string }[],
+): number | null {
+  let effective: number | null = currentCycleNum ?? null
+  if (effective === null && stratIdShort) {
+    for (const o of orders) {
+      if (!o.orderLinkId?.includes(stratIdShort)) continue
+      const n = extractCycleNum(o.orderLinkId)
+      if (n !== null && (effective === null || n > effective)) effective = n
+    }
+  }
+  return effective
 }
 
 export function Chart({ candles, candleSymbol, positions, orders, executions, symbol, lastPrice, onLoadMore, overlaySettings, strategyDir, stratIdShort, currentCycleNum, strategyLevels, relativeSlots, tickerPrices, safeZone, hedgePairTarget }: Props) {
@@ -384,6 +407,8 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     const currentPrice = lastPrice ? parseFloat(lastPrice) : 0
     const dirFilter = overlaySettings && !overlaySettings.bothDirections && effectiveDir ? effectiveDir : null
 
+    const effectiveCycleNum = deriveEffectiveCycleNum(currentCycleNum, stratIdShort, orders)
+
     for (const pos of positions.filter(p => {
       if (p.symbol !== symbol) return false
       if (overlaySettings && !overlaySettings.showPositions) return false
@@ -469,9 +494,9 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       // Hide orders belonging to a different strategy (ghost orders from deleted strategies).
       if (isOtherStrategyLinkId(o.orderLinkId, stratIdShort)) return false
       // Show only orders from the current cycle — hide any other cycle (old or phantom).
-      if (stratIdShort && currentCycleNum != null && o.orderLinkId?.includes(stratIdShort)) {
+      if (stratIdShort && effectiveCycleNum != null && o.orderLinkId?.includes(stratIdShort)) {
         const ordCycle = extractCycleNum(o.orderLinkId)
-        if (ordCycle !== null && ordCycle !== currentCycleNum) return false
+        if (ordCycle !== null && ordCycle !== effectiveCycleNum) return false
       }
       const lbl = parseOrderLabel(o.orderLinkId, o.side)
       // Skip exchange orders whose level is tracked as virtual in strategyLevels
@@ -585,7 +610,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         if (stratIdShort && !o.orderLinkId?.includes(stratIdShort)) continue
         const n = extractCycleNum(o.orderLinkId)
         if (n === null) continue
-        if (stratIdShort && currentCycleNum != null && n !== currentCycleNum) continue
+        if (stratIdShort && effectiveCycleNum != null && n !== effectiveCycleNum) continue
         activeCycles.add(n)
       }
 
@@ -615,7 +640,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         if (isOtherStrategyLinkId(e.orderLinkId, stratIdShort)) continue
         const cycleNum = extractCycleNum(e.orderLinkId)
         if (cycleNum === null || !activeCycles.has(cycleNum)) continue
-        if (stratIdShort && currentCycleNum != null && e.orderLinkId?.includes(stratIdShort) && cycleNum !== currentCycleNum) continue
+        if (stratIdShort && effectiveCycleNum != null && e.orderLinkId?.includes(stratIdShort) && cycleNum !== effectiveCycleNum) continue
         if (!e.price || e.price <= 0) continue
         const isTP = isTPLinkId(e.orderLinkId)
         if (isTP && hasActiveTP) continue
@@ -801,16 +826,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     // Only show markers for executions whose cycle still has active orders.
     // Manual executions (no cycle number) always show.
     // Build active cycles only from current-cycle orders; exclude all other cycles.
-    // When currentCycleNum is null (page just loaded), derive it from the max cycle seen in open orders
-    // so that stale markers from old cycles don't appear briefly.
-    let effectiveCycleNum: number | null = currentCycleNum ?? null
-    if (effectiveCycleNum === null && stratIdShort) {
-      for (const o of orders) {
-        if (!o.orderLinkId?.includes(stratIdShort)) continue
-        const n = extractCycleNum(o.orderLinkId)
-        if (n !== null && (effectiveCycleNum === null || n > effectiveCycleNum)) effectiveCycleNum = n
-      }
-    }
+    const effectiveCycleNum = deriveEffectiveCycleNum(currentCycleNum, stratIdShort, orders)
     const activeCycles = new Set<number>()
     for (const o of orders) {
       // Only count THIS strategy's orders — other strategies on the same symbol must not
@@ -853,7 +869,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       // but allow MSL fills through — they belong to the strategy even without a cycle num.
       if (cycleNum === null && stratIdShort && !isMSLLinkId) continue
       if (cycleNum !== null && !activeCycles.has(cycleNum)) continue
-      if (stratIdShort && currentCycleNum != null && e.orderLinkId?.includes(stratIdShort) && cycleNum !== null && cycleNum !== currentCycleNum) continue
+      if (stratIdShort && effectiveCycleNum != null && e.orderLinkId?.includes(stratIdShort) && cycleNum !== null && cycleNum !== effectiveCycleNum) continue
       // MSL fills: only show if the slot is sl_closed in the current cycle's levels.
       // Without this guard, SL markers from old cycles leak through (they have no cycle num).
       if (isMSLLinkId && strategyLevels && strategyLevels.length > 0) {
