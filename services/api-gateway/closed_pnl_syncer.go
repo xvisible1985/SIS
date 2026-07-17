@@ -179,6 +179,17 @@ func (s *ClosedPnlSyncer) processClosedPnl(ctx context.Context, a closedPnlAccou
 		return
 	}
 
+	// 1b. Direct attribution via our own orderLinkId — Bybit echoes it back unchanged.
+	// Authoritative: tells us exactly which strategy (and bot) owns this close,
+	// independent of whether the cycle looks "ended" or "zombie" from the outside —
+	// which is exactly what breaks for matrix bots (a global TP re-arms the SAME cycle
+	// instead of ending it, so the time-window heuristics below misfire on it).
+	if parsed, ok := strategy.ParseStrategyLinkID(p.OrderLinkId); ok {
+		if s.processLinkIDAttributed(ctx, a, p, parsed) {
+			return
+		}
+	}
+
 	// 2. Does a strategy cycle own this close?
 	// A strategy cycle that ended near this close time for this symbol+direction.
 	dir := "long"
@@ -333,6 +344,75 @@ func (s *ClosedPnlSyncer) processClosedPnl(ctx context.Context, a closedPnlAccou
 	}
 	log.Printf("closed_pnl_syncer: ручная сделка %s %s %s gross=%.4f net=%.4f",
 		p.Symbol, dir, p.OrderId, grossPnl, netPnl)
+}
+
+// processLinkIDAttributed handles a ClosedPnl entry whose orderLinkId directly identifies
+// the owning strategy via ParseStrategyLinkID. Returns true when the caller must NOT fall
+// through to the legacy time-window heuristics (steps 2-4) — either because this function
+// fully handled the entry, or because it positively identified the owning strategy and the
+// primary in-process recorder is expected to catch up on its own. Returns false only when
+// the parsed strategy id prefix doesn't resolve to a real row (e.g. deleted strategy) —
+// the legacy path is a safety net for that edge case.
+func (s *ClosedPnlSyncer) processLinkIDAttributed(ctx context.Context, a closedPnlAccount, p trader.ClosedPnl, parsed strategy.ParsedLinkID) bool {
+	var stratID, symbol, direction, category string
+	var botID *string
+	var cycleID *string
+	var cycleNum *int
+	err := s.pool.QueryRow(ctx, `
+		SELECT st.id, st.symbol, st.direction, st.category, st.bot_id, lc.cycle_id, lc.cycle_num
+		FROM strategies st
+		LEFT JOIN LATERAL (
+			SELECT c.id AS cycle_id, c.cycle_num
+			FROM strategy_cycles c WHERE c.strategy_id = st.id
+			ORDER BY c.cycle_num DESC LIMIT 1
+		) lc ON true
+		WHERE st.account_id = $1 AND st.id::text LIKE $2`,
+		a.id, parsed.StrategyID8+"%",
+	).Scan(&stratID, &symbol, &direction, &category, &botID, &cycleID, &cycleNum)
+	if err != nil {
+		return false // no matching strategy on this account — let the legacy path try
+	}
+
+	switch parsed.Kind {
+	case strategy.LinkIDMatrixTP:
+		// Global matrix TP re-arm: the cycle does NOT end. Record directly into
+		// matrix_tp_profits — same table/idempotency the in-process engine uses via
+		// RecordMatrixTPProfit. Never touch ended_at: this cycle is healthy and still
+		// trading, not a zombie — that is exactly the bug this fixes.
+		grossPnl, _ := strconv.ParseFloat(p.ClosedPnl, 64)
+		cn := 0
+		if cycleNum != nil {
+			cn = *cycleNum
+		}
+		strategy.InsertMatrixTPProfit(ctx, s.pool, strategy.MatrixTPInsertInput{
+			StrategyID: stratID, BotID: botID, AccountID: a.id,
+			CycleNum: cn, Symbol: symbol, GrossPnl: grossPnl, OrderID: p.OrderId,
+		})
+		return true
+
+	case strategy.LinkIDMatrixLevelSL:
+		// Already recorded by the in-process engine directly into
+		// strategy_levels.realized_pnl (handleMatrixSLFill) — writing this into
+		// trade_history too would create a duplicate/orphan row. No-op.
+		log.Printf("closed_pnl_syncer: %s per-level matrix SL (order=%s) already tracked via strategy_levels — skip", p.Symbol, p.OrderId)
+		return true
+
+	case strategy.LinkIDGridTP, strategy.LinkIDGridSL:
+		// A genuine cycle-ending close, now with a PRECISE strategy match instead of
+		// the fuzzy time-window guess below. The primary in-process recorder
+		// (closeCycle → RecordStrategyTrade) is expected to write this; if it hasn't
+		// yet (timing race), the next poll's step-1 existence check will pick it up
+		// once written. We do NOT force anything here, and we do NOT fall through to
+		// zombie-detection for a strategy we've positively identified.
+		if cycleID != nil {
+			log.Printf("closed_pnl_syncer: %s %s linkId-attributed to strategy %s cycle %s, waiting for recorder",
+				p.Symbol, direction, stratID[:8], (*cycleID)[:8])
+		}
+		return true
+
+	default: // strategy.LinkIDUnrecognized — matched our prefix, not a close-type suffix.
+		return false
+	}
 }
 
 func safeDiv(a, b float64) float64 {
