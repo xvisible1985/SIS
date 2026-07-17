@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"sis/pkg/signal"
 	"sis/pkg/trader"
 )
 
@@ -348,7 +349,64 @@ func (s *Server) directionHasLiveStrategy(ctx context.Context, accountID, symbol
 func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, creds trader.Credentials, posMap map[string]map[string]hedgePosInfo, skipSymbols map[string]bool) {
 	delistSymbols := s.GetDelistingSymbols()
 
-	for _, symbol := range whitelist {
+	// Per-bot strategy count limits (0 = unlimited) — stored on the bots table itself,
+	// not botCfgJSON, and were NEVER enforced anywhere in the matrix engine before this
+	// fix. Before the empty-whitelist-means-all-symbols fallback below existed, this
+	// limit was "accidentally" enforced by whoever sized their whitelist to match it;
+	// once that fallback could expand the loop to 400+ exchange symbols, nothing bounded
+	// how many pairs got opened in a single tick (live incident, 2026-07-17: a bot
+	// configured for max 4 opened 10+ before being stopped by hand).
+	var maxTotal, maxLong, maxShort int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(max_strategies,0), COALESCE(max_long_strategies,0), COALESCE(max_short_strategies,0) FROM bots WHERE id=$1`,
+		botID,
+	).Scan(&maxTotal, &maxLong, &maxShort); err != nil {
+		s.logBotEvent(ctx, botID, fmt.Sprintf("Матрикс: ошибка чтения лимитов бота: %v", err), "error", "matrix")
+		return
+	}
+	var activeLong, activeShort int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE direction='long'), count(*) FILTER (WHERE direction='short')
+		 FROM strategies WHERE bot_id=$1 AND status IN ('active','finishing')`,
+		botID,
+	).Scan(&activeLong, &activeShort); err != nil {
+		s.logBotEvent(ctx, botID, fmt.Sprintf("Матрикс: ошибка подсчёта активных стратегий: %v", err), "error", "matrix")
+		return
+	}
+	activeTotal := activeLong + activeShort
+
+	// Empty whitelist means "all symbols" everywhere else in this app (the bot form's own
+	// hint says so, and symbolPassesHedgeFilter treats it that way) — but unlike hedge
+	// bots, which iterate existing exchange positions and only use the whitelist as a
+	// pass/fail filter, matrix bots need an actual symbol list to drive this loop. Without
+	// this fallback a matrix bot with no whitelist configured silently opened nothing,
+	// ever, regardless of activation signals — found live (2026-07-16) when a bot's own
+	// signal scan (which fetches all symbols independently) showed matching pairs, but
+	// the tick itself had zero symbols to iterate over in the first place.
+	symbols := whitelist
+	if len(symbols) == 0 {
+		all, err := trader.FetchAllLinearSymbols(ctx)
+		if err != nil {
+			s.logBotEvent(ctx, botID, fmt.Sprintf("Матрикс: ошибка получения списка символов: %v", err), "error", "matrix")
+			return
+		}
+		symbols = all
+	}
+
+	// Aggregate counters for a single end-of-tick summary log — NOT logged per symbol,
+	// since with the empty-whitelist fallback above this loop can now cover 400+ exchange
+	// symbols per tick and a per-symbol "signal didn't confirm" log (like hedge bots emit,
+	// hedge_engine.go's "условие выполнено, сигнал не подтверждён") would flood bot_events.
+	// This summary line is also the main diagnostic for "signal scan shows matches but the
+	// bot isn't opening anything": if it shows 0/0 confirmed every tick while the scan
+	// finds hits, the live gate is genuinely evaluating differently from the scan (config/
+	// signal bug); if the line never appears at all, the tick isn't completing (timeout).
+	checkedActivation, confirmedActivation := 0, 0
+
+	for _, symbol := range symbols {
+		if maxTotal > 0 && activeTotal >= maxTotal {
+			break // total limit reached — no point scanning remaining symbols this tick
+		}
 		if skipSymbols[symbol] {
 			// Pair was just closed this tick — posMap still shows the (closing) position;
 			// re-adopting it here would re-fire the trigger. Reopens fresh next tick.
@@ -357,11 +415,28 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 		if !symbolPassesHedgeFilter(symbol, nil, blacklist, delistSymbols) {
 			continue
 		}
+		// Checked once per symbol — direction-agnostic, matrix opens both legs together.
+		activationOK := s.matrixActivationSignalOK(symbol, cfg)
+		if len(cfg.ActivationSignals) > 0 {
+			checkedActivation++
+			if activationOK {
+				confirmedActivation++
+			}
+		}
 		for _, dir := range []string{"long", "short"} {
 			// Skip if the bot already owns a live strategy for this slot, if the user
 			// paused this leg (manual close → paused, don't recreate), or if a detached
 			// (bot_id=NULL) strategy is still live on this account.
 			if s.directionHasLiveStrategy(ctx, accountID, symbol, dir, botID) {
+				continue
+			}
+			if maxTotal > 0 && activeTotal >= maxTotal {
+				continue
+			}
+			if dir == "long" && maxLong > 0 && activeLong >= maxLong {
+				continue
+			}
+			if dir == "short" && maxShort > 0 && activeShort >= maxShort {
 				continue
 			}
 
@@ -397,19 +472,74 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 				}
 			}
 
-			if _, err := s.createBotStrategy(ctx, b, cfg, symbol, dir, 0, "", adoptJSON); err != nil {
+			// An already-open exchange position must always be adopted regardless of the
+			// activation signal — leaving it unmanaged is worse than opening early. A fresh
+			// open (nothing to adopt) waits for activation to confirm, same as hedge bots.
+			if adoptJSON == nil && !activationOK {
+				continue
+			}
+
+			if id, err := s.createBotStrategy(ctx, b, cfg, symbol, dir, 0, "", adoptJSON); err != nil {
 				s.logBotEvent(ctx, botID,
 					fmt.Sprintf("Матрикс: %s %s — ошибка создания: %v", symbol, dir, err),
 					"error", "matrix")
-			} else if adoptJSON != nil {
-				s.logBotEvent(ctx, botID,
-					fmt.Sprintf("Матрикс: %s %s — открыт (поглощение существующей позиции %s)", symbol, dir, *adoptJSON),
-					"info", "matrix")
 			} else {
-				s.logBotEvent(ctx, botID,
-					fmt.Sprintf("Матрикс: %s %s — открыт", symbol, dir),
-					"info", "matrix")
+				if id != "" {
+					activeTotal++
+					if dir == "long" {
+						activeLong++
+					} else {
+						activeShort++
+					}
+				}
+				if adoptJSON != nil {
+					s.logBotEvent(ctx, botID,
+						fmt.Sprintf("Матрикс: %s %s — открыт (поглощение существующей позиции %s)", symbol, dir, *adoptJSON),
+						"info", "matrix")
+				} else {
+					s.logBotEvent(ctx, botID,
+						fmt.Sprintf("Матрикс: %s %s — открыт", symbol, dir),
+						"info", "matrix")
+				}
 			}
 		}
 	}
+
+	if checkedActivation > 0 {
+		s.logBotEvent(ctx, botID,
+			fmt.Sprintf("Матрикс: проверка активации — %d/%d символов подтвердили сигнал", confirmedActivation, checkedActivation),
+			"info", "matrix")
+	}
+}
+
+// matrixActivationSignalOK reports whether a matrix bot's configured activation signals
+// (if any) currently confirm activation for symbol. Mirrors the hedge bot's "Optional
+// activation signal filter" (hedge_engine.go), but direction-agnostic: matrix opens
+// long and short together (see ensureMatrixStrategies), so any non-Neutral state counts
+// — Buy or Sell both pass. This lets a signal like price-change be used purely for its
+// |change| >= threshold% magnitude check here; its trend/counter-trend mode still picks
+// Buy vs Sell under the hood, but matrix ignores which one fired, only that one did.
+// Empty ActivationSignals always passes — backward compatible with existing matrix bots,
+// which opened immediately before this gate existed.
+func (s *Server) matrixActivationSignalOK(symbol string, cfg botCfgJSON) bool {
+	if len(cfg.ActivationSignals) == 0 {
+		return true
+	}
+	sigCfgs := make([]signal.Config, 0, len(cfg.ActivationSignals))
+	for _, a := range cfg.ActivationSignals {
+		sc := signal.Config{Name: a.Name, Params: a.Params}
+		if _, err := signal.Build(sc); err != nil {
+			return false
+		}
+		sigCfgs = append(sigCfgs, sc)
+	}
+	interval := "15"
+	for _, a := range cfg.ActivationSignals {
+		if v, ok := a.Params["tf"].(string); ok && v != "" {
+			interval = v
+			break
+		}
+	}
+	state := s.signalEngine.ComputeStateForce(symbol, interval, sigCfgs)
+	return state != signal.Neutral
 }

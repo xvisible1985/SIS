@@ -653,6 +653,11 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
                   <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Ограничения</span>
                   <div className="h-px flex-1 bg-white/[.05]" />
                 </div>
+                <div className="mb-3 rounded-md border border-amber-900/40 bg-amber-900/[.12] px-3 py-2 text-[11px] leading-snug text-amber-400/90">
+                  HedgeBot открывает только один хедж-ордер к уже существующей стратегии —
+                  эти лимиты здесь не работают как «сколько пар открыть», в отличие от
+                  MatrixBot/SignalBot.
+                </div>
                 <div className="grid grid-cols-3 gap-3 mb-3">
                   <Field label="Всего стратегий" hint="0 = ∞">
                     <input type="number" min={0} step={1} value={maxStrategies}
