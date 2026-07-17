@@ -74,17 +74,42 @@ func RecordMatrixTPProfit(pool *pgxpool.Pool, creds trader.Credentials, in Matri
 		}
 	}
 
-	// Closing-order fees for this TP order.
+	InsertMatrixTPProfit(ctx, pool, MatrixTPInsertInput{
+		StrategyID: in.Strategy.ID, BotID: in.Strategy.BotID, AccountID: in.Strategy.AccountID,
+		CycleNum: in.CycleNum, Symbol: in.Strategy.Symbol, GrossPnl: grossPnl, OrderID: in.OrderID,
+	})
+}
+
+// MatrixTPInsertInput carries the values needed for one matrix_tp_profits row when the
+// gross PnL is already known — e.g. read directly from a Bybit ClosedPnl entry by
+// ClosedPnlSyncer, which doesn't need RecordMatrixTPProfit's own retry-fetch (that fetch
+// exists for the in-process fill-event call site, which only has fill price/qty at the
+// moment of the WS event, not yet the authoritative Bybit-reported realized PnL).
+type MatrixTPInsertInput struct {
+	StrategyID string
+	BotID      *string
+	AccountID  string
+	CycleNum   int
+	Symbol     string
+	GrossPnl   float64
+	OrderID    string
+}
+
+// InsertMatrixTPProfit writes one matrix_tp_profits row: computes fees from
+// trader_executions for the given closing order, net_pnl = gross - fees, and inserts
+// idempotently keyed on (account_id, bybit_order_id) — a replayed WS event or a
+// ClosedPnlSyncer poll re-processing the same close is a safe no-op.
+func InsertMatrixTPProfit(ctx context.Context, pool *pgxpool.Pool, in MatrixTPInsertInput) {
 	var fees float64
 	if in.OrderID != "" {
 		_ = pool.QueryRow(ctx, `
 			SELECT COALESCE(SUM(ABS(exec_fee)), 0)
 			FROM trader_executions
 			WHERE account_id = $1 AND order_id = $2 AND exec_type = 'Trade'`,
-			in.Strategy.AccountID, in.OrderID,
+			in.AccountID, in.OrderID,
 		).Scan(&fees)
 	}
-	netPnl := grossPnl - fees
+	netPnl := in.GrossPnl - fees
 
 	var orderIDPtr *string
 	if in.OrderID != "" {
@@ -96,14 +121,14 @@ func RecordMatrixTPProfit(pool *pgxpool.Pool, creds trader.Credentials, in Matri
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		ON CONFLICT (account_id, bybit_order_id) WHERE bybit_order_id IS NOT NULL
 		DO NOTHING`,
-		in.Strategy.ID, in.Strategy.BotID, in.Strategy.AccountID, in.CycleNum, in.Strategy.Symbol,
-		grossPnl, fees, netPnl, orderIDPtr,
+		in.StrategyID, in.BotID, in.AccountID, in.CycleNum, in.Symbol,
+		in.GrossPnl, fees, netPnl, orderIDPtr,
 	); err != nil {
-		log.Printf("matrix tp recorder [%s cy%d]: insert: %v", in.Strategy.Symbol, in.CycleNum, err)
+		log.Printf("matrix tp insert [%s cy%d]: %v", in.Symbol, in.CycleNum, err)
 		return
 	}
-	log.Printf("matrix tp recorder [%s cy%d]: записано — gross=%.4f fees=%.4f net=%.4f (order=%s)",
-		in.Strategy.Symbol, in.CycleNum, grossPnl, fees, netPnl, in.OrderID)
+	log.Printf("matrix tp insert [%s cy%d]: записано — gross=%.4f fees=%.4f net=%.4f (order=%s)",
+		in.Symbol, in.CycleNum, in.GrossPnl, fees, netPnl, in.OrderID)
 }
 
 // RecordStrategyTrade writes a trade_history row for a closed strategy cycle.
