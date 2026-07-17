@@ -149,3 +149,43 @@ func TestClosedPnlSyncer_UnrecognizedLinkID_FallsBackToLegacyManual(t *testing.T
 		t.Errorf("result = %q, want %q (unchanged legacy behavior)", result, "manual")
 	}
 }
+
+// TestClosedPnlSyncer_RecognizedLinkIDNoMatchingStrategy_FallsBackToLegacyManual: an
+// orderLinkId that matches our SIS_STR-{8hex}- format (so ParseStrategyLinkID succeeds)
+// but whose 8 hex chars don't resolve to any strategy row on this account (e.g. a
+// deleted strategy) must fall through to the legacy manual-attribution path — the
+// documented safety net in processLinkIDAttributed's "no matching strategy" branch.
+// This is a materially different code path from the empty-linkId case above:
+// ParseStrategyLinkID returns ok=true here, and processLinkIDAttributed itself returns
+// false after failing to find the strategy.
+func TestClosedPnlSyncer_RecognizedLinkIDNoMatchingStrategy_FallsBackToLegacyManual(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	userID := createWHUser(t, s, "cplsyncnostrat")
+	accID := createTestAccount(t, s, userID)
+
+	syncer := NewClosedPnlSyncer(s.pool, "test-enc-key")
+	// "deadbeef" is a well-formed 8-hex prefix but does not correspond to any strategy
+	// row created for this (or any) account.
+	linkID := "SIS_STR-deadbeef-tp-1-1"
+	p := trader.ClosedPnl{
+		Symbol: "NOSTRATUSDT", OrderId: "bybit-order-nostrat-1", OrderLinkId: linkID,
+		Side: "Sell", Qty: "10", AvgEntryPrice: "1.0", AvgExitPrice: "1.1",
+		ClosedPnl: "1.0", CreatedTime: "0", Category: "linear",
+	}
+	acc := closedPnlAccount{id: accID, ownerID: userID}
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM trade_history WHERE bybit_close_order_id=$1", p.OrderId) })
+
+	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, p, time.Now())
+
+	var count int
+	var result string
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM trade_history WHERE bybit_close_order_id=$1`, p.OrderId).Scan(&count)
+	if err != nil || count != 1 {
+		t.Fatalf("trade_history rows = %d (err=%v), want 1 (legacy manual fallback)", count, err)
+	}
+	s.pool.QueryRow(ctx, `SELECT result FROM trade_history WHERE bybit_close_order_id=$1`, p.OrderId).Scan(&result)
+	if result != "manual" {
+		t.Errorf("result = %q, want %q (unchanged legacy behavior)", result, "manual")
+	}
+}

@@ -379,7 +379,14 @@ func (s *ClosedPnlSyncer) processLinkIDAttributed(ctx context.Context, a closedP
 		// matrix_tp_profits — same table/idempotency the in-process engine uses via
 		// RecordMatrixTPProfit. Never touch ended_at: this cycle is healthy and still
 		// trading, not a zombie — that is exactly the bug this fixes.
-		grossPnl, _ := strconv.ParseFloat(p.ClosedPnl, 64)
+		grossPnl, perr := strconv.ParseFloat(p.ClosedPnl, 64)
+		if perr != nil {
+			// Don't insert a wrong 0.0 profit — InsertMatrixTPProfit is idempotent
+			// (ON CONFLICT DO NOTHING keyed on order id), so a bad insert now would
+			// permanently block a correct one later. Fall through to the legacy path.
+			log.Printf("closed_pnl_syncer: %s parse closedPnl=%q (order=%s): %v", p.Symbol, p.ClosedPnl, p.OrderId, perr)
+			return false
+		}
 		cn := 0
 		if cycleNum != nil {
 			cn = *cycleNum
