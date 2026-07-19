@@ -112,11 +112,13 @@ const botFrom = ` FROM bots b JOIN users u ON u.id = b.owner_id `
 // account so deleting the creator's own bot never removes the library entry.
 const catalogOwnerID = "00000000-0000-0000-0000-0000000000ca"
 
-// mineStatsCols — нули для статистики сделок (trade_history удалена, будет пересоздана)
+// mineStatsCols — реальная статистика сделок владельца по единому источнику PnL
+// (botPnlUnionSQL: trade_history + strategy_levels.realized_pnl + matrix_tp_profits),
+// иначе боты, чья прибыль идёт через matrix-TP re-arm, показывали бы нули.
 const mineStatsCols = `,
-	0::int AS trades_total,
-	0::int AS trades_win,
-	0::float8 AS net_pnl_total,
+	(SELECT COUNT(*) FROM ` + botPnlUnionSQL + ` bp WHERE bp.bot_id = b.id)::int AS trades_total,
+	(SELECT COUNT(*) FROM ` + botPnlUnionSQL + ` bp WHERE bp.bot_id = b.id AND bp.net_pnl > 0)::int AS trades_win,
+	COALESCE((SELECT SUM(bp.net_pnl) FROM ` + botPnlUnionSQL + ` bp WHERE bp.bot_id = b.id), 0)::float8 AS net_pnl_total,
 	COALESCE(
 		(SELECT CASE WHEN b2.is_official THEN 'NovaBot'
 		             ELSE COALESCE(
@@ -1953,4 +1955,3 @@ func (s *Server) CreateOfficialBot(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusCreated, bot)
 }
-

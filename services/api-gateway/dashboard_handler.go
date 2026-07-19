@@ -182,10 +182,10 @@ func (s *Server) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		rows, err := s.pool.Query(ctx, `
 			SELECT
 				b.id, b.name, b.status,
-				COUNT(th.id)                                AS trades,
-				COUNT(th.id) FILTER (WHERE th.net_pnl > 0) AS wins,
-				COALESCE(SUM(th.net_pnl), 0)               AS pnl
-			FROM trade_history th
+				COUNT(*)                                AS trades,
+				COUNT(*) FILTER (WHERE th.net_pnl > 0) AS wins,
+				COALESCE(SUM(th.net_pnl), 0)           AS pnl
+			FROM `+botPnlUnionSQL+` th
 			JOIN bots b ON b.id = th.bot_id `+baseWhere+`
 				AND th.bot_id IS NOT NULL
 			GROUP BY b.id, b.name, b.status
