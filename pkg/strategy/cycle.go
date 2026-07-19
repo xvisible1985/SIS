@@ -34,6 +34,8 @@ type StrategyRunner struct {
 	instrFetchedAt          time.Time // time of last successful GetInstrumentInfo; zero = never
 	closedBySelf            bool      // set by handleTPFill/handleSLFill to suppress the WS position-close event
 	closedByReason          string    // human-readable reason why we closed/reduced (TP/SL/Matrix TP/…); cleared after use
+	expectedCloseReason     string    // set via Engine.NotifyExpectedClose by an EXTERNAL bot-engine action (e.g. stopMatrixPair) that is about to close this position on purpose; used as trade_history.result instead of the default "manual_close". Cleared after use or once expired.
+	expectedCloseSetAt      time.Time // when expectedCloseReason was set — used for TTL expiry
 	unavailableCount        int       // consecutive "instrument unavailable" errors; stops after 5
 	repriceGen              int       // increments on each reprice so re-placed levels get fresh linkIds
 	partialCloseQty         float64   // actual exchange position qty after manual partial close; 0 = unset
@@ -4417,6 +4419,22 @@ func manualCloseStatus(strategy Strategy) Status {
 	return StatusStopped
 }
 
+// expectedCloseTTL bounds how long an Engine.NotifyExpectedClose reason stays valid. If
+// the closing orders that were supposed to trigger it never actually flatten the
+// position (exchange error, partial fill), a stale reason must not mislabel a later,
+// unrelated close — after the TTL, the safe default (manual_close) applies instead.
+const expectedCloseTTL = 2 * time.Minute
+
+// resolveCloseResult picks the trade_history result label for an external close: the
+// externally-set reason (via Engine.NotifyExpectedClose) if one is set and still within
+// its TTL, otherwise the default "manual_close".
+func resolveCloseResult(reason string, setAt time.Time) string {
+	if reason != "" && time.Since(setAt) <= expectedCloseTTL {
+		return reason
+	}
+	return "manual_close"
+}
+
 // closePositionExternal closes the cycle and stops the strategy because the position
 // disappeared unexpectedly. source is appended to the log line, e.g. "вручную" or
 // "биржей при отмене TP". Must be called with sr.mu held.
@@ -4430,7 +4448,9 @@ func (sr *StrategyRunner) closePositionExternal(ctx context.Context, source stri
 	// closeCycle must run BEFORE filled levels are marked cancelled in DB.
 	// RecordStrategyTrade (spawned by closeCycle) queries strategy_levels WHERE status='filled'
 	// after an 8-second sleep; marking them cancelled first yields zero rows → zero avg/qty in trade_history.
-	sr.closeCycle(ctx, "manual_close")
+	result := resolveCloseResult(sr.expectedCloseReason, sr.expectedCloseSetAt)
+	sr.expectedCloseReason = "" // consume regardless of whether it was used
+	sr.closeCycle(ctx, result)
 	if _, err := sr.runner.pool.Exec(ctx,
 		`UPDATE strategy_levels SET status='cancelled' WHERE cycle_id=$1 AND status='filled'`, cycleID,
 	); err != nil {

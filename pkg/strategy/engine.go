@@ -136,6 +136,32 @@ func (e *Engine) Notify(ctx context.Context, strategyID string) {
 	e.loadStrategy(ctx, s)
 }
 
+// NotifyExpectedClose tells the strategy runner (if currently loaded in memory) that an
+// external close is about to happen for a known reason — e.g. matrix paired-close market
+// orders placed by the bot engine (stopMatrixPair) — so the runner labels the resulting
+// trade_history row accurately instead of assuming a genuine manual close. Best-effort:
+// a no-op if the strategy/account isn't currently loaded (rare — the close then falls
+// back to the default "manual_close" label, same as before this feature existed).
+// Must NOT be called with any StrategyRunner lock held.
+func (e *Engine) NotifyExpectedClose(strategyID, accountID, reason string) {
+	e.mu.RLock()
+	runner, ok := e.runners[accountID]
+	e.mu.RUnlock()
+	if !ok {
+		return
+	}
+	runner.mu.RLock()
+	sr, ok := runner.strategies[strategyID]
+	runner.mu.RUnlock()
+	if !ok {
+		return
+	}
+	sr.mu.Lock()
+	sr.expectedCloseReason = reason
+	sr.expectedCloseSetAt = time.Now()
+	sr.mu.Unlock()
+}
+
 func (e *Engine) loadStrategy(ctx context.Context, s Strategy) {
 	e.mu.Lock()
 	runner, ok := e.runners[s.AccountID]
