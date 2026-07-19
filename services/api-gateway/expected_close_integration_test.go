@@ -8,11 +8,14 @@ import (
 	"time"
 )
 
-// TestStopMatrixPair_LabelsPairedClose: after checkMatrixPairedClose/stopMatrixPair
-// notify the engine, a subsequent WS-detected external close for that strategy must be
-// labeled "paired_close" — this exercises resolveCloseResult end-to-end via the engine's
-// in-memory runner state, without needing a live exchange connection.
-func TestStopMatrixPair_LabelsPairedClose(t *testing.T) {
+// TestNotifyExpectedClose_NoPanicForLoadedStrategy is a wiring smoke test only — it does
+// NOT verify the resulting trade_history.result label (see the note at the end of this
+// test for why that's out of reach here). It exercises the same call path
+// checkMatrixPairedClose/stopMatrixPair use: load a strategy into the engine's in-memory
+// runner, then call NotifyExpectedClose against it, catching nil-pointer/map-key
+// mismatches between stopMatrixPair's args and Notify's in-memory keys. The actual
+// TTL/label decision is covered in isolation by TestResolveCloseResult.
+func TestNotifyExpectedClose_NoPanicForLoadedStrategy(t *testing.T) {
 	s := newTestServer(t)
 	ctx := context.Background()
 	userID := createWHUser(t, s, "expclose")
