@@ -853,18 +853,38 @@ type botCfgJSON struct {
 	RelativeSlots          bool            `json:"relative_slots"`
 }
 
-// computeOpportunityScore returns a ranking score for a symbol based on the bot's
-// priority_signal setting. Higher score = higher priority.
-// "st-flip" → TTL remaining (more time left = more recent signal); anything else → signal value.
-func computeOpportunityScore(eng *signal.Engine, sym, interval string, cfgs []signal.Config, priority string) float64 {
-	if priority == "" {
-		return 1.0
+// effectivePrioritySignal resolves the ranking key computeOpportunityScore should use:
+// the bot's explicit priority_signal (base name, with any ":tf" suffix stripped) if
+// configured — takes precedence unconditionally. Otherwise, if the bot's activation
+// signals include "price-change", auto-select it: a bot driven by price-change signals
+// should rank candidates by the strongest move without needing separate priority_signal
+// configuration. Otherwise "" — no ranking, every candidate scores 1.0 (first-come order).
+func effectivePrioritySignal(priority string, cfgs []signal.Config) string {
+	if priority != "" {
+		// priority_signal may be "name" or "name:tf" — strip the optional ":tf" suffix
+		// so that e.g. "st-flip:1h" and "st-flip" both resolve to "st-flip".
+		if idx := strings.Index(priority, ":"); idx >= 0 {
+			return priority[:idx]
+		}
+		return priority
 	}
-	// priority_signal may be "name" or "name:tf" — strip the optional ":tf" suffix
-	// so that e.g. "st-flip:1h" and "st-flip" both resolve to "st-flip".
-	basePriority := priority
-	if idx := strings.Index(priority, ":"); idx >= 0 {
-		basePriority = priority[:idx]
+	for _, c := range cfgs {
+		if c.Name == "price-change" {
+			return "price-change"
+		}
+	}
+	return ""
+}
+
+// computeOpportunityScore returns a ranking score for a symbol based on
+// effectivePrioritySignal. Higher score = higher priority.
+// "st-flip" → TTL remaining (more time left = more recent signal); "price-change" →
+// absolute magnitude (a big drop is as strong a signal as a big rise); anything else →
+// raw signal value.
+func computeOpportunityScore(eng *signal.Engine, sym, interval string, cfgs []signal.Config, priority string) float64 {
+	basePriority := effectivePrioritySignal(priority, cfgs)
+	if basePriority == "" {
+		return 1.0
 	}
 	if basePriority == "st-flip" {
 		ttl := eng.QueryTTLRemaining(sym, interval, cfgs)
@@ -875,6 +895,9 @@ func computeOpportunityScore(eng *signal.Engine, sym, interval string, cfgs []si
 	}
 	if vals := eng.QueryValues(sym, interval, cfgs); vals != nil {
 		if v, ok := vals[basePriority]; ok {
+			if basePriority == "price-change" {
+				return math.Abs(v)
+			}
 			return v
 		}
 	}
