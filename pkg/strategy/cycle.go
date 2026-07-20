@@ -683,6 +683,10 @@ func (sr *StrategyRunner) checkPositionGone(ctx context.Context) bool {
 			closeSide = "Buy"
 		}
 		dustQty := strconv.FormatFloat(dustSize, 'f', -1, 64)
+		sr.mu.Lock()
+		sr.tpPlaceSeq++
+		dustLinkID := fmt.Sprintf("SIS_STR-%s-scl-%d-%d", sr.strategy.ID[:8], sr.selfCloseCycleNum(), sr.tpPlaceSeq)
+		sr.mu.Unlock()
 		_, closeErr := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
 			Symbol:      sr.strategy.Symbol,
 			Category:    sr.strategy.Category,
@@ -691,6 +695,7 @@ func (sr *StrategyRunner) checkPositionGone(ctx context.Context) bool {
 			Qty:         dustQty,
 			ReduceOnly:  !sr.strategy.HedgeMode,
 			PositionIdx: wantIdx,
+			OrderLinkId: dustLinkID,
 		})
 		if closeErr != nil {
 			log.Printf("strategy %s: dust close (%.8f %s): %v", sr.strategy.ID, dustSize, sr.strategy.Symbol, closeErr)
@@ -809,6 +814,10 @@ func (sr *StrategyRunner) closeDustPosition(ctx context.Context) {
 			closeSide = "Buy"
 		}
 		dustQty := strconv.FormatFloat(size, 'f', -1, 64)
+		sr.mu.Lock()
+		sr.tpPlaceSeq++
+		dustLinkID := fmt.Sprintf("SIS_STR-%s-scl-%d-%d", sr.strategy.ID[:8], sr.selfCloseCycleNum(), sr.tpPlaceSeq)
+		sr.mu.Unlock()
 		_, closeErr := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
 			Symbol:      symbol,
 			Category:    category,
@@ -817,6 +826,7 @@ func (sr *StrategyRunner) closeDustPosition(ctx context.Context) {
 			Qty:         dustQty,
 			ReduceOnly:  !hedgeMode,
 			PositionIdx: wantIdx,
+			OrderLinkId: dustLinkID,
 		})
 		if closeErr != nil {
 			log.Printf("strategy %s: closeDust(%.8f %s): %v", sr.strategy.ID, size, symbol, closeErr)
@@ -1071,6 +1081,16 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 	nearestQty := nearest.Qty
 	nearestLevelIdx := nearest.LevelIdx
 	nearestID := nearest.ID
+	// Same linkId this level was already assigned (see the snaps loop above) — this
+	// market order is that same entry fill, just forced through immediately instead of
+	// waiting for the limit order Bybit reports as still open. Reusing it (rather than
+	// leaving OrderLinkId empty, as this call did before) keeps it recognizable to
+	// ClosedPnlSyncer as an ordinary entry fill — not a close of any kind — same as any
+	// other level.
+	nearestLinkID := nearest.ExchangeLinkID
+	if nearestLinkID == "" {
+		nearestLinkID = fmt.Sprintf("SIS_STR-%s-%d-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, nearest.LevelIdx, sr.repriceGen)
+	}
 	posIdx := positionIdxForOpen(sr.strategy.HedgeMode, nearest.Side)
 	sr.mu.Unlock()
 
@@ -1083,6 +1103,7 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 		OrderType:   "Market",
 		Qty:         nearestQty,
 		PositionIdx: posIdx,
+		OrderLinkId: nearestLinkID,
 	})
 	sr.mu.Lock()
 	if err != nil {
