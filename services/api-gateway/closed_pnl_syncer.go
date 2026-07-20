@@ -417,6 +417,21 @@ func (s *ClosedPnlSyncer) processLinkIDAttributed(ctx context.Context, a closedP
 		}
 		return true
 
+	case strategy.LinkIDSelfClose:
+		// A generic self-issued market close (closePositionAtMarket, closeGhostPosition,
+		// the matrix TP re-arm's leftover-tail cleanup, or a post-cycle remnant-dust
+		// close). Whether this ends the cycle or not is decided entirely by the
+		// in-process runner that placed it (closeCycle is called separately, or — for the
+		// matrix tail-close — deliberately not called at all). Never force anything here;
+		// same wait-for-recorder treatment as LinkIDGridTP/LinkIDGridSL. Before this kind
+		// existed these orders had no orderLinkId at all, so they always fell through to
+		// the zombie heuristic below and could force-close a perfectly healthy cycle.
+		if cycleID != nil {
+			log.Printf("closed_pnl_syncer: %s %s linkId-attributed self-close for strategy %s cycle %s, waiting for recorder",
+				p.Symbol, direction, stratID[:8], (*cycleID)[:8])
+		}
+		return true
+
 	default: // strategy.LinkIDUnrecognized — matched our prefix, not a close-type suffix.
 		return false
 	}

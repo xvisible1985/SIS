@@ -1290,6 +1290,8 @@ func (sr *StrategyRunner) closePositionAtMarket(ctx context.Context, reason stri
 		closeSide = "Buy"
 	}
 	qty := trader.FormatQty(totalQty, sr.instr.QtyStep, sr.instr.MinQty)
+	sr.tpPlaceSeq++
+	linkID := fmt.Sprintf("SIS_STR-%s-scl-%d-%d", sr.strategy.ID[:8], sr.selfCloseCycleNum(), sr.tpPlaceSeq)
 	_, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:      sr.strategy.Symbol,
 		Category:    sr.strategy.Category,
@@ -1298,6 +1300,7 @@ func (sr *StrategyRunner) closePositionAtMarket(ctx context.Context, reason stri
 		Qty:         qty,
 		ReduceOnly:  !sr.strategy.HedgeMode,
 		PositionIdx: positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
+		OrderLinkId: linkID,
 	})
 	if err != nil {
 		sr.errlog(ctx, fmt.Sprintf("closePositionAtMarket: %v", err))
@@ -1308,6 +1311,16 @@ func (sr *StrategyRunner) closePositionAtMarket(ctx context.Context, reason stri
 	sr.cancelPlacedLevels(ctx)
 	sr.closeCycle(ctx, reason)
 	sr.maybeRestart(ctx)
+}
+
+// selfCloseCycleNum returns the current cycle's number for embedding into a self-close
+// order's linkId, or 0 if no cycle is loaded (defensive — self-close helpers are only
+// meant to run with a cycle present, but must not panic if called without one).
+func (sr *StrategyRunner) selfCloseCycleNum() int {
+	if sr.cycle == nil {
+		return 0
+	}
+	return sr.cycle.CycleNum
 }
 
 // closeGhostPosition closes a position that exists on the exchange but is not tracked
@@ -1322,6 +1335,8 @@ func (sr *StrategyRunner) closeGhostPosition(ctx context.Context, exchangeSize f
 	if qty == "" || qty == "0" {
 		return
 	}
+	sr.tpPlaceSeq++
+	linkID := fmt.Sprintf("SIS_STR-%s-scl-%d-%d", sr.strategy.ID[:8], sr.selfCloseCycleNum(), sr.tpPlaceSeq)
 	_, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:      sr.strategy.Symbol,
 		Category:    sr.strategy.Category,
@@ -1330,6 +1345,7 @@ func (sr *StrategyRunner) closeGhostPosition(ctx context.Context, exchangeSize f
 		Qty:         qty,
 		ReduceOnly:  !sr.strategy.HedgeMode,
 		PositionIdx: positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
+		OrderLinkId: linkID,
 	})
 	if err != nil {
 		sr.errlog(ctx, fmt.Sprintf("closeGhostPosition: %v", err))
@@ -5100,6 +5116,8 @@ func (sr *StrategyRunner) handlePartialPositionChange(ctx context.Context, excha
 					"Остаток позиции %.6f лот после %s — закрываю маркетом",
 					exchangeSize, reason,
 				))
+				sr.tpPlaceSeq++
+				remnantLinkID := fmt.Sprintf("SIS_STR-%s-scl-%d-%d", sr.strategy.ID[:8], sr.selfCloseCycleNum(), sr.tpPlaceSeq)
 				if _, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
 					Symbol:      sr.strategy.Symbol,
 					Category:    sr.strategy.Category,
@@ -5108,6 +5126,7 @@ func (sr *StrategyRunner) handlePartialPositionChange(ctx context.Context, excha
 					Qty:         qty,
 					ReduceOnly:  !sr.strategy.HedgeMode,
 					PositionIdx: positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
+					OrderLinkId: remnantLinkID,
 				}); err != nil {
 					sr.errlog(ctx, fmt.Sprintf("closeRemnantPosition after %s: %v", reason, err))
 				} else {
@@ -5146,6 +5165,15 @@ func (sr *StrategyRunner) handlePartialPositionChange(ctx context.Context, excha
 				if qty != "0" && qty != "" {
 					sr.warn(ctx, fmt.Sprintf(
 						"Matrix TP: хвостик %.6f лот — закрываю маркетом", exchangeSize))
+					// Tagged with the SAME -tpl- (LinkIDMatrixTP) pattern the governing TP order
+					// itself uses — this tail-close is cleanup from that TP event, not a new close,
+					// and must NOT end the cycle. Before this linkId existed, ClosedPnlSyncer could
+					// not recognize this order at all (no orderLinkId), fell through to the old
+					// time-window zombie heuristic, and force-marked the still-healthy re-armed
+					// cycle as ghost_close — found live (2026-07-20) as a repeating "цикл оживлён"
+					// flap on a fast-moving matrix pair re-arming every few minutes.
+					sr.tpPlaceSeq++
+					tailLinkID := fmt.Sprintf("SIS_STR-%s-tplt-%d-%d", sr.strategy.ID[:8], sr.selfCloseCycleNum(), sr.tpPlaceSeq)
 					if _, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
 						Symbol:      sr.strategy.Symbol,
 						Category:    sr.strategy.Category,
@@ -5154,6 +5182,7 @@ func (sr *StrategyRunner) handlePartialPositionChange(ctx context.Context, excha
 						Qty:         qty,
 						ReduceOnly:  !sr.strategy.HedgeMode,
 						PositionIdx: positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
+						OrderLinkId: tailLinkID,
 					}); err != nil {
 						sr.errlog(ctx, fmt.Sprintf("Matrix tail close: %v", err))
 					} else {

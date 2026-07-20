@@ -24,6 +24,18 @@ const (
 	LinkIDGridTP
 	// LinkIDGridSL: grid/hedge global SL. A genuine cycle-ending close.
 	LinkIDGridSL
+	// LinkIDSelfClose: a generic self-issued market close placed directly by the strategy
+	// runner outside the normal TP/SL flow — closePositionAtMarket, closeGhostPosition,
+	// the matrix TP re-arm's leftover-tail cleanup, and the post-cycle remnant-dust close
+	// in handlePartialPositionChange. These previously placed their market order with NO
+	// orderLinkId at all, so ClosedPnlSyncer could never recognize them via step 1b and
+	// fell through to the old time-window zombie heuristic (step 3) — which, seeing an
+	// unattributed close near an otherwise perfectly healthy open cycle (most commonly the
+	// matrix TP tail-close, fired on every re-arm), force-marked the cycle ghost_close even
+	// though the strategy was actively continuing. Found live (2026-07-20): a fast-moving
+	// matrix pair re-arming every few minutes flapped "цикл оживлён" dozens of times over
+	// hours while its TP/SL kept getting cancelled and never reliably re-placed.
+	LinkIDSelfClose
 )
 
 // ParsedLinkID is the result of successfully parsing one of our own orderLinkId strings.
@@ -43,6 +55,7 @@ var (
 	reMatrixLevelSL = regexp.MustCompile(`^SIS_STR-([0-9a-f]{8})-msl-`)
 	reGridTP        = regexp.MustCompile(`^SIS_STR-([0-9a-f]{8})-tp-`)
 	reGridSL        = regexp.MustCompile(`^SIS_STR-([0-9a-f]{8})-sl-`)
+	reSelfClose     = regexp.MustCompile(`^SIS_STR-([0-9a-f]{8})-scl-`)
 	reOurs          = regexp.MustCompile(`^SIS_STR-([0-9a-f]{8})-`)
 )
 
@@ -63,6 +76,9 @@ func ParseStrategyLinkID(linkID string) (ParsedLinkID, bool) {
 	}
 	if m := reGridSL.FindStringSubmatch(linkID); m != nil {
 		return ParsedLinkID{Kind: LinkIDGridSL, StrategyID8: m[1]}, true
+	}
+	if m := reSelfClose.FindStringSubmatch(linkID); m != nil {
+		return ParsedLinkID{Kind: LinkIDSelfClose, StrategyID8: m[1]}, true
 	}
 	if m := reOurs.FindStringSubmatch(linkID); m != nil {
 		return ParsedLinkID{Kind: LinkIDUnrecognized, StrategyID8: m[1]}, true
