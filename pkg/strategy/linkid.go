@@ -61,9 +61,10 @@ var (
 
 // ParseStrategyLinkID classifies an orderLinkId that Bybit echoes back on a ClosedPnl
 // entry. Returns ok=false when linkID doesn't match our SIS_STR- format at all — e.g. a
-// SIS_MPC_/SIS_DTH_ order (bot-engine-placed but without an embedded strategy id) or a
-// genuinely external/manual exchange order. Callers must fall back to other attribution
-// methods in that case; this function makes no attempt to identify those orders.
+// genuinely external/manual exchange order, or a legacy bot-engine order placed before
+// self-close paths (stopMatrixPair, DetachFromBot) started embedding a strategy id via
+// LinkIDSelfClose. Callers must fall back to other attribution methods in that case; this
+// function makes no attempt to identify those orders.
 func ParseStrategyLinkID(linkID string) (ParsedLinkID, bool) {
 	if m := reMatrixTP.FindStringSubmatch(linkID); m != nil {
 		return ParsedLinkID{Kind: LinkIDMatrixTP, StrategyID8: m[1]}, true

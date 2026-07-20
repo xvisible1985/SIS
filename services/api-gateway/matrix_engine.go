@@ -296,14 +296,28 @@ func (s *Server) stopMatrixPair(ctx context.Context, botID, accountID, symbol, l
 	// open by design), so without this the positions linger, ensureMatrixStrategies
 	// re-adopts them, and the trigger re-fires every tick without ever taking profit.
 	for _, leg := range []struct {
-		pos    hedgePosInfo
-		posIdx int
-	}{{longPos, 1}, {shortPos, 2}} {
+		pos     hedgePosInfo
+		posIdx  int
+		stratID string
+	}{{longPos, 1, longID}, {shortPos, 2, shortID}} {
 		req, ok := matrixLegCloseRequest(leg.pos, symbol, category, leg.posIdx)
 		if !ok {
 			continue
 		}
-		req.OrderLinkId = fmt.Sprintf("SIS_MPC_%d_%d", leg.posIdx, time.Now().UnixMilli())
+		// Was "SIS_MPC_{posIdx}_{ms}" — no embedded strategy id at all, so
+		// ClosedPnlSyncer's linkId-based step 1b could never recognize this order and it
+		// always fell through to the old time-window heuristics (steps 2-4). Step 3 there
+		// matches "the currently open cycle for this symbol+direction+account" with NO
+		// check that it's actually the SAME cycle the closing order belongs to — for a
+		// pair that reopens quickly after a paired-close (ensureMatrixStrategies routinely
+		// does), that query can catch the BRAND NEW cycle instead and force-close it with
+		// the OLD order's closeTime, well within the "2 minutes old" zombie threshold.
+		// Found live (2026-07-20): a HEMIUSDT short cycle flagged "цикл оживлён" 53s after
+		// starting — far too fast to be its own paired-close, but exactly consistent with
+		// the PRIOR incarnation's SIS_MPC_ close being misattributed onto it. Tagging with
+		// the real owning strategy's id (LinkIDSelfClose, -scl-) routes it through step 1b
+		// instead, which is scoped to the exact strategy — immune to this cross-cycle mixup.
+		req.OrderLinkId = fmt.Sprintf("SIS_STR-%s-scl-%d-%d", leg.stratID[:8], leg.posIdx, time.Now().UnixMilli())
 		if _, err := trader.PlaceOrder(ctx, creds, req); err != nil {
 			s.logBotEvent(ctx, botID,
 				fmt.Sprintf("Матрикс: %s — ошибка закрытия позиции (%s idx%d): %v", symbol, req.Side, leg.posIdx, err),

@@ -1180,7 +1180,13 @@ func (s *Server) DetachFromBot(w http.ResponseWriter, r *http.Request) {
 					Qty:         body.Position.Size,
 					ReduceOnly:  true,
 					PositionIdx: body.Position.PositionIdx,
-					OrderLinkId: fmt.Sprintf("SIS_DTH_%d", time.Now().UnixMilli()),
+					// Was "SIS_DTH_{ms}" — no embedded strategy id, so ClosedPnlSyncer's
+					// linkId-based attribution (step 1b) could never recognize this order and
+					// it always fell through to the old time-window zombie heuristics — same
+					// class of bug as stopMatrixPair's old SIS_MPC_ linkId (see that fix's
+					// comment for the exact failure mode: a fast reopen for the same
+					// symbol+direction can get its brand-new cycle force-closed instead).
+					OrderLinkId: fmt.Sprintf("SIS_STR-%s-scl-%d", id[:8], time.Now().UnixMilli()),
 				}
 				if _, placeErr := trader.PlaceOrder(r.Context(), creds, closeReq); placeErr != nil && botID != nil {
 					s.logBotEvent(r.Context(), *botID,
