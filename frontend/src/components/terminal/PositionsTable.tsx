@@ -1,6 +1,6 @@
 import type { Position, Strategy } from '../../types'
 import { placeOrder } from '../../api/trader'
-import { createStrategy, listStrategies } from '../../api/strategies'
+import { createStrategy } from '../../api/strategies'
 import { apiClient } from '../../api/client'
 import { useState, useEffect, useRef } from 'react'
 import { ClosePositionModal, makeCloseConfirm, type CloseConfirm } from '../common/ClosePositionModal'
@@ -12,6 +12,11 @@ interface Props {
   onSelect: (symbol: string) => void
   loading: boolean
   tickerPrices?: Map<string, number>
+  // Owned and polled by the parent (TerminalPage) — not fetched locally here, so a
+  // bot-created strategy (no user action to hang a one-shot refresh off) still shows up
+  // as its position's owner within the parent's poll interval, instead of only ever
+  // reflecting whatever was live at this component's mount time.
+  strategies: Strategy[]
 }
 
 function coinIcon(s: string) {
@@ -65,19 +70,17 @@ function getPositionOwner(
   return { name: `${name} (удал.)`, botKind: null, fromLog: true }
 }
 
-export function PositionsTable({ accountId, positions, onSelect, loading, tickerPrices }: Props) {
+export function PositionsTable({ accountId, positions, onSelect, loading, tickerPrices, strategies }: Props) {
   const [closing, setClosing] = useState(false)
   const [confirm, setConfirm] = useState<CloseConfirm | null>(null)
   const [contextMenu, setContextMenu] = useState<{ pos: Position; x: number; y: number } | null>(null)
   const [creatingFor, setCreatingFor] = useState<string | null>(null)
   const [flashMsg, setFlashMsg] = useState<{ text: string; ok: boolean } | null>(null)
-  const [strategies, setStrategies] = useState<Strategy[]>([])
   const [sourceLog, setSourceLog] = useState<SourceLogEntry[]>([])
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!accountId) return
-    listStrategies().then(setStrategies).catch(() => {})
     apiClient.get<SourceLogEntry[]>('/positions/source-log')
       .then(r => setSourceLog(Array.isArray(r.data) ? r.data : []))
       .catch(() => {})
@@ -177,7 +180,8 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
         relative_slots: false,
         size_as_main: false,
       })
-      listStrategies().then(setStrategies).catch(() => {})
+      // strategies is now owned by the parent (TerminalPage), which listens for this
+      // event and refetches immediately — see its own effect for why.
       window.dispatchEvent(new CustomEvent('strategy-created'))
       setFlashMsg({ text: `Стратегия ${pos.symbol} создана`, ok: true })
       setTimeout(() => setFlashMsg(null), 4000)

@@ -38,7 +38,7 @@ import { getBotKindMeta } from '../features/bots/botKindMeta'
 import { TrendingUp, Search, Shield, Layers } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { Bot, BotKind, BotAction } from '../features/bots/types'
-import type { Strategy, ExchangeAccount, ActiveOrder, Position, ChartExecution, StrategyLevel } from '../types'
+import type { Strategy, ExchangeAccount, ActiveOrder, Position, ChartExecution, StrategyLevel, MatrixRelativePreview } from '../types'
 import { HedgeBotOverlay } from '../components/terminal/HedgeBotOverlay'
 import { RecentEventsModal } from '../components/terminal/RecentEventsModal'
 
@@ -1302,16 +1302,23 @@ export function TerminalPage() {
   // Bots state lifted here so it can feed both the bots tab and the hedge overlay.
   const { mine: myBots, loading: botsLoading, action: botAction } = useBots()
 
-  // Strategies state lifted here so it can feed the hedge overlay regardless of which tab is active.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [_strategies, setStrategies] = useState<Strategy[]>([])
+  // Strategies state lifted here so it can feed the hedge overlay and the positions table
+  // regardless of which tab is active. Polled every 15s so a bot-created strategy (no
+  // user action to hang a refresh off) still shows up as its position's owner within a
+  // bounded time — found live (2026-07-20): a bot-opened position stayed labeled "(удал.)"
+  // (falling back to position_source_log) indefinitely because PositionsTable used to fetch
+  // its own strategies list exactly once, on mount, with nothing to ever refresh it.
+  const [strategies, setStrategies] = useState<Strategy[]>([])
   useEffect(() => {
     let cancelled = false
     const fetchStrategies = () =>
       listStrategies().then(s => { if (!cancelled) setStrategies(s) }).catch(() => {})
     fetchStrategies()
     const t = setInterval(fetchStrategies, 15_000)
-    return () => { cancelled = true; clearInterval(t) }
+    // Also refetch immediately after a manual strategy creation (PositionsTable dispatches
+    // this) so the user doesn't wait up to 15s to see their own action reflected.
+    window.addEventListener('strategy-created', fetchStrategies)
+    return () => { cancelled = true; clearInterval(t); window.removeEventListener('strategy-created', fetchStrategies) }
   }, [])
 
   const [eventsLogOpen, setEventsLogOpen] = useState(false)
@@ -1347,13 +1354,21 @@ export function TerminalPage() {
   const [strategyCycleNums, setStrategyCycleNums] = useState<Record<string, number>>({})
   const [strategyLevels, setStrategyLevels] = useState<StrategyLevel[]>([])
   const [strategySafeZone, setStrategySafeZone] = useState<{ low: number; high: number } | null>(null)
+  const [relativePreviewAccum, setRelativePreviewAccum] = useState<MatrixRelativePreview | null>(null)
+  const [relativePreviewCounter, setRelativePreviewCounter] = useState<MatrixRelativePreview | null>(null)
 
   useEffect(() => {
-    if (!selectedStrategy?.id) { setStrategyLevels([]); setStrategySafeZone(null); return }
+    if (!selectedStrategy?.id) {
+      setStrategyLevels([]); setStrategySafeZone(null)
+      setRelativePreviewAccum(null); setRelativePreviewCounter(null)
+      return
+    }
     const id = selectedStrategy.id
     const fetch = () => getStrategyState(id).then(s => {
       setStrategyLevels(s.levels ?? [])
       setStrategySafeZone(s.safe_zone ?? null)
+      setRelativePreviewAccum(s.relative_preview_accum ?? null)
+      setRelativePreviewCounter(s.relative_preview_counter ?? null)
       if (s.cycle_num) setStrategyCycleNums(prev => ({ ...prev, [id]: s.cycle_num }))
     }).catch(() => {})
     fetch()
@@ -1613,8 +1628,8 @@ export function TerminalPage() {
           {chartToolbar}
           {chartVisible && (
             <div className="flex-1 min-h-0 relative">
-              <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} relativeSlots={stratMatchesSymbol ? (selectedStrategy?.relative_slots ?? false) : false} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} hedgePairTarget={hedgePairTarget} />
-              <HedgeBotOverlay symbol={symbol} positions={positions} bots={myBots} accountId={accountId} tickerPrices={tickerPrices} strategies={_strategies} />
+              <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} relativeSlots={stratMatchesSymbol ? (selectedStrategy?.relative_slots ?? false) : false} relativePreviewAccum={stratMatchesSymbol ? relativePreviewAccum : null} relativePreviewCounter={stratMatchesSymbol ? relativePreviewCounter : null} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} hedgePairTarget={hedgePairTarget} />
+              <HedgeBotOverlay symbol={symbol} positions={positions} bots={myBots} accountId={accountId} tickerPrices={tickerPrices} strategies={strategies} />
             </div>
           )}
         </div>
@@ -1638,7 +1653,7 @@ export function TerminalPage() {
             </div>
           </div>
           <div className="flex-1 overflow-auto">
-            {mobileTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} tickerPrices={tickerPrices} />}
+            {mobileTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} tickerPrices={tickerPrices} strategies={strategies} />}
             {mobileTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} onRemoveOrder={removeOrder} strategyLevels={strategyLevels} />}
             {mobileTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} asAccountId={undefined} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} isMobile />}
             {mobileTab === 'bots' && <TerminalBotsTab onSymbolChange={setSymbol} mine={myBots} loading={botsLoading} action={botAction} />}
@@ -1701,8 +1716,8 @@ export function TerminalPage() {
             </div>
           </div>
           <div className="flex-1 min-h-0 relative">
-            <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} relativeSlots={stratMatchesSymbol ? (selectedStrategy?.relative_slots ?? false) : false} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} hedgePairTarget={hedgePairTarget} />
-            <HedgeBotOverlay symbol={symbol} positions={positions} bots={myBots} accountId={accountId} tickerPrices={tickerPrices} strategies={_strategies} />
+            <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} relativeSlots={stratMatchesSymbol ? (selectedStrategy?.relative_slots ?? false) : false} relativePreviewAccum={stratMatchesSymbol ? relativePreviewAccum : null} relativePreviewCounter={stratMatchesSymbol ? relativePreviewCounter : null} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} hedgePairTarget={hedgePairTarget} />
+            <HedgeBotOverlay symbol={symbol} positions={positions} bots={myBots} accountId={accountId} tickerPrices={tickerPrices} strategies={strategies} />
           </div>
         </div>
 
@@ -1746,7 +1761,7 @@ export function TerminalPage() {
             </div>
           </div>
           <div className="flex-1 overflow-auto">
-            {bottomTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} tickerPrices={tickerPrices} />}
+            {bottomTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} tickerPrices={tickerPrices} strategies={strategies} />}
             {bottomTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} onRemoveOrder={removeOrder} strategyLevels={strategyLevels} />}
             {bottomTab === 'history' && <HistoryTable accountId={accountId ?? undefined} symbol={symbol} />}
             {bottomTab === 'executions' && <ExecutionsTable accountId={accountId ?? undefined} />}
