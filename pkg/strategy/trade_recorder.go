@@ -131,6 +131,23 @@ func InsertMatrixTPProfit(ctx context.Context, pool *pgxpool.Pool, in MatrixTPIn
 		in.Symbol, in.CycleNum, in.GrossPnl, fees, netPnl, in.OrderID)
 }
 
+// AccumulateHedgeSessionPnl adds netPnl to the accumulated_pnl of whichever currently-open
+// (ended_at IS NULL) hedge_sessions row matches stratID — as either the main or the
+// hedge/matrix leg. No-op if stratID isn't part of any open session (a standalone
+// strategy, or one between sessions). Called directly from the code path that just
+// realized this PnL (RecordStrategyTrade on cycle close, handleMatrixSLFill on a
+// per-level SL fill) — never reconstructed later from trade_history, so it isn't exposed
+// to that table's close-attribution fragility. See design doc Section 2.
+func AccumulateHedgeSessionPnl(ctx context.Context, pool *pgxpool.Pool, stratID string, netPnl float64) {
+	if _, err := pool.Exec(ctx,
+		`UPDATE hedge_sessions SET accumulated_pnl = accumulated_pnl + $1
+		 WHERE (main_strategy_id = $2 OR hedge_strategy_id = $2) AND ended_at IS NULL`,
+		netPnl, stratID,
+	); err != nil {
+		log.Printf("AccumulateHedgeSessionPnl: strategy %s: %v", stratID, err)
+	}
+}
+
 // RecordStrategyTrade writes a trade_history row for a closed strategy cycle.
 // Must be called as a goroutine — it waits for Bybit to process the close
 // before querying the authoritative PnL.
@@ -330,12 +347,14 @@ func RecordStrategyTrade(pool *pgxpool.Pool, creds trader.Credentials, in TradeR
 		if tag.RowsAffected() > 0 {
 			log.Printf("trade recorder [%s cy%d]: ручная → стратегия result=%s gross=%.4f net=%.4f",
 				in.Strategy.Symbol, in.CycleNum, finalResult, grossPnl, netPnl)
+			AccumulateHedgeSessionPnl(ctx, pool, in.Strategy.ID, netPnl)
 			return
 		}
 	}
 
 	// Normal path: INSERT, or re-upsert if we already wrote this cycle earlier.
-	_, err = pool.Exec(ctx, `
+	var freshInsert bool
+	err = pool.QueryRow(ctx, `
 		INSERT INTO trade_history (
 			strategy_id, bot_id, account_id, owner_id,
 			symbol, category, direction, cycle_num, result, source,
@@ -360,18 +379,22 @@ func RecordStrategyTrade(pool *pgxpool.Pool, creds trader.Credentials, in TradeR
 			funding              = EXCLUDED.funding,
 			net_pnl              = EXCLUDED.net_pnl,
 			bybit_close_order_id = EXCLUDED.bybit_close_order_id,
-			closed_at            = NOW()`,
+			closed_at            = NOW()
+		RETURNING (xmax = 0)`,
 		in.Strategy.ID, in.Strategy.BotID, in.Strategy.AccountID, in.Strategy.OwnerID,
 		in.Strategy.Symbol, in.Strategy.Category, string(in.Strategy.Direction),
 		in.CycleNum, finalResult,
 		avgEntry, exitPrice, closedQty, totalUSDT,
 		grossPnl, pnlPct, in.StartedAt,
 		fees, funding, netPnl, bybitCloseOrderID,
-	)
+	).Scan(&freshInsert)
 	if err != nil {
 		log.Printf("trade recorder [%s cy%d]: upsert: %v", in.Strategy.Symbol, in.CycleNum, err)
 		return
 	}
 	log.Printf("trade recorder [%s cy%d]: записано — result=%s gross=%.4f fees=%.4f funding=%.4f net=%.4f",
 		in.Strategy.Symbol, in.CycleNum, finalResult, grossPnl, fees, funding, netPnl)
+	if freshInsert {
+		AccumulateHedgeSessionPnl(ctx, pool, in.Strategy.ID, netPnl)
+	}
 }
