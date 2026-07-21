@@ -110,8 +110,15 @@ func (s *Server) checkMatrixZombieStrategies(ctx context.Context, botID string, 
 		if s.engine != nil {
 			go s.engine.Notify(context.Background(), z.id)
 		}
+		// TEMP DIAGNOSTIC (see matching note in ensureMatrixStrategies): this stop makes
+		// the strategy briefly invisible to ensureMatrixStrategies' active-count query
+		// (status flips to 'stopped') before a later tick recreates it — if THIS is the
+		// live limit-overshoot's real trigger, id here should match a strategy_id that
+		// reappears in a "Матрикс[diag tick=...]: ... открыт" line for the SAME
+		// symbol+direction on a subsequent tick, net-growing the bot's active count by one
+		// per such stop+recreate pair instead of staying flat.
 		s.logBotEvent(ctx, botID,
-			fmt.Sprintf("Матрикс: %s %s — зомби-стратегия (active без цикла) остановлена для пересоздания", z.symbol, z.dir),
+			fmt.Sprintf("Матрикс[diag]: %s %s — зомби-стратегия (active без цикла) остановлена для пересоздания (id=%s)", z.symbol, z.dir, z.id[:8]),
 			"warn", "matrix")
 	}
 }
@@ -399,6 +406,23 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 	}
 	activeTotal := activeLong + activeShort
 
+	// TEMP DIAGNOSTIC (remove once the live limit-overshoot incident is root-caused):
+	// tickID lets us spot two ensureMatrixStrategies calls for the SAME bot overlapping
+	// in time (their logged entry/creation lines would interleave with different tickIDs)
+	// — the smoking-gun signature of a concurrency bug the static call-graph didn't reveal.
+	// If instead every creation's "было" counters look internally consistent (each new
+	// creation's logged snapshot correctly reflects all prior creations THIS tick, and no
+	// tickID ever overlaps another for the same bot), the bug is elsewhere (e.g. a status
+	// transition between ticks that a single snapshot can't catch) — check bot_events for
+	// intervening 'stopped'→active flips on the runner between two "открыт" lines instead.
+	tickID := time.Now().UnixNano()
+	if maxTotal > 0 || maxLong > 0 || maxShort > 0 {
+		s.logBotEvent(ctx, botID,
+			fmt.Sprintf("Матрикс[diag tick=%d]: вход в тик, active total=%d/%d long=%d/%d short=%d/%d",
+				tickID, activeTotal, maxTotal, activeLong, maxLong, activeShort, maxShort),
+			"info", "matrix-limit-debug")
+	}
+
 	// Empty whitelist means "all symbols" everywhere else in this app (the bot form's own
 	// hint says so, and symbolPassesHedgeFilter treats it that way) — but unlike hedge
 	// bots, which iterate existing exchange positions and only use the whitelist as a
@@ -518,11 +542,13 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 				}
 				if adoptJSON != nil {
 					s.logBotEvent(ctx, botID,
-						fmt.Sprintf("Матрикс: %s %s — открыт (поглощение существующей позиции %s)", symbol, dir, *adoptJSON),
+						fmt.Sprintf("Матрикс[diag tick=%d]: %s %s — открыт (поглощение существующей позиции %s) стало total=%d long=%d short=%d",
+							tickID, symbol, dir, *adoptJSON, activeTotal, activeLong, activeShort),
 						"info", "matrix")
 				} else {
 					s.logBotEvent(ctx, botID,
-						fmt.Sprintf("Матрикс: %s %s — открыт", symbol, dir),
+						fmt.Sprintf("Матрикс[diag tick=%d]: %s %s — открыт стало total=%d long=%d short=%d",
+							tickID, symbol, dir, activeTotal, activeLong, activeShort),
 						"info", "matrix")
 				}
 			}
