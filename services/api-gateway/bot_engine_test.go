@@ -70,3 +70,35 @@ func TestBotEngineTickStuck(t *testing.T) {
 		})
 	}
 }
+
+// TestComputeStateWithTimeout: a fast fn returns its real result; a fn that never
+// returns (simulating ComputeMultiTFState hanging inside SnapshotOrFetch/FetchKlineHistory,
+// neither of which is context-aware) must not block the caller past the timeout — ok=false,
+// and the abandoned goroutine is left to finish on its own rather than blocking STEP 4.
+// Found live (2026-07-21): botEngineTick's STEP 4 called ComputeMultiTFState with no bound
+// at all, so a single stuck call froze bot automation for 3.5+ hours; the tick's own 90s
+// ctx.WithTimeout never covered this call because nothing in that chain accepts a context.
+func TestComputeStateWithTimeout(t *testing.T) {
+	t.Run("fast fn returns its result", func(t *testing.T) {
+		st, ok := computeStateWithTimeout(50*time.Millisecond, func() signal.State {
+			return signal.Buy
+		})
+		if !ok {
+			t.Fatal("expected ok=true for a fn that returns well within the timeout")
+		}
+		if st != signal.Buy {
+			t.Errorf("got %v, want signal.Buy", st)
+		}
+	})
+
+	t.Run("hung fn times out instead of blocking forever", func(t *testing.T) {
+		block := make(chan struct{}) // never closed — fn never returns
+		_, ok := computeStateWithTimeout(10*time.Millisecond, func() signal.State {
+			<-block
+			return signal.Sell
+		})
+		if ok {
+			t.Fatal("expected ok=false — fn never returned within the timeout")
+		}
+	})
+}

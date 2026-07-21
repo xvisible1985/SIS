@@ -31,6 +31,36 @@ const botEngineSymbolSem = 20
 // per-tick ctx timeout, so a single slow-but-working tick never triggers a false alarm.
 const botEngineWatchdogThreshold = 3 * time.Minute
 
+// botEngineSymbolStateTimeout bounds a single ComputeMultiTFState call. Comfortably above
+// the worst-case cold-cache fetch (proxy.HTTPClient's own 10-30s timeout), but bounded —
+// unlike calling it directly, which has no timeout anywhere in its call chain
+// (ComputeMultiTFState → SnapshotOrFetch → FetchKlineHistory never receives a
+// context.Context), so botEngineTick's own 90s ctx.WithTimeout never actually covered it.
+const botEngineSymbolStateTimeout = 45 * time.Second
+
+// computeStateWithTimeout runs fn (a signal-state computation) with a hard bound so a hang
+// inside it — network stall, internal lock contention in the signal engine, anything —
+// cannot block the caller forever. ok=false when fn didn't finish in time; the goroutine
+// running fn is abandoned (not cancelled) and its eventual result discarded.
+//
+// Found live (2026-07-21): botEngineTick's STEP 4 called ComputeMultiTFState with nothing
+// bounding it, and that call chain has no context.Context anywhere in it — so a single
+// stuck call froze all bot automation for 3.5+ hours while the tick's own 90s per-tick
+// ctx.WithTimeout (added 2026-07-07) never actually covered this specific call.
+func computeStateWithTimeout(timeout time.Duration, fn func() signal.State) (signal.State, bool) {
+	ch := make(chan signal.State, 1)
+	go func() {
+		defer recoverEngine("computeStateWithTimeout")
+		ch <- fn()
+	}()
+	select {
+	case st := <-ch:
+		return st, true
+	case <-time.After(timeout):
+		return signal.Neutral, false
+	}
+}
+
 // reactiveOpp carries a single signal-fired trading opportunity.
 type reactiveOpp struct {
 	symbol   string
@@ -641,6 +671,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 		groupWg.Add(1)
 		go func() {
 			defer groupWg.Done()
+			defer recoverEngine("botEngineTick group " + key.interval)
 
 			var (
 				mu      sync.Mutex
@@ -654,6 +685,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
+					defer recoverEngine("botEngineTick symbol " + sym)
 					select {
 					case <-ctx.Done():
 						return
@@ -661,7 +693,14 @@ func (s *Server) botEngineTick(ctx context.Context) {
 					}
 					defer func() { <-sem }()
 
-					st := s.signalEngine.ComputeMultiTFState(sym, entry.sigCfgs)
+					st, ok := computeStateWithTimeout(botEngineSymbolStateTimeout, func() signal.State {
+						return s.signalEngine.ComputeMultiTFState(sym, entry.sigCfgs)
+					})
+					if !ok {
+						log.Printf("botEngineTick: ComputeMultiTFState(%s) exceeded %s — skipping this symbol this tick",
+							sym, botEngineSymbolStateTimeout)
+						return
+					}
 					mu.Lock()
 					results[sym] = st
 					mu.Unlock()
@@ -694,6 +733,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 			botWg.Add(1)
 			go func() {
 				defer botWg.Done()
+				defer recoverEngine("botEngineTick bot " + item.row.id)
 				select {
 				case <-ctx.Done():
 					return
