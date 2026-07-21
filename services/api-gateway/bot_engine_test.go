@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"sis/pkg/signal"
 )
@@ -34,6 +35,37 @@ func TestEffectivePrioritySignal(t *testing.T) {
 			got := effectivePrioritySignal(c.priority, c.cfgs)
 			if got != c.want {
 				t.Errorf("effectivePrioritySignal(%q, %v) = %q, want %q", c.priority, c.cfgs, got, c.want)
+			}
+		})
+	}
+}
+
+// TestBotEngineTickStuck: the watchdog must never flag a stall before the tick loop has
+// completed its first run (lastTickAt zero — RunBotEngine's synchronous first tick just
+// hasn't returned yet), must not flag a normal 30s-interval loop, and must flag once the
+// gap clearly exceeds botEngineTick's own 90s per-tick ctx timeout.
+// Found live (2026-07-21): the tick loop silently stalled for 3.5+ hours with no log trace
+// at all — a bot the user had disabled kept trading because the reactive signal processor
+// ran off a bot snapshot that stopped being refreshed, and nobody noticed until live
+// symptoms were reported hours later.
+func TestBotEngineTickStuck(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name       string
+		lastTickAt time.Time
+		want       bool
+	}{
+		{"never ticked yet (startup grace)", time.Time{}, false},
+		{"just ticked", now, false},
+		{"one interval ago (30s) — normal", now.Add(-30 * time.Second), false},
+		{"just under threshold (2m59s)", now.Add(-(3*time.Minute - time.Second)), false},
+		{"past threshold (4m)", now.Add(-4 * time.Minute), true},
+		{"way past threshold (3.5h, the live incident)", now.Add(-3*time.Hour - 30*time.Minute), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := botEngineTickStuck(c.lastTickAt, now); got != c.want {
+				t.Errorf("botEngineTickStuck(%v, now) = %v, want %v", c.lastTickAt, got, c.want)
 			}
 		})
 	}

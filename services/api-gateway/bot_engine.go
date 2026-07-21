@@ -26,6 +26,11 @@ import (
 const botEngineInterval = 30 * time.Second
 const botEngineSymbolSem = 20
 
+// botEngineWatchdogThreshold is how long the tick loop can go without completing a tick
+// before runBotEngineWatchdog logs a warning — comfortably beyond botEngineTick's own 90s
+// per-tick ctx timeout, so a single slow-but-working tick never triggers a false alarm.
+const botEngineWatchdogThreshold = 3 * time.Minute
+
 // reactiveOpp carries a single signal-fired trading opportunity.
 type reactiveOpp struct {
 	symbol   string
@@ -266,6 +271,48 @@ func (s *Server) applyBotOpportunities(ctx context.Context, botID string, opps [
 	}
 }
 
+// botEngineTickStuck reports whether the tick loop appears hung, given the last successful
+// tick time and now. A zero lastTickAt (never ticked yet) is never considered stuck —
+// RunBotEngine runs one tick synchronously before starting the ticker loop, so this only
+// covers the brief startup window before that first tick returns.
+func botEngineTickStuck(lastTickAt, now time.Time) bool {
+	if lastTickAt.IsZero() {
+		return false
+	}
+	return now.Sub(lastTickAt) > botEngineWatchdogThreshold
+}
+
+// runBotEngineWatchdog periodically checks whether botEngineTick's loop has stalled and
+// logs a warning if so. Logs once per stuck episode (not on every check) so a genuine hang
+// isn't buried under repeat spam, and clears once a fresh tick lands.
+//
+// Found live (2026-07-21): the tick loop silently stalled for 3.5+ hours with no log trace
+// at all — the reactive signal processor kept trading off a bot snapshot that had stopped
+// being refreshed, so a bot the user had disabled kept opening strategies, and nobody
+// noticed until live symptoms were reported hours later.
+func (s *Server) runBotEngineWatchdog(ctx context.Context) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	warned := false
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			lastAt, _, _, _, _ := botEngineStats()
+			if botEngineTickStuck(lastAt, time.Now()) {
+				if !warned {
+					log.Printf("BOT ENGINE WATCHDOG: tick loop appears stuck — last successful tick was %s ago (at %s). Reactive signal processing may be running on a stale bot snapshot.",
+						time.Since(lastAt).Round(time.Second), lastAt.UTC().Format(time.RFC3339))
+					warned = true
+				}
+			} else {
+				warned = false
+			}
+		}
+	}
+}
+
 // botEngineStats returns a snapshot of the most recent bot engine tick stats.
 func botEngineStats() (lastAt time.Time, ms int64, bots, groups, opps int) {
 	globalBotMetrics.mu.Lock()
@@ -307,6 +354,9 @@ func (s *Server) RunBotEngine(ctx context.Context) {
 
 	// Start the whale bot ticker (polls whale_events every 60 s).
 	go s.runWhaleBotTicker(ctx)
+
+	// Start the tick-loop watchdog (logs if botEngineTick stalls).
+	go s.runBotEngineWatchdog(ctx)
 
 	ticker := time.NewTicker(botEngineInterval)
 	defer ticker.Stop()
