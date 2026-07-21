@@ -353,16 +353,23 @@ func (s *Server) stopMatrixPair(ctx context.Context, botID, accountID, symbol, l
 
 // directionHasLiveStrategy сообщает, есть ли по (account, symbol, direction) стратегия,
 // которая должна блокировать пересоздание боту: активная/завершающаяся, ПРИОСТАНОВЛЕННАЯ
-// пользователем (paused), либо отцепленная (bot_id IS NULL — пользователь оставил её сам).
+// пользователем (paused), отцепленная (bot_id IS NULL — пользователь оставил её сам), или
+// принадлежащая ЛЮБОМУ ДРУГОМУ боту на этом же аккаунте. Раньше проверка была ограничена
+// (bot_id=$4 OR bot_id IS NULL) — своим ботом и открепленными, но не видела активные
+// стратегии чужих ботов вовсе. Живой инцидент (2026-07-21): MatrixNova и ST-Fast оба
+// открыли ARKMUSDT short с разницей в пару минут, каждый считая символ свободным, потому
+// что каждый смотрел только на свои собственные строки. У хедж-ботов уже была отдельная
+// защита от этого (resolveHedgeSlotConflict, hedge_engine.go) — здесь применяем тот же
+// принцип: любая чужая активная/завершающаяся/приостановленная стратегия по этому
+// symbol+direction на аккаунте блокирует открытие, независимо от bot_id.
 func (s *Server) directionHasLiveStrategy(ctx context.Context, accountID, symbol, dir, botID string) bool {
 	var exists bool
 	if err := s.pool.QueryRow(ctx,
 		`SELECT EXISTS(
 			SELECT 1 FROM strategies
 			WHERE account_id=$1 AND symbol=$2 AND direction=$3
-			  AND status IN ('active','finishing','paused')
-			  AND (bot_id=$4 OR bot_id IS NULL))`,
-		accountID, symbol, dir, botID,
+			  AND status IN ('active','finishing','paused'))`,
+		accountID, symbol, dir,
 	).Scan(&exists); err != nil {
 		return false
 	}
