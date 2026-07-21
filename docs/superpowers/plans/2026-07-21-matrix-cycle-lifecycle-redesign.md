@@ -524,11 +524,194 @@ git commit -m "fix(matrix): TP fill closes the cycle via shared closeCycle, not 
 
 ---
 
-### Task 5: `handleMatrixSLFill` closes the cycle when the position fully flattens
+### Task 5: `handleMatrixSLFill` closes the cycle when the position fully flattens, with fee-adjusted накопление
+
+Per-level matrix SL накопление must be fee-adjusted the same way `RecordStrategyTrade`'s cycle-close path already is (Task 2) — not left as raw gross PnL. This mirrors `InsertMatrixTPProfit`'s existing fee-lookup pattern (`trader_executions` by `account_id`+`order_id`), split into a sleep-and-fetch outer function (production use, called as a goroutine) and a directly-testable inner function with no delay — the same split `RecordMatrixTPProfit`/`InsertMatrixTPProfit` already use.
 
 **Files:**
+- Modify: `pkg/strategy/trade_recorder.go` (new `AccumulateMatrixLevelSLPnl` + `accumulateMatrixLevelSLPnlNow`)
 - Modify: `pkg/strategy/matrix.go:1707-1827` (`handleMatrixSLFill`)
-- Test: `pkg/strategy/matrix_cycle_test.go` (from Task 4)
+- Test: `pkg/strategy/matrix_level_sl_accumulate_test.go` (new, integration-tagged), `pkg/strategy/matrix_cycle_test.go` (from Task 4)
+
+#### Part A: fee-adjusted накопление for every per-level SL fire
+
+- [ ] **Step 1: Write the failing test**
+
+Create `pkg/strategy/matrix_level_sl_accumulate_test.go`:
+
+```go
+//go:build integration
+
+package strategy
+
+import (
+	"context"
+	"testing"
+)
+
+// TestAccumulateMatrixLevelSLPnlNow_NetsFeesFromTraderExecutions: накопление from a
+// per-level matrix SL close must be fee-adjusted the same way RecordStrategyTrade's
+// cycle-close path already is (Task 2) — not the raw gross PnL. Mirrors
+// InsertMatrixTPProfit's fee lookup (trader_executions by account_id+order_id) exactly.
+func TestAccumulateMatrixLevelSLPnlNow_NetsFeesFromTraderExecutions(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+
+	var ownerID, accID, botID, mainID, hedgeID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id`,
+		"mlslacc-"+t.Name()+"@example.com").Scan(&ownerID); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM users WHERE id=$1", ownerID) })
+	if err := pool.QueryRow(ctx, `INSERT INTO exchange_accounts (owner_id, exchange, label, api_key_enc, secret_enc) VALUES ($1,'bybit','x','','') RETURNING id`,
+		ownerID).Scan(&accID); err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM exchange_accounts WHERE id=$1", accID) })
+	if err := pool.QueryRow(ctx, `INSERT INTO bots (owner_id, account_id, name, status, strategy_config) VALUES ($1,$2,'x','active','{}'::jsonb) RETURNING id`,
+		ownerID, accID).Scan(&botID); err != nil {
+		t.Fatalf("create bot: %v", err)
+	}
+	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM bots WHERE id=$1", botID) })
+	if err := pool.QueryRow(ctx, `INSERT INTO strategies (owner_id, account_id, symbol, direction, strategy_type, status, bot_id) VALUES ($1,$2,'MLSUSDT','long','matrix','active',$3) RETURNING id`,
+		ownerID, accID, botID).Scan(&mainID); err != nil {
+		t.Fatalf("create main strategy: %v", err)
+	}
+	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM strategies WHERE id=$1", mainID) })
+	if err := pool.QueryRow(ctx, `INSERT INTO strategies (owner_id, account_id, symbol, direction, strategy_type, status, bot_id) VALUES ($1,$2,'MLSUSDT','short','matrix','active',$3) RETURNING id`,
+		ownerID, accID, botID).Scan(&hedgeID); err != nil {
+		t.Fatalf("create hedge strategy: %v", err)
+	}
+	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM strategies WHERE id=$1", hedgeID) })
+	var sessionID string
+	if err := pool.QueryRow(ctx, `INSERT INTO hedge_sessions (bot_id, main_strategy_id, hedge_strategy_id) VALUES ($1,$2,$3) RETURNING id`,
+		botID, mainID, hedgeID).Scan(&sessionID); err != nil {
+		t.Fatalf("create hedge_sessions: %v", err)
+	}
+	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM hedge_sessions WHERE id=$1", sessionID) })
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO trader_executions (owner_id, account_id, exec_id, order_id, exchange, symbol, category, exec_type, exec_fee, exec_time)
+		 VALUES ($1,$2,'exec-1','sl-order-1','bybit','MLSUSDT','linear','Trade',0.75,NOW())`,
+		ownerID, accID); err != nil {
+		t.Fatalf("seed trader_executions: %v", err)
+	}
+	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM trader_executions WHERE account_id=$1", accID) })
+
+	accumulateMatrixLevelSLPnlNow(ctx, pool, MatrixLevelSLAccumulateInput{
+		StrategyID: mainID, AccountID: accID, OrderID: "sl-order-1", GrossPnl: 10.0,
+	})
+
+	var got float64
+	if err := pool.QueryRow(ctx, `SELECT accumulated_pnl FROM hedge_sessions WHERE id=$1`, sessionID).Scan(&got); err != nil {
+		t.Fatalf("read accumulated_pnl: %v", err)
+	}
+	if got != 9.25 {
+		t.Errorf("accumulated_pnl = %v, want 9.25 (10.0 gross - 0.75 fee)", got)
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test -tags=integration ./pkg/strategy/ -run TestAccumulateMatrixLevelSLPnlNow -v`
+Expected: FAIL with `undefined: accumulateMatrixLevelSLPnlNow` (and `MatrixLevelSLAccumulateInput`).
+
+- [ ] **Step 3: Implement `AccumulateMatrixLevelSLPnl` / `accumulateMatrixLevelSLPnlNow`**
+
+Add to `pkg/strategy/trade_recorder.go`, after `AccumulateHedgeSessionPnl` (from Task 2):
+
+```go
+// MatrixLevelSLAccumulateInput carries the data needed to fee-adjust and accumulate one
+// per-level matrix SL close into hedge_sessions.accumulated_pnl.
+type MatrixLevelSLAccumulateInput struct {
+	StrategyID string
+	AccountID  string
+	OrderID    string  // the filled SL order's id, for trader_executions fee lookup
+	GrossPnl   float64 // already computed synchronously in handleMatrixSLFill
+}
+
+// AccumulateMatrixLevelSLPnl fee-adjusts one per-level matrix SL's gross PnL and adds the
+// net result to hedge_sessions.accumulated_pnl. Must be called as a goroutine — waits for
+// the exchange to record the closing order's fee executions before querying
+// trader_executions, mirroring InsertMatrixTPProfit's fee-lookup pattern. Unlike
+// RecordStrategyTrade (which re-derives PnL from Bybit's ClosedPnl API, since a full cycle
+// close can span multiple entry fills), this only needs the fee side — a single level's SL
+// gross PnL is already known precisely from the fill price recorded synchronously in
+// handleMatrixSLFill.
+func AccumulateMatrixLevelSLPnl(pool *pgxpool.Pool, in MatrixLevelSLAccumulateInput) {
+	time.Sleep(8 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	accumulateMatrixLevelSLPnlNow(ctx, pool, in)
+}
+
+// accumulateMatrixLevelSLPnlNow does the actual fee lookup + accumulate with no delay —
+// split out from AccumulateMatrixLevelSLPnl so it's directly testable without an 8s sleep
+// per test case (mirrors the RecordMatrixTPProfit/InsertMatrixTPProfit split above).
+func accumulateMatrixLevelSLPnlNow(ctx context.Context, pool *pgxpool.Pool, in MatrixLevelSLAccumulateInput) {
+	var fees float64
+	if in.OrderID != "" {
+		_ = pool.QueryRow(ctx, `
+			SELECT COALESCE(SUM(ABS(exec_fee)), 0)
+			FROM trader_executions
+			WHERE account_id = $1 AND order_id = $2 AND exec_type = 'Trade'`,
+			in.AccountID, in.OrderID,
+		).Scan(&fees)
+	}
+	netPnl := in.GrossPnl - fees
+	AccumulateHedgeSessionPnl(ctx, pool, in.StrategyID, netPnl)
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `go test -tags=integration ./pkg/strategy/ -run TestAccumulateMatrixLevelSLPnlNow -v`
+Expected: PASS.
+
+- [ ] **Step 5: Wire it into `handleMatrixSLFill` — fires on every per-level SL, not just the flatten case**
+
+In `pkg/strategy/matrix.go`, find (inside `handleMatrixSLFill`):
+
+```go
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategy_levels SET status='sl_closed', realized_pnl=$1, sl_closed_at=NOW() WHERE id=$2`, levelPnl, levelID,
+	)
+	closed.Status = LevelSLClosed
+	closed.SLOrderID = ""
+	sr.warn(ctx, fmt.Sprintf("Matrix SL сработал %s @ %.4f",
+		slotLabel(closed.Slot), slTrigger))
+```
+
+Replace with:
+
+```go
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategy_levels SET status='sl_closed', realized_pnl=$1, sl_closed_at=NOW() WHERE id=$2`, levelPnl, levelID,
+	)
+	closed.Status = LevelSLClosed
+	slOrderID := closed.SLOrderID
+	closed.SLOrderID = ""
+	go AccumulateMatrixLevelSLPnl(sr.runner.pool, MatrixLevelSLAccumulateInput{
+		StrategyID: sr.strategy.ID, AccountID: sr.strategy.AccountID, OrderID: slOrderID, GrossPnl: levelPnl,
+	})
+	sr.warn(ctx, fmt.Sprintf("Matrix SL сработал %s @ %.4f",
+		slotLabel(closed.Slot), slTrigger))
+```
+
+- [ ] **Step 6: Build**
+
+Run: `go build ./pkg/strategy/...`
+Expected: no errors.
+
+- [ ] **Step 7: Commit Part A**
+
+```bash
+git add pkg/strategy/trade_recorder.go pkg/strategy/matrix.go pkg/strategy/matrix_level_sl_accumulate_test.go
+git commit -m "feat(matrix): fee-adjusted накопление on every per-level SL fire"
+```
+
+#### Part B: close the cycle when the flattened position was the last one standing
 
 - [ ] **Step 1: Write the failing test**
 
@@ -626,8 +809,9 @@ Replace with:
 	// last leg standing — the cycle ends here via the same shared path hedge/grid TP/SL
 	// fills use, instead of leaving it open for handlePositionClose to (previously) do
 	// nothing useful with. See matrix-cycle-lifecycle-redesign design doc Section 1.
+	// накопление for THIS level's PnL was already fired above (Part A) — nothing more to
+	// accumulate here, this block only decides whether the cycle also ends.
 	if sr.matrixActiveQty() == 0 {
-		AccumulateHedgeSessionPnl(ctx, sr.runner.pool, sr.strategy.ID, levelPnl)
 		sr.closedBySelf = true
 		sr.closedByReason = "SL"
 		sr.cancelPlacedLevels(ctx)
@@ -641,8 +825,6 @@ Replace with:
 	// level enters the waiting-reentry queue via the code above.
 }
 ```
-
-Note: `levelPnl` is the gross, not fee-adjusted, per-level PnL already computed earlier in this function (see the existing `levelPnl := ...` block above). This is a deliberate, smaller scope than `RecordStrategyTrade`'s fee-aware accumulation (Task 2) — fee-adjusting a single per-level SL close would require its own async Bybit-fee lookup (mirroring `InsertMatrixTPProfit`'s `trader_executions` query), which is real additional scope. Flag this explicitly to the user as a known simplification before merging this task: **накопление from per-level SL closes is NOT fee-adjusted, only cycle-ending closes routed through `RecordStrategyTrade` are.** If exact fee accounting on every partial SL matters before shipping, that's a follow-up task, not silently done here.
 
 - [ ] **Step 4: Run both tests**
 
@@ -660,8 +842,6 @@ Expected: all PASS.
 git add pkg/strategy/matrix.go pkg/strategy/matrix_cycle_test.go
 git commit -m "fix(matrix): per-level SL closes the cycle when it flattens the position"
 ```
-
-**Flag to user before proceeding:** this task's fee-adjustment simplification (Step 4's note) should be surfaced explicitly in the task-review report, not buried — the user cares specifically about fee-accurate накопление for breakeven mode (their own words: "с учетом комиссий биржи").
 
 ---
 
@@ -1197,7 +1377,7 @@ git commit -m "feat: paired-close progress bar (mode/current/threshold) in pair 
 
 - [ ] Run: `go build ./pkg/strategy/... ./services/api-gateway/...`
 - [ ] Run: `go test ./pkg/strategy/... ./services/api-gateway/... -count=1`
-- [ ] Run: `go test -tags=integration ./services/api-gateway/ -count=1 -v 2>&1 | tail -150` — full integration suite, not just the tests touched by this plan; matrix/hedge changes are exactly the kind of change likely to have non-obvious ripple effects on zombie-detection, strategy limits, and cross-bot conflict tests written earlier this session.
+- [ ] Run: `go test -tags=integration ./pkg/strategy/... ./services/api-gateway/... -count=1 -v 2>&1 | tail -150` — full integration suite, not just the tests touched by this plan; matrix/hedge changes are exactly the kind of change likely to have non-obvious ripple effects on zombie-detection, strategy limits, and cross-bot conflict tests written earlier this session.
 - [ ] Run: `cd frontend && npx tsc --noEmit`
-- [ ] Report to the user, per CLAUDE.md: which existing mechanics were checked (list every test suite run), what passed, what (if anything) changed behavior and why that's expected — explicitly call out Task 5's fee-adjustment simplification and confirm whether the user wants it addressed now or tracked as follow-up debt.
+- [ ] Report to the user, per CLAUDE.md: which existing mechanics were checked (list every test suite run), what passed, what (if anything) changed behavior and why that's expected.
 - [ ] Remind the user: this needs a full rebuild + api-gateway restart before it's live, same as every backend change this session.
