@@ -2747,14 +2747,13 @@ func (sr *StrategyRunner) logBotStrategy(ctx context.Context, msg string) {
 		*sr.strategy.BotID, msg)
 }
 
-// handleTPFill is called when the TP order is filled.
+// handleTPFill is called when the TP order is filled. Matrix strategies close through
+// this same path as hedge/grid — closeCycle and cancelPlacedLevels already contain the
+// matrix-specific bookkeeping (per-level SL cancellation, waiting-slot reset) needed
+// before a matrix cycle actually ends. See matrix-cycle-lifecycle-redesign design doc.
 func (sr *StrategyRunner) handleTPFill(ctx context.Context, orderID string, fillPrice, fillQty float64) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
-	if sr.strategy.StrategyType == "matrix" {
-		sr.handleMatrixTPFill(ctx, orderID, fillPrice, fillQty)
-		return
-	}
 	// Guard against duplicate fill events (e.g. WS reconnect replay): if the
 	// cycle was already closed by a previous call, there is nothing to do.
 	if sr.cycle == nil {
