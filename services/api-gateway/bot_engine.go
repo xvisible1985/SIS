@@ -356,6 +356,39 @@ type groupEntry struct {
 	}
 }
 
+// openDirectionKey identifies one (symbol, direction) slot for duplicate/conflict checks.
+type openDirectionKey struct{ sym, dir string }
+
+// loadOpenDirections returns the set of (symbol, direction) pairs that already have an
+// active/finishing strategy on this account — regardless of which bot owns it, or
+// whether it's detached (bot_id IS NULL). Used to prevent a bot from opening a strategy
+// for a slot another bot (or a detached strategy) already occupies.
+//
+// Previously this check was scoped to bot_id=$1 OR bot_id IS NULL only — a bot never saw
+// another bot's own active strategies. Found live (2026-07-21): MatrixNova and ST-Fast
+// both opened ARKMUSDT short within minutes of each other, each seeing the symbol as free
+// because each only checked its own rows. Same class of gap fixed for matrix bots in
+// directionHasLiveStrategy (matrix_engine.go); hedge bots already had their own dedicated
+// defense (resolveHedgeSlotConflict, hedge_engine.go).
+func (s *Server) loadOpenDirections(ctx context.Context, accountID string) (map[openDirectionKey]bool, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT symbol, direction FROM strategies
+		 WHERE account_id=$1 AND status IN ('active', 'finishing')`,
+		accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	opened := make(map[openDirectionKey]bool)
+	for rows.Next() {
+		var sym, dir string
+		if rows.Scan(&sym, &dir) == nil {
+			opened[openDirectionKey{sym, dir}] = true
+		}
+	}
+	return opened, nil
+}
+
 func (s *Server) botEngineTick(ctx context.Context) {
 	// Bound the tick so a hung ctx-aware call cannot freeze the bot engine loop.
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
@@ -627,25 +660,12 @@ func (s *Server) botEngineTick(ctx context.Context) {
 					return
 				}
 
-				// Load existing open strategies for this bot to avoid duplicates
-				// Include detached strategies (bot_id IS NULL) owned by the same user/account.
-				type openKey struct{ sym, dir string }
-				openRows, err := s.pool.Query(ctx,
-					`SELECT symbol, direction FROM strategies
-					 WHERE status IN ('active', 'finishing')
-					   AND (bot_id = $1 OR (bot_id IS NULL AND owner_id = $2 AND account_id = $3))`,
-					b.id, b.ownerID, b.accountID)
+				// Load existing open strategies to avoid duplicates — any bot's active
+				// strategy on this account, not just this one's (see loadOpenDirections).
+				opened, err := s.loadOpenDirections(ctx, b.accountID)
 				if err != nil {
 					return
 				}
-				opened := make(map[openKey]bool)
-				for openRows.Next() {
-					var sym, dir string
-					if openRows.Scan(&sym, &dir) == nil {
-						opened[openKey{sym, dir}] = true
-					}
-				}
-				openRows.Close()
 
 				s.logBotEvent(ctx, b.id, fmt.Sprintf("Тик: сканируем %d символов...", len(botSymbols)), "info", "tick")
 
@@ -696,7 +716,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 						skippedDir = append(skippedDir, fmt.Sprintf("%s(%s)", r.sym, string(r.state)))
 						continue
 					}
-					if opened[openKey{r.sym, openDir}] {
+					if opened[openDirectionKey{r.sym, openDir}] {
 						continue
 					}
 					opportunities = append(opportunities, fmt.Sprintf("%s→%s", r.sym, openDir))
@@ -736,7 +756,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 									openDir = "short"
 								}
 							}
-							if openDir == "" || opened[openKey{r.sym, openDir}] {
+							if openDir == "" || opened[openDirectionKey{r.sym, openDir}] {
 								continue
 							}
 							score := computeOpportunityScore(s.signalEngine, r.sym, key.interval, entry.sigCfgs, cfg.PrioritySignal)
