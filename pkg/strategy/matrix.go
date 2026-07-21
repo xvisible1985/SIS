@@ -1436,7 +1436,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	sr.tpPlaceSeq++
 	// Plain "-tp-" linkId, matching hedge/grid's format exactly — deliberately NOT
 	// embedding the governing slot anymore (that used to produce "-tpl{N}-", which
-	// ClosedPnlSyncer's linkid.go classifies as LinkIDMatrixTP: "cycle never ends".
+	// ClosedPnlSyncer's linkid.go classifies as LinkIDMatrixTP: "cycle never ends").
 	// Since the matrix-cycle-lifecycle redesign, a matrix TP fill DOES end the cycle
 	// exactly like hedge/grid's does, so it must classify as LinkIDGridTP instead — the
 	// frontend's "TP L(N)" execution-marker label is lost for matrix TP orders, a minor
