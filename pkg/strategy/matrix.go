@@ -1434,21 +1434,14 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	}
 
 	sr.tpPlaceSeq++
-	// Embed the initiating slot into the linkId so the frontend can display
-	// "TP L(N)" in the execution marker. Uses same encoding as matrixSlotLinkStr:
-	// positive slots → plain digits, negative slots → "n{abs}".
-	slotSuffix := ""
-	if latest.Slot != nil {
-		s := *latest.Slot
-		var enc string
-		if s < 0 {
-			enc = fmt.Sprintf("n%d", -s)
-		} else {
-			enc = fmt.Sprintf("%d", s)
-		}
-		slotSuffix = "l" + enc // e.g. "l2" or "ln1" → link looks like "…-tpl2-…"
-	}
-	linkID := fmt.Sprintf("SIS_STR-%s-tp%s-%d-%d", sr.strategy.ID[:8], slotSuffix, sr.cycle.CycleNum, sr.tpPlaceSeq)
+	// Plain "-tp-" linkId, matching hedge/grid's format exactly — deliberately NOT
+	// embedding the governing slot anymore (that used to produce "-tpl{N}-", which
+	// ClosedPnlSyncer's linkid.go classifies as LinkIDMatrixTP: "cycle never ends".
+	// Since the matrix-cycle-lifecycle redesign, a matrix TP fill DOES end the cycle
+	// exactly like hedge/grid's does, so it must classify as LinkIDGridTP instead — the
+	// frontend's "TP L(N)" execution-marker label is lost for matrix TP orders, a minor
+	// display detail traded for correct close attribution.
+	linkID := fmt.Sprintf("SIS_STR-%s-tp-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, sr.tpPlaceSeq)
 	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:      sr.strategy.Symbol,
 		Category:    sr.strategy.Category,
