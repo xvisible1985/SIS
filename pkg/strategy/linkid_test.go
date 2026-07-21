@@ -1,6 +1,9 @@
 package strategy
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestParseStrategyLinkID(t *testing.T) {
 	cases := []struct {
@@ -40,5 +43,52 @@ func TestParseStrategyLinkID(t *testing.T) {
 				t.Errorf("StrategyID8 = %q, want %q", got.StrategyID8, c.wantID8)
 			}
 		})
+	}
+}
+
+// TestParseStrategyLinkID_MatrixGlobalTP_ClassifiedAsGridTP: the matrix global TP order's
+// linkId must classify as LinkIDGridTP (a genuine cycle-ending close), not LinkIDMatrixTP
+// (ClosedPnlSyncer's "never touch ended_at" case) — matrix TP now ends the cycle the same
+// way hedge/grid's does (see matrix-cycle-lifecycle-redesign design doc). Pins the format
+// matrixUpdateTP must produce: SIS_STR-{id8}-tp-{cycleNum}-{seq}, with no slot suffix
+// embedded between "tp" and the first "-", which is what previously triggered the
+// (now-incorrect) LinkIDMatrixTP classification.
+func TestParseStrategyLinkID_MatrixGlobalTP_ClassifiedAsGridTP(t *testing.T) {
+	parsed, ok := ParseStrategyLinkID("SIS_STR-abc12345-tp-3-2")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if parsed.Kind != LinkIDGridTP {
+		t.Errorf("Kind = %v, want LinkIDGridTP", parsed.Kind)
+	}
+	if parsed.StrategyID8 != "abc12345" {
+		t.Errorf("StrategyID8 = %q, want abc12345", parsed.StrategyID8)
+	}
+}
+
+// TestParseStrategyLinkID_MatrixGlobalTP_OldFormatStillMatrixTP: historical linkIds already
+// recorded in trade_history/trader_executions before this fix used the "-tpl{N}-" format —
+// the PARSER (not the generator) must keep recognizing those as LinkIDMatrixTP so old data
+// is still interpreted correctly. Only the generator (matrixUpdateTP) changes; the parser's
+// classification rules are unchanged.
+func TestParseStrategyLinkID_MatrixGlobalTP_OldFormatStillMatrixTP(t *testing.T) {
+	parsed, ok := ParseStrategyLinkID("SIS_STR-abc12345-tpl2-3-2")
+	if !ok || parsed.Kind != LinkIDMatrixTP {
+		t.Fatalf("expected old -tpl2- format to still classify as LinkIDMatrixTP (unchanged), got kind=%v ok=%v", parsed.Kind, ok)
+	}
+}
+
+// TestMatrixTPLinkIDFormat_NoSlotSuffix documents and pins the exact linkId shape
+// matrixUpdateTP must now produce (see matrix.go's linkID construction inside
+// matrixUpdateTP) — plain "SIS_STR-{id8}-tp-{cycleNum}-{seq}", classified as
+// LinkIDGridTP by ParseStrategyLinkID.
+func TestMatrixTPLinkIDFormat_NoSlotSuffix(t *testing.T) {
+	linkID := fmt.Sprintf("SIS_STR-%s-tp-%d-%d", "abc12345", 3, 2)
+	if linkID != "SIS_STR-abc12345-tp-3-2" {
+		t.Fatalf("linkID = %q, want SIS_STR-abc12345-tp-3-2", linkID)
+	}
+	parsed, ok := ParseStrategyLinkID(linkID)
+	if !ok || parsed.Kind != LinkIDGridTP {
+		t.Fatalf("expected LinkIDGridTP, got kind=%v ok=%v", parsed.Kind, ok)
 	}
 }
