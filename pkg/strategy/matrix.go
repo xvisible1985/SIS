@@ -1584,7 +1584,11 @@ func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string
 		`UPDATE strategy_levels SET status='sl_closed', realized_pnl=$1, sl_closed_at=NOW() WHERE id=$2`, levelPnl, levelID,
 	)
 	closed.Status = LevelSLClosed
+	slOrderID := closed.SLOrderID
 	closed.SLOrderID = ""
+	go AccumulateMatrixLevelSLPnl(sr.runner.pool, MatrixLevelSLAccumulateInput{
+		StrategyID: sr.strategy.ID, AccountID: sr.strategy.AccountID, OrderID: slOrderID, GrossPnl: levelPnl,
+	})
 	sr.warn(ctx, fmt.Sprintf("Matrix SL сработал %s @ %.4f",
 		slotLabel(closed.Slot), slTrigger))
 
