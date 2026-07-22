@@ -178,14 +178,18 @@ func AccumulateMatrixLevelSLPnl(pool *pgxpool.Pool, in MatrixLevelSLAccumulateIn
 func accumulateMatrixLevelSLPnlNow(ctx context.Context, pool *pgxpool.Pool, in MatrixLevelSLAccumulateInput) {
 	var fees float64
 	if in.OrderID != "" {
-		_ = pool.QueryRow(ctx, `
+		if err := pool.QueryRow(ctx, `
 			SELECT COALESCE(SUM(ABS(exec_fee)), 0)
 			FROM trader_executions
 			WHERE account_id = $1 AND order_id = $2 AND exec_type = 'Trade'`,
 			in.AccountID, in.OrderID,
-		).Scan(&fees)
+		).Scan(&fees); err != nil {
+			log.Printf("accumulateMatrixLevelSLPnlNow: fee lookup for strategy %s order %s: %v", in.StrategyID, in.OrderID, err)
+		}
 	}
 	netPnl := in.GrossPnl - fees
+	log.Printf("matrix level SL накопление [strategy %s]: gross=%.4f fees=%.4f net=%.4f (order=%s)",
+		in.StrategyID, in.GrossPnl, fees, netPnl, in.OrderID)
 	AccumulateHedgeSessionPnl(ctx, pool, in.StrategyID, netPnl)
 }
 
