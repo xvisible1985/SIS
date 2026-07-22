@@ -4,12 +4,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"sis/pkg/signal"
 	"sis/pkg/trader"
@@ -1438,9 +1441,11 @@ func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID st
 		// counter (GetHedgeSession) resets here and nowhere else.
 		var accumulatedPnl float64
 		if hasMain && hasHedge {
-			s.pool.QueryRow(ctx, //nolint:errcheck
+			if err := s.pool.QueryRow(ctx,
 				`SELECT accumulated_pnl FROM hedge_sessions
-				 WHERE hedge_strategy_id=$1 AND ended_at IS NULL`, h.id).Scan(&accumulatedPnl)
+				 WHERE hedge_strategy_id=$1 AND ended_at IS NULL`, h.id).Scan(&accumulatedPnl); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				s.logBotEvent(ctx, botID, fmt.Sprintf("meetsPairedCloseCriteria: accumulated_pnl fetch for %s: %v — falling back to live-only PnL for this tick", h.id, err), "warn", "hedge")
+			}
 		}
 		if hasMain && hasHedge && meetsPairedCloseCriteria(mainPos, hedgePos, cfg, accumulatedPnl) {
 			combined := mainPos.UnrealisedPnl + hedgePos.UnrealisedPnl
