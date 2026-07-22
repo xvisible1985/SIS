@@ -1662,12 +1662,37 @@ func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string
 		}
 	}
 
+	sr.matrixHandleSLFlattenOrContinue(ctx)
+}
+
+// matrixHandleSLFlattenOrContinue decides what happens after a per-level SL close: if no
+// other level is still filled, the position has fully flattened — this was the last leg
+// standing, so the cycle ends here via the same shared path hedge/grid TP/SL fills use,
+// instead of leaving it open for handlePositionClose to (previously) do nothing useful
+// with. See matrix-cycle-lifecycle-redesign design doc Section 1.
+// накопление for THIS level's PnL was already fired earlier in handleMatrixSLFill (Task 5
+// Part A, already merged) — nothing more to accumulate here, this only decides whether the
+// cycle also ends.
+//
+// Extracted from handleMatrixSLFill's tail (rather than inlined) specifically so it can be
+// exercised directly in tests: handleMatrixSLFill's own body contains an unconditional,
+// pre-existing sr.runner.pool.Exec DB write (persisting the just-closed level's status)
+// that runs before this logic and panics on a nil-runner test fixture — a real blocker for
+// the nil-runner-panic proof technique used throughout this test file. Calling this method
+// directly sidesteps that earlier, unrelated call entirely.
+func (sr *StrategyRunner) matrixHandleSLFlattenOrContinue(ctx context.Context) {
+	if sr.matrixActiveQty() == 0 {
+		sr.closedBySelf = true
+		sr.closedByReason = "SL"
+		sr.cancelPlacedLevels(ctx)
+		sr.closeCycle(ctx, "sl")
+		sr.maybeRestart(ctx)
+		return
+	}
 	// Recalculate global TP (will cancel it if no filled levels remain)
 	sr.matrixUpdateTP(ctx)
-	// Per-level SL closes only part of the position — the cycle continues.
-	// When the full position goes to zero on the exchange, handlePositionClose
-	// will detect it (closedBySelf=false, hasPosition=false) and return early,
-	// leaving the cycle alive so matrixReplaceSlots can re-enter after SafeZone.
+	// Per-level SL closes only part of the position — the cycle continues, and this
+	// level enters the waiting-reentry queue via the code above (in handleMatrixSLFill).
 }
 
 // handleMatrixSLCancelled re-places the per-level SL when it is externally cancelled.

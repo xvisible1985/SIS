@@ -132,12 +132,21 @@ func TestMatrixHandleSLFlattenOrContinue_LastLevelClosesCycle(t *testing.T) {
 // distinct.
 func TestMatrixHandleSLFlattenOrContinue_OtherLevelsStillFilled_CycleStaysOpen(t *testing.T) {
 	slot1 := 1
+	tpPct := 1.0
 	sr := &StrategyRunner{
 		strategy: Strategy{
 			ID:           "11111111-2222-3333-4444-555555555555",
 			StrategyType: "matrix",
 			Direction:    DirectionLong,
 			Symbol:       "TESTUSDT",
+			// matrixUpdateTP looks up TP config for the governing slot via
+			// matrixLevelConfig(1) -> MatrixLevels[direction="above"][0]; without a
+			// matching entry (or the TPPct pointer left nil) it bails out at its
+			// "TP percentage removed from config" guard before ever reaching
+			// resolveExchangeAvgEntry. Providing this keeps the test reaching the
+			// intended panic site regardless of exactly where in matrixUpdateTP's body
+			// the avgEntry/resolveExchangeAvgEntry call happens to sit.
+			MatrixLevels: []MatrixLevel{{Direction: "above", PriceStepPct: 1.0, TPPct: &tpPct}},
 		},
 		cycle: &Cycle{ID: "cycle-1", CycleNum: 1, StartPrice: 100.0},
 		levels: []GridLevel{
