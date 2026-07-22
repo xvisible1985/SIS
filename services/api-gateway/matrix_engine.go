@@ -4,9 +4,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"sis/pkg/signal"
 	"sis/pkg/trader"
@@ -247,7 +250,13 @@ func (s *Server) checkMatrixPairedClose(ctx context.Context, botID, accountID st
 		if !hasLong || !hasShort {
 			continue
 		}
-		if meetsPairedCloseCriteria(longPos, shortPos, cfg) {
+		var accumulatedPnl float64
+		if err := s.pool.QueryRow(ctx,
+			`SELECT accumulated_pnl FROM hedge_sessions
+			 WHERE hedge_strategy_id=$1 AND ended_at IS NULL`, p.shortID).Scan(&accumulatedPnl); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			s.logBotEvent(ctx, botID, fmt.Sprintf("checkMatrixPairedClose: accumulated_pnl fetch for %s: %v — falling back to live-only PnL for this tick", sym, err), "warn", "matrix")
+		}
+		if meetsPairedCloseCriteria(longPos, shortPos, cfg, accumulatedPnl) {
 			combined := longPos.UnrealisedPnl + shortPos.UnrealisedPnl
 			s.logBotEvent(ctx, botID,
 				fmt.Sprintf("Матрикс: %s — парное закрытие (PnL=%.4g, тип=%d, порог=%.4g)",
