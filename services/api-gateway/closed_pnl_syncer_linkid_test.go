@@ -189,3 +189,74 @@ func TestClosedPnlSyncer_RecognizedLinkIDNoMatchingStrategy_FallsBackToLegacyMan
 		t.Errorf("result = %q, want %q (unchanged legacy behavior)", result, "manual")
 	}
 }
+
+// TestClosedPnlSyncer_MatrixTPLinkID_AlreadyInTradeHistory_SkipsDoubleCount: a matrix-TP
+// linkId (old pre-2026-07-21 format, still resting on the exchange for any cycle that was
+// already open and re-armed before the matrix-cycle-lifecycle redesign deployed) must NOT
+// write into matrix_tp_profits if trade_history already has a row for this exact closing
+// order — that means the in-process closeCycle/RecordStrategyTrade path already attributed
+// this exact close (the new architecture: matrix TP now always ends the cycle and writes
+// trade_history, same as hedge/grid). Writing into matrix_tp_profits too would double-count
+// this same close in every "Накоплено" figure that unions both tables. Found in code review
+// (2026-07-21) during the matrix-cycle-lifecycle-redesign plan's Task 4: a real,
+// money-affecting race between this poller and the in-process recorder for the transient
+// population of cycles whose live TP order predates the Task 3 linkId fix.
+func TestClosedPnlSyncer_MatrixTPLinkID_AlreadyInTradeHistory_SkipsDoubleCount(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	userID := createWHUser(t, s, "cplsyncdupe")
+	accID := createTestAccount(t, s, userID)
+
+	var stratID string
+	if err := s.pool.QueryRow(ctx,
+		`INSERT INTO strategies (owner_id, account_id, symbol, direction, strategy_type, status)
+		 VALUES ($1,$2,'CPLDUPUSDT','long','matrix','active') RETURNING id`,
+		userID, accID).Scan(&stratID); err != nil {
+		t.Fatalf("create strategy: %v", err)
+	}
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM strategies WHERE id=$1", stratID) })
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM matrix_tp_profits WHERE strategy_id=$1", stratID) })
+
+	var cycleID string
+	if err := s.pool.QueryRow(ctx,
+		`INSERT INTO strategy_cycles (strategy_id, cycle_num, started_at, ended_at, result)
+		 VALUES ($1,1,NOW(),NOW(),'tp') RETURNING id`,
+		stratID).Scan(&cycleID); err != nil {
+		t.Fatalf("create cycle: %v", err)
+	}
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM strategy_cycles WHERE id=$1", cycleID) })
+
+	orderID := "bybit-order-dupe-1"
+	// Simulate RecordStrategyTrade already having won the race: trade_history already has
+	// a row for this exact closing order.
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO trade_history (strategy_id, account_id, owner_id, symbol, category, direction,
+		 cycle_num, result, source, avg_entry, exit_price, qty, volume_usdt, pnl, pnl_pct,
+		 opened_at, closed_at, fees, funding, net_pnl, bybit_close_order_id)
+		 VALUES ($1,$2,$3,'CPLDUPUSDT','linear','long',1,'tp','strategy',1.0,1.05,100,100,5.0,5.0,NOW(),NOW(),0,0,5.0,$4)`,
+		stratID, accID, userID, orderID); err != nil {
+		t.Fatalf("seed trade_history: %v", err)
+	}
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM trade_history WHERE bybit_close_order_id=$1", orderID) })
+
+	syncer := NewClosedPnlSyncer(s.pool, "test-enc-key")
+	linkID := "SIS_STR-" + stratID[:8] + "-tpl2-1-99002" // old format — still recognized by the parser
+	p := trader.ClosedPnl{
+		Symbol: "CPLDUPUSDT", OrderId: orderID, OrderLinkId: linkID,
+		Side: "Sell", Qty: "100", AvgEntryPrice: "1.0", AvgExitPrice: "1.05",
+		ClosedPnl: "5.0", CreatedTime: "0", Category: "linear",
+	}
+	acc := closedPnlAccount{id: accID, ownerID: userID}
+
+	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, p, time.Now())
+
+	var count int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM matrix_tp_profits WHERE strategy_id=$1 AND bybit_order_id=$2`,
+		stratID, orderID).Scan(&count); err != nil {
+		t.Fatalf("query matrix_tp_profits: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("matrix_tp_profits rows = %d, want 0 (already attributed via trade_history — must not double-count)", count)
+	}
+}
