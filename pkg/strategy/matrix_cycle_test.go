@@ -5,6 +5,8 @@ import (
 	"runtime/debug"
 	"strings"
 	"testing"
+
+	"sis/pkg/trader"
 )
 
 // TestHandleTPFill_MatrixFallsThroughToSharedClose: handleTPFill must no longer delegate
@@ -97,4 +99,59 @@ func TestHandlePartialPositionChange_MatrixGhostFallsThroughToSharedClose(t *tes
 	if matrixSite != gridSite {
 		t.Fatalf("matrix and grid strategies panic at different cycle.go lines — the matrix-specific branch is still present:\nmatrix: %s\ngrid:   %s", matrixSite, gridSite)
 	}
+}
+
+// TestMatrixHandleSLFlattenOrContinue_LastLevelClosesCycle: when no level remains filled
+// (matrixActiveQty() == 0), the position has fully flattened — the cycle must close via
+// the shared closeCycle/maybeRestart path, proven by reaching a nil-runner panic inside
+// closeCycle, same technique as Task 4's tests.
+func TestMatrixHandleSLFlattenOrContinue_LastLevelClosesCycle(t *testing.T) {
+	sr := &StrategyRunner{
+		strategy: Strategy{
+			ID:           "11111111-2222-3333-4444-555555555555",
+			StrategyType: "matrix",
+			Direction:    DirectionLong,
+			Symbol:       "TESTUSDT",
+		},
+		cycle:  &Cycle{ID: "cycle-1", CycleNum: 1, StartPrice: 100.0},
+		levels: nil, // no filled levels -> matrixActiveQty() == 0
+	}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic reaching closeCycle — zero active qty must flatten the position and close the cycle")
+		}
+	}()
+	sr.matrixHandleSLFlattenOrContinue(context.Background())
+}
+
+// TestMatrixHandleSLFlattenOrContinue_OtherLevelsStillFilled_CycleStaysOpen: when a level
+// remains filled (matrixActiveQty() > 0), the position has NOT flattened — the cycle must
+// stay open, reaching matrixUpdateTP's TP recompute (via resolveExchangeAvgEntry, which
+// touches sr.runner.tradeStream before any strategy-type branch) rather than closeCycle.
+// Different panic site than the LastLevelClosesCycle test proves the two branches are
+// distinct.
+func TestMatrixHandleSLFlattenOrContinue_OtherLevelsStillFilled_CycleStaysOpen(t *testing.T) {
+	slot1 := 1
+	sr := &StrategyRunner{
+		strategy: Strategy{
+			ID:           "11111111-2222-3333-4444-555555555555",
+			StrategyType: "matrix",
+			Direction:    DirectionLong,
+			Symbol:       "TESTUSDT",
+		},
+		cycle: &Cycle{ID: "cycle-1", CycleNum: 1, StartPrice: 100.0},
+		levels: []GridLevel{
+			{ID: "level-1", Slot: &slot1, Status: LevelFilled, FilledPrice: 98.0, Qty: "1.0", SizeUSDT: 98.0},
+		},
+		// matrixUpdateTP bails out immediately if instr.QtyStep == 0 (its zero value),
+		// before ever reaching resolveExchangeAvgEntry — set a nonzero QtyStep so
+		// execution actually gets far enough to hit the intended nil-runner panic site.
+		instr: trader.InstrumentInfo{QtyStep: 0.001},
+	}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic reaching matrixUpdateTP (via resolveExchangeAvgEntry) — cycle must stay open and recompute TP while a level is still filled")
+		}
+	}()
+	sr.matrixHandleSLFlattenOrContinue(context.Background())
 }
