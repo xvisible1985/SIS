@@ -324,8 +324,12 @@ func meetsDeactivationCriteria(mainPos hedgePosInfo, cfg botCfgJSON) bool {
 }
 
 // meetsPairedCloseCriteria returns true when both positions together satisfy the
-// combined P&L/ROI/breakeven condition.
-func meetsPairedCloseCriteria(mainPos, hPos hedgePosInfo, cfg botCfgJSON) bool {
+// combined P&L/ROI/breakeven condition. accumulatedPnl is this session's
+// hedge_sessions.accumulated_pnl (both legs' realized PnL since the last
+// paired_close, fee-adjusted where the source event was fee-aware — see
+// AccumulateHedgeSessionPnl) — used only by mode 2 (breakeven), which must account for
+// realized history, not just the live open position. Modes 0/1 stay live-only.
+func meetsPairedCloseCriteria(mainPos, hPos hedgePosInfo, cfg botCfgJSON, accumulatedPnl float64) bool {
 	combined := mainPos.UnrealisedPnl + hPos.UnrealisedPnl
 	switch cfg.HedgeDeactCloseType {
 	case 0: // combined pnl$ ≥ threshold
@@ -338,8 +342,8 @@ func meetsPairedCloseCriteria(mainPos, hPos hedgePosInfo, cfg botCfgJSON) bool {
 			return false
 		}
 		return combined/totalMargin*100 >= cfg.HedgeDeactCloseValue
-	case 2: // breakeven + optional profit target
-		return combined >= cfg.HedgeBreakevenProfit
+	case 2: // breakeven: accumulated realized history + current live position vs threshold
+		return accumulatedPnl+combined >= cfg.HedgeBreakevenProfit
 	}
 	return false
 }
@@ -1432,7 +1436,13 @@ func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID st
 		// Paired close: combined P&L condition (requires both positions).
 		// This is the ONLY genuine paired-close trigger — the cumulative PnL
 		// counter (GetHedgeSession) resets here and nowhere else.
-		if hasMain && hasHedge && meetsPairedCloseCriteria(mainPos, hedgePos, cfg) {
+		var accumulatedPnl float64
+		if hasMain && hasHedge {
+			s.pool.QueryRow(ctx, //nolint:errcheck
+				`SELECT accumulated_pnl FROM hedge_sessions
+				 WHERE hedge_strategy_id=$1 AND ended_at IS NULL`, h.id).Scan(&accumulatedPnl)
+		}
+		if hasMain && hasHedge && meetsPairedCloseCriteria(mainPos, hedgePos, cfg, accumulatedPnl) {
 			combined := mainPos.UnrealisedPnl + hedgePos.UnrealisedPnl
 			s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "paired_close",
 				fmt.Sprintf("парное закрытие: суммарный PnL %.4g (тип=%d, порог=%.4g)",
