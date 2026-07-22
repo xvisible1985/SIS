@@ -148,6 +148,47 @@ func AccumulateHedgeSessionPnl(ctx context.Context, pool *pgxpool.Pool, stratID 
 	}
 }
 
+// MatrixLevelSLAccumulateInput carries the data needed to fee-adjust and accumulate one
+// per-level matrix SL close into hedge_sessions.accumulated_pnl.
+type MatrixLevelSLAccumulateInput struct {
+	StrategyID string
+	AccountID  string
+	OrderID    string  // the filled SL order's id, for trader_executions fee lookup
+	GrossPnl   float64 // already computed synchronously in handleMatrixSLFill
+}
+
+// AccumulateMatrixLevelSLPnl fee-adjusts one per-level matrix SL's gross PnL and adds the
+// net result to hedge_sessions.accumulated_pnl. Must be called as a goroutine — waits for
+// the exchange to record the closing order's fee executions before querying
+// trader_executions, mirroring InsertMatrixTPProfit's fee-lookup pattern. Unlike
+// RecordStrategyTrade (which re-derives PnL from Bybit's ClosedPnl API, since a full cycle
+// close can span multiple entry fills), this only needs the fee side — a single level's SL
+// gross PnL is already known precisely from the fill price recorded synchronously in
+// handleMatrixSLFill.
+func AccumulateMatrixLevelSLPnl(pool *pgxpool.Pool, in MatrixLevelSLAccumulateInput) {
+	time.Sleep(8 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	accumulateMatrixLevelSLPnlNow(ctx, pool, in)
+}
+
+// accumulateMatrixLevelSLPnlNow does the actual fee lookup + accumulate with no delay —
+// split out from AccumulateMatrixLevelSLPnl so it's directly testable without an 8s sleep
+// per test case (mirrors the RecordMatrixTPProfit/InsertMatrixTPProfit split above).
+func accumulateMatrixLevelSLPnlNow(ctx context.Context, pool *pgxpool.Pool, in MatrixLevelSLAccumulateInput) {
+	var fees float64
+	if in.OrderID != "" {
+		_ = pool.QueryRow(ctx, `
+			SELECT COALESCE(SUM(ABS(exec_fee)), 0)
+			FROM trader_executions
+			WHERE account_id = $1 AND order_id = $2 AND exec_type = 'Trade'`,
+			in.AccountID, in.OrderID,
+		).Scan(&fees)
+	}
+	netPnl := in.GrossPnl - fees
+	AccumulateHedgeSessionPnl(ctx, pool, in.StrategyID, netPnl)
+}
+
 // RecordStrategyTrade writes a trade_history row for a closed strategy cycle.
 // Must be called as a goroutine — it waits for Bybit to process the close
 // before querying the authoritative PnL.
