@@ -5159,63 +5159,20 @@ func (sr *StrategyRunner) handlePartialPositionChange(ctx context.Context, excha
 	}
 	avg, ourQty := sr.avgEntry()
 	if ourQty == 0 {
-		// No filled levels tracked. For matrix strategy this can happen right after the
-		// global TP fires and handleMatrixTPFill resets all levels to pending — the tail
-		// position on the exchange should be closed at market WITHOUT ending the cycle.
-		// For all other strategies, treat it as a ghost position and close the cycle.
+		// No filled levels tracked but the exchange still reports a position — a ghost/
+		// orphan position, for any strategy type. Matrix used to special-case this (the
+		// old in-place TP re-arm reset levels to pending while leaving the position open,
+		// so a tail here meant "TP just fired, don't end the cycle") — that model is gone
+		// (handleMatrixTPFill deleted, matrix TP now ends the cycle via closeCycle exactly
+		// like hedge/grid does), so a tail here is a genuine ghost position that should
+		// close AND end whatever cycle it's attached to, same as every other strategy
+		// type. See matrix-cycle-lifecycle-redesign design doc Section 1.
 		if exchangeSize > 0 {
-			if sr.strategy.StrategyType == "matrix" {
-				// Guard: only close a tail when WE previously closed (TP/SL sets closedBySelf=true).
-				// If closedBySelf=false the position event raced ahead of the entry fill event —
-				// ourQty will be updated when the fill event arrives; close nothing now.
-				if !sr.closedBySelf {
-					return
-				}
-				// Dedup: Bybit sends position snapshots on every order event; don't
-				// issue a second tail-close for the same size we already handled.
-				if sr.partialCloseQty > 0 && math.Abs(exchangeSize-sr.partialCloseQty) < exchangeSize*0.01 {
-					return
-				}
-				sr.partialCloseQty = exchangeSize
-				closeSide := "Buy" // SHORT → Buy to close
-				if sr.strategy.Direction == DirectionLong {
-					closeSide = "Sell"
-				}
-				qty := trader.FormatQty(exchangeSize, sr.instr.QtyStep, sr.instr.MinQty)
-				if qty != "0" && qty != "" {
-					sr.warn(ctx, fmt.Sprintf(
-						"Matrix TP: хвостик %.6f лот — закрываю маркетом", exchangeSize))
-					// Tagged with the SAME -tpl- (LinkIDMatrixTP) pattern the governing TP order
-					// itself uses — this tail-close is cleanup from that TP event, not a new close,
-					// and must NOT end the cycle. Before this linkId existed, ClosedPnlSyncer could
-					// not recognize this order at all (no orderLinkId), fell through to the old
-					// time-window zombie heuristic, and force-marked the still-healthy re-armed
-					// cycle as ghost_close — found live (2026-07-20) as a repeating "цикл оживлён"
-					// flap on a fast-moving matrix pair re-arming every few minutes.
-					sr.tpPlaceSeq++
-					tailLinkID := fmt.Sprintf("SIS_STR-%s-tplt-%d-%d", sr.strategy.ID[:8], sr.selfCloseCycleNum(), sr.tpPlaceSeq)
-					if _, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
-						Symbol:      sr.strategy.Symbol,
-						Category:    sr.strategy.Category,
-						Side:        closeSide,
-						OrderType:   "Market",
-						Qty:         qty,
-						ReduceOnly:  !sr.strategy.HedgeMode,
-						PositionIdx: positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
-						OrderLinkId: tailLinkID,
-					}); err != nil {
-						sr.errlog(ctx, fmt.Sprintf("Matrix tail close: %v", err))
-					} else {
-						sr.closedBySelf = true // suppress the position-zero event that follows
-					}
-				}
-			} else {
-				sr.warn(ctx, fmt.Sprintf(
-					"Ghost-позиция обнаружена: биржа=%.6f, наш учёт=0 — закрываю маркетом",
-					exchangeSize,
-				))
-				sr.closeGhostPosition(ctx, exchangeSize)
-			}
+			sr.warn(ctx, fmt.Sprintf(
+				"Ghost-позиция обнаружена: биржа=%.6f, наш учёт=0 — закрываю маркетом",
+				exchangeSize,
+			))
+			sr.closeGhostPosition(ctx, exchangeSize)
 		}
 		return
 	}

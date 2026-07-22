@@ -2,6 +2,8 @@ package strategy
 
 import (
 	"context"
+	"runtime/debug"
+	"strings"
 	"testing"
 )
 
@@ -33,4 +35,66 @@ func TestHandleTPFill_MatrixFallsThroughToSharedClose(t *testing.T) {
 		}
 	}()
 	sr.handleTPFill(context.Background(), "tp-order-1", 105.0, 1.0)
+}
+
+// TestHandlePartialPositionChange_MatrixGhostFallsThroughToSharedClose: the matrix-specific
+// "tail close without ending the cycle" branch in handlePartialPositionChange assumed the
+// OLD in-place TP re-arm model (handleMatrixTPFill resets levels to pending, leaving
+// ourQty==0 while the cycle stays open) — now removed (Task 4), so this scenario must fall
+// through to the same generic closeGhostPosition path non-matrix strategies already use,
+// not a matrix-only branch tagged to never end the cycle. Regression for the
+// matrix-cycle-lifecycle redesign (2026-07-21): after handleMatrixTPFill's deletion, a
+// matrix TP fill always ends the cycle via closeCycle, so any subsequent WS position event
+// reporting a leftover tail while ourQty==0 is a genuine ghost/orphan position — closing it
+// should also end whatever cycle it's attached to, exactly like it already does for
+// hedge/grid.
+//
+// Proof technique: rather than matching a function name in the panic stack (both the old
+// matrix-only branch and the shared path call sr.warn — which itself panics on the nil
+// test runner before reaching PlaceOrder — so a name-based check can't distinguish them),
+// this compares the exact panic-site LINE NUMBER in cycle.go between a matrix and a
+// non-matrix strategy hitting the identical scenario. Before this fix they diverged (the
+// matrix branch had its own separate sr.warn call at a different line); after it, both
+// strategy types must panic at the exact same line — proof the branch is gone and both
+// types now run the same code.
+func TestHandlePartialPositionChange_MatrixGhostFallsThroughToSharedClose(t *testing.T) {
+	panicLine := func(strategyType string) string {
+		sr := &StrategyRunner{
+			strategy: Strategy{
+				ID:           "11111111-2222-3333-4444-555555555555",
+				StrategyType: strategyType,
+				Direction:    DirectionLong,
+				Symbol:       "TESTUSDT",
+			},
+			cycle:        &Cycle{ID: "cycle-1", CycleNum: 1, StartPrice: 100.0},
+			levels:       nil, // no filled levels -> avgEntry() returns ourQty=0
+			closedBySelf: true,
+		}
+		var site string
+		func() {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatalf("expected panic for strategyType=%s", strategyType)
+				}
+				stack := string(debug.Stack())
+				for _, line := range strings.Split(stack, "\n") {
+					if strings.Contains(line, "cycle.go:") {
+						site = strings.TrimSpace(line)
+						break
+					}
+				}
+			}()
+			sr.handlePartialPositionChange(context.Background(), 5.0)
+		}()
+		return site
+	}
+
+	matrixSite := panicLine("matrix")
+	gridSite := panicLine("grid")
+	if matrixSite == "" || gridSite == "" {
+		t.Fatalf("failed to capture panic site: matrix=%q grid=%q", matrixSite, gridSite)
+	}
+	if matrixSite != gridSite {
+		t.Fatalf("matrix and grid strategies panic at different cycle.go lines — the matrix-specific branch is still present:\nmatrix: %s\ngrid:   %s", matrixSite, gridSite)
+	}
 }
