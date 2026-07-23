@@ -193,6 +193,34 @@ func accumulateMatrixLevelSLPnlNow(ctx context.Context, pool *pgxpool.Pool, in M
 	AccumulateHedgeSessionPnl(ctx, pool, in.StrategyID, netPnl)
 }
 
+// feesAndFundingInRange sums Trade/Funding execution fees for account+symbol within
+// [from, to]. Deliberately does NOT filter by position_idx: Bybit's execution-list REST
+// endpoint (synced into trader_executions by pkg/trader.Syncer) does not reliably report
+// it — observed in production always 0 or NULL, even for accounts genuinely holding
+// simultaneous long+short positions on the same symbol (Bybit hedge mode). A prior
+// position_idx = 1/2 filter here never matched real rows, silently summing to zero for
+// every automatic TP/SL close. Matches the same account+symbol+time-only pattern
+// services/api-gateway/closed_pnl_syncer.go's manual-close fee lookup already uses
+// successfully. Trade-off: if both legs of a hedge/matrix pair generate fee-bearing
+// executions on the same symbol within the same narrow time window, this can't
+// distinguish which leg a given execution belongs to — accepted as strictly better than
+// the prior always-zero behavior.
+func feesAndFundingInRange(ctx context.Context, pool *pgxpool.Pool, accountID, symbol string, from, to time.Time) (fees, funding float64) {
+	pool.QueryRow(ctx, //nolint:errcheck
+		`SELECT COALESCE(SUM(ABS(exec_fee)), 0)
+		 FROM trader_executions
+		 WHERE account_id = $1 AND symbol = $2 AND exec_type = 'Trade' AND exec_time BETWEEN $3 AND $4`,
+		accountID, symbol, from, to,
+	).Scan(&fees)
+	pool.QueryRow(ctx, //nolint:errcheck
+		`SELECT COALESCE(SUM(ABS(exec_fee)), 0)
+		 FROM trader_executions
+		 WHERE account_id = $1 AND symbol = $2 AND exec_type = 'Funding' AND exec_time BETWEEN $3 AND $4`,
+		accountID, symbol, from, to,
+	).Scan(&funding)
+	return
+}
+
 // RecordStrategyTrade writes a trade_history row for a closed strategy cycle.
 // Must be called as a goroutine — it waits for Bybit to process the close
 // before querying the authoritative PnL.
@@ -299,34 +327,9 @@ func RecordStrategyTrade(pool *pgxpool.Pool, creds trader.Credentials, in TradeR
 		}
 	}
 
-	// ── 4. Fees (Trade executions) by time range ──────────────────────────────
+	// ── 4/5. Fees + funding (Trade/Funding executions) by time range ───────────
 	closedAt := time.Now()
-	posIdx := 1
-	if in.Strategy.Direction == DirectionShort {
-		posIdx = 2
-	}
-	var fees float64
-	_ = pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(ABS(exec_fee)), 0)
-		FROM trader_executions
-		WHERE account_id = $1 AND symbol = $2
-		  AND exec_type = 'Trade'
-		  AND exec_time BETWEEN $3 AND $4
-		  AND (position_idx IS NULL OR position_idx = $5)`,
-		in.Strategy.AccountID, in.Strategy.Symbol, in.StartedAt, closedAt, posIdx,
-	).Scan(&fees)
-
-	// ── 5. Funding by time range ──────────────────────────────────────────────
-	var funding float64
-	_ = pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(ABS(exec_fee)), 0)
-		FROM trader_executions
-		WHERE account_id = $1 AND symbol = $2
-		  AND exec_type = 'Funding'
-		  AND exec_time BETWEEN $3 AND $4
-		  AND (position_idx IS NULL OR position_idx = $5)`,
-		in.Strategy.AccountID, in.Strategy.Symbol, in.StartedAt, closedAt, posIdx,
-	).Scan(&funding)
+	fees, funding := feesAndFundingInRange(ctx, pool, in.Strategy.AccountID, in.Strategy.Symbol, in.StartedAt, closedAt)
 
 	// ── 6. Fix result attribution ─────────────────────────────────────────────
 	// If cycle was ghost_close but our TP order is the one that fired → "tp".
