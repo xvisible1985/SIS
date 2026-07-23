@@ -1494,16 +1494,15 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 		StartedAt          time.Time  `json:"started_at"`
 		EndedAt            *time.Time `json:"ended_at"`
 		CumulativeHedgePnl float64    `json:"cumulative_hedge_pnl"`
+		CloseType          int        `json:"close_type"`      // 0=pnl$, 1=roi%, 2=breakeven
+		CloseThreshold     float64    `json:"close_threshold"` // cfg value for the active close_type
 	}
 
-	// The cumulative counter must include every closed trade (TP, SL — both
-	// full-cycle via trade_history and per-level matrix SL via
-	// strategy_levels.realized_pnl — and manual closes, which land in
-	// trade_history through the same closeCycle() path) for the requested
-	// leg (main or hedge — whichever stratID refers to), and it must reset
-	// ONLY when a genuine paired-close previously happened for this
-	// hedge_strategy_id — not on deactivation/trailing-profit/position_gone
-	// stops, which restart the pair without zeroing the counter.
+	// accumulated_pnl is incremented directly by the code that realizes each PnL
+	// event (RecordStrategyTrade on cycle close, handleMatrixSLFill on a per-level
+	// SL) — see AccumulateHedgeSessionPnl. It already covers both legs together and
+	// already resets correctly on a new session (each row starts at 0), so no
+	// separate floor_time/reset computation is needed here anymore.
 	var resp sessionResp
 	err := s.pool.QueryRow(r.Context(), `
 		SELECT
@@ -1516,39 +1515,7 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 			hs.gap_at_start,
 			hs.started_at,
 			hs.ended_at,
-			(
-				WITH floor_time AS (
-					SELECT COALESCE(MAX(ended_at), '-infinity'::timestamptz) AS t
-					FROM hedge_sessions
-					WHERE hedge_strategy_id = hs.hedge_strategy_id
-					  AND end_reason = 'paired_close'
-				),
-				leg AS (
-					SELECT CASE WHEN hs.main_strategy_id = $1 THEN hs.main_strategy_id ELSE hs.hedge_strategy_id END AS id
-				)
-				SELECT
-					COALESCE((
-						SELECT SUM(th.net_pnl)
-						FROM trade_history th, floor_time, leg
-						WHERE th.strategy_id = leg.id
-						  AND th.closed_at >= floor_time.t
-					), 0)
-					+
-					COALESCE((
-						SELECT SUM(sl.realized_pnl)
-						FROM strategy_levels sl, floor_time, leg
-						WHERE sl.strategy_id = leg.id
-						  AND sl.realized_pnl IS NOT NULL
-						  AND sl.sl_closed_at >= floor_time.t
-					), 0)
-					+
-					COALESCE((
-						SELECT SUM(mtp.net_pnl)
-						FROM matrix_tp_profits mtp, floor_time, leg
-						WHERE mtp.strategy_id = leg.id
-						  AND mtp.closed_at >= floor_time.t
-					), 0)
-			)::float8
+			hs.accumulated_pnl::float8
 		FROM hedge_sessions hs
 		WHERE (hs.main_strategy_id = $1 OR hs.hedge_strategy_id = $1)
 		  AND hs.bot_id IN (SELECT id FROM bots WHERE owner_id = $2)
@@ -1563,6 +1530,24 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
+	}
+
+	var stratCfg []byte
+	if err := s.pool.QueryRow(r.Context(),
+		`SELECT strategy_config FROM bots WHERE id=$1`, resp.BotID,
+	).Scan(&stratCfg); err == nil {
+		var cfg botCfgJSON
+		if json.Unmarshal(stratCfg, &cfg) == nil {
+			resp.CloseType = cfg.HedgeDeactCloseType
+			switch cfg.HedgeDeactCloseType {
+			case 1:
+				resp.CloseThreshold = cfg.HedgeDeactCloseValue
+			case 2:
+				resp.CloseThreshold = cfg.HedgeBreakevenProfit
+			default:
+				resp.CloseThreshold = cfg.HedgeDeactCloseValue
+			}
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
