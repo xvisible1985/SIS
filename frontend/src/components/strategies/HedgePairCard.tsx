@@ -147,6 +147,42 @@ function StatRow({ label, value, color }: { label: string; value: string; color?
   )
 }
 
+// ── PairedCloseProgress ────────────────────────────────────────────────────
+
+const CLOSE_MODE_LABEL: Record<number, string> = { 0: 'PnL$', 1: 'ROI%', 2: 'Безубыток' }
+
+function fmtCloseValue(v: number, closeType: number): string {
+  if (closeType === 1) return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
+  return `${v >= 0 ? '+' : ''}${v.toFixed(2)}$`
+}
+
+function PairedCloseProgress({
+  closeType, current, threshold,
+}: { closeType: number; current: number; threshold: number }) {
+  const pct = threshold !== 0 ? Math.max(0, Math.min(100, (current / threshold) * 100)) : 0
+  const label = CLOSE_MODE_LABEL[closeType] ?? 'PnL$'
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between">
+        <span className="text-[11px] text-slate-500">{label}</span>
+        <span className="text-[11px] text-slate-500 tabular-nums">{pct.toFixed(0)}% до порога</span>
+      </div>
+      <div className="h-1.5 rounded-full overflow-hidden bg-white/[.06]">
+        <div
+          className="h-full rounded-full transition-all"
+          style={{ width: `${pct}%`, background: pct >= 100 ? '#6ee7b7' : '#a78bfa' }}
+        />
+      </div>
+      <div className="flex items-baseline justify-between">
+        <span className="text-[12px] font-semibold tabular-nums" style={{ color: current >= threshold ? '#6ee7b7' : '#94a3b8' }}>
+          {fmtCloseValue(current, closeType)}
+        </span>
+        <span className="text-[12px] text-slate-600 tabular-nums">{fmtCloseValue(threshold, closeType)}</span>
+      </div>
+    </div>
+  )
+}
+
 // ── StrategyRow ───────────────────────────────────────────────────────────────
 
 function StrategyRow({
@@ -511,6 +547,23 @@ export function HedgePairCard({
     return (threshold + dm * Em * Sm + dh * Eh * Sh) / denom
   }, [mainPos, hedgePos, main.direction, hedge.direction, hedgeBot])
 
+  const pairedCloseCurrent = useMemo(() => {
+    if (!mainPos || !hedgePos) return null
+    const liveCombined = parseFloat(mainPos.unrealisedPnl) + parseFloat(hedgePos.unrealisedPnl)
+    const closeType = hedgeBot?.strategyConfig?.hedge_deact_close_type ?? 0
+    if (closeType === 2) {
+      const accumulated = isMatrixPair ? (matrixPnl ?? 0) : (hedgeSession?.cumulative_hedge_pnl ?? 0)
+      return accumulated + liveCombined
+    }
+    if (closeType === 1) {
+      const Em = parseFloat(mainPos.entryPrice), Eh = parseFloat(hedgePos.entryPrice)
+      const Sm = parseFloat(mainPos.size), Sh = parseFloat(hedgePos.size)
+      const totalMargin = (Em * Sm) + (Eh * Sh)
+      return totalMargin !== 0 ? (liveCombined / totalMargin) * 100 : null
+    }
+    return liveCombined
+  }, [mainPos, hedgePos, hedgeBot, isMatrixPair, matrixPnl, hedgeSession])
+
   const currentPrice = tickerPrices?.get(symbol) ?? null
   const distanceToClose = pairedCloseTarget !== null && currentPrice !== null
     ? main.direction === 'long'
@@ -804,7 +857,17 @@ export function HedgePairCard({
 
               {/* ── Правая колонка ── */}
               <div className="space-y-1.5">
-                {/* будет заполнена позже */}
+                {pairedCloseCurrent !== null && hedgeBot?.strategyConfig && (
+                  <PairedCloseProgress
+                    closeType={hedgeBot.strategyConfig.hedge_deact_close_type ?? 0}
+                    current={pairedCloseCurrent}
+                    threshold={
+                      (hedgeBot.strategyConfig.hedge_deact_close_type ?? 0) === 2
+                        ? (hedgeBot.strategyConfig.hedge_breakeven_profit ?? 0)
+                        : (hedgeBot.strategyConfig.hedge_deact_close_value ?? 0)
+                    }
+                  />
+                )}
               </div>
 
             </div>
