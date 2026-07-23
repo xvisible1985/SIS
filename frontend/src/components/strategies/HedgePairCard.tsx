@@ -159,7 +159,9 @@ function fmtCloseValue(v: number, closeType: number): string {
 function PairedCloseProgress({
   closeType, current, threshold,
 }: { closeType: number; current: number; threshold: number }) {
-  const pct = threshold !== 0 ? Math.max(0, Math.min(100, (current / threshold) * 100)) : 0
+  const pct = threshold > 0
+    ? Math.max(0, Math.min(100, (current / threshold) * 100))
+    : (current >= threshold ? 100 : 0)
   const label = CLOSE_MODE_LABEL[closeType] ?? 'PnL$'
   return (
     <div className="space-y-1">
@@ -558,7 +560,8 @@ export function HedgePairCard({
     if (closeType === 1) {
       const Em = parseFloat(mainPos.entryPrice), Eh = parseFloat(hedgePos.entryPrice)
       const Sm = parseFloat(mainPos.size), Sh = parseFloat(hedgePos.size)
-      const totalMargin = (Em * Sm) + (Eh * Sh)
+      const Lm = parseFloat(mainPos.leverage), Lh = parseFloat(hedgePos.leverage)
+      const totalMargin = (Em * Sm / Lm) + (Eh * Sh / Lh)
       return totalMargin !== 0 ? (liveCombined / totalMargin) * 100 : null
     }
     return liveCombined
