@@ -356,6 +356,8 @@ export interface HedgeSession {
   started_at:           string
   ended_at:             string | null
   cumulative_hedge_pnl: number
+  close_type:           number  // 0=pnl$, 1=roi%, 2=breakeven
+  close_threshold:      number  // cfg value for the active close_type
 }
 
 export interface StrategyTemplate {
