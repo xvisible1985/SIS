@@ -176,10 +176,10 @@ function PairedCloseProgress({
         />
       </div>
       <div className="flex items-baseline justify-between">
-        <span className="text-[12px] font-semibold tabular-nums" style={{ color: current >= threshold ? '#6ee7b7' : '#94a3b8' }}>
+        <span className="text-[15px] font-semibold tabular-nums" style={{ color: current > 0 ? '#6ee7b7' : current < 0 ? '#fca5a5' : '#94a3b8' }}>
           {fmtCloseValue(current, closeType)}
         </span>
-        <span className="text-[12px] text-slate-600 tabular-nums">{fmtCloseValue(threshold, closeType)}</span>
+        <span className="text-[14px] text-slate-400 tabular-nums">{fmtCloseValue(threshold, closeType)}</span>
       </div>
     </div>
   )
@@ -442,11 +442,11 @@ export function HedgePairCard({
   useEffect(() => {
     if (!expanded) return
     setDataLoading(true)
+    // A matrix pair's main and hedge legs share ONE hedge_sessions row (matched by
+    // either main_strategy_id OR hedge_strategy_id) — fetching by both ids and summing
+    // would double-count the same accumulated_pnl value. One fetch is enough.
     const pnlPromise = isMatrixPair
-      ? Promise.all([
-          getHedgeSession(main.id).catch(() => null),
-          getHedgeSession(hedge.id).catch(() => null),
-        ]).then(([a, b]) => (a?.cumulative_hedge_pnl ?? 0) + (b?.cumulative_hedge_pnl ?? 0))
+      ? getHedgeSession(main.id).then(s => s?.cumulative_hedge_pnl ?? null).catch(() => null)
       : Promise.resolve(null)
     Promise.all([
       getStrategyState(main.id).catch(() => null),
@@ -478,11 +478,10 @@ export function HedgePairCard({
   useEffect(() => {
     if (!expanded) return
     const id = setInterval(() => {
+      // Same single-fetch fix as the initial-load effect above — one hedge_sessions
+      // row serves both legs of a matrix pair.
       const pnlPromise = isMatrixPair
-        ? Promise.all([
-            getHedgeSession(main.id).catch(() => null),
-            getHedgeSession(hedge.id).catch(() => null),
-          ]).then(([a, b]) => (a?.cumulative_hedge_pnl ?? 0) + (b?.cumulative_hedge_pnl ?? 0))
+        ? getHedgeSession(main.id).then(s => s?.cumulative_hedge_pnl ?? null).catch(() => null)
         : Promise.resolve(null)
       Promise.all([
         getStrategyState(main.id).catch(() => null),
@@ -787,10 +786,10 @@ export function HedgePairCard({
           ) : expandTab === 'stats' ? (
 
             // ── Stats ──
-            <div className="px-3 pb-3 pt-1 grid grid-cols-2 gap-x-3">
+            <div className="px-3 pb-3 pt-1 grid grid-cols-2 gap-2">
 
               {/* ── Левая колонка ── */}
-              <div className="space-y-1.5">
+              <div className="space-y-1.5 bg-black/[.18] border border-white/[.05] rounded-[10px] p-3">
                 <StatRow label="Вход Main"  value={fmtPrice(mainEntry, dec)} />
                 <StatRow label="Вход Hedge" value={fmtPrice(hedgeEntry, dec)} />
 
@@ -859,7 +858,7 @@ export function HedgePairCard({
               </div>
 
               {/* ── Правая колонка ── */}
-              <div className="space-y-1.5">
+              <div className="space-y-1.5 bg-black/[.18] border border-white/[.05] rounded-[10px] p-3">
                 {pairedCloseCurrent !== null && hedgeBot?.strategyConfig && (
                   <PairedCloseProgress
                     closeType={hedgeBot.strategyConfig.hedge_deact_close_type ?? 0}
