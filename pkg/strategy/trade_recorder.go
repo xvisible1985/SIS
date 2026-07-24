@@ -138,6 +138,13 @@ func InsertMatrixTPProfit(ctx context.Context, pool *pgxpool.Pool, in MatrixTPIn
 // realized this PnL (RecordStrategyTrade on cycle close, handleMatrixSLFill on a
 // per-level SL fill) — never reconstructed later from trade_history, so it isn't exposed
 // to that table's close-attribution fragility. See design doc Section 2.
+// OnAccumulate, if set, is called after AccumulateHedgeSessionPnl successfully finishes
+// writing — used by services/api-gateway to react to накопление changes in near-real-time
+// (see docs/superpowers/specs/2026-07-23-paired-close-realtime-design.md component 3).
+// nil by default; registered once at startup. Deliberately does not run when the write
+// itself failed — only a successful накопление change is worth reacting to.
+var OnAccumulate func(stratID string, netPnl float64)
+
 func AccumulateHedgeSessionPnl(ctx context.Context, pool *pgxpool.Pool, stratID string, netPnl float64) {
 	if _, err := pool.Exec(ctx,
 		`UPDATE hedge_sessions SET accumulated_pnl = accumulated_pnl + $1
@@ -145,6 +152,10 @@ func AccumulateHedgeSessionPnl(ctx context.Context, pool *pgxpool.Pool, stratID 
 		netPnl, stratID,
 	); err != nil {
 		log.Printf("AccumulateHedgeSessionPnl: strategy %s: %v", stratID, err)
+		return
+	}
+	if OnAccumulate != nil {
+		OnAccumulate(stratID, netPnl)
 	}
 }
 
