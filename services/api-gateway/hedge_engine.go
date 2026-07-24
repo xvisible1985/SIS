@@ -124,9 +124,7 @@ func (s *Server) hedgeEngineTick(ctx context.Context) {
 		}()
 	}
 	s.applyHedgeWatches(newWatches)
-	s.pairedCloseWatchMu.Lock()
-	s.pairedCloseWatches = newPairedWatches
-	s.pairedCloseWatchMu.Unlock()
+	s.applyPairedCloseWatches(newPairedWatches)
 }
 
 // processHedgeBot processes a single hedge bot for one tick:
@@ -472,6 +470,227 @@ func (s *Server) buildPairedCloseWatches(ctx context.Context, botID, accountID, 
 			hedgeLeverage:  hedgePos.Leverage,
 			accumulatedPnl: accumulatedPnl,
 		}
+	}
+}
+
+// runPairedCloseCheck runs check for symbol, gated by a per-symbol in-flight flag: if a
+// check for this symbol is already running, this call is a no-op (dropped) rather than
+// blocking or running concurrently — the in-flight check already has the freshest data.
+func (s *Server) runPairedCloseCheck(symbol string, check func()) {
+	s.pairedCloseInFlightMu.Lock()
+	if s.pairedCloseInFlight[symbol] {
+		s.pairedCloseInFlightMu.Unlock()
+		return
+	}
+	s.pairedCloseInFlight[symbol] = true
+	s.pairedCloseInFlightMu.Unlock()
+
+	defer func() {
+		s.pairedCloseInFlightMu.Lock()
+		delete(s.pairedCloseInFlight, symbol)
+		s.pairedCloseInFlightMu.Unlock()
+	}()
+	check()
+}
+
+// runPairedCloseCheckForAccount additionally bounds concurrent checks to
+// pairedCloseSemaphoreSize FOR THE SAME accountID — a different account's checks are
+// entirely unaffected, since Bybit's rate limits are per-API-key.
+func (s *Server) runPairedCloseCheckForAccount(accountID, symbol string, check func()) {
+	s.pairedCloseSemMu.Lock()
+	sem, ok := s.pairedCloseSemPer[accountID]
+	if !ok {
+		sem = make(chan struct{}, pairedCloseSemaphoreSize)
+		s.pairedCloseSemPer[accountID] = sem
+	}
+	s.pairedCloseSemMu.Unlock()
+
+	sem <- struct{}{}
+	defer func() { <-sem }()
+	s.runPairedCloseCheck(symbol, check)
+}
+
+// pairedCloseMsg is the WS message shape pushed to the frontend.
+type pairedCloseMsg struct {
+	Type            string  `json:"type"`
+	MainStrategyID  string  `json:"main_strategy_id"`
+	HedgeStrategyID string  `json:"hedge_strategy_id"`
+	Current         float64 `json:"current"`
+	Threshold       float64 `json:"threshold"`
+	CloseType       int     `json:"close_type"`
+	Pct             float64 `json:"pct"`
+	TargetPrice     float64 `json:"target_price"`
+}
+
+// pairedCloseThreshold returns the configured threshold value for entry.cfg's active
+// close_type — mirrors the exact mode-to-field mapping already used in
+// services/api-gateway/strategy_handler.go's GetHedgeSession and (until this task's
+// frontend counterpart lands) frontend/src/components/strategies/HedgePairCard.tsx.
+func (entry pairedCloseWatchEntry) threshold() float64 {
+	switch entry.cfg.HedgeDeactCloseType {
+	case 1:
+		return entry.cfg.HedgeDeactCloseValue
+	case 2:
+		return entry.cfg.HedgeBreakevenProfit
+	default:
+		return entry.cfg.HedgeDeactCloseValue
+	}
+}
+
+// recomputeAndPushPairedClose recomputes current/pct/target_price for entry (using its
+// cached leg entry/size/leverage and накопление — refreshed by either trigger below) and
+// pushes the WS message unconditionally. If the threshold is crossed based on the
+// PRECOMPUTED target price, triggers a targeted verify-and-close for entry's bot, which
+// re-fetches fresh data before actually deciding to close (see verifyAndClosePairedBot).
+func (s *Server) recomputeAndPushPairedClose(entry pairedCloseWatchEntry) {
+	threshold := entry.threshold()
+	targetPrice, hasTarget := pairedCloseTargetPrice(
+		entry.mainDir, entry.hedgeDir,
+		entry.mainEntry, entry.hedgeEntry,
+		entry.mainSize, entry.hedgeSize,
+		entry.mainLeverage, entry.hedgeLeverage,
+		entry.cfg.HedgeDeactCloseType, threshold, entry.accumulatedPnl,
+	)
+
+	s.broadcast(entry.accountID, pairedCloseMsg{
+		Type:            "paired_close",
+		MainStrategyID:  entry.mainID,
+		HedgeStrategyID: entry.hedgeID,
+		Threshold:       threshold,
+		CloseType:       entry.cfg.HedgeDeactCloseType,
+		TargetPrice:     targetPrice,
+	})
+
+	if !hasTarget {
+		return
+	}
+
+	s.runPairedCloseCheckForAccount(entry.accountID, entry.symbol, func() {
+		s.verifyAndClosePairedBot(context.Background(), entry)
+	})
+}
+
+// verifyAndClosePairedBot re-fetches this account's live positions and re-runs the
+// existing, already-tested per-bot close logic (checkHedgeDeactivation for a hedge bot,
+// checkMatrixPairedClose for a matrix bot) — the ONLY thing that actually decides to
+// close. This function never closes anything itself; it only gets fresh data in front of
+// the existing decision logic faster than waiting for the next 30s tick. Scoped to entry's
+// one bot (not entry's one pair, and not the whole account/server) — checkHedgeDeactivation
+// has significant edge-case handling (standalone hedges, flip-mode recovery, stale-API
+// guards) that iterates all of one bot's pairs internally; there is no small, safely-
+// extractable "single pair" slice of it without a risky refactor of already-tested,
+// edge-case-heavy code on a live-money system, so this deliberately re-runs the whole
+// per-bot check rather than a narrower per-pair one.
+func (s *Server) verifyAndClosePairedBot(ctx context.Context, entry pairedCloseWatchEntry) {
+	creds, err := s.loadBotAccountCreds(ctx, entry.accountID)
+	if err != nil {
+		return
+	}
+	rawPositions, err := trader.FetchPositions(ctx, creds)
+	if err != nil {
+		return
+	}
+	posMap, _ := buildHedgePosMap(rawPositions)
+
+	switch entry.botKind {
+	case "hedge":
+		s.checkHedgeDeactivation(ctx, entry.botID, entry.accountID, entry.cfg, posMap)
+	case "matrix":
+		s.checkMatrixPairedClose(ctx, entry.botID, entry.accountID, entry.cfg, creds, posMap)
+	}
+}
+
+// applyPairedCloseWatches replaces the current set of paired-close PriceHub subscriptions
+// with newWatches, subscribing to symbols not already watched and unsubscribing those no
+// longer present — same lifecycle pattern as applyHedgeWatches (activation).
+func (s *Server) applyPairedCloseWatches(newWatches map[string]pairedCloseWatchEntry) {
+	s.pairedCloseWatchMu.Lock()
+	old := s.pairedCloseUnsubs
+	s.pairedCloseUnsubs = nil
+	s.pairedCloseWatches = newWatches
+	s.pairedCloseWatchMu.Unlock()
+
+	for _, u := range old {
+		u()
+	}
+
+	hub := s.signalEngine.PriceHub()
+	for sym := range newWatches {
+		sym := sym
+		u := hub.Subscribe(sym, func(mp float64) {
+			s.pairedClosePriceCallback(sym)
+		})
+		s.pairedCloseWatchMu.Lock()
+		s.pairedCloseUnsubs = append(s.pairedCloseUnsubs, u)
+		s.pairedCloseWatchMu.Unlock()
+	}
+}
+
+// pairedClosePriceCallback is called by PriceHub on each markPrice update for a watched
+// symbol, throttled to pairedCloseRecomputeThrottle per symbol. Wrapped in its own
+// recover(): this is an entry point from pkg/signal's TickerHub, a call chain not
+// necessarily protected by any recover further up — see the MANDATORY panic-safety note
+// at the top of this task. A panic anywhere in the downstream recompute/push/verify/close
+// chain must not crash the whole process.
+func (s *Server) pairedClosePriceCallback(symbol string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("pairedClosePriceCallback: recovered panic for %s: %v", symbol, r)
+		}
+	}()
+
+	s.pairedCloseThrottleMu.Lock()
+	last, ok := s.pairedCloseLastRecompute[symbol]
+	if ok && time.Since(last) < pairedCloseRecomputeThrottle {
+		s.pairedCloseThrottleMu.Unlock()
+		return
+	}
+	s.pairedCloseLastRecompute[symbol] = time.Now()
+	s.pairedCloseThrottleMu.Unlock()
+
+	s.pairedCloseWatchMu.RLock()
+	entry, ok := s.pairedCloseWatches[symbol]
+	s.pairedCloseWatchMu.RUnlock()
+	if !ok {
+		return
+	}
+	s.recomputeAndPushPairedClose(entry)
+}
+
+// onAccumulateChange is registered as strategy.OnAccumulate at startup (see Step 4) — it
+// updates the cached watch entry (if any) for whichever pair stratID belongs to, and
+// triggers an immediate recompute for that one pair, independent of price ticks.
+//
+// Wrapped in its own recover(): this is called from pkg/strategy.AccumulateHedgeSessionPnl,
+// which is itself reached from FOUR real production call sites, ALL via bare unrecovered
+// goroutines (go RecordStrategyTrade(...) at pkg/strategy/cycle.go, startup_reconcile.go,
+// services/api-gateway/closed_pnl_syncer.go; go AccumulateMatrixLevelSLPnl(...) at
+// pkg/strategy/matrix.go). An unrecovered panic here would crash the ENTIRE process, not
+// just this goroutine — every strategy runner managing live positions would stop
+// simultaneously. This recover() is a MANDATORY safety requirement, not optional
+// defensive style — see this task's corrections section.
+func (s *Server) onAccumulateChange(stratID string, netPnl float64) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("onAccumulateChange: recovered panic for strategy %s: %v", stratID, r)
+		}
+	}()
+
+	s.pairedCloseWatchMu.Lock()
+	var found *pairedCloseWatchEntry
+	for sym, entry := range s.pairedCloseWatches {
+		if entry.mainID == stratID || entry.hedgeID == stratID {
+			entry.accumulatedPnl += netPnl
+			s.pairedCloseWatches[sym] = entry
+			e := entry
+			found = &e
+			break
+		}
+	}
+	s.pairedCloseWatchMu.Unlock()
+
+	if found != nil {
+		s.recomputeAndPushPairedClose(*found)
 	}
 }
 

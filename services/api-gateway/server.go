@@ -84,7 +84,27 @@ type Server struct {
 	pairedCloseWatchMu sync.RWMutex
 	pairedCloseWatches map[string]pairedCloseWatchEntry // symbol → cached pair state
 	pairedCloseUnsubs  []func()                         // TickerHub unsubscribe funcs
+
+	pairedCloseInFlightMu sync.Mutex
+	pairedCloseInFlight   map[string]bool // symbol → a verify-and-close is currently running
+
+	pairedCloseSemMu  sync.Mutex
+	pairedCloseSemPer map[string]chan struct{} // accountID → bounded concurrency semaphore
+
+	pairedCloseThrottleMu    sync.Mutex
+	pairedCloseLastRecompute map[string]time.Time // symbol → last price-tick-triggered recompute
 }
+
+// pairedCloseSemaphoreSize caps how many paired-close verify-and-close checks can run
+// concurrently for the SAME account — Bybit's rate limits are per-API-key, so a burst on
+// one account must not be able to starve or exceed that account's own limit budget.
+// Matches matrixBatchCheckActivation's existing sem := make(chan struct{}, 20) constant.
+const pairedCloseSemaphoreSize = 20
+
+// pairedCloseRecomputeThrottle bounds how often a single price tick can trigger a
+// recompute for the same symbol — a fast-moving market's flood of ticks shouldn't redo the
+// same work dozens of times a second.
+const pairedCloseRecomputeThrottle = time.Second
 
 // initBroadcastRegistry must be called once before subscribeBroadcast/broadcast are used
 // (NewServer does this — tests constructing a bare &Server{} must call it themselves).
@@ -171,6 +191,10 @@ func NewServer(ctx context.Context, pool *pgxpool.Pool, rdb *redis.Client, jwtSe
 	s.flipChan = make(chan string, 16)
 	s.initBroadcastRegistry()
 	s.pairedCloseWatches = make(map[string]pairedCloseWatchEntry)
+	s.pairedCloseInFlight = make(map[string]bool)
+	s.pairedCloseSemPer = make(map[string]chan struct{})
+	s.pairedCloseLastRecompute = make(map[string]time.Time)
+	strategy.OnAccumulate = s.onAccumulateChange
 	go s.refreshDelistCache(ctx)
 	return s
 }
