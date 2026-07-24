@@ -18,7 +18,7 @@ import (
 // processMatrixBot processes a single matrix bot for one tick:
 //  1. Checks existing strategy pairs for the paired-close condition.
 //  2. Ensures both long and short strategies are running for each whitelisted symbol.
-func (s *Server) processMatrixBot(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON) {
+func (s *Server) processMatrixBot(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, pairedWatches map[string]pairedCloseWatchEntry) {
 	creds, err := s.loadBotAccountCreds(ctx, accountID)
 	if err != nil {
 		s.logBotEvent(ctx, botID, fmt.Sprintf("Матрикс: ошибка ключей аккаунта: %v", err), "error", "system")
@@ -39,6 +39,7 @@ func (s *Server) processMatrixBot(ctx context.Context, botID, ownerID, accountID
 	closed := s.checkMatrixPairedClose(ctx, botID, accountID, cfg, creds, posMap)
 	s.checkMatrixZombieStrategies(ctx, botID, posMap)
 	s.ensureMatrixStrategies(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, creds, posMap, closed)
+	s.buildPairedCloseWatches(ctx, botID, accountID, "matrix", cfg, posMap, pairedWatches)
 }
 
 // checkMatrixZombieStrategies stops bot matrix strategies stuck in status='active'
