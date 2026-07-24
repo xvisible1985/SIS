@@ -30,7 +30,7 @@ type Server struct {
 	globalWarmer *signal.GlobalWarmer
 	adminEmails  map[string]bool
 	botSecret    string
-	tronAddr     string        // TRON/USDT TRC20 receiving address
+	tronAddr     string // TRON/USDT TRC20 receiving address
 	coinIcons    *coinicons.Store
 	proxyManager *proxy.Manager
 
@@ -67,8 +67,8 @@ type Server struct {
 	hedgeWatchMu   sync.RWMutex
 	hedgeWatches   map[string]hedgeWatchEntry // symbol → cached threshold
 	hedgeUnsubs    []func()                   // TickerHub unsubscribe funcs
-	hedgeTriggerCh chan struct{}               // buffered(1): WS price crossed threshold
-	flipChan       chan string                 // buffered(16): main strategy IDs closed at TP
+	hedgeTriggerCh chan struct{}              // buffered(1): WS price crossed threshold
+	flipChan       chan string                // buffered(16): main strategy IDs closed at TP
 
 	// Per-account WS broadcast registry: lets background goroutines (the paired-close
 	// watcher) push messages to every currently-open trader-positions WS connection for a
@@ -77,6 +77,13 @@ type Server struct {
 	// component 4.
 	broadcastMu   sync.RWMutex
 	broadcastSubs map[string][]chan any // accountID → subscriber channels
+
+	// Paired-close watcher: mirrors the hedgeWatches pattern above but for the
+	// combined-PnL+накопление threshold rather than a single entry-price level. See
+	// docs/superpowers/specs/2026-07-23-paired-close-realtime-design.md components 2-3.
+	pairedCloseWatchMu sync.RWMutex
+	pairedCloseWatches map[string]pairedCloseWatchEntry // symbol → cached pair state
+	pairedCloseUnsubs  []func()                         // TickerHub unsubscribe funcs
 }
 
 // initBroadcastRegistry must be called once before subscribeBroadcast/broadcast are used
@@ -163,6 +170,7 @@ func NewServer(ctx context.Context, pool *pgxpool.Pool, rdb *redis.Client, jwtSe
 	s.hedgeTriggerCh = make(chan struct{}, 1)
 	s.flipChan = make(chan string, 16)
 	s.initBroadcastRegistry()
+	s.pairedCloseWatches = make(map[string]pairedCloseWatchEntry)
 	go s.refreshDelistCache(ctx)
 	return s
 }

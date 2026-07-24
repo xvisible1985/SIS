@@ -105,6 +105,7 @@ func (s *Server) hedgeEngineTick(ctx context.Context) {
 	rows.Close()
 
 	newWatches := make(map[string]hedgeWatchEntry)
+	newPairedWatches := make(map[string]pairedCloseWatchEntry)
 	for _, b := range bots {
 		// Per-bot recovery: a panic while processing one bot must not abort the whole
 		// tick (which would freeze every other hedge/matrix bot until restart).
@@ -116,20 +117,23 @@ func (s *Server) hedgeEngineTick(ctx context.Context) {
 			}
 			switch cfg.BotKind {
 			case "hedge":
-				s.processHedgeBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg, newWatches)
+				s.processHedgeBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg, newWatches, newPairedWatches)
 			case "matrix":
-				s.processMatrixBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg)
+				s.processMatrixBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg, newPairedWatches)
 			}
 		}()
 	}
 	s.applyHedgeWatches(newWatches)
+	s.pairedCloseWatchMu.Lock()
+	s.pairedCloseWatches = newPairedWatches
+	s.pairedCloseWatchMu.Unlock()
 }
 
 // processHedgeBot processes a single hedge bot for one tick:
 //  1. Fetches open exchange positions.
 //  2. Checks existing hedges for deactivation.
 //  3. Checks unhedged positions for activation.
-func (s *Server) processHedgeBot(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, watches map[string]hedgeWatchEntry) {
+func (s *Server) processHedgeBot(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, watches map[string]hedgeWatchEntry, pairedWatches map[string]pairedCloseWatchEntry) {
 	creds, err := s.loadBotAccountCreds(ctx, accountID)
 	if err != nil {
 		s.logBotEvent(ctx, botID,
@@ -155,6 +159,7 @@ func (s *Server) processHedgeBot(ctx context.Context, botID, ownerID, accountID 
 
 	s.checkHedgeDeactivation(ctx, botID, accountID, cfg, posMap)
 	s.checkHedgeActivation(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, creds, posMap, watches)
+	s.buildPairedCloseWatches(ctx, botID, accountID, "hedge", cfg, posMap, pairedWatches)
 }
 
 // ── Data types ────────────────────────────────────────────────────────────────
@@ -392,6 +397,82 @@ func pairedCloseTargetPrice(mainDir, hedgeDir string, mainEntry, hedgeEntry, mai
 	}
 	price := (effectiveThreshold + dm*mainEntry*mainSize + dh*hedgeEntry*hedgeSize) / denom
 	return price, true
+}
+
+// pairedCloseWatchEntry holds everything the paired-close watcher needs to recompute
+// current/pct/target_price and, on a threshold crossing, re-verify and close — without
+// re-querying the DB on every price tick. Refreshed once per 30s tick (see
+// buildPairedCloseWatches) and additionally by the накопление-change hook (a later task).
+type pairedCloseWatchEntry struct {
+	botID, accountID, botKind   string
+	cfg                         botCfgJSON
+	symbol                      string
+	mainID, hedgeID             string
+	mainDir, hedgeDir           string
+	mainEntry, hedgeEntry       float64
+	mainSize, hedgeSize         float64
+	mainLeverage, hedgeLeverage float64
+	accumulatedPnl              float64
+}
+
+// buildPairedCloseWatches finds this bot's complete, currently-open pairs (both legs
+// active/finishing, matched via an open hedge_sessions row, both legs present with a real
+// position in posMap) and adds one watch entry per pair to out, keyed by symbol.
+//
+// Keyed by symbol only, same as the existing hedgeWatches map — if two different bots both
+// have an open pair on the identical symbol, only one gets a live watch entry (last one
+// processed wins); the periodic 30s tick remains a full-coverage fallback regardless. This
+// is a pre-existing, accepted limitation of the hedgeWatches pattern this mirrors, not a
+// new one.
+func (s *Server) buildPairedCloseWatches(ctx context.Context, botID, accountID, botKind string, cfg botCfgJSON, posMap map[string]map[string]hedgePosInfo, out map[string]pairedCloseWatchEntry) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT hs.main_strategy_id, hs.hedge_strategy_id, hs.accumulated_pnl,
+		       ms.symbol, ms.direction, hst.direction
+		FROM hedge_sessions hs
+		JOIN strategies ms ON ms.id = hs.main_strategy_id
+		JOIN strategies hst ON hst.id = hs.hedge_strategy_id
+		WHERE hs.bot_id = $1 AND hs.ended_at IS NULL
+		  AND ms.status IN ('active','finishing') AND hst.status IN ('active','finishing')`,
+		botID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var mainID, hedgeID, symbol, mainDir, hedgeDir string
+		var accumulatedPnl float64
+		if rows.Scan(&mainID, &hedgeID, &accumulatedPnl, &symbol, &mainDir, &hedgeDir) != nil {
+			continue
+		}
+		bySymbol, ok := posMap[symbol]
+		if !ok {
+			continue
+		}
+		mainPos, hasMain := bySymbol[hedgeDirToSide(mainDir)]
+		hedgePos, hasHedge := bySymbol[hedgeDirToSide(hedgeDir)]
+		if !hasMain || !hasHedge {
+			continue
+		}
+		out[symbol] = pairedCloseWatchEntry{
+			botID:          botID,
+			accountID:      accountID,
+			botKind:        botKind,
+			cfg:            cfg,
+			symbol:         symbol,
+			mainID:         mainID,
+			hedgeID:        hedgeID,
+			mainDir:        mainDir,
+			hedgeDir:       hedgeDir,
+			mainEntry:      mainPos.EntryPrice,
+			hedgeEntry:     hedgePos.EntryPrice,
+			mainSize:       mainPos.Size,
+			hedgeSize:      hedgePos.Size,
+			mainLeverage:   mainPos.Leverage,
+			hedgeLeverage:  hedgePos.Leverage,
+			accumulatedPnl: accumulatedPnl,
+		}
+	}
 }
 
 // ── Bot filter ────────────────────────────────────────────────────────────────
