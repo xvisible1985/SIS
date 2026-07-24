@@ -69,6 +69,63 @@ type Server struct {
 	hedgeUnsubs    []func()                   // TickerHub unsubscribe funcs
 	hedgeTriggerCh chan struct{}               // buffered(1): WS price crossed threshold
 	flipChan       chan string                 // buffered(16): main strategy IDs closed at TP
+
+	// Per-account WS broadcast registry: lets background goroutines (the paired-close
+	// watcher) push messages to every currently-open trader-positions WS connection for a
+	// given account, without those goroutines knowing anything about *websocket.Conn or
+	// HTTP. See docs/superpowers/specs/2026-07-23-paired-close-realtime-design.md
+	// component 4.
+	broadcastMu   sync.RWMutex
+	broadcastSubs map[string][]chan any // accountID → subscriber channels
+}
+
+// initBroadcastRegistry must be called once before subscribeBroadcast/broadcast are used
+// (NewServer does this — tests constructing a bare &Server{} must call it themselves).
+func (s *Server) initBroadcastRegistry() {
+	s.broadcastMu.Lock()
+	defer s.broadcastMu.Unlock()
+	if s.broadcastSubs == nil {
+		s.broadcastSubs = make(map[string][]chan any)
+	}
+}
+
+// subscribeBroadcast registers a new channel for accountID and returns it along with an
+// unsubscribe function that removes it. Buffered(8) — matches the non-blocking-drop
+// philosophy already used for the Bybit-read goroutine in pkg/trader/ws.go: a slow or
+// absent reader must never stall the broadcaster.
+func (s *Server) subscribeBroadcast(accountID string) (chan any, func()) {
+	ch := make(chan any, 8)
+	s.broadcastMu.Lock()
+	s.broadcastSubs[accountID] = append(s.broadcastSubs[accountID], ch)
+	s.broadcastMu.Unlock()
+
+	unsub := func() {
+		s.broadcastMu.Lock()
+		defer s.broadcastMu.Unlock()
+		subs := s.broadcastSubs[accountID]
+		for i, c := range subs {
+			if c == ch {
+				s.broadcastSubs[accountID] = append(subs[:i], subs[i+1:]...)
+				break
+			}
+		}
+	}
+	return ch, unsub
+}
+
+// broadcast sends msg to every channel currently subscribed for accountID. Non-blocking
+// per-subscriber — a slow/full subscriber's message is dropped rather than blocking the
+// caller or other subscribers.
+func (s *Server) broadcast(accountID string, msg any) {
+	s.broadcastMu.RLock()
+	subs := s.broadcastSubs[accountID]
+	s.broadcastMu.RUnlock()
+	for _, ch := range subs {
+		select {
+		case ch <- msg:
+		default:
+		}
+	}
 }
 
 // NewServer creates a Server.
@@ -100,6 +157,7 @@ func NewServer(ctx context.Context, pool *pgxpool.Pool, rdb *redis.Client, jwtSe
 	s.hedgeWatches = make(map[string]hedgeWatchEntry)
 	s.hedgeTriggerCh = make(chan struct{}, 1)
 	s.flipChan = make(chan string, 16)
+	s.initBroadcastRegistry()
 	go s.refreshDelistCache(ctx)
 	return s
 }
