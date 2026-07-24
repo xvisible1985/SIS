@@ -24,7 +24,7 @@ func safeSend(conn *websocket.Conn, v any) {
 // RunPositionStream opens a Bybit private WebSocket, authenticates, subscribes
 // to position and order topics, fetches a REST snapshot, then relays WS deltas
 // to the client conn until ctx is cancelled or conn closes.
-func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credentials, accountName string) {
+func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credentials, accountName string, broadcastCh <-chan any) {
 	type msg map[string]any
 	logMsg := func(m string, errFlag ...bool) {
 		isErr := len(errFlag) > 0 && errFlag[0]
@@ -90,6 +90,9 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 		case err := <-bybitErrCh:
 			logMsg("Bybit WS закрыт: "+err.Error(), true)
 			return
+
+		case m := <-broadcastCh:
+			safeSend(conn, m)
 
 		case data := <-bybitCh:
 			var raw map[string]any

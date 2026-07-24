@@ -65,6 +65,8 @@ func (s *Server) PositionsStream(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	creds := trader.Credentials{APIKey: apiKey, SecretKey: secretKey}
-	trader.RunPositionStream(r.Context(), conn, creds, label)
+	broadcastCh, unsub := s.subscribeBroadcast(accountID)
+	defer unsub()
+	trader.RunPositionStream(r.Context(), conn, creds, label, broadcastCh)
 }
 

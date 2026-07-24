@@ -105,9 +105,14 @@ func (s *Server) subscribeBroadcast(accountID string) (chan any, func()) {
 		subs := s.broadcastSubs[accountID]
 		for i, c := range subs {
 			if c == ch {
-				s.broadcastSubs[accountID] = append(subs[:i], subs[i+1:]...)
+				subs = append(subs[:i], subs[i+1:]...)
 				break
 			}
+		}
+		if len(subs) == 0 {
+			delete(s.broadcastSubs, accountID)
+		} else {
+			s.broadcastSubs[accountID] = subs
 		}
 	}
 	return ch, unsub
