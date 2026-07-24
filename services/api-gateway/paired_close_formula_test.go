@@ -15,6 +15,7 @@ func TestPairedCloseTargetPrice_PnlDollarMode(t *testing.T) {
 		"long", "short",
 		100.0, 100.0, // mainEntry, hedgeEntry
 		2.0, 1.0, // mainSize, hedgeSize (units, not USDT)
+		10.0, 10.0, // mainLeverage, hedgeLeverage (unused for mode 0)
 		0, 5.0, // closeType=0 (pnl$), closeValue=5.0
 		0, // накопление unused for mode 0
 	)
@@ -27,23 +28,60 @@ func TestPairedCloseTargetPrice_PnlDollarMode(t *testing.T) {
 	}
 }
 
-// TestPairedCloseTargetPrice_RoiPercentMode: mode 1's threshold is a % of total notional
-// (Em*Sm + Eh*Sh), not a flat $ value.
+// TestPairedCloseTargetPrice_RoiPercentMode: mode 1's threshold is a % of total MARGIN
+// (Em*Sm/Lm + Eh*Sh/Lh), not notional and not a flat $ value — must match
+// meetsPairedCloseCriteria's mainMargin/hMargin computation exactly (leverage divides in).
 func TestPairedCloseTargetPrice_RoiPercentMode(t *testing.T) {
 	price, ok := pairedCloseTargetPrice(
 		"long", "short",
 		100.0, 100.0,
 		2.0, 1.0,
+		10.0, 10.0, // mainLeverage, hedgeLeverage
 		1, 5.0, // closeType=1 (roi%), closeValue=5.0
 		0,
 	)
 	if !ok {
 		t.Fatal("expected a finite target price for mode 1")
 	}
-	// notional = 100*2 + 100*1 = 300; threshold = 300*5/100 = 15.
-	// combined(price) = price - 100 (same as above). Solve price-100=15 -> price=115.
-	if got, want := price, 115.0; got < want-0.0001 || got > want+0.0001 {
+	// margin = 100*2/10 + 100*1/10 = 20+10 = 30; threshold = 30*5/100 = 1.5.
+	// combined(price) = price - 100 (same as above). Solve price-100=1.5 -> price=101.5.
+	if got, want := price, 101.5; got < want-0.0001 || got > want+0.0001 {
 		t.Errorf("target price = %v, want %v", got, want)
+	}
+}
+
+// TestPairedCloseTargetPrice_MatchesMeetsPairedCloseCriteriaBoundary_RoiMode: the price
+// pairedCloseTargetPrice returns must be the genuine boundary where meetsPairedCloseCriteria
+// flips from false to true — cross-checked directly against the real criteria function
+// instead of trusting a hand-derived expected value, since a hand-derived value can encode
+// the same bug the implementation has (exactly what happened with the original notional-
+// vs-margin mistake in this mode).
+func TestPairedCloseTargetPrice_MatchesMeetsPairedCloseCriteriaBoundary_RoiMode(t *testing.T) {
+	mainEntry, hedgeEntry := 100.0, 100.0
+	mainSize, hedgeSize := 2.0, 1.0
+	mainLev, hedgeLev := 10.0, 10.0
+	closeValue := 5.0
+
+	price, ok := pairedCloseTargetPrice("long", "short", mainEntry, hedgeEntry, mainSize, hedgeSize, mainLev, hedgeLev, 1, closeValue, 0)
+	if !ok {
+		t.Fatal("expected a finite target price")
+	}
+
+	cfg := botCfgJSON{HedgeDeactCloseType: 1, HedgeDeactCloseValue: closeValue}
+	mainAtPrice := func(p float64) hedgePosInfo {
+		return hedgePosInfo{EntryPrice: mainEntry, Size: mainSize, Leverage: mainLev, UnrealisedPnl: (p - mainEntry) * mainSize}
+	}
+	hedgeAtPrice := func(p float64) hedgePosInfo {
+		return hedgePosInfo{EntryPrice: hedgeEntry, Size: hedgeSize, Leverage: hedgeLev, UnrealisedPnl: (hedgeEntry - p) * hedgeSize}
+	}
+
+	justBelow := meetsPairedCloseCriteria(mainAtPrice(price-0.01), hedgeAtPrice(price-0.01), cfg, 0)
+	justAbove := meetsPairedCloseCriteria(mainAtPrice(price+0.01), hedgeAtPrice(price+0.01), cfg, 0)
+	if justBelow {
+		t.Errorf("meetsPairedCloseCriteria already true just BELOW the computed target price %v — target price is wrong (likely too low)", price)
+	}
+	if !justAbove {
+		t.Errorf("meetsPairedCloseCriteria still false just ABOVE the computed target price %v — target price is wrong (likely too high)", price)
 	}
 }
 
@@ -57,6 +95,7 @@ func TestPairedCloseTargetPrice_BreakevenMode_AccountsForAccumulated(t *testing.
 		"long", "short",
 		100.0, 100.0,
 		2.0, 1.0,
+		10.0, 10.0, // mainLeverage, hedgeLeverage (unused for mode 2)
 		2, 10.0, // closeType=2 (breakeven), closeValue=hedge_breakeven_profit=10.0
 		8.0, // накопление already at 8
 	)
@@ -79,6 +118,7 @@ func TestPairedCloseTargetPrice_PerfectlyHedgedEqualSizes_NoFinitePrice(t *testi
 		"long", "short",
 		100.0, 100.0,
 		1.0, 1.0, // equal sizes
+		10.0, 10.0, // mainLeverage, hedgeLeverage (unused for mode 0)
 		0, 5.0,
 		0,
 	)

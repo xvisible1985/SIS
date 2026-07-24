@@ -366,7 +366,7 @@ func meetsPairedCloseCriteria(mainPos, hPos hedgePosInfo, cfg botCfgJSON, accumu
 // Returns ok=false when there is no finite price (denom ~= 0): the pair's legs are sized
 // such that combined PnL doesn't move with price at all (e.g. perfectly-hedged equal
 // sizes) — the threshold is either always or never met regardless of price.
-func pairedCloseTargetPrice(mainDir, hedgeDir string, mainEntry, hedgeEntry, mainSize, hedgeSize float64, closeType int, closeValue, accumulatedPnl float64) (float64, bool) {
+func pairedCloseTargetPrice(mainDir, hedgeDir string, mainEntry, hedgeEntry, mainSize, hedgeSize, mainLeverage, hedgeLeverage float64, closeType int, closeValue, accumulatedPnl float64) (float64, bool) {
 	dm := 1.0
 	if mainDir == "short" {
 		dm = -1.0
@@ -378,8 +378,8 @@ func pairedCloseTargetPrice(mainDir, hedgeDir string, mainEntry, hedgeEntry, mai
 
 	var effectiveThreshold float64
 	switch closeType {
-	case 1: // roi%: threshold is a % of total notional
-		effectiveThreshold = (mainEntry*mainSize + hedgeEntry*hedgeSize) * closeValue / 100
+	case 1: // roi%: threshold is a % of total MARGIN (entry*size/leverage per leg), not notional
+		effectiveThreshold = (mainEntry*mainSize/mainLeverage + hedgeEntry*hedgeSize/hedgeLeverage) * closeValue / 100
 	case 2: // breakeven: накопление already covers part of the threshold
 		effectiveThreshold = closeValue - accumulatedPnl
 	default: // pnl$: threshold is a flat $ value
