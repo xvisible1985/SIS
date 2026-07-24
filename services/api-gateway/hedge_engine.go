@@ -351,6 +351,49 @@ func meetsPairedCloseCriteria(mainPos, hPos hedgePosInfo, cfg botCfgJSON, accumu
 	return false
 }
 
+// pairedCloseTargetPrice computes the price at which a pair's combined unrealized PnL
+// (both legs, given their known entry/size/direction) plus, for breakeven mode,
+// накопление, would exactly equal the configured close threshold — the same condition
+// meetsPairedCloseCriteria enforces, solved for price instead of evaluated at a known
+// price. Used both to decide which price to watch for an early wake-up (component 2/3 of
+// docs/superpowers/specs/2026-07-23-paired-close-realtime-design.md) and to drive the
+// frontend's chart target-price line via the WS push, replacing the old
+// HedgePairCard.tsx client-side formula entirely.
+//
+// dir must be "long" or "short". accumulatedPnl is ignored for modes 0/1 (live-only, same
+// as meetsPairedCloseCriteria) — pass 0 if unknown/inapplicable.
+//
+// Returns ok=false when there is no finite price (denom ~= 0): the pair's legs are sized
+// such that combined PnL doesn't move with price at all (e.g. perfectly-hedged equal
+// sizes) — the threshold is either always or never met regardless of price.
+func pairedCloseTargetPrice(mainDir, hedgeDir string, mainEntry, hedgeEntry, mainSize, hedgeSize float64, closeType int, closeValue, accumulatedPnl float64) (float64, bool) {
+	dm := 1.0
+	if mainDir == "short" {
+		dm = -1.0
+	}
+	dh := 1.0
+	if hedgeDir == "short" {
+		dh = -1.0
+	}
+
+	var effectiveThreshold float64
+	switch closeType {
+	case 1: // roi%: threshold is a % of total notional
+		effectiveThreshold = (mainEntry*mainSize + hedgeEntry*hedgeSize) * closeValue / 100
+	case 2: // breakeven: накопление already covers part of the threshold
+		effectiveThreshold = closeValue - accumulatedPnl
+	default: // pnl$: threshold is a flat $ value
+		effectiveThreshold = closeValue
+	}
+
+	denom := dm*mainSize + dh*hedgeSize
+	if denom > -1e-9 && denom < 1e-9 {
+		return 0, false
+	}
+	price := (effectiveThreshold + dm*mainEntry*mainSize + dh*hedgeEntry*hedgeSize) / denom
+	return price, true
+}
+
 // ── Bot filter ────────────────────────────────────────────────────────────────
 
 // positionPassesBotFilter returns true if the position at symbol/mainDir on
