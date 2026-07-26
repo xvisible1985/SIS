@@ -93,6 +93,7 @@ export function usePositionsWs(accountId: string | null) {
   const [accountName, setAccountName] = useState(initialName)
   const [loading, setLoading] = useState(!fromCache && !ls)
   const [freeMargin, setFreeMargin] = useState<number | null>(null)
+  const [pairedClose, setPairedClose] = useState<Map<string, WsMsg & { type: 'paired_close' }>>(new Map())
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const rawPositions = useRef(new Map<string, any>())
@@ -141,6 +142,15 @@ export function usePositionsWs(accountId: string | null) {
         if (msg.type === 'wallet') {
           if (typeof msg.availableBalance === 'number' && msg.availableBalance >= 0)
             setFreeMargin(msg.availableBalance)
+          return
+        }
+        if (msg.type === 'paired_close') {
+          setPairedClose(prev => {
+            const next = new Map(prev)
+            next.set(msg.main_strategy_id, msg)
+            next.set(msg.hedge_strategy_id, msg)
+            return next
+          })
           return
         }
         if (msg.type === 'log') {
@@ -312,5 +322,5 @@ export function usePositionsWs(accountId: string | null) {
     setOrders(prev => prev.filter(o => o.orderId !== orderId && o.orderLinkId !== orderId))
   }, [])
 
-  return { positions, orders, executions, log, status, accountName, loading, reconnect, removeOrder, freeMargin }
+  return { positions, orders, executions, log, status, accountName, loading, reconnect, removeOrder, freeMargin, pairedClose }
 }

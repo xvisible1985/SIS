@@ -235,6 +235,7 @@ export type WsMsg =
   | { type: 'order'; dataType: 'snapshot' | 'delta'; data: any[] }
   | { type: 'execution'; dataType: 'delta'; data: any[] }
   | { type: 'wallet'; availableBalance: number; equity?: number }
+  | { type: 'paired_close'; main_strategy_id: string; hedge_strategy_id: string; current: number; threshold: number; close_type: number; pct: number; target_price: number }
 
 // Strategies
 export interface SignalConfig {
