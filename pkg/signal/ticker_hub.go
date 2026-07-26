@@ -95,6 +95,15 @@ func (h *TickerHub) LatestPrice(symbol string) float64 {
 	return p
 }
 
+// SetPrice manually sets the cached latest price for symbol — used by tests to seed a
+// price without a live WS connection; production code should rely on handleMessage's
+// real ticker updates instead.
+func (h *TickerHub) SetPrice(symbol string, price float64) {
+	h.mu.Lock()
+	h.prices[symbol] = price
+	h.mu.Unlock()
+}
+
 // ConnCount returns the current number of WS connections in the pool.
 func (h *TickerHub) ConnCount() int {
 	h.poolMu.Lock()

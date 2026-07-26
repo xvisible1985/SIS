@@ -108,6 +108,80 @@ func TestPairedCloseTargetPrice_BreakevenMode_AccountsForAccumulated(t *testing.
 	}
 }
 
+// TestPairedCloseCurrentValue_MatchesTargetPrice_PnlDollarMode: pairedCloseCurrentValue is
+// the forward counterpart to pairedCloseTargetPrice — evaluating current value AT the
+// target price that pairedCloseTargetPrice computed for a given threshold must reproduce
+// that exact threshold. This proves the two formulas are mathematically consistent rather
+// than just independently "looks right". Mode 0 (pnl$): current is a plain $ value.
+func TestPairedCloseCurrentValue_MatchesTargetPrice_PnlDollarMode(t *testing.T) {
+	mainEntry, hedgeEntry := 100.0, 100.0
+	mainSize, hedgeSize := 2.0, 1.0
+	mainLev, hedgeLev := 10.0, 10.0
+	closeValue := 5.0
+
+	price, ok := pairedCloseTargetPrice("long", "short", mainEntry, hedgeEntry, mainSize, hedgeSize, mainLev, hedgeLev, 0, closeValue, 0)
+	if !ok {
+		t.Fatal("expected a finite target price")
+	}
+
+	current := pairedCloseCurrentValue("long", "short", mainEntry, hedgeEntry, mainSize, hedgeSize, mainLev, hedgeLev, price, 0, 0)
+	if got, want := current, closeValue; got < want-0.0001 || got > want+0.0001 {
+		t.Errorf("current at target price = %v, want %v (threshold) — forward/inverse formulas disagree", got, want)
+	}
+}
+
+// TestPairedCloseCurrentValue_MatchesTargetPrice_RoiPercentMode: mode 1 (roi%) — current
+// must be expressed as a % of total margin, same convention as meetsPairedCloseCriteria
+// and pairedCloseTargetPrice's effectiveThreshold computation for this mode.
+func TestPairedCloseCurrentValue_MatchesTargetPrice_RoiPercentMode(t *testing.T) {
+	mainEntry, hedgeEntry := 100.0, 100.0
+	mainSize, hedgeSize := 2.0, 1.0
+	mainLev, hedgeLev := 10.0, 10.0
+	closeValue := 5.0
+
+	price, ok := pairedCloseTargetPrice("long", "short", mainEntry, hedgeEntry, mainSize, hedgeSize, mainLev, hedgeLev, 1, closeValue, 0)
+	if !ok {
+		t.Fatal("expected a finite target price")
+	}
+
+	current := pairedCloseCurrentValue("long", "short", mainEntry, hedgeEntry, mainSize, hedgeSize, mainLev, hedgeLev, price, 1, 0)
+	if got, want := current, closeValue; got < want-0.0001 || got > want+0.0001 {
+		t.Errorf("current at target price = %v, want %v (threshold) — forward/inverse formulas disagree", got, want)
+	}
+}
+
+// TestPairedCloseCurrentValue_MatchesTargetPrice_BreakevenMode: mode 2 (breakeven) — current
+// must include накопление (accumulatedPnl), same as meetsPairedCloseCriteria's mode 2 and
+// pairedCloseTargetPrice's effectiveThreshold = closeValue - accumulatedPnl.
+func TestPairedCloseCurrentValue_MatchesTargetPrice_BreakevenMode(t *testing.T) {
+	mainEntry, hedgeEntry := 100.0, 100.0
+	mainSize, hedgeSize := 2.0, 1.0
+	mainLev, hedgeLev := 10.0, 10.0
+	closeValue := 10.0
+	accumulatedPnl := 8.0
+
+	price, ok := pairedCloseTargetPrice("long", "short", mainEntry, hedgeEntry, mainSize, hedgeSize, mainLev, hedgeLev, 2, closeValue, accumulatedPnl)
+	if !ok {
+		t.Fatal("expected a finite target price")
+	}
+
+	current := pairedCloseCurrentValue("long", "short", mainEntry, hedgeEntry, mainSize, hedgeSize, mainLev, hedgeLev, price, 2, accumulatedPnl)
+	if got, want := current, closeValue; got < want-0.0001 || got > want+0.0001 {
+		t.Errorf("current at target price = %v, want %v (threshold) — forward/inverse formulas disagree", got, want)
+	}
+}
+
+// TestPairedCloseCurrentValue_RoiMode_ZeroMarginReturnsZero: when total margin is 0 (edge
+// case — shouldn't happen in practice with real positions, but must not divide by zero),
+// current must sensibly return 0 rather than NaN/Inf, mirroring meetsPairedCloseCriteria's
+// treatment of totalMargin==0 as "condition not met".
+func TestPairedCloseCurrentValue_RoiMode_ZeroMarginReturnsZero(t *testing.T) {
+	current := pairedCloseCurrentValue("long", "short", 0, 0, 0, 0, 10, 10, 100, 1, 0)
+	if current != 0 {
+		t.Errorf("current = %v, want 0 for zero total margin", current)
+	}
+}
+
 // TestPairedCloseTargetPrice_PerfectlyHedgedEqualSizes_NoFinitePrice: when both legs have
 // identical size, combined PnL doesn't move with price at all (gains on one leg exactly
 // offset losses on the other) — there is no finite price where the threshold is crossed

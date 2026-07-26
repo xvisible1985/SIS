@@ -55,6 +55,71 @@ func TestPairedCloseInFlight_AllowsSequentialTriggers(t *testing.T) {
 	}
 }
 
+// TestRecomputeAndPushPairedClose_UsesLivePriceForCurrentAndPct: recomputeAndPushPairedClose
+// must populate Current and Pct in the broadcast pairedCloseMsg using the live price from
+// s.signalEngine.PriceHub() — previously these silently stayed at their zero value,
+// permanently breaking the frontend's progress bar. Seeds a price via TickerHub.SetPrice
+// (no live WS connection needed), then verifies the broadcast message's Current/Pct match
+// the expected mode-0 (pnl$) combined-PnL formula at that price. Uses a bogus accountID so
+// the subsequent verify-and-close fast path (triggered because unequal leg sizes give a
+// finite target price) safely no-ops on "account not found" rather than needing a full
+// trader/exchange mock — recomputeAndPushPairedClose broadcasts BEFORE that fast path runs,
+// so the broadcast assertion is unaffected either way.
+func TestRecomputeAndPushPairedClose_UsesLivePriceForCurrentAndPct(t *testing.T) {
+	s := newTestServer(t)
+
+	mainEntry, hedgeEntry := 100.0, 100.0
+	mainSize, hedgeSize := 2.0, 1.0
+	mainLev, hedgeLev := 10.0, 10.0
+	closeValue := 5.0
+	livePrice := 110.0 // combined = (110-100)*2 + (100-110)*1 = 20-10 = 10
+
+	s.signalEngine.PriceHub().SetPrice("RECOMPUTEUSDT", livePrice)
+
+	entry := pairedCloseWatchEntry{
+		accountID:     "acc-recompute-bogus",
+		botKind:       "matrix",
+		cfg:           botCfgJSON{HedgeDeactCloseType: 0, HedgeDeactCloseValue: closeValue},
+		symbol:        "RECOMPUTEUSDT",
+		mainID:        "main-recompute",
+		hedgeID:       "hedge-recompute",
+		mainDir:       "long",
+		hedgeDir:      "short",
+		mainEntry:     mainEntry,
+		hedgeEntry:    hedgeEntry,
+		mainSize:      mainSize,
+		hedgeSize:     hedgeSize,
+		mainLeverage:  mainLev,
+		hedgeLeverage: hedgeLev,
+	}
+
+	ch, unsub := s.subscribeBroadcast("acc-recompute-bogus")
+	defer unsub()
+
+	s.recomputeAndPushPairedClose(entry)
+
+	select {
+	case got := <-ch:
+		msg, ok := got.(pairedCloseMsg)
+		if !ok {
+			t.Fatalf("broadcast message type = %T, want pairedCloseMsg", got)
+		}
+		wantCurrent := 10.0
+		wantPct := wantCurrent / closeValue * 100
+		if msg.Current < wantCurrent-0.0001 || msg.Current > wantCurrent+0.0001 {
+			t.Errorf("msg.Current = %v, want %v", msg.Current, wantCurrent)
+		}
+		if msg.Pct < wantPct-0.0001 || msg.Pct > wantPct+0.0001 {
+			t.Errorf("msg.Pct = %v, want %v", msg.Pct, wantPct)
+		}
+		if msg.Threshold != closeValue {
+			t.Errorf("msg.Threshold = %v, want %v", msg.Threshold, closeValue)
+		}
+	default:
+		t.Fatal("expected a pairedCloseMsg broadcast, got none")
+	}
+}
+
 // TestPairedCloseSemaphore_CapsConcurrencyPerAccount: no more than the configured number
 // of verify-and-close checks run concurrently for the SAME account — a burst of triggers
 // queues past the cap instead of running unbounded.

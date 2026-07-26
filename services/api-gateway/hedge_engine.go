@@ -397,6 +397,44 @@ func pairedCloseTargetPrice(mainDir, hedgeDir string, mainEntry, hedgeEntry, mai
 	return price, true
 }
 
+// pairedCloseCurrentValue computes the pair's current progress toward its close threshold
+// at the given live price mp — the forward counterpart to pairedCloseTargetPrice (which
+// solves the same relationship for price instead of value). Mirrors
+// meetsPairedCloseCriteria's three close_type modes exactly: mode 0 (pnl$) and mode 2
+// (breakeven) return a dollar current value comparable directly to threshold; mode 1 (roi%)
+// returns a percentage.
+//
+// dir must be "long" or "short", same dm/dh direction-sign convention as
+// pairedCloseTargetPrice. accumulatedPnl is накопление — used only by mode 2, same as
+// meetsPairedCloseCriteria; pass 0 if unknown/inapplicable for modes 0/1.
+func pairedCloseCurrentValue(mainDir, hedgeDir string, mainEntry, hedgeEntry, mainSize, hedgeSize, mainLeverage, hedgeLeverage, mp float64, closeType int, accumulatedPnl float64) float64 {
+	dm := 1.0
+	if mainDir == "short" {
+		dm = -1.0
+	}
+	dh := 1.0
+	if hedgeDir == "short" {
+		dh = -1.0
+	}
+
+	combined := dm*(mp-mainEntry)*mainSize + dh*(mp-hedgeEntry)*hedgeSize
+
+	switch closeType {
+	case 1: // roi%: combined as a % of total margin (entry*size/leverage per leg)
+		mainMargin := mainEntry * mainSize / mainLeverage
+		hMargin := hedgeEntry * hedgeSize / hedgeLeverage
+		totalMargin := mainMargin + hMargin
+		if totalMargin == 0 {
+			return 0
+		}
+		return combined / totalMargin * 100
+	case 2: // breakeven: накопление + live combined
+		return accumulatedPnl + combined
+	default: // pnl$: plain combined
+		return combined
+	}
+}
+
 // pairedCloseWatchEntry holds everything the paired-close watcher needs to recompute
 // current/pct/target_price and, on a threshold crossing, re-verify and close — without
 // re-querying the DB on every price tick. Refreshed once per 30s tick (see
@@ -552,12 +590,32 @@ func (s *Server) recomputeAndPushPairedClose(entry pairedCloseWatchEntry) {
 		entry.cfg.HedgeDeactCloseType, threshold, entry.accumulatedPnl,
 	)
 
+	// mp is 0 when the symbol hasn't ticked yet (e.g. right after startup) — we still push
+	// the message with Current: 0 in that case rather than skipping it, matching this
+	// feature's established "renders nothing until the first message arrives" precedent
+	// (docs/superpowers/specs/2026-07-23-paired-close-realtime-design.md, component 7)
+	// rather than inventing a new "no data" signal.
+	mp := s.signalEngine.PriceHub().LatestPrice(entry.symbol)
+	current := pairedCloseCurrentValue(
+		entry.mainDir, entry.hedgeDir,
+		entry.mainEntry, entry.hedgeEntry,
+		entry.mainSize, entry.hedgeSize,
+		entry.mainLeverage, entry.hedgeLeverage,
+		mp, entry.cfg.HedgeDeactCloseType, entry.accumulatedPnl,
+	)
+	pct := 0.0
+	if threshold != 0 {
+		pct = current / threshold * 100
+	}
+
 	s.broadcast(entry.accountID, pairedCloseMsg{
 		Type:            "paired_close",
 		MainStrategyID:  entry.mainID,
 		HedgeStrategyID: entry.hedgeID,
+		Current:         current,
 		Threshold:       threshold,
 		CloseType:       entry.cfg.HedgeDeactCloseType,
+		Pct:             pct,
 		TargetPrice:     targetPrice,
 	})
 
