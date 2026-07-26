@@ -58,6 +58,17 @@ func TestPairedCloseInFlight_AllowsSequentialTriggers(t *testing.T) {
 // TestPairedCloseSemaphore_CapsConcurrencyPerAccount: no more than the configured number
 // of verify-and-close checks run concurrently for the SAME account — a burst of triggers
 // queues past the cap instead of running unbounded.
+//
+// Uses MORE unique symbols (30) than pairedCloseSemaphoreSize (20) so the per-symbol
+// in-flight dedup gate in runPairedCloseCheck can never be the limiting factor — with only
+// 20 unique symbols (the previous version of this test used fmt.Sprintf("SYM%d", i%20)),
+// at most 20 goroutines could ever be concurrently inside fakeCheck regardless of the
+// semaphore's actual size, which made the test pass even with the semaphore effectively
+// disabled (empirically verified: bumping pairedCloseSemaphoreSize to 1000 against the old
+// 20-symbol version still produced maxConcurrent==20). With 30 unique symbols, all 30
+// goroutines can reach fakeCheck and block on <-release, so the semaphore is the only thing
+// that can cap concurrency — letting the test assert maxConcurrent == pairedCloseSemaphoreSize
+// exactly (not just <=), proving the cap is both enforced AND actually reached.
 func TestPairedCloseSemaphore_CapsConcurrencyPerAccount(t *testing.T) {
 	s := newTestServer(t)
 	var concurrent, maxConcurrent int32
@@ -79,14 +90,14 @@ func TestPairedCloseSemaphore_CapsConcurrencyPerAccount(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			s.runPairedCloseCheckForAccount("acc-burst", fmt.Sprintf("SYM%d", i%20), fakeCheck)
+			s.runPairedCloseCheckForAccount("acc-burst", fmt.Sprintf("SYM%d", i), fakeCheck)
 		}(i)
 	}
 	time.Sleep(100 * time.Millisecond) // let goroutines pile up against the semaphore
 	close(release)
 	wg.Wait()
 
-	if maxConcurrent > pairedCloseSemaphoreSize {
-		t.Errorf("max concurrent = %d, want <= %d (pairedCloseSemaphoreSize)", maxConcurrent, pairedCloseSemaphoreSize)
+	if maxConcurrent != pairedCloseSemaphoreSize {
+		t.Errorf("max concurrent = %d, want exactly %d (pairedCloseSemaphoreSize) — cap should be both enforced and reached", maxConcurrent, pairedCloseSemaphoreSize)
 	}
 }

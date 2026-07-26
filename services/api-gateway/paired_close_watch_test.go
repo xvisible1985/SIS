@@ -95,3 +95,44 @@ func TestBuildPairedCloseWatches_SkipsIncompletePair(t *testing.T) {
 		t.Error("expected no watch entry for an orphaned single leg, got one")
 	}
 }
+
+// TestLoadFreshBotCfg_ReadsCurrentConfigNotCached: loadFreshBotCfg must read the bot's
+// strategy_config fresh from the DB on every call — not return a cached/stale snapshot.
+// Proven by updating strategy_config between two calls and asserting the second call
+// reflects the update.
+func TestLoadFreshBotCfg_ReadsCurrentConfigNotCached(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	userID := createWHUser(t, s, "freshcfg")
+	botID := createZombieBot(t, s, userID, "freshcfg-bot")
+
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE bots SET strategy_config = $1 WHERE id = $2`,
+		`{"hedge_deact_close_type":2,"hedge_breakeven_profit":10.0}`, botID,
+	); err != nil {
+		t.Fatalf("seed strategy_config A: %v", err)
+	}
+
+	cfgA, err := s.loadFreshBotCfg(ctx, botID)
+	if err != nil {
+		t.Fatalf("loadFreshBotCfg (A): %v", err)
+	}
+	if cfgA.HedgeBreakevenProfit != 10.0 {
+		t.Errorf("cfgA.HedgeBreakevenProfit = %v, want 10.0", cfgA.HedgeBreakevenProfit)
+	}
+
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE bots SET strategy_config = $1 WHERE id = $2`,
+		`{"hedge_deact_close_type":2,"hedge_breakeven_profit":25.0}`, botID,
+	); err != nil {
+		t.Fatalf("seed strategy_config B: %v", err)
+	}
+
+	cfgB, err := s.loadFreshBotCfg(ctx, botID)
+	if err != nil {
+		t.Fatalf("loadFreshBotCfg (B): %v", err)
+	}
+	if cfgB.HedgeBreakevenProfit != 25.0 {
+		t.Errorf("cfgB.HedgeBreakevenProfit = %v, want 25.0 (must read fresh, not cached)", cfgB.HedgeBreakevenProfit)
+	}
+}

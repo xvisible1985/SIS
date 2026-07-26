@@ -570,6 +570,26 @@ func (s *Server) recomputeAndPushPairedClose(entry pairedCloseWatchEntry) {
 	})
 }
 
+// loadFreshBotCfg reads botID's CURRENT strategy_config straight from the bots table and
+// unmarshals it into a botCfgJSON — same query+unmarshal pattern as handleMainTpFlip's
+// config load (see around line 1957). Extracted as its own method so the "read fresh, not
+// stale" behavior is independently testable without needing to mock trader.FetchPositions
+// (see verifyAndClosePairedBot, which calls this and falls back to a cached snapshot on
+// error).
+func (s *Server) loadFreshBotCfg(ctx context.Context, botID string) (botCfgJSON, error) {
+	var cfgRaw []byte
+	if err := s.pool.QueryRow(ctx,
+		`SELECT strategy_config FROM bots WHERE id = $1`, botID,
+	).Scan(&cfgRaw); err != nil {
+		return botCfgJSON{}, err
+	}
+	var cfg botCfgJSON
+	if err := json.Unmarshal(cfgRaw, &cfg); err != nil {
+		return botCfgJSON{}, err
+	}
+	return cfg, nil
+}
+
 // verifyAndClosePairedBot re-fetches this account's live positions and re-runs the
 // existing, already-tested per-bot close logic (checkHedgeDeactivation for a hedge bot,
 // checkMatrixPairedClose for a matrix bot) — the ONLY thing that actually decides to
@@ -592,11 +612,23 @@ func (s *Server) verifyAndClosePairedBot(ctx context.Context, entry pairedCloseW
 	}
 	posMap, _ := buildHedgePosMap(rawPositions)
 
+	// entry.cfg is a snapshot up to ~30s stale (refreshed once per hedge-engine tick — see
+	// buildPairedCloseWatches). A user editing the bot's close threshold live (via
+	// bots_handler.go's update endpoint) between ticks must take effect immediately for this
+	// fast path to serve its purpose, so re-read the CURRENT config here rather than trusting
+	// the cached one. Fall back to entry.cfg on error (transient DB hiccup): acting on
+	// slightly-stale data beats silently skipping this close check altogether — the next 30s
+	// tick self-heals regardless.
+	cfg, err := s.loadFreshBotCfg(ctx, entry.botID)
+	if err != nil {
+		cfg = entry.cfg
+	}
+
 	switch entry.botKind {
 	case "hedge":
-		s.checkHedgeDeactivation(ctx, entry.botID, entry.accountID, entry.cfg, posMap)
+		s.checkHedgeDeactivation(ctx, entry.botID, entry.accountID, cfg, posMap)
 	case "matrix":
-		s.checkMatrixPairedClose(ctx, entry.botID, entry.accountID, entry.cfg, creds, posMap)
+		s.checkMatrixPairedClose(ctx, entry.botID, entry.accountID, cfg, creds, posMap)
 	}
 }
 
