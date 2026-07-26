@@ -20,7 +20,7 @@ function sortStrategies(list: Strategy[]): Strategy[] {
 
 export function StrategiesPage() {
   const { selectedAccountId } = useSelectedAccount()
-  const { positions, orders } = usePositionsWs(selectedAccountId || null)
+  const { positions, orders, pairedClose } = usePositionsWs(selectedAccountId || null)
   const { mine: hedgeBots } = useBots()
 
   const [strategies, setStrategies] = useState<Strategy[]>([])
@@ -410,6 +410,7 @@ export function StrategiesPage() {
                       positions={positions}
                       selectedStrategyId={selectedId}
                       hedgeBot={hedgeBots.find(b => b.id === item.hedge.bot_id) ?? null}
+                      pairedClose={pairedClose}
                       onEdit={openEdit}
                       onChanged={load}
                       onSelect={handleSelect}

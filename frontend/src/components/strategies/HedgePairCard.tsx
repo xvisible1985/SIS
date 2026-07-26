@@ -9,7 +9,7 @@ import {
 import { placeOrder } from '../../api/trader'
 import { ClosePositionModal, makeCloseConfirm, type CloseConfirm } from '../common/ClosePositionModal'
 import { CoinIcon } from '../common/CoinIcon'
-import type { Strategy, ExchangeAccount, ActiveOrder, Position, StrategyState, StrategyEvent, HedgeSession } from '../../types'
+import type { Strategy, ExchangeAccount, ActiveOrder, Position, StrategyState, StrategyEvent, HedgeSession, WsMsg } from '../../types'
 import type { Bot } from '../../features/bots/types'
 
 export interface HedgePairCardProps {
@@ -29,6 +29,7 @@ export interface HedgePairCardProps {
   isOpen?: boolean
   onToggleOpen?: () => void
   isMatrixPair?: boolean
+  pairedClose: Map<string, WsMsg & { type: 'paired_close' }>
 }
 
 // ── tiny icons ─────────────────────────────────────────────────────────────────
@@ -316,7 +317,7 @@ function StrategyRow({
 export function HedgePairCard({
   main, hedge, positions, tickerPrices, selectedStrategyId,
   hedgeBot, onEdit, onChanged, onSelect, onPairTargetUpdate, onSimpleDetach,
-  isOpen, onToggleOpen, isMatrixPair,
+  isOpen, onToggleOpen, isMatrixPair, pairedClose,
 }: HedgePairCardProps) {
   const mainPos  = findPosition(main,  positions)
   const hedgePos = findPosition(hedge, positions)
@@ -499,72 +500,11 @@ export function HedgePairCard({
   }, [expanded, main.id, hedge.id, isMatrixPair])
 
   // ── Paired close target ───────────────────────────────────────────────────
-  // Uses live position data (real-time WebSocket) + hedge bot config (close condition).
-  //
-  // Combined PnL formula (for any direction):
-  //   pnl(P) = dm×(P − Em)×Sm + dh×(P − Eh)×Sh
-  //           = P×(dm×Sm + dh×Sh) − (dm×Em×Sm + dh×Eh×Sh)
-  //
-  // Setting pnl(P) = threshold:
-  //   P = (threshold + dm×Em×Sm + dh×Eh×Sh) / (dm×Sm + dh×Sh)
-  //
-  // Breakeven with fees (open already paid + future close fee):
-  //   P = (Em×Sm×(dm+r) + Eh×Sh×(dh+r)) / (dm×Sm + dh×Sh − r×(Sm+Sh))
-  //   where r = taker fee rate (Bybit default 0.055%)
-  const pairedCloseTarget = useMemo(() => {
-    if (!mainPos || !hedgePos) return null
-    const Em = parseFloat(mainPos.entryPrice)
-    const Eh = parseFloat(hedgePos.entryPrice)
-    const Sm = parseFloat(mainPos.size)
-    const Sh = parseFloat(hedgePos.size)
-    if (!Em || !Eh || !Sm || !Sh) return null
-
-    const dm = main.direction === 'long' ? 1 : -1
-    const dh = hedge.direction === 'long' ? 1 : -1
-
-    const cfg = hedgeBot?.strategyConfig
-    const closeType  = cfg?.hedge_deact_close_type  ?? 0  // 0=pnl$, 1=roi%, 2=breakeven
-    const closeValue = cfg?.hedge_deact_close_value ?? 0
-
-    if (closeType === 2) {
-      // Breakeven: account for open (already paid) + future close fees
-      const r = 0.00055  // Bybit taker rate ~0.055%
-      const denom = dm * Sm + dh * Sh - r * (Sm + Sh)
-      if (Math.abs(denom) < 1e-9) return null
-      return (Em * Sm * (dm + r) + Eh * Sh * (dh + r)) / denom
-    }
-
-    let threshold: number
-    if (closeType === 1) {
-      // roi%: threshold = % of total notional
-      threshold = (Em * Sm + Eh * Sh) * closeValue / 100
-    } else {
-      // pnl$: direct $ target
-      threshold = closeValue
-    }
-
-    const denom = dm * Sm + dh * Sh
-    if (Math.abs(denom) < 1e-9) return null  // perfectly hedged (equal size) — PnL doesn't change with price
-    return (threshold + dm * Em * Sm + dh * Eh * Sh) / denom
-  }, [mainPos, hedgePos, main.direction, hedge.direction, hedgeBot])
-
-  const pairedCloseCurrent = useMemo(() => {
-    if (!mainPos || !hedgePos) return null
-    const liveCombined = parseFloat(mainPos.unrealisedPnl) + parseFloat(hedgePos.unrealisedPnl)
-    const closeType = hedgeBot?.strategyConfig?.hedge_deact_close_type ?? 0
-    if (closeType === 2) {
-      const accumulated = isMatrixPair ? (matrixPnl ?? 0) : (hedgeSession?.cumulative_hedge_pnl ?? 0)
-      return accumulated + liveCombined
-    }
-    if (closeType === 1) {
-      const Em = parseFloat(mainPos.entryPrice), Eh = parseFloat(hedgePos.entryPrice)
-      const Sm = parseFloat(mainPos.size), Sh = parseFloat(hedgePos.size)
-      const Lm = parseFloat(mainPos.leverage), Lh = parseFloat(hedgePos.leverage)
-      const totalMargin = (Em * Sm / Lm) + (Eh * Sh / Lh)
-      return totalMargin !== 0 ? (liveCombined / totalMargin) * 100 : null
-    }
-    return liveCombined
-  }, [mainPos, hedgePos, hedgeBot, isMatrixPair, matrixPnl, hedgeSession])
+  // Sourced from the backend's real-time WS push (paired_close message) — the
+  // Go side computes the same combined-PnL formula previously duplicated here.
+  const pairedCloseWs = pairedClose.get(main.id) ?? pairedClose.get(hedge.id) ?? null
+  const pairedCloseCurrent = pairedCloseWs?.current ?? null
+  const pairedCloseTarget = pairedCloseWs?.target_price ?? null
 
   const currentPrice = tickerPrices?.get(symbol) ?? null
   const distanceToClose = pairedCloseTarget !== null && currentPrice !== null
@@ -859,15 +799,11 @@ export function HedgePairCard({
 
               {/* ── Правая колонка ── */}
               <div className="space-y-1.5 bg-black/[.18] border border-white/[.05] rounded-[10px] p-3">
-                {pairedCloseCurrent !== null && hedgeBot?.strategyConfig && (
+                {pairedCloseWs && (
                   <PairedCloseProgress
-                    closeType={hedgeBot.strategyConfig.hedge_deact_close_type ?? 0}
-                    current={pairedCloseCurrent}
-                    threshold={
-                      (hedgeBot.strategyConfig.hedge_deact_close_type ?? 0) === 2
-                        ? (hedgeBot.strategyConfig.hedge_breakeven_profit ?? 0)
-                        : (hedgeBot.strategyConfig.hedge_deact_close_value ?? 0)
-                    }
+                    closeType={pairedCloseWs.close_type}
+                    current={pairedCloseWs.current}
+                    threshold={pairedCloseWs.threshold}
                   />
                 )}
               </div>

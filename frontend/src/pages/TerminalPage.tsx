@@ -38,7 +38,7 @@ import { getBotKindMeta } from '../features/bots/botKindMeta'
 import { TrendingUp, Search, Shield, Layers } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { Bot, BotKind, BotAction } from '../features/bots/types'
-import type { Strategy, ExchangeAccount, ActiveOrder, Position, ChartExecution, StrategyLevel, MatrixRelativePreview } from '../types'
+import type { Strategy, ExchangeAccount, ActiveOrder, Position, ChartExecution, StrategyLevel, MatrixRelativePreview, WsMsg } from '../types'
 import { HedgeBotOverlay } from '../components/terminal/HedgeBotOverlay'
 import { RecentEventsModal } from '../components/terminal/RecentEventsModal'
 
@@ -740,7 +740,7 @@ function countHedgeWatchers(strategy: Strategy, hedgeBots: Bot[]): number {
 // ── Strategies tab ───────────────────────────────────────────────────────────
 type LiveSignal = { signal_state: string; signal_values: Record<string, number> }
 
-function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices, accountId, asAccountId, onStrategySelect, onCycleNumUpdate, onStrategiesChange, onPairTargetUpdate, freeMargin, hedgeBots, isMobile }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[]; positions: Position[]; tickerPrices?: Map<string, number>; accountId: string | null; asAccountId?: string; onStrategySelect?: (s: Strategy | null) => void; onCycleNumUpdate?: (id: string, cycleNum: number) => void; onStrategiesChange?: (strategies: Strategy[]) => void; onPairTargetUpdate?: (target: number | null) => void; freeMargin?: number | null; hedgeBots: Bot[]; isMobile?: boolean }) {
+function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices, accountId, asAccountId, onStrategySelect, onCycleNumUpdate, onStrategiesChange, onPairTargetUpdate, freeMargin, hedgeBots, isMobile, pairedClose }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[]; positions: Position[]; tickerPrices?: Map<string, number>; accountId: string | null; asAccountId?: string; onStrategySelect?: (s: Strategy | null) => void; onCycleNumUpdate?: (id: string, cycleNum: number) => void; onStrategiesChange?: (strategies: Strategy[]) => void; onPairTargetUpdate?: (target: number | null) => void; freeMargin?: number | null; hedgeBots: Bot[]; isMobile?: boolean; pairedClose: Map<string, WsMsg & { type: 'paired_close' }> }) {
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
   const [loading, setLoading] = useState(true)
@@ -1134,6 +1134,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
                   onChanged={load}
                   onSelect={handleSelect}
                   onPairTargetUpdate={onPairTargetUpdate}
+                  pairedClose={pairedClose}
                   isOpen={expandedId === `pair-${item.main.id}`}
                   onToggleOpen={() => setExpandedId(prev => prev === `pair-${item.main.id}` ? null : `pair-${item.main.id}`)}
                   isMatrixPair={item.isMatrixPair}
@@ -1450,7 +1451,7 @@ export function TerminalPage() {
     }, { replace: true })
   }, [tf, setSearchParams])
 
-  const { positions, orders, executions, log, status, accountName, loading, reconnect, removeOrder, freeMargin } = usePositionsWs(accountId)
+  const { positions, orders, executions, log, status, accountName, loading, reconnect, removeOrder, freeMargin, pairedClose } = usePositionsWs(accountId)
 
   const [historicalExecs, setHistoricalExecs] = useState<ChartExecution[]>([])
   useEffect(() => {
@@ -1655,7 +1656,7 @@ export function TerminalPage() {
           <div className="flex-1 overflow-auto">
             {mobileTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} tickerPrices={tickerPrices} strategies={strategies} />}
             {mobileTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} onRemoveOrder={removeOrder} strategyLevels={strategyLevels} />}
-            {mobileTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} asAccountId={undefined} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} isMobile />}
+            {mobileTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} asAccountId={undefined} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} isMobile pairedClose={pairedClose} />}
             {mobileTab === 'bots' && <TerminalBotsTab onSymbolChange={setSymbol} mine={myBots} loading={botsLoading} action={botAction} />}
             {mobileTab === 'trade' && (
               <div className="flex flex-col gap-2 p-2 overflow-y-auto">
@@ -1834,7 +1835,7 @@ export function TerminalPage() {
               </div>
             </>
           )}
-          {rightTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} asAccountId={undefined} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} />}
+          {rightTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} asAccountId={undefined} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} pairedClose={pairedClose} />}
           {rightTab === 'bots' && <TerminalBotsTab onSymbolChange={setSymbol} mine={myBots} loading={botsLoading} action={botAction} />}
         </div>
 
