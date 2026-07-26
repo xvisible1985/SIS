@@ -502,9 +502,24 @@ export function HedgePairCard({
   // ── Paired close target ───────────────────────────────────────────────────
   // Sourced from the backend's real-time WS push (paired_close message) — the
   // Go side computes the same combined-PnL formula previously duplicated here.
-  const pairedCloseWs = pairedClose.get(main.id) ?? pairedClose.get(hedge.id) ?? null
+  //
+  // A strategy row's UUID can be reused for a later, unrelated pair once its
+  // previous pair closes (createBotStrategy reactivates a stopped row rather
+  // than always minting a new id) — pairedClose is keyed by id and never
+  // pruned, so a lookup by id alone can return a stale message belonging to
+  // that id's PREVIOUS pair. Require both sides of the message to match this
+  // pair's actual main+hedge ids before trusting it.
+  const pairedCloseCandidate = pairedClose.get(main.id) ?? pairedClose.get(hedge.id) ?? null
+  const pairedCloseWs = pairedCloseCandidate
+    && pairedCloseCandidate.main_strategy_id === main.id
+    && pairedCloseCandidate.hedge_strategy_id === hedge.id
+    ? pairedCloseCandidate
+    : null
   const pairedCloseCurrent = pairedCloseWs?.current ?? null
-  const pairedCloseTarget = pairedCloseWs?.target_price ?? null
+  // target_price is 0 (not omitted) when the backend has no finite target
+  // (e.g. a perfectly-hedged equal-size pair) — treat 0 as "no target" like
+  // Chart.tsx's own price-line guard already does, not as a real price.
+  const pairedCloseTarget = pairedCloseWs && pairedCloseWs.target_price > 0 ? pairedCloseWs.target_price : null
 
   const currentPrice = tickerPrices?.get(symbol) ?? null
   const distanceToClose = pairedCloseTarget !== null && currentPrice !== null
