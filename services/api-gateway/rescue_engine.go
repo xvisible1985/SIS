@@ -2,6 +2,7 @@ package main
 
 import (
 	"strconv"
+	"time"
 
 	"sis/pkg/trader"
 )
@@ -70,4 +71,51 @@ func rescuePriceLevelReached(mainSide string, markPrice, level float64) bool {
 		return markPrice <= level
 	}
 	return markPrice >= level
+}
+
+// rescueTriggersMet оценивает все ВКЛЮЧЁННЫЕ триггеры (T1-T4) и возвращает true,
+// только если истинны все включённые (логическое «И»). Триггер, который не
+// настроен (nil-указатель / нулевое значение поля), пропускается — не участвует в
+// условии. Если ни один триггер не включён, результат истинен (пустое «И») — это
+// осознанное поведение: включение RescuePartialCloseEnabled без единого триггера
+// означает "срабатывать на каждом тике, ограничено только кулдауном".
+//
+// currentSignalFired сообщает, сработал ли на этом тике сигнал, настроенный в
+// cfg.RescueTriggerSignal, для символа бота — вызывающий код отвечает за оценку
+// самого сигнала (через существующий pkg/signal, как ActivationSignals), поскольку
+// это требует доступа к движку сигналов/рыночным данным, которых у этой чистой
+// функции нет.
+func rescueTriggersMet(cfg botCfgJSON, mainSide string, hedgeEntryAtStart, markPrice, accumulatedPnl float64, currentSignalFired bool) bool {
+	if cfg.RescueTriggerPriceMovePct != nil {
+		moved := rescuePriceMoveTowardMainPct(mainSide, hedgeEntryAtStart, markPrice)
+		if moved < *cfg.RescueTriggerPriceMovePct {
+			return false
+		}
+	}
+	if cfg.RescueTriggerPriceLevel != nil {
+		if !rescuePriceLevelReached(mainSide, markPrice, *cfg.RescueTriggerPriceLevel) {
+			return false
+		}
+	}
+	if cfg.RescueTriggerAccumulatedMinUsdt != nil {
+		if accumulatedPnl < *cfg.RescueTriggerAccumulatedMinUsdt {
+			return false
+		}
+	}
+	if cfg.RescueTriggerSignal != nil {
+		if !currentSignalFired {
+			return false
+		}
+	}
+	return true
+}
+
+// rescueCooldownElapsed сообщает, прошёл ли кулдаун между шагами частичного
+// снятия. lastPartialCloseAt=nil (шага ещё не было) или minIntervalSec<=0
+// (кулдаун отключён в конфиге) — всегда true.
+func rescueCooldownElapsed(lastPartialCloseAt *time.Time, minIntervalSec int, now time.Time) bool {
+	if lastPartialCloseAt == nil || minIntervalSec <= 0 {
+		return true
+	}
+	return now.Sub(*lastPartialCloseAt) >= time.Duration(minIntervalSec)*time.Second
 }

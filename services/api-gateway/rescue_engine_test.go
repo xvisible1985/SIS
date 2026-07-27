@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestRescueCalcPartialCloseQty_Long: мейн-лонг вошёл по 100, сейчас 90 (просадка
 // 10/юнит). accumulated_pnl=50 -> должны снять 50/10=5 монет (без учёта округления,
@@ -160,5 +163,120 @@ func TestRescuePriceLevelReached_Short(t *testing.T) {
 	}
 	if !rescuePriceLevelReached("Sell", 61200, 61200) {
 		t.Error("expected reached=true when markPrice exactly equals level for short main (inclusive <=)")
+	}
+}
+
+// TestRescueTriggersMet_AllDisabled: ни один триггер не включён (все указатели
+// nil) -> "И" по пустому множеству включённых триггеров считается истинным. Это
+// осознанное, задокументированное поведение: включение RescuePartialCloseEnabled
+// без единого настроенного триггера означает "снимать на каждом тике, ограничено
+// только кулдауном" — не баг, форма используется намеренно.
+func TestRescueTriggersMet_AllDisabled(t *testing.T) {
+	cfg := botCfgJSON{}
+	if !rescueTriggersMet(cfg, "Buy", 100, 105, 10, false) {
+		t.Error("expected true when no triggers are configured (vacuous AND)")
+	}
+}
+
+// TestRescueTriggersMet_PriceMoveTrigger: только T1 включён.
+func TestRescueTriggersMet_PriceMoveTrigger(t *testing.T) {
+	threshold := 3.0
+	cfg := botCfgJSON{RescueTriggerPriceMovePct: &threshold}
+	// markPrice=104 при hedgeEntryAtStart=100 -> движение +4% >= порога 3% -> true.
+	if !rescueTriggersMet(cfg, "Buy", 100, 104, 10, false) {
+		t.Error("expected true: price moved 4%% >= 3%% threshold")
+	}
+	// markPrice=101 -> движение +1% < порога 3% -> false.
+	if rescueTriggersMet(cfg, "Buy", 100, 101, 10, false) {
+		t.Error("expected false: price moved only 1%% < 3%% threshold")
+	}
+}
+
+// TestRescueTriggersMet_AccumulatedMinTrigger: только T3 включён.
+func TestRescueTriggersMet_AccumulatedMinTrigger(t *testing.T) {
+	minAccum := 20.0
+	cfg := botCfgJSON{RescueTriggerAccumulatedMinUsdt: &minAccum}
+	if !rescueTriggersMet(cfg, "Buy", 100, 105, 25, false) {
+		t.Error("expected true: accumulated 25 >= min 20")
+	}
+	if rescueTriggersMet(cfg, "Buy", 100, 105, 15, false) {
+		t.Error("expected false: accumulated 15 < min 20")
+	}
+}
+
+// TestRescueTriggersMet_SignalTrigger: только T4 включён — зависит целиком от
+// переданного currentSignalFired (оценка самого сигнала — забота вызывающего кода,
+// см. Task 8).
+func TestRescueTriggersMet_SignalTrigger(t *testing.T) {
+	cfg := botCfgJSON{}
+	cfg.RescueTriggerSignal = &struct {
+		Name   string                 `json:"name"`
+		Params map[string]interface{} `json:"params"`
+	}{Name: "st-flip"}
+	if !rescueTriggersMet(cfg, "Buy", 100, 105, 10, true) {
+		t.Error("expected true when signal fired")
+	}
+	if rescueTriggersMet(cfg, "Buy", 100, 105, 10, false) {
+		t.Error("expected false when signal did not fire")
+	}
+}
+
+// TestRescueTriggersMet_MultipleTriggers_AllMustPass: T1+T3 оба включены — «И»:
+// один провален -> итог false, даже если другой пройден.
+func TestRescueTriggersMet_MultipleTriggers_AllMustPass(t *testing.T) {
+	movePct := 3.0
+	minAccum := 20.0
+	cfg := botCfgJSON{
+		RescueTriggerPriceMovePct:       &movePct,
+		RescueTriggerAccumulatedMinUsdt: &minAccum,
+	}
+	// Оба выполнены -> true.
+	if !rescueTriggersMet(cfg, "Buy", 100, 104, 25, false) {
+		t.Error("expected true: both T1 and T3 satisfied")
+	}
+	// T1 выполнен, T3 — нет (accumulated=15<20) -> false.
+	if rescueTriggersMet(cfg, "Buy", 100, 104, 15, false) {
+		t.Error("expected false: T3 not satisfied even though T1 is")
+	}
+	// T3 выполнен, T1 — нет (движение всего 1%%<3%%) -> false.
+	if rescueTriggersMet(cfg, "Buy", 100, 101, 25, false) {
+		t.Error("expected false: T1 not satisfied even though T3 is")
+	}
+}
+
+// TestRescueCooldownElapsed_NoPreviousStep: lastPartialCloseAt=nil (шага ещё не
+// было) -> кулдаун всегда пройден.
+func TestRescueCooldownElapsed_NoPreviousStep(t *testing.T) {
+	if !rescueCooldownElapsed(nil, 300, time.Now()) {
+		t.Error("expected true when there is no previous step yet")
+	}
+}
+
+// TestRescueCooldownElapsed_ZeroInterval: MinIntervalSec<=0 -> кулдаун отключён,
+// всегда пройден вне зависимости от lastPartialCloseAt.
+func TestRescueCooldownElapsed_ZeroInterval(t *testing.T) {
+	now := time.Now()
+	if !rescueCooldownElapsed(&now, 0, now) {
+		t.Error("expected true when MinIntervalSec<=0 (cooldown disabled)")
+	}
+}
+
+// TestRescueCooldownElapsed_WithinCooldown: последний шаг был 100с назад,
+// MinIntervalSec=300 -> кулдаун ещё не прошёл.
+func TestRescueCooldownElapsed_WithinCooldown(t *testing.T) {
+	now := time.Now()
+	last := now.Add(-100 * time.Second)
+	if rescueCooldownElapsed(&last, 300, now) {
+		t.Error("expected false: only 100s elapsed of 300s cooldown")
+	}
+}
+
+// TestRescueCooldownElapsed_AfterCooldown: последний шаг был 400с назад,
+// MinIntervalSec=300 -> кулдаун прошёл.
+func TestRescueCooldownElapsed_AfterCooldown(t *testing.T) {
+	now := time.Now()
+	last := now.Add(-400 * time.Second)
+	if !rescueCooldownElapsed(&last, 300, now) {
+		t.Error("expected true: 400s elapsed >= 300s cooldown")
 	}
 }
