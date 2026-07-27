@@ -2,11 +2,23 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
+	"sis/pkg/signal"
+	"sis/pkg/strategy"
 	"sis/pkg/trader"
 )
+
+// rescueSignalTrigger — named type for cfg.RescueTriggerSignal (T4). Named (rather
+// than an inline anonymous struct) so it can be used as a standalone parameter type
+// in rescueEvaluateTriggerSignal without relying on Go's anonymous-struct structural
+// assignability, which is easy to get subtly wrong across files.
+type rescueSignalTrigger struct {
+	Name   string                 `json:"name"`
+	Params map[string]interface{} `json:"params"`
+}
 
 // rescueCalcPartialCloseQty вычисляет объём мейн-позиции для снятия на этом шаге,
 // профинансированный реализованным PnL хеджа (accumulatedPnl): реализованный убыток
@@ -155,4 +167,144 @@ func (s *Server) recordRescuePartialClose(ctx context.Context, stratID string, c
 		 WHERE (main_strategy_id = $3 OR hedge_strategy_id = $3) AND ended_at IS NULL`,
 		coinDelta, usdtDelta, stratID)
 	return err
+}
+
+// rescueSessionRow — одна активная сессия хеджа этого бота, читаемая для оценки
+// частичного снятия. Та же join-форма, что buildPairedCloseWatches (см.
+// hedge_engine.go), плюс поля, нужные только RescueBot (hedge_entry_at_start,
+// last_partial_close_at).
+type rescueSessionRow struct {
+	hedgeStrategyID    string
+	accumulatedPnl     float64
+	hedgeEntryAtStart  *float64
+	lastPartialCloseAt *time.Time
+	symbol             string
+	mainDir            string
+}
+
+// checkRescuePartialClose оценивает и, при срабатывании всех включённых триггеров,
+// исполняет один шаг частичного снятия мейна для каждой активной hedge-сессии этого
+// бота. Вызывается из конца processHedgeBot (hedge_engine.go), гейтится
+// cfg.RescuePartialCloseEnabled на вызывающей стороне. Работает независимо от
+// paired-close/обычной деактивации — они продолжают проверяться в processHedgeBot
+// на каждом тике вне зависимости от состояния этой функции (см. дизайн, раздел
+// «Архитектура»).
+func (s *Server) checkRescuePartialClose(ctx context.Context, botID string, cfg botCfgJSON, creds trader.Credentials, posMap map[string]map[string]hedgePosInfo) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT hs.hedge_strategy_id, hs.accumulated_pnl, hs.hedge_entry_at_start,
+		       hs.last_partial_close_at, ms.symbol, ms.direction
+		FROM hedge_sessions hs
+		JOIN strategies ms ON ms.id = hs.main_strategy_id
+		JOIN strategies hst ON hst.id = hs.hedge_strategy_id
+		WHERE hs.bot_id = $1 AND hs.ended_at IS NULL
+		  AND ms.status IN ('active','finishing') AND hst.status IN ('active','finishing')`,
+		botID)
+	if err != nil {
+		s.logBotEvent(ctx, botID, fmt.Sprintf("RescueBot: ошибка запроса сессий: %v", err), "error", "rescue")
+		return
+	}
+	var sessions []rescueSessionRow
+	for rows.Next() {
+		var rs rescueSessionRow
+		if rows.Scan(&rs.hedgeStrategyID, &rs.accumulatedPnl, &rs.hedgeEntryAtStart,
+			&rs.lastPartialCloseAt, &rs.symbol, &rs.mainDir) == nil {
+			sessions = append(sessions, rs)
+		}
+	}
+	rows.Close()
+
+	for _, rs := range sessions {
+		if !rescueCooldownElapsed(rs.lastPartialCloseAt, cfg.RescueMinIntervalSec, time.Now()) {
+			continue
+		}
+
+		bySymbol, ok := posMap[rs.symbol]
+		if !ok {
+			continue
+		}
+		mainSide := hedgeDirToSide(rs.mainDir)
+		mainPos, hasMain := bySymbol[mainSide]
+		if !hasMain || mainPos.Size <= 0 {
+			continue
+		}
+
+		var hedgeEntryAtStart float64
+		if rs.hedgeEntryAtStart != nil {
+			hedgeEntryAtStart = *rs.hedgeEntryAtStart
+		}
+
+		signalFired := false
+		if cfg.RescueTriggerSignal != nil {
+			signalFired = s.rescueEvaluateTriggerSignal(rs.symbol, mainSide, *cfg.RescueTriggerSignal)
+		}
+
+		if !rescueTriggersMet(cfg, mainSide, hedgeEntryAtStart, mainPos.MarkPrice, rs.accumulatedPnl, signalFired) {
+			continue
+		}
+
+		instr, err := trader.GetPublicInstrumentInfo(ctx, cfg.Category, rs.symbol)
+		if err != nil {
+			s.logBotEvent(ctx, botID,
+				fmt.Sprintf("RescueBot: %s — ошибка получения параметров инструмента: %v", rs.symbol, err),
+				"error", "rescue")
+			continue
+		}
+
+		qty, _ := rescueCalcPartialCloseQty(mainSide, mainPos.EntryPrice, mainPos.MarkPrice, rs.accumulatedPnl, mainPos.Size, instr.QtyStep, instr.MinQty)
+		if qty <= 0 {
+			continue
+		}
+
+		posIdx := 1
+		if mainSide == "Sell" {
+			posIdx = 2
+		}
+		req := rescuePartialCloseRequest(mainSide, rs.symbol, cfg.Category, posIdx, qty, instr.QtyStep, instr.MinQty)
+
+		if _, err := trader.PlaceOrder(ctx, creds, req); err != nil {
+			s.logBotEvent(ctx, botID,
+				fmt.Sprintf("RescueBot: %s — ошибка частичного закрытия мейна (%s qty=%s): %v",
+					rs.symbol, req.Side, req.Qty, err),
+				"error", "rescue")
+			continue
+		}
+
+		realizedLoss := qty * (mainPos.EntryPrice - mainPos.MarkPrice)
+		if mainSide == "Sell" {
+			realizedLoss = qty * (mainPos.MarkPrice - mainPos.EntryPrice)
+		}
+		strategy.AccumulateHedgeSessionPnl(ctx, s.pool, rs.hedgeStrategyID, -realizedLoss)
+
+		if err := s.recordRescuePartialClose(ctx, rs.hedgeStrategyID, qty, qty*mainPos.MarkPrice); err != nil {
+			s.logBotEvent(ctx, botID,
+				fmt.Sprintf("RescueBot: %s — ордер исполнен, но не удалось записать состояние: %v", rs.symbol, err),
+				"error", "rescue")
+		}
+
+		s.logBotEvent(ctx, botID,
+			fmt.Sprintf("RescueBot: %s — частично снято %s (%.8f) с мейна, накоплено хеджа уменьшено на %.4g",
+				rs.symbol, req.Qty, qty, realizedLoss),
+			"info", "rescue")
+	}
+}
+
+// rescueEvaluateTriggerSignal оценивает сигнал T4 тем же способом, что
+// checkHedgeActivation оценивает ActivationSignals (см. hedge_engine.go): сигнал
+// должен подтверждать направление, благоприятное для мейна — если мейн-лонг, ждём
+// Buy; если мейн-шорт, ждём Sell.
+func (s *Server) rescueEvaluateTriggerSignal(symbol, mainSide string, trig rescueSignalTrigger) bool {
+	sc := signal.Config{Name: trig.Name, Params: trig.Params}
+	if _, err := signal.Build(sc); err != nil {
+		return false
+	}
+	interval := "15"
+	if v, ok := trig.Params["tf"].(string); ok && v != "" {
+		interval = v
+	}
+	state := s.signalEngine.ComputeStateForce(symbol, interval, []signal.Config{sc})
+	want := signal.Buy
+	if mainSide == "Sell" {
+		want = signal.Sell
+	}
+	return state == want
 }

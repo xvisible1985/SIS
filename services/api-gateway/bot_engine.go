@@ -942,11 +942,8 @@ type botCfgJSON struct {
 	RescuePartialCloseEnabled       bool     `json:"rescue_partial_close_enabled"`
 	RescueTriggerPriceMovePct       *float64 `json:"rescue_trigger_price_move_pct"`  // T1: % от hedge_entry_at_start в сторону мейна
 	RescueTriggerPriceLevel         *float64 `json:"rescue_trigger_price_level"`     // T2: абсолютный уровень цены символа
-	RescueTriggerAccumulatedMinUsdt *float64 `json:"rescue_trigger_accumulated_min"` // T3: минимальная сумма accumulated_pnl (USDT)
-	RescueTriggerSignal             *struct {
-		Name   string                 `json:"name"`
-		Params map[string]interface{} `json:"params"`
-	} `json:"rescue_trigger_signal"` // T4: та же форма, что ActivationSignals — по имени, не по ID
+	RescueTriggerAccumulatedMinUsdt *float64             `json:"rescue_trigger_accumulated_min"` // T3: минимальная сумма accumulated_pnl (USDT)
+	RescueTriggerSignal             *rescueSignalTrigger `json:"rescue_trigger_signal"`          // T4: та же форма, что ActivationSignals — по имени, не по ID
 	RescueMinIntervalSec int `json:"rescue_min_interval_sec"` // кулдаун между шагами частичного закрытия
 
 	// SizeAsMain: when true, each slot's USDT size is derived from the opposite

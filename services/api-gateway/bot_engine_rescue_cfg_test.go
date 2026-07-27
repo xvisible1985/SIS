@@ -21,10 +21,7 @@ func TestBotCfgJSON_RescueFieldsRoundTrip(t *testing.T) {
 		RescueTriggerAccumulatedMinUsdt: &minAccum,
 		RescueMinIntervalSec:            300,
 	}
-	original.RescueTriggerSignal = &struct {
-		Name   string                 `json:"name"`
-		Params map[string]interface{} `json:"params"`
-	}{Name: "st-flip", Params: map[string]interface{}{"tf": "15"}}
+	original.RescueTriggerSignal = &rescueSignalTrigger{Name: "st-flip", Params: map[string]interface{}{"tf": "15"}}
 
 	raw, err := json.Marshal(original)
 	if err != nil {

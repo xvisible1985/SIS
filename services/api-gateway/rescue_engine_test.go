@@ -223,10 +223,7 @@ func TestRescueTriggersMet_AccumulatedMinTrigger(t *testing.T) {
 // см. Task 8).
 func TestRescueTriggersMet_SignalTrigger(t *testing.T) {
 	cfg := botCfgJSON{}
-	cfg.RescueTriggerSignal = &struct {
-		Name   string                 `json:"name"`
-		Params map[string]interface{} `json:"params"`
-	}{Name: "st-flip"}
+	cfg.RescueTriggerSignal = &rescueSignalTrigger{Name: "st-flip"}
 	if !rescueTriggersMet(cfg, "Buy", 100, 105, 10, true) {
 		t.Error("expected true when signal fired")
 	}
