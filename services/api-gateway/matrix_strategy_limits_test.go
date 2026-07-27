@@ -55,3 +55,69 @@ func TestEnsureMatrixStrategies_RespectsStrategyLimits(t *testing.T) {
 		t.Errorf("short strategies = %d, want 2 (max_short_strategies=2)", short)
 	}
 }
+
+// TestMatrixRepairCandidates_FindsOneSidedSymbols: a symbol with exactly one direction
+// active/finishing and the other direction missing entirely (no row at all) or explicitly
+// 'stopped' is a repair candidate, paired with the missing direction. A symbol whose other
+// direction is 'paused' (user-initiated stop) must NOT be a candidate — directionHasLiveStrategy
+// treats 'paused' as live, and repair must respect that same "don't touch it" boundary.
+// A symbol with BOTH directions active (a complete pair) or NEITHER direction present is
+// also not a candidate (nothing to repair either way).
+func TestMatrixRepairCandidates_FindsOneSidedSymbols(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	userID := createWHUser(t, s, "repaircand")
+	accID := createTestAccount(t, s, userID)
+
+	var botID string
+	if err := s.pool.QueryRow(ctx,
+		`INSERT INTO bots (owner_id, name, account_id, status, strategy_config)
+		 VALUES ($1,'repairbot',$2,'active','{"bot_kind":"matrix"}'::jsonb) RETURNING id`,
+		userID, accID).Scan(&botID); err != nil {
+		t.Fatalf("create bot: %v", err)
+	}
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM bots WHERE id=$1", botID) })
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM strategies WHERE bot_id=$1", botID) })
+
+	insertStrat := func(symbol, dir, status string) {
+		if _, err := s.pool.Exec(ctx,
+			`INSERT INTO strategies (owner_id, account_id, bot_id, symbol, direction, strategy_type, status)
+			 VALUES ($1,$2,$3,$4,$5,'matrix',$6)`,
+			userID, accID, botID, symbol, dir, status); err != nil {
+			t.Fatalf("insert strategy %s/%s/%s: %v", symbol, dir, status, err)
+		}
+	}
+
+	// STOPUSDT: long active, short stopped -> repair candidate, missing "short".
+	insertStrat("STOPUSDT", "long", "active")
+	insertStrat("STOPUSDT", "short", "stopped")
+
+	// NOROWUSDT: short active, long has no row at all -> repair candidate, missing "long".
+	insertStrat("NOROWUSDT", "short", "active")
+
+	// PAUSEDUSDT: long active, short paused -> NOT a candidate (must not touch).
+	insertStrat("PAUSEDUSDT", "long", "active")
+	insertStrat("PAUSEDUSDT", "short", "paused")
+
+	// FULLUSDT: both active -> NOT a candidate (already a complete pair).
+	insertStrat("FULLUSDT", "long", "active")
+	insertStrat("FULLUSDT", "short", "active")
+
+	got := s.matrixRepairCandidates(ctx, botID)
+
+	want := map[string]string{"STOPUSDT": "short", "NOROWUSDT": "long"}
+	if len(got) != len(want) {
+		t.Fatalf("matrixRepairCandidates() = %v, want %v", got, want)
+	}
+	for sym, wantDir := range want {
+		if got[sym] != wantDir {
+			t.Errorf("matrixRepairCandidates()[%s] = %q, want %q", sym, got[sym], wantDir)
+		}
+	}
+	if _, ok := got["PAUSEDUSDT"]; ok {
+		t.Errorf("matrixRepairCandidates() included PAUSEDUSDT — its other leg is paused, must not be touched")
+	}
+	if _, ok := got["FULLUSDT"]; ok {
+		t.Errorf("matrixRepairCandidates() included FULLUSDT — both legs already active, nothing to repair")
+	}
+}

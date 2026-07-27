@@ -386,6 +386,52 @@ func (s *Server) directionHasLiveStrategy(ctx context.Context, accountID, symbol
 	return exists
 }
 
+// matrixRepairCandidates returns symbols (for this bot) that currently have exactly one
+// direction ('long' or 'short') active/finishing, mapped to the OTHER, missing direction
+// that should be reopened to restore a balanced pair. A symbol is a candidate whether its
+// missing direction has no strategy row at all, or has one that's 'stopped' (TP/SL closed
+// naturally, eligible for auto-restart) — but never if the missing direction is 'paused'
+// (user-initiated stop, must stay closed). The query also fetches 'paused' rows (not just
+// 'active'/'finishing') specifically so this exclusion can be enforced here, in the
+// candidate query itself, rather than relying on every future caller to separately guard
+// against ever touching a paused leg.
+func (s *Server) matrixRepairCandidates(ctx context.Context, botID string) map[string]string {
+	rows, err := s.pool.Query(ctx,
+		`SELECT symbol, direction, status FROM strategies WHERE bot_id=$1 AND status IN ('active','finishing','paused')`,
+		botID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	type dirState struct{ live, paused bool }
+	haveDir := make(map[string]map[string]dirState)
+	for rows.Next() {
+		var sym, dir, status string
+		if rows.Scan(&sym, &dir, &status) != nil {
+			continue
+		}
+		if haveDir[sym] == nil {
+			haveDir[sym] = make(map[string]dirState)
+		}
+		haveDir[sym][dir] = dirState{
+			live:   status == "active" || status == "finishing",
+			paused: status == "paused",
+		}
+	}
+
+	result := make(map[string]string)
+	for sym, dirs := range haveDir {
+		long, short := dirs["long"], dirs["short"]
+		if long.live && !short.live && !short.paused {
+			result[sym] = "short"
+		} else if short.live && !long.live && !long.paused {
+			result[sym] = "long"
+		}
+	}
+	return result
+}
+
 // ensureMatrixStrategies creates long and short strategies for each whitelisted symbol
 // if they are not already active. Called every tick so the pair restarts automatically
 // after a paired-close completes.
