@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -596,6 +597,11 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 		}
 	}
 
+	// Computed concurrently (bounded) up front — see matrixBatchCheckActivation for why
+	// a sequential per-symbol call in this loop is dangerous now that symbols can number
+	// in the hundreds.
+	activationResults := s.matrixBatchCheckActivation(ctx, symbols, cfg)
+
 	for _, symbol := range symbols {
 		if maxTotal > 0 && activeTotal >= maxTotal {
 			break // total limit reached — no point scanning remaining symbols this tick
@@ -609,7 +615,7 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 			continue
 		}
 		// Checked once per symbol — direction-agnostic, matrix opens both legs together.
-		activationOK := s.matrixActivationSignalOK(symbol, cfg)
+		activationOK := activationResults[symbol]
 		if len(cfg.ActivationSignals) > 0 {
 			checkedActivation++
 			if activationOK {
@@ -728,13 +734,71 @@ func (s *Server) matrixActivationSignalOK(symbol string, cfg botCfgJSON) bool {
 		}
 		sigCfgs = append(sigCfgs, sc)
 	}
-	interval := "15"
+	state := s.signalEngine.ComputeStateForce(symbol, matrixActivationInterval(cfg), sigCfgs)
+	return state != signal.Neutral
+}
+
+// matrixActivationInterval extracts the candle interval a matrix bot's activation
+// signals should be evaluated on — the first "tf" param found among ActivationSignals,
+// falling back to "15". Shared by matrixActivationSignalOK (per-symbol check) and
+// matrixBatchCheckActivation (which also uses it to warm the interval) so they can never
+// disagree on which interval is actually being evaluated.
+func matrixActivationInterval(cfg botCfgJSON) string {
 	for _, a := range cfg.ActivationSignals {
 		if v, ok := a.Params["tf"].(string); ok && v != "" {
-			interval = v
-			break
+			return v
 		}
 	}
-	state := s.signalEngine.ComputeStateForce(symbol, interval, sigCfgs)
-	return state != signal.Neutral
+	return "15"
+}
+
+// matrixBatchCheckActivation computes matrixActivationSignalOK for many symbols
+// concurrently (bounded, mirroring ScanSignals' semaphore pattern in bots_handler.go),
+// after first warming the interval via the SAME GlobalWarmer signal-bot activation
+// already uses (bot_engine.go's "STEP 3: EnsureIntervals"). Two separate problems, one
+// fix:
+//   - Cold ticks: matrix/hedge bots were explicitly skipped from the warming path
+//     (bot_engine.go's botEngineTick), so every symbol's first check ever did a REST
+//     fetch. With ~275 symbols checked sequentially, a single tick could take many
+//     minutes and stall the entire bot engine (hedge bots included, since they share the
+//     tick loop) — found live (2026-07-17): zero bot_events logged anywhere for 11+
+//     minutes after a restart. The bounded concurrency below addresses this even without
+//     warming, but warming is what makes the fetch a one-time cost instead of per-tick.
+//   - Stale data forever after: SnapshotOrFetch's one-shot REST fallback caches whatever
+//     it fetched and, having ≥2 candles, never re-fetches — there is no live WS feed
+//     refreshing it. Without EnsureIntervals establishing a real subscription, a matrix
+//     bot's activation signal would keep evaluating against the same frozen candle
+//     snapshot from the first cold fetch indefinitely, never reflecting real price
+//     movement again.
+func (s *Server) matrixBatchCheckActivation(ctx context.Context, symbols []string, cfg botCfgJSON) map[string]bool {
+	result := make(map[string]bool, len(symbols))
+	if len(cfg.ActivationSignals) == 0 {
+		for _, sym := range symbols {
+			result[sym] = true
+		}
+		return result
+	}
+	s.globalWarmer.EnsureIntervals([]string{matrixActivationInterval(cfg)})
+	sem := make(chan struct{}, 20)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, sym := range symbols {
+		sym := sym
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				return
+			case sem <- struct{}{}:
+			}
+			defer func() { <-sem }()
+			ok := s.matrixActivationSignalOK(sym, cfg)
+			mu.Lock()
+			result[sym] = ok
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	return result
 }
