@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Добавить бэкенд нового типа бота `RescueBot` (`bot_kind: "rescue"`): создаёт хедж как обычный hedge-бот, и дополнительно на каждом тике частично снимает объём мейн-позиции, профинансированный уже реализованным PnL хеджа (`accumulated_pnl`), когда все включённые триггеры (движение цены, абсолютный уровень цены, минимальная накопленная сумма, прикреплённый сигнал) истинны одновременно.
+**Goal:** Доработать существующий hedge-бота (`bot_kind: "hedge"` — НЕ новый тип бота, редизайн от 2026-07-27): опционально (тумблер `RescuePartialCloseEnabled`, по умолчанию выключен) на каждом тике частично снимать объём мейн-позиции, профинансированный уже реализованным PnL хеджа (`accumulated_pnl`), когда все включённые триггеры (движение цены, абсолютный уровень цены, минимальная накопленная сумма, прикреплённый сигнал) истинны одновременно. Хедж-боты без включённого тумблера ведут себя ровно как раньше.
 
-**Архитектура:** Новый `processRescueBot` в `hedge_engine.go`'s тик-диспетчере переиспользует уже существующие, проверенно kind-агностичные хелперы (`checkHedgeDeactivation`, `checkHedgeActivation`, `buildPairedCloseWatches`) для активации/деактивации/paired-close без изменений в них, и добавляет новую, отдельно вынесенную в `rescue_engine.go` логику частичного снятия мейна: чистые функции расчёта объёма/триггеров (юнит-тестируемые без БД) + интеграционная обвязка (запрос к БД, ордер на биржу).
+**Архитектура:** Новая функция `checkRescuePartialClose`, вызываемая из **конца уже существующей** `processHedgeBot` (`hedge_engine.go`) — без нового `bot_kind`, без изменений в SQL-фильтре/switch-диспетчере `hedgeEngineTick`, без новой функции-обёртки уровня бота. Активация/деактивация/paired-close (`checkHedgeDeactivation`, `checkHedgeActivation`, `buildPairedCloseWatches`) не меняются вообще. Логика частичного снятия мейна вынесена в отдельный файл `rescue_engine.go`: чистые функции расчёта объёма/триггеров (юнит-тестируемые без БД) + интеграционная обвязка (запрос к БД, ордер на биржу), вызываемая из `processHedgeBot`.
 
 **Tech Stack:** Go, PostgreSQL (миграции `migrations/NNN_*.sql`), pgx, существующий `pkg/trader` (ордера, инструменты), `pkg/signal` (сигналы), stdlib `testing` (без testify — как везде в этом пакете).
 
@@ -21,8 +21,8 @@ sis/
   services/api-gateway/
     bot_engine.go                                 # + RescueBot-поля в botCfgJSON
     bot_engine_rescue_cfg_test.go                  # новый: JSON round-trip новых полей
-    hedge_engine.go                                # + 'rescue' в SQL-фильтр и switch-диспетчер
-    rescue_engine.go                               # новый: processRescueBot + вся rescue-логика
+    hedge_engine.go                                # + 1 вызов checkRescuePartialClose в конце processHedgeBot
+    rescue_engine.go                               # новый: checkRescuePartialClose + вся rescue-логика
     rescue_engine_test.go                          # новый: юнит-тесты чистых функций
 ```
 
@@ -92,7 +92,7 @@ func TestBotCfgJSON_RescueFieldsRoundTrip(t *testing.T) {
 	minAccum := 25.0
 
 	original := botCfgJSON{
-		BotKind:                    "rescue",
+		BotKind:                    "hedge", // не "rescue" — это доработка hedge-бота, не новый bot_kind
 		RescuePartialCloseEnabled:  true,
 		RescueTriggerPriceMovePct:  &movePct,
 		RescueTriggerPriceLevel:    &level,
@@ -114,7 +114,7 @@ func TestBotCfgJSON_RescueFieldsRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	if decoded.BotKind != "rescue" || !decoded.RescuePartialCloseEnabled {
+	if decoded.BotKind != "hedge" || !decoded.RescuePartialCloseEnabled {
 		t.Errorf("BotKind/Enabled mismatch: %+v", decoded)
 	}
 	if decoded.RescueTriggerPriceMovePct == nil || *decoded.RescueTriggerPriceMovePct != movePct {
@@ -135,7 +135,7 @@ func TestBotCfgJSON_RescueFieldsRoundTrip(t *testing.T) {
 
 	// Триггер без указателя (nil) должен остаться nil после round-trip — это
 	// "выключенное" состояние тумблера, критично для rescueTriggersMet (Task 5).
-	original2 := botCfgJSON{BotKind: "rescue"}
+	original2 := botCfgJSON{BotKind: "hedge"}
 	raw2, _ := json.Marshal(original2)
 	var decoded2 botCfgJSON
 	if err := json.Unmarshal(raw2, &decoded2); err != nil {
@@ -157,7 +157,8 @@ func TestBotCfgJSON_RescueFieldsRoundTrip(t *testing.T) {
 В `services/api-gateway/bot_engine.go`, сразу после существующего поля `HedgeBotBlacklist []string \`json:"hedge_bot_blacklist"\`` (строка 938 на момент написания плана — искать по этому полю, не по номеру строки, если файл успел измениться) добавить:
 
 ```go
-	// RescueBot: частичное снятие мейна за счёт накопленного PnL хеджа (bot_kind="rescue").
+	// Частичное снятие мейна за счёт накопленного PnL хеджа — доработка hedge-бота
+	// (bot_kind остаётся "hedge"), не отдельный тип бота.
 	RescuePartialCloseEnabled       bool     `json:"rescue_partial_close_enabled"`
 	RescueTriggerPriceMovePct       *float64 `json:"rescue_trigger_price_move_pct"`  // T1: % от hedge_entry_at_start в сторону мейна
 	RescueTriggerPriceLevel         *float64 `json:"rescue_trigger_price_level"`     // T2: абсолютный уровень цены символа
@@ -784,47 +785,39 @@ git commit -m "feat(rescue): add DB helper to record partial-close state"
 
 ---
 
-## Task 8: Интеграция — `processRescueBot`, `checkRescuePartialClose`, диспетчер
+## Task 8: Интеграция — вызов `checkRescuePartialClose` из существующего `processHedgeBot`
 
 **Files:**
 - Modify: `services/api-gateway/hedge_engine.go`
 - Modify: `services/api-gateway/rescue_engine.go`
 
+**Редизайн (2026-07-27):** это доработка существующего hedge-бота, не новый тип бота — см. `docs/superpowers/specs/2026-07-26-rescuebot-design.md`, разделы «Тип бота (редизайн)» и «Архитектура (бэкенд)». Диспетчер `hedgeEngineTick` (SQL-фильтр `bot_kind IN (...)`, switch по `cfg.BotKind`) **не меняется вообще** — правится только тело уже существующей `processHedgeBot`.
+
 Это интеграционная обвязка (БД + биржа + существующий движок сигналов) — без нового юнит-теста в этой задаче по тем же причинам, что в Task 7; проверяется сборкой, `go vet` и полным прогоном регрессии в Task 9, как того требует CLAUDE.md для доработок, затрагивающих основные механики (`hedge_engine.go`).
 
-- [ ] **Step 1: Добавить `'rescue'` в SQL-фильтр и диспетчер `hedge_engine.go`**
+- [ ] **Step 1: Добавить один вызов в конец тела существующей `processHedgeBot`**
 
-Найти (текущая строка ~82):
+Найти конец функции `processHedgeBot` в `hedge_engine.go` (последняя строка тела — вызов `s.buildPairedCloseWatches(ctx, botID, accountID, "hedge", cfg, posMap, pairedWatches)`, см. Task 8's контекст research: строка 160 на момент написания плана):
 ```go
-		  AND strategy_config->>'bot_kind' IN ('hedge', 'matrix')`)
+	s.checkHedgeDeactivation(ctx, botID, accountID, cfg, posMap)
+	s.checkHedgeActivation(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, creds, posMap, watches)
+	s.buildPairedCloseWatches(ctx, botID, accountID, "hedge", cfg, posMap, pairedWatches)
+}
 ```
-Заменить на:
+Заменить на (добавляется только 3 строки перед закрывающей скобкой функции, ничего до этого места не меняется):
 ```go
-		  AND strategy_config->>'bot_kind' IN ('hedge', 'matrix', 'rescue')`)
-```
+	s.checkHedgeDeactivation(ctx, botID, accountID, cfg, posMap)
+	s.checkHedgeActivation(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, creds, posMap, watches)
+	s.buildPairedCloseWatches(ctx, botID, accountID, "hedge", cfg, posMap, pairedWatches)
 
-Найти switch-диспетчер (текущие строки ~118-123):
-```go
-			switch cfg.BotKind {
-			case "hedge":
-				s.processHedgeBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg, newWatches, newPairedWatches)
-			case "matrix":
-				s.processMatrixBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg, newPairedWatches)
-			}
+	if cfg.RescuePartialCloseEnabled {
+		s.checkRescuePartialClose(ctx, botID, cfg, creds, posMap)
+	}
+}
 ```
-Заменить на:
-```go
-			switch cfg.BotKind {
-			case "hedge":
-				s.processHedgeBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg, newWatches, newPairedWatches)
-			case "matrix":
-				s.processMatrixBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg, newPairedWatches)
-			case "rescue":
-				s.processRescueBot(ctx, b.id, b.ownerID, b.accountID, b.whitelist, b.blacklist, cfg, newWatches, newPairedWatches)
-			}
-```
+`creds` и `posMap` — уже существующие локальные переменные этой функции (объявлены выше по тексту `processHedgeBot`, видны в этой точке без изменений сигнатуры функции).
 
-- [ ] **Step 2: Добавить `processRescueBot` и `checkRescuePartialClose` в `rescue_engine.go`**
+- [ ] **Step 2: Добавить `checkRescuePartialClose` в `rescue_engine.go`**
 
 Добавить необходимые импорты в начало файла (`context`, `fmt`, `time`, `sis/pkg/signal`, `sis/pkg/trader` — часть уже добавлена в Task 3/6, добавить недостающие):
 ```go
@@ -840,43 +833,6 @@ import (
 ```
 
 ```go
-// processRescueBot обрабатывает один RescueBot-бот за тик: те же проверки
-// активации/деактивации/paired-close, что hedge-бот (checkHedgeDeactivation,
-// checkHedgeActivation, buildPairedCloseWatches — проверенно kind-агностичны, не
-// содержат ветвлений по cfg.BotKind, см. docs/superpowers/specs/2026-07-26-
-// rescuebot-design.md), плюс дополнительный шаг частичного снятия мейна.
-func (s *Server) processRescueBot(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, watches map[string]hedgeWatchEntry, pairedWatches map[string]pairedCloseWatchEntry) {
-	creds, err := s.loadBotAccountCreds(ctx, accountID)
-	if err != nil {
-		s.logBotEvent(ctx, botID,
-			fmt.Sprintf("RescueBot: ошибка ключей аккаунта: %v", err), "error", "system")
-		return
-	}
-
-	rawPositions, err := trader.FetchPositions(ctx, creds)
-	if err != nil {
-		s.logBotEvent(ctx, botID,
-			fmt.Sprintf("RescueBot: ошибка получения позиций: %v", err), "error", "system")
-		return
-	}
-
-	posMap, badPositions := buildHedgePosMap(rawPositions)
-	for _, p := range badPositions {
-		s.logBotEvent(ctx, botID,
-			fmt.Sprintf("RescueBot: позиция %s %s (size=%s) отфильтрована — невалидный avgPrice=%q или markPrice=%q",
-				p.Symbol, p.Side, p.Size, p.EntryPrice, p.MarkPrice),
-			"warn", "system")
-	}
-
-	s.checkHedgeDeactivation(ctx, botID, accountID, cfg, posMap)
-	s.checkHedgeActivation(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, creds, posMap, watches)
-	s.buildPairedCloseWatches(ctx, botID, accountID, "rescue", cfg, posMap, pairedWatches)
-
-	if cfg.RescuePartialCloseEnabled {
-		s.checkRescuePartialClose(ctx, botID, cfg, creds, posMap)
-	}
-}
-
 // rescueSessionRow — одна активная сессия хеджа этого бота, читаемая для оценки
 // частичного снятия. Та же join-форма, что buildPairedCloseWatches, плюс поля,
 // нужные только RescueBot (hedge_entry_at_start, last_partial_close_at,
@@ -893,7 +849,7 @@ type rescueSessionRow struct {
 // checkRescuePartialClose оценивает и, при срабатывании всех включённых триггеров,
 // исполняет один шаг частичного снятия мейна для каждой активной rescue-сессии
 // этого бота. Работает независимо от paired-close/обычной деактивации — они
-// продолжают проверяться в processRescueBot на каждом тике вне зависимости от
+// продолжают проверяться в processHedgeBot на каждом тике вне зависимости от
 // состояния этой функции (см. дизайн, раздел «Архитектура»).
 func (s *Server) checkRescuePartialClose(ctx context.Context, botID string, cfg botCfgJSON, creds trader.Credentials, posMap map[string]map[string]hedgePosInfo) {
 	rows, err := s.pool.Query(ctx, `
@@ -1042,7 +998,7 @@ import (
 
 ```bash
 git add services/api-gateway/hedge_engine.go services/api-gateway/rescue_engine.go
-git commit -m "feat(rescue): wire processRescueBot into the hedge/matrix engine tick loop"
+git commit -m "feat(rescue): call checkRescuePartialClose from processHedgeBot"
 ```
 
 ---
@@ -1078,5 +1034,5 @@ go test ./services/api-gateway/... -run "TestBuildPairedCloseWatches_OnePerCompl
 
 Эта Фаза 1 (бэкенд) даёт полностью рабочую и протестированную (на уровне чистых функций) логику RescueBot, управляемую напрямую через БД/конфиг бота — без UI. Не покрыто этим планом:
 
-- **Фаза 2 (фронтенд):** `RescueBotForm.tsx` (форк `HedgeBotForm.tsx` с вкладкой «Закрытие»), `BOT_KIND_META`/`KIND_ICONS`, интеграция в `BotForm.tsx`/`MyBotCard.tsx` — отдельный план после проверки Фазы 1 в работе.
+- **Фаза 2 (фронтенд):** доработка существующей `HedgeBotForm.tsx` — новая секция/вкладка «Частичное закрытие» (идея переноса деактивации в отдельную вкладку «Закрытие» остаётся в силе, внутри той же формы). Новый bot_kind/карточка/`BOT_KIND_META`-запись не нужны — отдельный план после проверки Фазы 1 в работе.
 - **WS-трансляция новых счётчиков** (`main_reduced_coin`/`main_reduced_usdt`) — сейчас доступны только через прямой запрос к `hedge_sessions`; решение «добавить в `pairedCloseMsg`/`s.broadcast` или в `GetHedgeSession` REST-ответ» — на усмотрение при работе над Фазой 2, когда появится реальный UI-потребитель.
