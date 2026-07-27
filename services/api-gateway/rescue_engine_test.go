@@ -72,3 +72,25 @@ func TestRescueCalcPartialCloseQty_RoundsDownToQtyStep(t *testing.T) {
 		t.Errorf("qty = %v, want 5.5 (rounded down from 5.7 by qtyStep=0.5)", qty)
 	}
 }
+
+// TestRescueCalcPartialCloseQty_MinQtySnapUpCappedAtRemaining: the second cap check
+// (after trader.FormatQty) is only non-redundant when minQty forces FormatQty to snap
+// a floored qty *up* past mainRemainingQty — the first cap check (on the pre-rounding
+// raw value) can't catch this because raw itself is comfortably under
+// mainRemainingQty; only rounding pushes it over.
+//
+// entryPrice-markPrice=10/юнит убытка, accumulated_pnl=21 -> raw=2.1, which is below
+// mainRemainingQty=3 (so the first cap check does NOT fire). trader.FormatQty(2.1, 1,
+// 5) floors 2.1->2 to qtyStep=1, then — since 2 < minQty=5 — snaps up to
+// ceil(5/1)*1=5, which exceeds mainRemainingQty=3. Without the second cap check this
+// would overshoot and report qty=5, closing more than the position has left; with it,
+// the result must be capped at exactly mainRemainingQty=3, closesEntirely=true.
+func TestRescueCalcPartialCloseQty_MinQtySnapUpCappedAtRemaining(t *testing.T) {
+	qty, closesEntirely := rescueCalcPartialCloseQty("Buy", 100, 90, 21, 3, 1, 5)
+	if !closesEntirely {
+		t.Fatal("expected closesEntirely=true when minQty snap-up pushes qty past mainRemainingQty")
+	}
+	if qty != 3 {
+		t.Errorf("qty = %v, want exactly mainRemainingQty=3 (minQty snap-up must not overshoot)", qty)
+	}
+}
