@@ -125,3 +125,118 @@ func TestMatrixRepairCandidates_FindsOneSidedSymbols(t *testing.T) {
 		t.Errorf("matrixRepairCandidates() included FULLUSDT — both legs already active, nothing to repair")
 	}
 }
+
+// TestEnsureMatrixStrategies_RepairsOneSidedPairBeforeNewOnes: a symbol already missing
+// one leg (repair candidate) must get that leg reopened even with zero whitelist symbols
+// to scan for brand-new pairs, and even though it has no confirming activation signal —
+// repair bypasses the activation gate entirely (mirrors the existing philosophy for
+// adopting an orphan exchange position: leaving a half-open pair unbalanced is worse than
+// opening the missing leg without waiting for a fresh signal).
+func TestEnsureMatrixStrategies_RepairsOneSidedPairBeforeNewOnes(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	userID := createWHUser(t, s, "repairwire")
+	accID := createTestAccount(t, s, userID)
+
+	var botID string
+	if err := s.pool.QueryRow(ctx,
+		`INSERT INTO bots (owner_id, name, account_id, status, max_strategies, max_long_strategies, max_short_strategies, strategy_config)
+		 VALUES ($1,'repairwirebot',$2,'active',10,10,10,'{"bot_kind":"matrix"}'::jsonb) RETURNING id`,
+		userID, accID).Scan(&botID); err != nil {
+		t.Fatalf("create bot: %v", err)
+	}
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM bots WHERE id=$1", botID) })
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM strategies WHERE bot_id=$1", botID) })
+
+	// ensureMatrixStrategies takes cfg directly as a parameter below (same pattern as the
+	// existing TestEnsureMatrixStrategies_RespectsStrategyLimits) — it does not re-read
+	// strategy_config from this row, so the bot's own JSON only needs bot_kind for the
+	// dispatch-by-kind logic elsewhere in the engine; activation_signals lives in the Go
+	// cfg value constructed below instead.
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO strategies (owner_id, account_id, bot_id, symbol, direction, strategy_type, status)
+		 VALUES ($1,$2,$3,'REPAIRWIREUSDT','long','matrix','active')`,
+		userID, accID, botID); err != nil {
+		t.Fatalf("insert existing leg: %v", err)
+	}
+
+	cfg := botCfgJSON{
+		StrategyType: "matrix",
+		ActivationSignals: []struct {
+			Name   string                 `json:"name"`
+			Params map[string]interface{} `json:"params"`
+		}{
+			{Name: "price-change", Params: map[string]interface{}{"tf": "1D", "mode": "counter", "periodHours": 24.0, "thresholdPct": 20.0}},
+		},
+	}
+
+	// Empty whitelist (no new-pair candidates to scan) — if the missing leg opens, it can
+	// only be the repair pass that did it.
+	s.ensureMatrixStrategies(ctx, botID, userID, accID, []string{}, nil, cfg, trader.Credentials{}, map[string]map[string]hedgePosInfo{}, map[string]bool{})
+
+	var shortCount int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM strategies WHERE bot_id=$1 AND symbol='REPAIRWIREUSDT' AND direction='short' AND status IN ('active','finishing')`,
+		botID,
+	).Scan(&shortCount); err != nil {
+		t.Fatalf("count short leg: %v", err)
+	}
+	if shortCount != 1 {
+		t.Errorf("REPAIRWIREUSDT short leg count = %d, want 1 (repair pass must open the missing leg, bypassing the activation gate, even with an empty whitelist)", shortCount)
+	}
+}
+
+// TestEnsureMatrixStrategies_RepairTakesPrioritySlotOverNewPair: with capacity for only
+// ONE more long strategy, a repair candidate missing "long" must win that slot over a
+// brand-new candidate symbol also wanting to open long — repair runs first.
+func TestEnsureMatrixStrategies_RepairTakesPrioritySlotOverNewPair(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	userID := createWHUser(t, s, "repairprio")
+	accID := createTestAccount(t, s, userID)
+
+	var botID string
+	if err := s.pool.QueryRow(ctx,
+		`INSERT INTO bots (owner_id, name, account_id, status, max_strategies, max_long_strategies, max_short_strategies, strategy_config)
+		 VALUES ($1,'repairpriobot',$2,'active',3,1,2,'{"bot_kind":"matrix"}'::jsonb) RETURNING id`,
+		userID, accID).Scan(&botID); err != nil {
+		t.Fatalf("create bot: %v", err)
+	}
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM bots WHERE id=$1", botID) })
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM strategies WHERE bot_id=$1", botID) })
+
+	// PRIOUSDT already has a short leg -> repair candidate, wants "long".
+	// max_long_strategies=1, so exactly one symbol's long leg can open this tick.
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO strategies (owner_id, account_id, bot_id, symbol, direction, strategy_type, status)
+		 VALUES ($1,$2,$3,'PRIOUSDT','short','matrix','active')`,
+		userID, accID, botID); err != nil {
+		t.Fatalf("insert existing leg: %v", err)
+	}
+
+	// FRESHUSDT is a brand-new candidate (no existing rows) competing for the same long slot.
+	whitelist := []string{"FRESHUSDT"}
+	cfg := botCfgJSON{StrategyType: "matrix"} // no ActivationSignals -> new-pair path always passes activation
+
+	s.ensureMatrixStrategies(ctx, botID, userID, accID, whitelist, nil, cfg, trader.Credentials{}, map[string]map[string]hedgePosInfo{}, map[string]bool{})
+
+	var prioLong, freshLong int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM strategies WHERE bot_id=$1 AND symbol='PRIOUSDT' AND direction='long' AND status IN ('active','finishing')`,
+		botID,
+	).Scan(&prioLong); err != nil {
+		t.Fatalf("count PRIOUSDT long: %v", err)
+	}
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM strategies WHERE bot_id=$1 AND symbol='FRESHUSDT' AND direction='long' AND status IN ('active','finishing')`,
+		botID,
+	).Scan(&freshLong); err != nil {
+		t.Fatalf("count FRESHUSDT long: %v", err)
+	}
+	if prioLong != 1 {
+		t.Errorf("PRIOUSDT long = %d, want 1 (repair candidate must win the only available long slot)", prioLong)
+	}
+	if freshLong != 0 {
+		t.Errorf("FRESHUSDT long = %d, want 0 (new-pair candidate must NOT take the slot repair needed)", freshLong)
+	}
+}

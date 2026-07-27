@@ -522,6 +522,80 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 	// signal bug); if the line never appears at all, the tick isn't completing (timeout).
 	checkedActivation, confirmedActivation := 0, 0
 
+	// Repair pass: symbols already missing one leg get priority over brand-new candidates
+	// for the same scarce long/short capacity — see matrixRepairCandidates' doc comment
+	// and docs/superpowers/specs/2026-07-24-matrix-slot-repair-priority-design.md for why.
+	// Bypasses the activation-signal gate entirely (unlike the new-pair loop below): a pair
+	// that already has one real leg in the market is worse off staying unbalanced than
+	// getting its other leg back without waiting for a fresh signal — same philosophy the
+	// existing adopt-orphan-position path below already uses.
+	for symbol, dir := range s.matrixRepairCandidates(ctx, botID) {
+		if maxTotal > 0 && activeTotal >= maxTotal {
+			break
+		}
+		if !symbolPassesHedgeFilter(symbol, nil, blacklist, delistSymbols) {
+			continue
+		}
+		if s.directionHasLiveStrategy(ctx, accountID, symbol, dir, botID) {
+			continue // became live since the candidates query ran, or is actually 'paused'
+		}
+		if dir == "long" && maxLong > 0 && activeLong >= maxLong {
+			continue
+		}
+		if dir == "short" && maxShort > 0 && activeShort >= maxShort {
+			continue
+		}
+
+		s.cleanupStoppedHedgeCards(ctx, botID, symbol, dir)
+
+		b := botEngineRow{
+			id:        botID,
+			ownerID:   ownerID,
+			accountID: accountID,
+			whitelist: whitelist,
+			blacklist: blacklist,
+		}
+
+		var adoptJSON *string
+		exchangeSide := "Buy"
+		if dir == "short" {
+			exchangeSide = "Sell"
+		}
+		if bySymbol, ok := posMap[symbol]; ok {
+			if pos, hasPos := bySymbol[exchangeSide]; hasPos && pos.Size > 0 {
+				type adoptData struct {
+					Size       string `json:"size"`
+					EntryPrice string `json:"entry_price"`
+				}
+				raw, _ := json.Marshal(adoptData{
+					Size:       strconv.FormatFloat(pos.Size, 'f', -1, 64),
+					EntryPrice: strconv.FormatFloat(pos.EntryPrice, 'f', -1, 64),
+				})
+				adoptStr := string(raw)
+				adoptJSON = &adoptStr
+			}
+		}
+
+		if id, err := s.createBotStrategy(ctx, b, cfg, symbol, dir, 0, "", adoptJSON); err != nil {
+			s.logBotEvent(ctx, botID,
+				fmt.Sprintf("Матрикс[repair]: %s %s — ошибка восстановления: %v", symbol, dir, err),
+				"error", "matrix")
+		} else {
+			if id != "" {
+				activeTotal++
+				if dir == "long" {
+					activeLong++
+				} else {
+					activeShort++
+				}
+			}
+			s.logBotEvent(ctx, botID,
+				fmt.Sprintf("Матрикс[repair]: %s %s — восстановлена недостающая нога стало total=%d long=%d short=%d",
+					symbol, dir, activeTotal, activeLong, activeShort),
+				"info", "matrix")
+		}
+	}
+
 	for _, symbol := range symbols {
 		if maxTotal > 0 && activeTotal >= maxTotal {
 			break // total limit reached — no point scanning remaining symbols this tick
