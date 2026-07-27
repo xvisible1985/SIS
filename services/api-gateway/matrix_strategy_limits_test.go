@@ -103,9 +103,13 @@ func TestMatrixRepairCandidates_FindsOneSidedSymbols(t *testing.T) {
 	insertStrat("FULLUSDT", "long", "active")
 	insertStrat("FULLUSDT", "short", "active")
 
+	// FINISHUSDT: long finishing (not active), short missing entirely -> repair candidate,
+	// missing "short". Confirms 'finishing' counts as live on the present side, same as 'active'.
+	insertStrat("FINISHUSDT", "long", "finishing")
+
 	got := s.matrixRepairCandidates(ctx, botID)
 
-	want := map[string]string{"STOPUSDT": "short", "NOROWUSDT": "long"}
+	want := map[string]string{"STOPUSDT": "short", "NOROWUSDT": "long", "FINISHUSDT": "short"}
 	if len(got) != len(want) {
 		t.Fatalf("matrixRepairCandidates() = %v, want %v", got, want)
 	}

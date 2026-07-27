@@ -395,11 +395,19 @@ func (s *Server) directionHasLiveStrategy(ctx context.Context, accountID, symbol
 // 'active'/'finishing') specifically so this exclusion can be enforced here, in the
 // candidate query itself, rather than relying on every future caller to separately guard
 // against ever touching a paused leg.
+//
+// A symbol can have at most one row per (symbol, direction) among the statuses queried
+// here: `uniq_bot_active_strategy` is a partial unique index on (bot_id, symbol, direction)
+// WHERE status IN ('active','finishing'), and 'paused' is only ever reached via an in-place
+// UPDATE of an existing active/finishing row (pkg/strategy/cycle.go), never a fresh INSERT —
+// so the per-(symbol,direction) map assignment below can never silently pick between two
+// conflicting rows for the same key.
 func (s *Server) matrixRepairCandidates(ctx context.Context, botID string) map[string]string {
 	rows, err := s.pool.Query(ctx,
 		`SELECT symbol, direction, status FROM strategies WHERE bot_id=$1 AND status IN ('active','finishing','paused')`,
 		botID)
 	if err != nil {
+		s.logBotEvent(ctx, botID, fmt.Sprintf("matrixRepairCandidates: query error: %v", err), "error", "matrix")
 		return nil
 	}
 	defer rows.Close()
