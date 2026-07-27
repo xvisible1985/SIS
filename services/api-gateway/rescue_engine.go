@@ -44,3 +44,30 @@ func rescueCalcPartialCloseQty(mainSide string, mainEntryPrice, markPrice, accum
 	}
 	return rounded, false
 }
+
+// rescuePriceMoveTowardMainPct возвращает, на сколько процентов цена сдвинулась от
+// hedgeEntryAtStart (цена, по которой открылась хедж-нога — момент активации) в
+// пользу мейна. Положительное значение = движение в пользу мейна, отрицательное =
+// против. Возвращает 0, если точка отсчёта ещё не известна (hedge_entry_at_start
+// заполняется асинхронно после фактического открытия хедж-позиции на бирже).
+func rescuePriceMoveTowardMainPct(mainSide string, hedgeEntryAtStart, markPrice float64) float64 {
+	if hedgeEntryAtStart <= 0 {
+		return 0
+	}
+	if mainSide == "Sell" {
+		// мейн-шорт: в его пользу — падение цены ниже точки отсчёта.
+		return (hedgeEntryAtStart - markPrice) / hedgeEntryAtStart * 100
+	}
+	// мейн-лонг: в его пользу — рост цены выше точки отсчёта.
+	return (markPrice - hedgeEntryAtStart) / hedgeEntryAtStart * 100
+}
+
+// rescuePriceLevelReached сообщает, достигла ли markPrice абсолютного уровня level
+// в благоприятном для мейна направлении: для лонга — цена на уровне или выше, для
+// шорта — на уровне или ниже.
+func rescuePriceLevelReached(mainSide string, markPrice, level float64) bool {
+	if mainSide == "Sell" {
+		return markPrice <= level
+	}
+	return markPrice >= level
+}

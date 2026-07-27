@@ -94,3 +94,53 @@ func TestRescueCalcPartialCloseQty_MinQtySnapUpCappedAtRemaining(t *testing.T) {
 		t.Errorf("qty = %v, want exactly mainRemainingQty=3 (minQty snap-up must not overshoot)", qty)
 	}
 }
+
+// TestRescuePriceMoveTowardMainPct_Long: мейн-лонг, хедж открылся по 100, сейчас
+// 105 -> движение в пользу мейна +5%.
+func TestRescuePriceMoveTowardMainPct_Long(t *testing.T) {
+	got := rescuePriceMoveTowardMainPct("Buy", 100, 105)
+	if got < 4.999999 || got > 5.000001 {
+		t.Errorf("got %v, want 5.0", got)
+	}
+}
+
+// TestRescuePriceMoveTowardMainPct_Short: мейн-шорт, хедж открылся по 100, сейчас
+// 95 -> движение в пользу мейна +5% (для шорта падение цены — это плюс).
+func TestRescuePriceMoveTowardMainPct_Short(t *testing.T) {
+	got := rescuePriceMoveTowardMainPct("Sell", 100, 95)
+	if got < 4.999999 || got > 5.000001 {
+		t.Errorf("got %v, want 5.0", got)
+	}
+}
+
+// TestRescuePriceMoveTowardMainPct_AgainstMain: движение цены ПРОТИВ мейна должно
+// давать отрицательный процент, не искусственно зажиматься в 0 — так
+// rescueTriggersMet корректно сравнивает с положительным порогом и не пропускает
+// ложных срабатываний.
+func TestRescuePriceMoveTowardMainPct_AgainstMain(t *testing.T) {
+	got := rescuePriceMoveTowardMainPct("Buy", 100, 95)
+	if got > -4.999999 {
+		t.Errorf("got %v, want ~-5.0 (against main)", got)
+	}
+}
+
+// TestRescuePriceLevelReached_Long: мейн-лонг, уровень 61200, цена 61500 -> reached.
+func TestRescuePriceLevelReached_Long(t *testing.T) {
+	if !rescuePriceLevelReached("Buy", 61500, 61200) {
+		t.Error("expected reached=true when markPrice above level for long main")
+	}
+	if rescuePriceLevelReached("Buy", 61000, 61200) {
+		t.Error("expected reached=false when markPrice below level for long main")
+	}
+}
+
+// TestRescuePriceLevelReached_Short: мейн-шорт, уровень 61200, цена 61000 -> reached
+// (для шорта "в пользу мейна" — цена НИЖЕ уровня).
+func TestRescuePriceLevelReached_Short(t *testing.T) {
+	if !rescuePriceLevelReached("Sell", 61000, 61200) {
+		t.Error("expected reached=true when markPrice below level for short main")
+	}
+	if rescuePriceLevelReached("Sell", 61500, 61200) {
+		t.Error("expected reached=false when markPrice above level for short main")
+	}
+}
