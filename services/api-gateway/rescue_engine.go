@@ -110,6 +110,25 @@ func rescueTriggersMet(cfg botCfgJSON, mainSide string, hedgeEntryAtStart, markP
 	return true
 }
 
+// rescuePartialCloseRequest строит reduce-only рыночный ордер, снимающий qty с
+// мейн-позиции. side — ПРОТИВОПОЛОЖНАЯ стороне мейна (гасит позицию, а не
+// удваивает), та же конвенция, что в matrixLegCloseRequest (matrix_engine.go).
+func rescuePartialCloseRequest(mainSide, symbol, category string, posIdx int, qty, qtyStep, minQty float64) trader.OrderRequest {
+	closeSide := "Sell"
+	if mainSide == "Sell" {
+		closeSide = "Buy"
+	}
+	return trader.OrderRequest{
+		Category:    category,
+		Symbol:      symbol,
+		Side:        closeSide,
+		OrderType:   "Market",
+		Qty:         trader.FormatQty(qty, qtyStep, minQty),
+		ReduceOnly:  true,
+		PositionIdx: posIdx,
+	}
+}
+
 // rescueCooldownElapsed сообщает, прошёл ли кулдаун между шагами частичного
 // снятия. lastPartialCloseAt=nil (шага ещё не было) или minIntervalSec<=0
 // (кулдаун отключён в конфиге) — всегда true.

@@ -294,3 +294,28 @@ func TestRescueCooldownElapsed_AfterCooldown(t *testing.T) {
 		t.Error("expected true: 400s elapsed >= 300s cooldown")
 	}
 }
+
+// TestRescuePartialCloseRequest_Long: мейн-лонг -> закрывающий ордер должен быть
+// Sell, reduce-only, тот же формат, что matrixLegCloseRequest.
+func TestRescuePartialCloseRequest_Long(t *testing.T) {
+	req := rescuePartialCloseRequest("Buy", "BTCUSDT", "linear", 1, 0.5, 0.001, 0)
+	if req.Side != "Sell" || req.PositionIdx != 1 || !req.ReduceOnly ||
+		req.OrderType != "Market" || req.Symbol != "BTCUSDT" || req.Category != "linear" {
+		t.Errorf("long partial-close request wrong: %+v", req)
+	}
+	// trader.FormatQty formats to the qtyStep's implied decimal places (stepDecimals),
+	// so qtyStep=0.001 (3 decimals) yields "0.500", not a trimmed "0.5" — matches
+	// FormatQty's existing behavior used elsewhere in the codebase (see matrixLegCloseRequest
+	// callers and pkg/trader/instruments_test.go).
+	if req.Qty != "0.500" {
+		t.Errorf("Qty = %q, want %q", req.Qty, "0.500")
+	}
+}
+
+// TestRescuePartialCloseRequest_Short: мейн-шорт -> закрывающий ордер Buy.
+func TestRescuePartialCloseRequest_Short(t *testing.T) {
+	req := rescuePartialCloseRequest("Sell", "BTCUSDT", "linear", 2, 0.5, 0.001, 0)
+	if req.Side != "Buy" || req.PositionIdx != 2 || !req.ReduceOnly {
+		t.Errorf("short partial-close request wrong: %+v", req)
+	}
+}
