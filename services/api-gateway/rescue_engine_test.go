@@ -124,6 +124,18 @@ func TestRescuePriceMoveTowardMainPct_AgainstMain(t *testing.T) {
 	}
 }
 
+// TestRescuePriceMoveTowardMainPct_UnpopulatedEntry: hedge_entry_at_start ещё не
+// заполнен асинхронным обработчиком (0 или отрицательное значение) — функция должна
+// вернуть 0, а не делить на ноль/отрицательное число.
+func TestRescuePriceMoveTowardMainPct_UnpopulatedEntry(t *testing.T) {
+	if got := rescuePriceMoveTowardMainPct("Buy", 0, 105); got != 0 {
+		t.Errorf("got %v, want 0 when hedgeEntryAtStart==0", got)
+	}
+	if got := rescuePriceMoveTowardMainPct("Sell", -5, 105); got != 0 {
+		t.Errorf("got %v, want 0 when hedgeEntryAtStart<0", got)
+	}
+}
+
 // TestRescuePriceLevelReached_Long: мейн-лонг, уровень 61200, цена 61500 -> reached.
 func TestRescuePriceLevelReached_Long(t *testing.T) {
 	if !rescuePriceLevelReached("Buy", 61500, 61200) {
@@ -131,6 +143,9 @@ func TestRescuePriceLevelReached_Long(t *testing.T) {
 	}
 	if rescuePriceLevelReached("Buy", 61000, 61200) {
 		t.Error("expected reached=false when markPrice below level for long main")
+	}
+	if !rescuePriceLevelReached("Buy", 61200, 61200) {
+		t.Error("expected reached=true when markPrice exactly equals level for long main (inclusive >=)")
 	}
 }
 
@@ -142,5 +157,8 @@ func TestRescuePriceLevelReached_Short(t *testing.T) {
 	}
 	if rescuePriceLevelReached("Sell", 61500, 61200) {
 		t.Error("expected reached=false when markPrice above level for short main")
+	}
+	if !rescuePriceLevelReached("Sell", 61200, 61200) {
+		t.Error("expected reached=true when markPrice exactly equals level for short main (inclusive <=)")
 	}
 }
