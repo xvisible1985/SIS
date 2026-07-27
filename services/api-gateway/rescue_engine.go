@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strconv"
 	"time"
 
@@ -137,4 +138,21 @@ func rescueCooldownElapsed(lastPartialCloseAt *time.Time, minIntervalSec int, no
 		return true
 	}
 	return now.Sub(*lastPartialCloseAt) >= time.Duration(minIntervalSec)*time.Second
+}
+
+// recordRescuePartialClose фиксирует результат одного шага частичного снятия:
+// увеличивает счётчики main_reduced_coin/main_reduced_usdt и обновляет
+// last_partial_close_at (для кулдауна следующего шага). Матчится по main или
+// hedge strategy id — та же конвенция, что AccumulateHedgeSessionPnl
+// (pkg/strategy/trade_recorder.go), которой снятие накопленного PnL хеджа
+// пользуется отдельно (см. Task 8).
+func (s *Server) recordRescuePartialClose(ctx context.Context, stratID string, coinDelta, usdtDelta float64) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE hedge_sessions
+		 SET main_reduced_coin = main_reduced_coin + $1,
+		     main_reduced_usdt = main_reduced_usdt + $2,
+		     last_partial_close_at = NOW()
+		 WHERE (main_strategy_id = $3 OR hedge_strategy_id = $3) AND ended_at IS NULL`,
+		coinDelta, usdtDelta, stratID)
+	return err
 }
