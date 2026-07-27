@@ -142,6 +142,21 @@ func rescuePartialCloseRequest(mainSide, symbol, category string, posIdx int, qt
 	}
 }
 
+// rescueSelfCloseLinkID строит SIS_STR-{id8}-scl-{ms} orderLinkId для
+// reduce-only partial-close ордера на мейн-стратегии — тот же формат
+// "scl" (self-close), что strategy_handler.go использует для detach-close
+// (см. pkg/strategy/linkid.go, reSelfClose/LinkIDSelfClose). Обязателен: без
+// него ClosedPnlSyncer не сможет атрибутировать закрытие по linkId и
+// свалится в устаревшую time-window zombie-эвристику, которая force-закроет
+// ещё живой цикл мейна как ghost_close (см. вызов в checkRescuePartialClose).
+func rescueSelfCloseLinkID(mainStrategyID string, now time.Time) string {
+	id8 := mainStrategyID
+	if len(id8) > 8 {
+		id8 = id8[:8]
+	}
+	return fmt.Sprintf("SIS_STR-%s-scl-%d", id8, now.UnixMilli())
+}
+
 // rescueCooldownElapsed сообщает, прошёл ли кулдаун между шагами частичного
 // снятия. lastPartialCloseAt=nil (шага ещё не было) или minIntervalSec<=0
 // (кулдаун отключён в конфиге) — всегда true.
@@ -174,6 +189,7 @@ func (s *Server) recordRescuePartialClose(ctx context.Context, stratID string, c
 // hedge_engine.go), плюс поля, нужные только RescueBot (hedge_entry_at_start,
 // last_partial_close_at).
 type rescueSessionRow struct {
+	mainStrategyID     string
 	hedgeStrategyID    string
 	accumulatedPnl     float64
 	hedgeEntryAtStart  *float64
@@ -191,7 +207,7 @@ type rescueSessionRow struct {
 // «Архитектура»).
 func (s *Server) checkRescuePartialClose(ctx context.Context, botID string, cfg botCfgJSON, creds trader.Credentials, posMap map[string]map[string]hedgePosInfo) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT hs.hedge_strategy_id, hs.accumulated_pnl, hs.hedge_entry_at_start,
+		SELECT hs.main_strategy_id, hs.hedge_strategy_id, hs.accumulated_pnl, hs.hedge_entry_at_start,
 		       hs.last_partial_close_at, ms.symbol, ms.direction
 		FROM hedge_sessions hs
 		JOIN strategies ms ON ms.id = hs.main_strategy_id
@@ -206,7 +222,7 @@ func (s *Server) checkRescuePartialClose(ctx context.Context, botID string, cfg 
 	var sessions []rescueSessionRow
 	for rows.Next() {
 		var rs rescueSessionRow
-		if rows.Scan(&rs.hedgeStrategyID, &rs.accumulatedPnl, &rs.hedgeEntryAtStart,
+		if rows.Scan(&rs.mainStrategyID, &rs.hedgeStrategyID, &rs.accumulatedPnl, &rs.hedgeEntryAtStart,
 			&rs.lastPartialCloseAt, &rs.symbol, &rs.mainDir) == nil {
 			sessions = append(sessions, rs)
 		}
@@ -260,6 +276,14 @@ func (s *Server) checkRescuePartialClose(ctx context.Context, botID string, cfg 
 			posIdx = 2
 		}
 		req := rescuePartialCloseRequest(mainSide, rs.symbol, cfg.Category, posIdx, qty, instr.QtyStep, instr.MinQty)
+		// linkId is required so ClosedPnlSyncer's linkId-based attribution (step 1b)
+		// recognizes this as a non-cycle-ending self-close on the MAIN strategy and
+		// skips the time-window zombie-cycle heuristic (step 3), which would otherwise
+		// force-close the main's still-open cycle as "ghost_close". Same fix pattern as
+		// strategy_handler.go's detach-close and the historical stopMatrixPair/SIS_MPC_
+		// and DetachFromBot/SIS_DTH_ bugs (see pkg/strategy/linkid.go's LinkIDSelfClose
+		// doc comment).
+		req.OrderLinkId = rescueSelfCloseLinkID(rs.mainStrategyID, time.Now())
 
 		if _, err := trader.PlaceOrder(ctx, creds, req); err != nil {
 			s.logBotEvent(ctx, botID,

@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"sis/pkg/strategy"
 )
 
 // TestRescueCalcPartialCloseQty_Long: мейн-лонг вошёл по 100, сейчас 90 (просадка
@@ -313,5 +315,38 @@ func TestRescuePartialCloseRequest_Short(t *testing.T) {
 	req := rescuePartialCloseRequest("Sell", "BTCUSDT", "linear", 2, 0.5, 0.001, 0)
 	if req.Side != "Buy" || req.PositionIdx != 2 || !req.ReduceOnly {
 		t.Errorf("short partial-close request wrong: %+v", req)
+	}
+}
+
+// TestRescueSelfCloseLinkID_ParsesAsSelfCloseForMainStrategy проверяет, что
+// rescueSelfCloseLinkID производит orderLinkId, который pkg/strategy.ParseStrategyLinkID
+// распознаёт как LinkIDSelfClose с правильным 8-символьным префиксом ID МЕЙН-стратегии —
+// это единственное, что не даёт ClosedPnlSyncer свалиться в zombie-эвристику и
+// force-закрыть ещё живой цикл мейна как ghost_close (см. checkRescuePartialClose).
+func TestRescueSelfCloseLinkID_ParsesAsSelfCloseForMainStrategy(t *testing.T) {
+	mainID := "abcdef12-3456-7890-abcd-ef1234567890"
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	linkID := rescueSelfCloseLinkID(mainID, now)
+
+	parsed, ok := strategy.ParseStrategyLinkID(linkID)
+	if !ok {
+		t.Fatalf("ParseStrategyLinkID(%q) failed to recognize linkId as ours", linkID)
+	}
+	if parsed.Kind != strategy.LinkIDSelfClose {
+		t.Errorf("Kind = %v, want LinkIDSelfClose", parsed.Kind)
+	}
+	if parsed.StrategyID8 != "abcdef12" {
+		t.Errorf("StrategyID8 = %q, want %q (main strategy's prefix, not hedge's)", parsed.StrategyID8, "abcdef12")
+	}
+}
+
+// TestRescueSelfCloseLinkID_ShortID: защитная проверка на случай если mainStrategyID
+// когда-либо окажется короче 8 символов (не должно случиться для настоящих UUID, но
+// rescueSelfCloseLinkID не должен паниковать при срезе).
+func TestRescueSelfCloseLinkID_ShortID(t *testing.T) {
+	linkID := rescueSelfCloseLinkID("ab12", time.Unix(0, 0))
+	if linkID != "SIS_STR-ab12-scl-0" {
+		t.Errorf("linkID = %q, want %q", linkID, "SIS_STR-ab12-scl-0")
 	}
 }
