@@ -304,9 +304,8 @@ func TestRescuePartialCloseRequest_Long(t *testing.T) {
 		t.Errorf("long partial-close request wrong: %+v", req)
 	}
 	// trader.FormatQty formats to the qtyStep's implied decimal places (stepDecimals),
-	// so qtyStep=0.001 (3 decimals) yields "0.500", not a trimmed "0.5" — matches
-	// FormatQty's existing behavior used elsewhere in the codebase (see matrixLegCloseRequest
-	// callers and pkg/trader/instruments_test.go).
+	// so qtyStep=0.001 (3 decimals) yields "0.500", not a trimmed "0.5" — see
+	// FormatQty/stepDecimals in pkg/trader/instruments.go (~lines 80-118).
 	if req.Qty != "0.500" {
 		t.Errorf("Qty = %q, want %q", req.Qty, "0.500")
 	}
