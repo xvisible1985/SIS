@@ -192,6 +192,20 @@ func TestRescueTriggersMet_PriceMoveTrigger(t *testing.T) {
 	}
 }
 
+// TestRescueTriggersMet_PriceLevelTrigger: только T2 включён.
+func TestRescueTriggersMet_PriceLevelTrigger(t *testing.T) {
+	level := 61200.0
+	cfg := botCfgJSON{RescueTriggerPriceLevel: &level}
+	// markPrice=61500 при mainSide="Buy" -> цена выше уровня -> достигнут -> true.
+	if !rescueTriggersMet(cfg, "Buy", 100, 61500, 10, false) {
+		t.Error("expected true: markPrice 61500 reached level 61200 for long main")
+	}
+	// markPrice=61000 -> цена ниже уровня -> не достигнут -> false.
+	if rescueTriggersMet(cfg, "Buy", 100, 61000, 10, false) {
+		t.Error("expected false: markPrice 61000 did not reach level 61200 for long main")
+	}
+}
+
 // TestRescueTriggersMet_AccumulatedMinTrigger: только T3 включён.
 func TestRescueTriggersMet_AccumulatedMinTrigger(t *testing.T) {
 	minAccum := 20.0
