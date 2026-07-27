@@ -30,31 +30,38 @@ Paired-close и обычная деактивация хеджа продолж�
 
 ## Модель данных
 
-Миграция `084_rescue_bot.sql` — новые колонки на `hedge_sessions`:
+Отдельного `HedgeCfg`-типа в кодовой базе нет — все виды ботов (`signal`/`hedge`/`matrix`/…) используют один общий `botCfgJSON` (`services/api-gateway/bot_engine.go:882-964`), парсится по `bot_kind`. RescueBot-поля добавляются в эту же структуру, не отдельным типом — так сделаны все существующие блоки (`Hedge*`, `Matrix*`).
 
-- `main_reduced_coin NUMERIC NOT NULL DEFAULT 0` — накопительно за сессию, сколько объёма мейна снято частичными закрытиями (в монете).
-- `main_reduced_usdt NUMERIC NOT NULL DEFAULT 0` — то же в USDT (по цене на момент каждого шага).
+`hedge_sessions.hedge_entry_at_start` (мигр. `060_hedge_sessions.sql`) уже хранит ровно то, что нужно как точка отсчёта для %-триггера — «exchange avg_entry хедж-позиции с момента первого открытия». Заполняется в `checkHedgeActivation` (`hedge_engine.go:1841-1854`) сразу же, как хедж-позиция становится видна на бирже. Отдельная колонка `hedge_entry_price` не нужна — переиспользуем `hedge_entry_at_start`.
+
+Миграция `084_rescue_bot.sql` — только новые колонки на `hedge_sessions`:
+
+- `main_reduced_coin NUMERIC(18, 8) NOT NULL DEFAULT 0` — накопительно за сессию, сколько объёма мейна снято частичными закрытиями (в монете).
+- `main_reduced_usdt NUMERIC(18, 8) NOT NULL DEFAULT 0` — то же в USDT (по цене на момент каждого шага).
 - `last_partial_close_at TIMESTAMPTZ` — для кулдауна между шагами.
-- `hedge_entry_price NUMERIC` — цена «нулевого ордера» хеджа (момент активации хедж-ноги), точка отсчёта для %-триггера. Если эквивалентное поле уже существует в текущей структуре hedge-сессии — переиспользуется, отдельная колонка не добавляется (уточняется в начале реализации).
 
-В `strategy_config` (JSONB) бота типа `rescue`, помимо обычных hedge-полей, — новый блок:
+Новые поля в `botCfgJSON` (`services/api-gateway/bot_engine.go`), рядом с существующим блоком `Hedge*`:
 
 ```go
-type PartialCloseCfg struct {
-    Enabled               bool
-    TriggerPriceMovePct   *float64 // T1: % от hedge_entry_price в сторону мейна (положительное значение = движение в пользу мейна)
-    TriggerPriceLevel     *float64 // T2: абсолютный уровень цены символа
-    TriggerAccumulatedMin *float64 // T3: минимальная сумма accumulated_pnl (USDT) для срабатывания
-    TriggerSignalID       *string  // T4: id прикреплённого сигнала
-    MinIntervalSec        int      // кулдаун между шагами частичного закрытия
-}
+// RescueBot: частичное снятие мейна за счёт накопленного PnL хеджа (bot_kind="rescue").
+RescuePartialCloseEnabled       bool     `json:"rescue_partial_close_enabled"`
+RescueTriggerPriceMovePct       *float64 `json:"rescue_trigger_price_move_pct"`   // T1: % от hedge_entry_at_start в сторону мейна
+RescueTriggerPriceLevel         *float64 `json:"rescue_trigger_price_level"`      // T2: абсолютный уровень цены символа
+RescueTriggerAccumulatedMinUsdt *float64 `json:"rescue_trigger_accumulated_min"`  // T3: минимальная сумма accumulated_pnl (USDT)
+RescueTriggerSignal             *struct {
+    Name   string                 `json:"name"`
+    Params map[string]interface{} `json:"params"`
+} `json:"rescue_trigger_signal"` // T4: тем же способом, что ActivationSignals — по имени сигнала, не по ID
+RescueMinIntervalSec int `json:"rescue_min_interval_sec"` // кулдаун между шагами
 ```
+
+`TriggerSignal` по форме сделан идентично существующему `ActivationSignals[i]` (`Name string` + `Params map[string]interface{}`) — в кодовой базе сигналы везде адресуются по имени, а не по ID (числовой/UUID `signal_id` в `webhooks_handler.go`/`jobs_handler.go` относится к другой подсистеме — внешнему приёму сигналов и job-результатам бэктеста, не к активационным сигналам ботов).
 
 Каждый параметр — независимый тумблер (`nil`/не задан = выключен). Все включённые триггеры объединяются по «И» — шаг срабатывает только если истинны все активные условия.
 
 ## Механика шага частичного снятия
 
-На каждом тике `processRescueBot`, если `PartialClose.Enabled`:
+На каждом тике `processRescueBot`, если `RescuePartialCloseEnabled`:
 
 1. **Кулдаун:** пропускаем шаг, если `now - last_partial_close_at < MinIntervalSec`.
 2. **Проверка триггеров:** вычисляем истинность каждого включённого T1–T4, объединяем по «И». Если хоть один включённый триггер ложен — не срабатываем.
@@ -76,7 +83,6 @@ type PartialCloseCfg struct {
 - Тест на то, что `accumulated_pnl`/`main_reduced_*`/`last_partial_close_at` обновляются только после успешного исполнения ордера, не до.
 - `go test ./services/api-gateway/...` — регресс на существующие hedge/matrix/paired-close механики (по правилам проекта, CLAUDE.md).
 
-## Открытые вопросы (уточняются в начале реализации, не блокируют дизайн)
+## Открытые вопросы
 
-- **T4 (прикреплённый сигнал):** точный механизм привязки сигнала к боту — нужно опереться на то, как это уже сделано для `signal`-типа ботов (найдены точки входа в `jobs_handler.go`/`webhooks_handler.go`, детали уточняются на месте).
-- **`hedge_entry_price`:** возможно, эквивалент этого значения уже где-то вычисляется/хранится для hedge-сессии — тогда переиспользуется вместо новой колонки.
+Оба вопроса из первой версии дизайна разрешены исследованием кода (см. «Модель данных» выше): точка отсчёта для %-триггера — существующий `hedge_entry_at_start`, привязка сигнала (T4) — по имени+параметрам, как `ActivationSignals`, а не по ID. Открытых вопросов, блокирующих реализацию, не осталось.
