@@ -81,7 +81,7 @@ func doSignedGET(ctx context.Context, creds Credentials, path, query string) ([]
 	for k, v := range authHeaders(creds, query) {
 		req.Header.Set(k, v)
 	}
-	resp, err := proxy.HTTPClient().Do(req)
+	resp, err := proxy.HTTPClientFor(creds.WhitelistedIPs).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func doSignedPOST(ctx context.Context, creds Credentials, path string, body any)
 	for k, v := range authHeaders(creds, string(b)) {
 		req.Header.Set(k, v)
 	}
-	resp, err := proxy.HTTPClient().Do(req)
+	resp, err := proxy.HTTPClientFor(creds.WhitelistedIPs).Do(req)
 	if err != nil {
 		return nil, err
 	}
