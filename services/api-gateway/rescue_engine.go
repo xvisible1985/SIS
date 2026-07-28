@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"log"
 	"math"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // rescueSignalTrigger describes a signal-based condition for the RescueBot
@@ -129,6 +133,27 @@ func rescuePartialCloseRequest(
 		closeSide = "buy"
 	}
 	return &rescueCloseReq{Symbol: symbol, Side: closeSide, Qty: qty}
+}
+
+// recordRescuePartialClose persists a successful partial close into
+// hedge_sessions: increments main_reduced_coin and main_reduced_usdt (coin × price)
+// and stamps last_partial_close_at = NOW(). The session is identified by its
+// hedge_strategy_id (the same ID used everywhere else in the hedge engine to
+// locate the open session row).
+func recordRescuePartialClose(ctx context.Context, pool *pgxpool.Pool, hedgeStratID string, coinQty, priceAtClose float64) error {
+	usdtValue := coinQty * priceAtClose
+	_, err := pool.Exec(ctx, `
+		UPDATE hedge_sessions
+		SET main_reduced_coin  = main_reduced_coin  + $1,
+		    main_reduced_usdt  = main_reduced_usdt  + $2,
+		    last_partial_close_at = NOW()
+		WHERE hedge_strategy_id = $3 AND ended_at IS NULL`,
+		coinQty, usdtValue, hedgeStratID,
+	)
+	if err != nil {
+		log.Printf("recordRescuePartialClose [%s]: %v", hedgeStratID, err)
+	}
+	return err
 }
 
 // rescueCalcPartialCloseQty returns the coin quantity to partially close on the
