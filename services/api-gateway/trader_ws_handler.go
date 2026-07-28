@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
 	"sis/pkg/auth"
 	"sis/pkg/crypto"
 	"sis/pkg/trader"
@@ -34,16 +36,30 @@ func (s *Server) PositionsStream(w http.ResponseWriter, r *http.Request) {
 		`SELECT api_key_enc, secret_enc, label FROM exchange_accounts WHERE id=$1 AND owner_id=$2 AND is_active=TRUE`,
 		accountID, userID,
 	).Scan(&apiKeyEnc, &secretEnc, &label)
-	if err != nil && s.isAdmin(r.Context(), userID) {
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			log.Printf("trader ws: query account %s: %v", accountID, err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !s.isAdmin(r.Context(), userID) {
+			http.Error(w, "account not found", http.StatusNotFound)
+			return
+		}
 		// Admin fallback: allow streaming any account regardless of ownership.
 		err = s.pool.QueryRow(r.Context(),
 			`SELECT api_key_enc, secret_enc, label FROM exchange_accounts WHERE id=$1 AND is_active=TRUE`,
 			accountID,
 		).Scan(&apiKeyEnc, &secretEnc, &label)
-	}
-	if err != nil {
-		http.Error(w, "account not found", http.StatusNotFound)
-		return
+		if err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				log.Printf("trader ws: query account %s (admin): %v", accountID, err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			http.Error(w, "account not found", http.StatusNotFound)
+			return
+		}
 	}
 
 	apiKey, err := crypto.Decrypt(apiKeyEnc, s.encKey)
