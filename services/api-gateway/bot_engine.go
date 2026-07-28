@@ -961,6 +961,15 @@ type botCfgJSON struct {
 	MatrixRebuildOnSL      bool            `json:"matrix_rebuild_on_sl"`
 	MatrixRebuildFromEntry bool            `json:"matrix_rebuild_from_entry"`
 	RelativeSlots          bool            `json:"relative_slots"`
+
+	// RescueBot: опциональное частичное закрытие мейн-позиции за счёт накопленного
+	// хедж-PnL. Триггеры — указатели: nil = триггер выключен (AND по активным).
+	RescuePartialCloseEnabled       bool                 `json:"rescue_partial_close_enabled"`
+	RescueTriggerPriceMovePct       *float64             `json:"rescue_trigger_price_move_pct,omitempty"`
+	RescueTriggerPriceLevel         *float64             `json:"rescue_trigger_price_level,omitempty"`
+	RescueTriggerAccumulatedMinUsdt *float64             `json:"rescue_trigger_accumulated_min_usdt,omitempty"`
+	RescueTriggerSignal             *rescueSignalTrigger `json:"rescue_trigger_signal,omitempty"`
+	RescueMinIntervalSec            int                  `json:"rescue_min_interval_sec"`
 }
 
 // effectivePrioritySignal resolves the ranking key computeOpportunityScore should use:
