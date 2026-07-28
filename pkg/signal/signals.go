@@ -643,6 +643,76 @@ func (s *adxSignal) Compute(c []Candle) State {
 // ensure math is imported (used by bollingerBands indirectly)
 var _ = math.Sqrt
 
+// ── Price Change (rolling time window) ─────────────────────────────────────
+//
+// Fires when the coin moved by at least thresholdPct over the last periodHours,
+// measured by wall-clock time (via Candle.Time), not candle count — so the
+// window covers the same real-world duration regardless of the chart timeframe
+// the candles happen to be sampled at. This mirrors how exchanges report "24h
+// change" (a genuine rolling 24h window, not "N candles") — see
+// CoinPicker.tsx's use of Bybit's price24hPcnt ticker field, which inspired
+// this signal but only covers a fixed 24h; this generalises it to any
+// configurable period. Direction depends on mode: "trend" signals in the
+// direction of the move (rise→Buy, fall→Sell); "counter" signals against it
+// (rise→Sell, fall→Buy). Below threshold, or not enough history to cover the
+// full window yet, → Neutral.
+type priceChangeSignal struct {
+	periodHours  float64
+	thresholdPct float64
+	mode         string // "trend" (default) | "counter"
+}
+
+// priceChangePct returns the % change from the candle closest to (last time -
+// periodHours) to the last candle's close, or (0, false) if there isn't enough
+// history yet to cover the requested window.
+func (s *priceChangeSignal) priceChangePct(c []Candle) (float64, bool) {
+	if len(c) < 2 || s.periodHours <= 0 {
+		return 0, false
+	}
+	last := c[len(c)-1]
+	cutoff := last.Time - int64(s.periodHours*3600*1000) // Candle.Time is unix millis
+
+	baseIdx := -1
+	for i := len(c) - 2; i >= 0; i-- {
+		if c[i].Time <= cutoff {
+			baseIdx = i
+			break
+		}
+	}
+	if baseIdx == -1 {
+		return 0, false // not enough history to cover the full window yet
+	}
+	base := c[baseIdx].Close
+	if base <= 0 || last.Close <= 0 {
+		return 0, false
+	}
+	return (last.Close - base) / base * 100, true
+}
+
+func (s *priceChangeSignal) Compute(c []Candle) State {
+	change, ok := s.priceChangePct(c)
+	if !ok {
+		return Neutral
+	}
+	if math.Abs(change) < s.thresholdPct {
+		return Neutral
+	}
+	rose := change > 0
+	trend := s.mode != "counter" && s.mode != "против" && s.mode != "contra"
+	if rose == trend {
+		return Buy
+	}
+	return Sell
+}
+
+func (s *priceChangeSignal) Value(c []Candle) float64 {
+	change, ok := s.priceChangePct(c)
+	if !ok {
+		return 0
+	}
+	return math.Round(change*100) / 100
+}
+
 // ── RSI Zone — continuous (indicator 'rsi') ───────────────────────────────
 
 type rsiZone struct{ period int; lower, upper float64 }

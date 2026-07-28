@@ -13,6 +13,7 @@ type BbP    = BaseParams & { period: number; std: number; source: PriceSource };
 type StochP = BaseParams & { k: number; d: number; smooth: number };
 type AtrP   = BaseParams & { period: number };
 type AdxP   = BaseParams & { period: number; threshold: number; mode?: string };
+type PriceChangeP = BaseParams & { periodHours: number; thresholdPct: number; mode?: string };
 type IchiP  = BaseParams & { tenkan: number; kijun: number; senkou: number; shift: number };
 type VwapP  = BaseParams & { anchor: 'session' | 'day' | 'week' };
 type CciP   = BaseParams & { period: number; upper: number; lower: number; source: PriceSource };
@@ -53,6 +54,26 @@ function stDir(candles: Candle[], period: number, mult: number): { state: Signal
     dir = dir === 'sell' ? (cl[idx]! > fub ? 'buy' : 'sell') : (cl[idx]! < flb ? 'sell' : 'buy')
   }
   return { state: dir, val: +(dir === 'buy' ? flb : fub).toFixed(2) }
+}
+
+// priceChangePct mirrors pkg/signal's priceChangeSignal.priceChangePct: the %
+// change from the candle closest to (last time - periodHours) to the last
+// candle's close, measured by wall-clock time (candle.time, unix millis), not
+// candle count — so the window covers the same real-world duration regardless
+// of the selected chart timeframe. Returns null if there isn't enough history
+// to cover the full window yet.
+export function priceChangePct(candles: Candle[], periodHours: number): number | null {
+  if (candles.length < 2 || periodHours <= 0) return null
+  const lastCandle = candles[candles.length - 1]!
+  const cutoff = lastCandle.time - periodHours * 3600 * 1000
+  let baseIdx = -1
+  for (let i = candles.length - 2; i >= 0; i--) {
+    if (candles[i]!.time <= cutoff) { baseIdx = i; break }
+  }
+  if (baseIdx === -1) return null
+  const base = candles[baseIdx]!.close
+  if (base <= 0 || lastCandle.close <= 0) return null
+  return (lastCandle.close - base) / base * 100
 }
 
 export const INDICATORS: IndicatorDef<any>[] = [
@@ -222,6 +243,26 @@ export const INDICATORS: IndicatorDef<any>[] = [
       return sig('neutral', v.adx.toFixed(1))
     },
     Preview: () => <SparkLine data={Array.from({ length: 32 }, (_, i) => 15 + Math.abs(Math.sin((i / 31) * Math.PI * 1.5)) * 40)} stroke="#5be0a0" fill="#5be0a0" hLines={[{ v: 25, c: '#7b8aa6' }]} />,
+  },
+  {
+    id: 'price-change', abbr: 'Δ%', name: 'Изменение цены', cat: 'momentum',
+    desc: 'Рост/падение цены за период — по/против тренда',
+    about: 'Сравнивает текущую цену с ценой periodHours часов назад (реальное время, не число свечей — окно не зависит от выбранного таймфрейма графика). Если |изменение| ≥ порога — сигнал срабатывает. Режим «тренд»: рост → Buy, падение → Sell (сигнал в направлении движения). Режим «контр-тренд»: рост → Sell, падение → Buy (сигнал против движения, ставка на разворот).',
+    defaults: { periodHours: 24, thresholdPct: 20, mode: 'trend', tf: '1h' } as PriceChangeP,
+    params: [
+      { kind: 'number',    key: 'periodHours',  label: 'Период, ч',  hint: 'За сколько часов назад сравнивать цену. Не зависит от таймфрейма графика. Стандарт: 24.' },
+      { kind: 'number',    key: 'thresholdPct', label: 'Порог, %',   hint: 'Минимальное |изменение цены| за период, чтобы сигнал сработал. Стандарт: 20.' },
+      { kind: 'segmented', key: 'mode',         label: 'Режим',      hint: 'Тренд — сигнал в направлении движения (рост→Buy, падение→Sell). Контр-тренд — сигнал против движения (рост→Sell, падение→Buy).', options: ['trend', 'counter'] as const },
+    ],
+    compute: (p: PriceChangeP, c: Candle[]) => {
+      const change = priceChangePct(c, p.periodHours)
+      if (change === null) return sig('neutral')
+      if (Math.abs(change) < p.thresholdPct) return sig('neutral', `${change.toFixed(1)}%`)
+      const rose = change > 0
+      const trend = (p.mode ?? 'trend') !== 'counter'
+      return sig(rose === trend ? 'buy' : 'sell', `${change.toFixed(1)}%`)
+    },
+    Preview: () => <SparkLine data={demo.sin(32, 4, 10, 30)} stroke="#c084fc" fill="#c084fc" />,
   },
   {
     id: 'ichi', abbr: 'ICH', name: 'Ichimoku', cat: 'trend',

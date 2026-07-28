@@ -242,4 +242,21 @@ func init() {
 	Register("whale", func(cfg Config) Signal {
 		return &whaleSignal{}
 	})
+
+	// Fires when the coin moved by >= thresholdPct over the last periodHours
+	// (rolling wall-clock window, not candle count). mode "trend" signals with
+	// the move (rise→Buy, fall→Sell); "counter" signals against it.
+	// Param keys are camelCase to match what the frontend's indicator param editor
+	// (frontend/src/features/indicators/indicators.tsx, PriceChangeP) actually saves —
+	// this signal was silently ignoring user-configured period/threshold and always using
+	// the hardcoded defaults below until this was caught (2026-07-16), because it read
+	// snake_case keys ("period_hours"/"threshold_pct") that were never present in the
+	// saved params (only "mode" matched, being the same in both cases).
+	Register("price-change", func(cfg Config) Signal {
+		return &priceChangeSignal{
+			periodHours:  cfg.Float("periodHours", 24),
+			thresholdPct: cfg.Float("thresholdPct", 20),
+			mode:         cfg.Str("mode", "trend"),
+		}
+	})
 }

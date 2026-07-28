@@ -156,15 +156,19 @@ func (s *Server) ToggleIndicatorType(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sync to signal_types: when panel changes to 'signal', the indicator becomes
-	// available in the strategy signal picker (it has a Go signal engine implementation).
-	// When moved back to 'indicator' panel, remove it from signal_types.
-	if body.Panel != nil {
-		if *body.Panel == "signal" {
-			var name, status string
-			s.pool.QueryRow(r.Context(),
-				`SELECT name, status FROM indicator_types WHERE id=$1`, id,
-			).Scan(&name, &status)
+	// Sync to signal_types: it's a separate table, mirrored only while panel='signal'
+	// (that's what the user-facing, non-admin SignalPickerField actually reads). Must
+	// re-sync on ANY change here, not just when panel itself changes — otherwise a plain
+	// status toggle after the indicator was already moved to the signal panel (e.g.
+	// 'test' → 'enabled') updates indicator_types but silently leaves signal_types on its
+	// old status, and the indicator never actually becomes visible to users.
+	if body.Panel != nil && *body.Panel != "signal" {
+		s.pool.Exec(r.Context(), `DELETE FROM signal_types WHERE id=$1`, id) //nolint:errcheck
+	} else {
+		var name, status, panel string
+		if err := s.pool.QueryRow(r.Context(),
+			`SELECT name, status, panel FROM indicator_types WHERE id=$1`, id,
+		).Scan(&name, &status, &panel); err == nil && panel == "signal" {
 			s.pool.Exec(r.Context(), //nolint:errcheck
 				`INSERT INTO signal_types (id, name, status, panel)
 				 VALUES ($1, $2, $3, 'signal')
@@ -173,8 +177,6 @@ func (s *Server) ToggleIndicatorType(w http.ResponseWriter, r *http.Request) {
 				   panel='signal', updated_at=NOW()`,
 				id, name, status,
 			)
-		} else {
-			s.pool.Exec(r.Context(), `DELETE FROM signal_types WHERE id=$1`, id) //nolint:errcheck
 		}
 	}
 
