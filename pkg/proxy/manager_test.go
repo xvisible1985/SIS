@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -172,4 +173,95 @@ func TestPortFromURL(t *testing.T) {
 func mustURL(s string) *url.URL {
 	u, _ := url.Parse(s)
 	return u
+}
+
+func TestPickForIPs_EmptyAllowedBehavesLikePick(t *testing.T) {
+	m := &Manager{
+		proxies: []*Proxy{
+			{ID: 1, URL: mustURL("http://proxy1.example.com:3128"), Weight: 1, IsActive: true, status: "healthy"},
+			{ID: 2, URL: mustURL("http://proxy2.example.com:3128"), Weight: 1, IsActive: true, status: "healthy"},
+		},
+	}
+	p, err := m.PickForIPs(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p == nil {
+		t.Fatal("expected a proxy, got nil")
+	}
+}
+
+func TestPickForIPs_FiltersToAllowedHost(t *testing.T) {
+	p1 := &Proxy{ID: 1, URL: mustURL("http://10.0.0.1:3128"), Weight: 1, IsActive: true, status: "healthy"}
+	p2 := &Proxy{ID: 2, URL: mustURL("http://10.0.0.2:3128"), Weight: 1, IsActive: true, status: "healthy"}
+	m := &Manager{proxies: []*Proxy{p1, p2}}
+
+	for i := 0; i < 20; i++ {
+		p, err := m.PickForIPs([]string{"10.0.0.2"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if p.ID != 2 {
+			t.Errorf("expected proxy 2 (10.0.0.2), got %d", p.ID)
+		}
+	}
+}
+
+func TestPickForIPs_MultipleAllowedUsesLeastConnections(t *testing.T) {
+	p1 := &Proxy{ID: 1, URL: mustURL("http://10.0.0.1:3128"), Weight: 1, IsActive: true, status: "healthy"}
+	p2 := &Proxy{ID: 2, URL: mustURL("http://10.0.0.2:3128"), Weight: 1, IsActive: true, status: "healthy"}
+	p3 := &Proxy{ID: 3, URL: mustURL("http://10.0.0.3:3128"), Weight: 1, IsActive: true, status: "healthy"}
+	m := &Manager{proxies: []*Proxy{p1, p2, p3}}
+
+	// p3 не в allowedIPs — не должен выбираться, даже если наименее загружен.
+	p1.IncPending()
+	p1.IncPending()
+
+	for i := 0; i < 20; i++ {
+		p, err := m.PickForIPs([]string{"10.0.0.1", "10.0.0.2"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if p.ID != 2 {
+			t.Errorf("expected proxy 2 (least pending among allowed), got %d", p.ID)
+		}
+	}
+}
+
+func TestPickForIPs_NoMatchReturnsErrNoWhitelistedProxy(t *testing.T) {
+	p1 := &Proxy{ID: 1, URL: mustURL("http://10.0.0.1:3128"), Weight: 1, IsActive: true, status: "healthy"}
+	m := &Manager{proxies: []*Proxy{p1}}
+
+	p, err := m.PickForIPs([]string{"192.168.1.1"})
+	if p != nil {
+		t.Errorf("expected nil proxy, got %v", p)
+	}
+	if !errors.Is(err, ErrNoWhitelistedProxy) {
+		t.Errorf("expected ErrNoWhitelistedProxy, got %v", err)
+	}
+}
+
+func TestPickForIPs_EmptyPoolWithAllowedIPsReturnsError(t *testing.T) {
+	m := &Manager{proxies: []*Proxy{}}
+	p, err := m.PickForIPs([]string{"10.0.0.1"})
+	if p != nil {
+		t.Errorf("expected nil proxy, got %v", p)
+	}
+	if !errors.Is(err, ErrNoWhitelistedProxy) {
+		t.Errorf("expected ErrNoWhitelistedProxy, got %v", err)
+	}
+}
+
+func TestPickForIPs_UnhealthyOrInactiveExcludedEvenIfAllowed(t *testing.T) {
+	p1 := &Proxy{ID: 1, URL: mustURL("http://10.0.0.1:3128"), Weight: 1, IsActive: true, status: "unhealthy"}
+	p2 := &Proxy{ID: 2, URL: mustURL("http://10.0.0.2:3128"), Weight: 1, IsActive: false, status: "healthy"}
+	m := &Manager{proxies: []*Proxy{p1, p2}}
+
+	p, err := m.PickForIPs([]string{"10.0.0.1", "10.0.0.2"})
+	if p != nil {
+		t.Errorf("expected nil proxy, got %v", p)
+	}
+	if !errors.Is(err, ErrNoWhitelistedProxy) {
+		t.Errorf("expected ErrNoWhitelistedProxy, got %v", err)
+	}
 }
