@@ -73,7 +73,7 @@ func WSDialer() *websocket.Dialer {
 	if p == nil {
 		return websocket.DefaultDialer
 	}
-	return &websocket.Dialer{Proxy: http.ProxyURL(p.URL)}
+	return &websocket.Dialer{Proxy: http.ProxyURL(p.URL), HandshakeTimeout: 45 * time.Second}
 }
 
 // WSDialerFor returns a *websocket.Dialer restricted to proxies whose host is in
@@ -93,5 +93,5 @@ func WSDialerFor(allowedIPs []string) (*websocket.Dialer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &websocket.Dialer{Proxy: http.ProxyURL(p.URL)}, nil
+	return &websocket.Dialer{Proxy: http.ProxyURL(p.URL), HandshakeTimeout: 45 * time.Second}, nil
 }
