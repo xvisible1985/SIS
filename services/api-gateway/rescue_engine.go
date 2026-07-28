@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"sis/pkg/signal"
+	"sis/pkg/trader"
 )
 
 // rescueSignalTrigger describes a signal-based condition for the RescueBot
@@ -178,4 +182,142 @@ func rescueCalcPartialCloseQty(accumulatedPnl, mainReducedUsdt, price, qtyStep, 
 		return 0
 	}
 	return qty
+}
+
+// checkRescuePartialClose is called once per hedge-engine tick for hedge bots
+// with RescuePartialCloseEnabled=true. It queries all open hedge sessions for
+// the bot, evaluates rescue conditions for each pair, and places a reduce-only
+// market order on the main position when all gates are open.
+func (s *Server) checkRescuePartialClose(ctx context.Context, botID, accountID string, cfg botCfgJSON, posMap map[string]map[string]hedgePosInfo) {
+	type sessionRow struct {
+		hedgeStratID    string
+		accumulatedPnl  float64
+		mainReducedUsdt float64
+		lastCloseAt     *time.Time
+		symbol          string
+		mainDir         string
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT hs.hedge_strategy_id, hs.accumulated_pnl, hs.main_reduced_usdt,
+		       hs.last_partial_close_at, ms.symbol, ms.direction
+		FROM hedge_sessions hs
+		JOIN strategies ms ON ms.id = hs.main_strategy_id
+		JOIN strategies hst ON hst.id = hs.hedge_strategy_id
+		WHERE hs.bot_id = $1 AND hs.ended_at IS NULL
+		  AND ms.status IN ('active','finishing') AND hst.status IN ('active','finishing')`,
+		botID)
+	if err != nil {
+		log.Printf("checkRescuePartialClose [bot %s]: query: %v", botID, err)
+		return
+	}
+	defer rows.Close()
+
+	var sessions []sessionRow
+	for rows.Next() {
+		var sr sessionRow
+		if err := rows.Scan(&sr.hedgeStratID, &sr.accumulatedPnl, &sr.mainReducedUsdt,
+			&sr.lastCloseAt, &sr.symbol, &sr.mainDir); err != nil {
+			continue
+		}
+		sessions = append(sessions, sr)
+	}
+	rows.Close()
+
+	creds, err := s.loadBotAccountCreds(ctx, accountID)
+	if err != nil {
+		log.Printf("checkRescuePartialClose [bot %s]: creds: %v", botID, err)
+		return
+	}
+
+	for _, sr := range sessions {
+		mainSide := hedgeDirToSide(sr.mainDir)
+		bySymbol, ok := posMap[sr.symbol]
+		if !ok {
+			continue
+		}
+		mainPos, ok := bySymbol[mainSide]
+		if !ok {
+			continue
+		}
+
+		currentPrice := mainPos.MarkPrice
+		mainEntryPrice := mainPos.EntryPrice
+
+		// Evaluate signal trigger if configured.
+		signalMet := true
+		if cfg.RescueTriggerSignal != nil {
+			trig := cfg.RescueTriggerSignal
+			sc := signal.Config{Name: trig.Name, Params: trig.Params}
+			interval := "15"
+			if v, ok := trig.Params["tf"].(string); ok && v != "" {
+				interval = v
+			}
+			state := s.signalEngine.ComputeStateForce(sr.symbol, interval, []signal.Config{sc})
+			// Signal must confirm the rescue direction (adverse to main = beneficial for hedge).
+			var want signal.State
+			if sr.mainDir == "buy" {
+				want = signal.Sell // price falling → sell signal confirms rescue for long main
+			} else {
+				want = signal.Buy
+			}
+			signalMet = (state == want)
+		}
+
+		// Fetch instrument constraints (cached 5m by trader package).
+		pubInfo, err := trader.GetPublicInstrumentInfo(ctx, "linear", sr.symbol)
+		if err != nil {
+			log.Printf("checkRescuePartialClose [%s %s]: GetPublicInstrumentInfo: %v", botID, sr.symbol, err)
+			continue
+		}
+
+		req := rescuePartialCloseRequest(cfg,
+			sr.symbol, sr.mainDir,
+			currentPrice, mainEntryPrice,
+			sr.accumulatedPnl, sr.mainReducedUsdt,
+			pubInfo.QtyStep, pubInfo.MinQty,
+			sr.lastCloseAt, signalMet,
+		)
+		if req == nil {
+			continue
+		}
+
+		// Capitalize side for Bybit API: "sell" → "Sell", "buy" → "Buy".
+		apiSide := strings.Title(req.Side) //nolint:staticcheck // simple capitalisation, locale-insensitive
+		posIdx := 1                         // long main (Buy position) → positionIdx 1
+		if sr.mainDir == "sell" {
+			posIdx = 2 // short main (Sell position) → positionIdx 2
+		}
+
+		orderReq := trader.OrderRequest{
+			Symbol:      req.Symbol,
+			Category:    "linear",
+			Side:        apiSide,
+			OrderType:   "Market",
+			Qty:         trader.FormatQty(req.Qty, pubInfo.QtyStep, pubInfo.MinQty),
+			ReduceOnly:  true,
+			PositionIdx: posIdx,
+		}
+
+		result, err := trader.PlaceOrder(ctx, creds, orderReq)
+		if err != nil {
+			log.Printf("checkRescuePartialClose [%s %s]: PlaceOrder: %v", botID, sr.symbol, err)
+			s.logBotEvent(ctx, botID,
+				fmt.Sprintf("Хедж-рескью: частичное закрытие %s %s — ошибка ордера: %v", sr.symbol, sr.mainDir, err),
+				"error", "hedge")
+			continue
+		}
+
+		log.Printf("checkRescuePartialClose [%s %s]: placed reduce-only %s qty=%s orderID=%s",
+			botID, sr.symbol, apiSide, orderReq.Qty, result.OrderId)
+
+		if err := recordRescuePartialClose(ctx, s.pool, sr.hedgeStratID, req.Qty, currentPrice); err != nil {
+			log.Printf("checkRescuePartialClose [%s %s]: recordRescuePartialClose: %v", botID, sr.symbol, err)
+		}
+
+		s.logBotEvent(ctx, botID,
+			fmt.Sprintf("Хедж-рескью: частичное закрытие мейна %s %s — qty=%s по цене %.4f (hedge PnL=%.2f USDT)",
+				sr.symbol, sr.mainDir, orderReq.Qty, currentPrice, sr.accumulatedPnl),
+			"info", "hedge")
+	}
 }

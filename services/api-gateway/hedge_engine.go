@@ -158,6 +158,9 @@ func (s *Server) processHedgeBot(ctx context.Context, botID, ownerID, accountID 
 	s.checkHedgeDeactivation(ctx, botID, accountID, cfg, posMap)
 	s.checkHedgeActivation(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, creds, posMap, watches)
 	s.buildPairedCloseWatches(ctx, botID, accountID, "hedge", cfg, posMap, pairedWatches)
+	if cfg.RescuePartialCloseEnabled {
+		s.checkRescuePartialClose(ctx, botID, accountID, cfg, posMap)
+	}
 }
 
 // ── Data types ────────────────────────────────────────────────────────────────
