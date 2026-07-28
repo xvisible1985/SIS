@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 var (
@@ -23,6 +25,24 @@ func InitGlobalManager(m *Manager) {
 // GlobalManager returns the singleton Manager or nil if not initialised.
 func GlobalManager() *Manager {
 	return globalManager
+}
+
+// WSDialer returns a *websocket.Dialer that routes the connection through the best
+// available proxy. Falls back to websocket.DefaultDialer if no proxies are configured
+// or healthy. Call once per dial — the proxy is selected at call time, not per-frame.
+func WSDialer() *websocket.Dialer {
+	m := globalManager
+	if m == nil || m.Count() == 0 {
+		return websocket.DefaultDialer
+	}
+	p := m.Pick()
+	if p == nil {
+		return websocket.DefaultDialer
+	}
+	return &websocket.Dialer{
+		Proxy:            http.ProxyURL(p.URL),
+		HandshakeTimeout: websocket.DefaultDialer.HandshakeTimeout,
+	}
 }
 
 // HTTPClient returns an *http.Client that routes requests through the proxy pool.
