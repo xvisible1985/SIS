@@ -5,6 +5,95 @@ import (
 	"testing"
 )
 
+// TestRescuePriceMoveTowardMainPct проверяет расчёт движения цены в сторону
+// мейн-позиции (т.е. против неё — убыток для мейна).
+func TestRescuePriceMoveTowardMainPct(t *testing.T) {
+	cases := []struct {
+		name      string
+		entryAt   float64
+		currentAt float64
+		mainDir   string // "buy" = long, "sell" = short
+		wantPct   float64
+	}{
+		{
+			// Long main, price fell 5% from entry → движение к убытку = 5%
+			name:      "long: price down 5pct",
+			entryAt:   100,
+			currentAt: 95,
+			mainDir:   "buy",
+			wantPct:   5.0,
+		},
+		{
+			// Long main, price rose → движение в сторону прибыли, возвращаем 0
+			name:      "long: price up — no adverse move",
+			entryAt:   100,
+			currentAt: 110,
+			mainDir:   "buy",
+			wantPct:   0,
+		},
+		{
+			// Short main, price rose 10% from entry → убыток для мейна = 10%
+			name:      "short: price up 10pct",
+			entryAt:   100,
+			currentAt: 110,
+			mainDir:   "sell",
+			wantPct:   10.0,
+		},
+		{
+			// Short main, price fell → в сторону прибыли
+			name:      "short: price down — no adverse move",
+			entryAt:   100,
+			currentAt: 90,
+			mainDir:   "sell",
+			wantPct:   0,
+		},
+		{
+			name:    "zero entry returns 0",
+			entryAt: 0, currentAt: 90, mainDir: "buy",
+			wantPct: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := rescuePriceMoveTowardMainPct(tc.entryAt, tc.currentAt, tc.mainDir)
+			if math.Abs(got-tc.wantPct) > 1e-9 {
+				t.Errorf("want %.6f, got %.6f", tc.wantPct, got)
+			}
+		})
+	}
+}
+
+// TestRescuePriceLevelReached проверяет пересечение ценового уровня в зависимости
+// от направления мейн-позиции.
+func TestRescuePriceLevelReached(t *testing.T) {
+	cases := []struct {
+		name      string
+		level     float64
+		currentAt float64
+		mainDir   string
+		want      bool
+	}{
+		// Long main: уровень below entry — price falls to/past it → reached
+		{"long: price at level", 90, 90, "buy", true},
+		{"long: price below level", 90, 85, "buy", true},
+		{"long: price above level", 90, 95, "buy", false},
+		// Short main: уровень above entry — price rises to/past it → reached
+		{"short: price at level", 110, 110, "sell", true},
+		{"short: price above level", 110, 115, "sell", true},
+		{"short: price below level", 110, 105, "sell", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := rescuePriceLevelReached(tc.level, tc.currentAt, tc.mainDir)
+			if got != tc.want {
+				t.Errorf("want %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
 // TestRescueCalcPartialCloseQty проверяет конвертацию доступного PnL → объём
 // частичного закрытия с учётом qtyStep и minQty.
 func TestRescueCalcPartialCloseQty(t *testing.T) {
