@@ -213,9 +213,14 @@ func TestPickForIPs_MultipleAllowedUsesLeastConnections(t *testing.T) {
 	p3 := &Proxy{ID: 3, URL: mustURL("http://10.0.0.3:3128"), Weight: 1, IsActive: true, status: "healthy"}
 	m := &Manager{proxies: []*Proxy{p1, p2, p3}}
 
-	// p3 не в allowedIPs — не должен выбираться, даже если наименее загружен.
+	// p3 не в allowedIPs и является безальтернативным глобальным минимумом по pending
+	// (pending=0, у p1 и p2 pending > 0): если бы фильтр по whitelist применялся
+	// ПОСЛЕ скоринга по наименьшей загрузке, p3 выигрывал бы детерминированно на
+	// каждой итерации. Среди allowedIPs (p1, p2) минимумом является p2.
 	p1.IncPending()
-	p1.IncPending()
+	p1.IncPending() // p1.pending = 2
+	p2.IncPending() // p2.pending = 1, наименьший среди allowed
+	// p3.pending остаётся 0 — глобальный минимум, но p3 не в allowedIPs.
 
 	for i := 0; i < 20; i++ {
 		p, err := m.PickForIPs([]string{"10.0.0.1", "10.0.0.2"})
