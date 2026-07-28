@@ -523,6 +523,11 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 	// signal bug); if the line never appears at all, the tick isn't completing (timeout).
 	checkedActivation, confirmedActivation := 0, 0
 
+	// repairCooldown is the minimum time between successive failed repair attempts for the
+	// same (bot, symbol, direction) tuple. Prevents a persistently-failing symbol (delisted,
+	// order rejected, etc.) from spamming createBotStrategy and logBotEvent every 30s tick.
+	const repairCooldown = 5 * time.Minute
+
 	// Repair pass: symbols already missing one leg get priority over brand-new candidates
 	// for the same scarce long/short capacity — see matrixRepairCandidates' doc comment
 	// and docs/superpowers/specs/2026-07-24-matrix-slot-repair-priority-design.md for why.
@@ -544,6 +549,11 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 			continue
 		}
 		if dir == "short" && maxShort > 0 && activeShort >= maxShort {
+			continue
+		}
+
+		cooldownKey := botID + ":" + symbol + ":" + dir
+		if t, ok := s.repairFailedAt.Load(cooldownKey); ok && time.Since(t.(time.Time)) < repairCooldown {
 			continue
 		}
 
@@ -578,10 +588,12 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 		}
 
 		if id, err := s.createBotStrategy(ctx, b, cfg, symbol, dir, 0, "", adoptJSON); err != nil {
+			s.repairFailedAt.Store(cooldownKey, time.Now())
 			s.logBotEvent(ctx, botID,
 				fmt.Sprintf("Матрикс[repair]: %s %s — ошибка восстановления: %v", symbol, dir, err),
 				"error", "matrix")
 		} else {
+			s.repairFailedAt.Delete(cooldownKey)
 			if id != "" {
 				activeTotal++
 				if dir == "long" {

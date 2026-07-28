@@ -62,6 +62,12 @@ type Server struct {
 	// timeout in cleanupStoppedBotStrategies.
 	cleanupWaiters sync.Map
 
+	// repairFailedAt tracks the last failure time for repair-pass attempts.
+	// Key: "botID:symbol:dir" → time.Time. Cleared on success; used to impose a cooldown
+	// between retries so a persistently-failing symbol (delisted, etc.) does not spam
+	// createBotStrategy and logBotEvent on every 30s tick.
+	repairFailedAt sync.Map
+
 	// Hedge WS price watcher: subscribes to TickerHub for symbols near the activation
 	// threshold and triggers an immediate hedge engine tick when price crosses it.
 	hedgeWatchMu   sync.RWMutex
