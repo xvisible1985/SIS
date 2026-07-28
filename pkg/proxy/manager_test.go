@@ -10,9 +10,9 @@ import (
 func TestPickRoundRobin(t *testing.T) {
 	m := &Manager{
 		proxies: []*Proxy{
-			{ID: 1, Weight: 1, IsActive: true, HealthStatus: "healthy"},
-			{ID: 2, Weight: 1, IsActive: true, HealthStatus: "healthy"},
-			{ID: 3, Weight: 1, IsActive: true, HealthStatus: "healthy"},
+			{ID: 1, URL: mustURL("http://proxy1.example.com:3128"), Weight: 1, IsActive: true, status: "healthy"},
+			{ID: 2, URL: mustURL("http://proxy2.example.com:3128"), Weight: 1, IsActive: true, status: "healthy"},
+			{ID: 3, URL: mustURL("http://proxy3.example.com:3128"), Weight: 1, IsActive: true, status: "healthy"},
 		},
 	}
 
@@ -34,9 +34,9 @@ func TestPickRoundRobin(t *testing.T) {
 }
 
 func TestPickLeastConnections(t *testing.T) {
-	p1 := &Proxy{ID: 1, Weight: 1, IsActive: true, HealthStatus: "healthy"}
-	p2 := &Proxy{ID: 2, Weight: 1, IsActive: true, HealthStatus: "healthy"}
-	p3 := &Proxy{ID: 3, Weight: 1, IsActive: true, HealthStatus: "healthy"}
+	p1 := &Proxy{ID: 1, URL: mustURL("http://proxy1.example.com:3128"), Weight: 1, IsActive: true, status: "healthy"}
+	p2 := &Proxy{ID: 2, URL: mustURL("http://proxy2.example.com:3128"), Weight: 1, IsActive: true, status: "healthy"}
+	p3 := &Proxy{ID: 3, URL: mustURL("http://proxy3.example.com:3128"), Weight: 1, IsActive: true, status: "healthy"}
 
 	m := &Manager{proxies: []*Proxy{p1, p2, p3}}
 
@@ -55,8 +55,8 @@ func TestPickLeastConnections(t *testing.T) {
 }
 
 func TestPickWeight(t *testing.T) {
-	p1 := &Proxy{ID: 1, Weight: 1, IsActive: true, HealthStatus: "healthy"}
-	p2 := &Proxy{ID: 2, Weight: 3, IsActive: true, HealthStatus: "healthy"}
+	p1 := &Proxy{ID: 1, URL: mustURL("http://proxy1.example.com:3128"), Weight: 1, IsActive: true, status: "healthy"}
+	p2 := &Proxy{ID: 2, URL: mustURL("http://proxy2.example.com:3128"), Weight: 3, IsActive: true, status: "healthy"}
 
 	m := &Manager{proxies: []*Proxy{p1, p2}}
 
@@ -77,8 +77,8 @@ func TestPickWeight(t *testing.T) {
 }
 
 func TestPickNoHealthyReturnsNil(t *testing.T) {
-	p1 := &Proxy{ID: 1, Weight: 1, IsActive: true, HealthStatus: "unhealthy"}
-	p2 := &Proxy{ID: 2, Weight: 1, IsActive: false, HealthStatus: "healthy"}
+	p1 := &Proxy{ID: 1, Weight: 1, IsActive: true, status: "unhealthy"}
+	p2 := &Proxy{ID: 2, Weight: 1, IsActive: false, status: "healthy"}
 
 	m := &Manager{proxies: []*Proxy{p1, p2}}
 
@@ -121,8 +121,8 @@ func TestProxyCounters(t *testing.T) {
 
 func TestPickConcurrency(t *testing.T) {
 	proxies := []*Proxy{
-		{ID: 1, Weight: 1, IsActive: true, HealthStatus: "healthy"},
-		{ID: 2, Weight: 1, IsActive: true, HealthStatus: "healthy"},
+		{ID: 1, URL: mustURL("http://proxy1.example.com:3128"), Weight: 1, IsActive: true, status: "healthy"},
+		{ID: 2, URL: mustURL("http://proxy2.example.com:3128"), Weight: 1, IsActive: true, status: "healthy"},
 	}
 	m := &Manager{proxies: proxies}
 
