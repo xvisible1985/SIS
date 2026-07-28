@@ -91,6 +91,14 @@ export type StrategyConfig = {
   // (2) create standalone hedge on whitelisted symbols even without a main position.
   // Standalone hedges are not tied to any main strategy and deactivate via paired-close only.
   hedge_force_activation?: boolean;
+  // Rescue Bot: optional partial close of the main position funded by hedge accumulated PnL.
+  // Trigger fields are nullable: null / undefined = trigger disabled (AND logic across active triggers).
+  rescue_partial_close_enabled?: boolean;
+  rescue_trigger_price_move_pct?: number | null;
+  rescue_trigger_price_level?: number | null;
+  rescue_trigger_accumulated_min_usdt?: number | null;
+  rescue_trigger_signal?: { name: string; params?: Record<string, unknown> } | null;
+  rescue_min_interval_sec?: number;
 };
 
 export type Bot = {
