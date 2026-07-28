@@ -3,8 +3,10 @@ package trader
 import "time"
 
 type Credentials struct {
-	APIKey    string
-	SecretKey string
+	APIKey         string
+	SecretKey      string
+	AccountID      string   // exchange_accounts.id; используется для whitelist-aware выбора прокси
+	WhitelistedIPs []string // exchange_accounts.whitelisted_ips; nil/пусто = ограничений на бирже нет
 }
 
 type OrderRequest struct {
