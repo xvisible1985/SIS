@@ -93,6 +93,44 @@ func rescueCooldownElapsed(lastPartialCloseAt *time.Time, minIntervalSec int) bo
 	return time.Since(*lastPartialCloseAt) >= time.Duration(minIntervalSec)*time.Second
 }
 
+// rescueCloseReq is returned by rescuePartialCloseRequest when all conditions
+// are met. It carries everything needed to place the reduce-only market order.
+type rescueCloseReq struct {
+	Symbol string
+	Side   string  // "buy" (closing short) or "sell" (closing long)
+	Qty    float64 // coin quantity, already rounded to qtyStep
+}
+
+// rescuePartialCloseRequest evaluates all rescue conditions and returns a close
+// request when every gate is open, or nil when any gate blocks. The caller is
+// responsible for checking cfg.RescuePartialCloseEnabled before calling.
+func rescuePartialCloseRequest(
+	cfg botCfgJSON,
+	symbol, mainDir string,
+	currentPrice, mainEntryPrice float64,
+	accumulatedPnl, mainReducedUsdt float64,
+	qtyStep, minQty float64,
+	lastPartialCloseAt *time.Time,
+	signalMet bool,
+) *rescueCloseReq {
+	if !rescueCooldownElapsed(lastPartialCloseAt, cfg.RescueMinIntervalSec) {
+		return nil
+	}
+	if !rescueTriggersMet(cfg, currentPrice, mainEntryPrice, mainDir, accumulatedPnl, signalMet) {
+		return nil
+	}
+	qty := rescueCalcPartialCloseQty(accumulatedPnl, mainReducedUsdt, currentPrice, qtyStep, minQty)
+	if qty <= 0 {
+		return nil
+	}
+	// closing side is opposite to main position direction
+	closeSide := "sell"
+	if mainDir == "sell" {
+		closeSide = "buy"
+	}
+	return &rescueCloseReq{Symbol: symbol, Side: closeSide, Qty: qty}
+}
+
 // rescueCalcPartialCloseQty returns the coin quantity to partially close on the
 // main position, funded by the hedge's accumulated PnL minus what was already
 // reduced. Returns 0 when the available USDT is insufficient (below minQty value

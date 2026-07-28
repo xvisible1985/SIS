@@ -221,6 +221,85 @@ func TestRescueCooldownElapsed(t *testing.T) {
 	}
 }
 
+// TestRescuePartialCloseRequest проверяет сборку запроса частичного закрытия.
+func TestRescuePartialCloseRequest(t *testing.T) {
+	pctThresh := 5.0
+	accumMin := 20.0
+
+	t.Run("all conditions met → request returned", func(t *testing.T) {
+		cfg := botCfgJSON{
+			RescuePartialCloseEnabled:       true,
+			RescueTriggerPriceMovePct:       &pctThresh,
+			RescueTriggerAccumulatedMinUsdt: &accumMin,
+			RescueMinIntervalSec:            300,
+		}
+		// long main, price dropped 8% from entry, 50 USDT accumulated
+		req := rescuePartialCloseRequest(cfg,
+			"BTCUSDT", "buy",   // symbol, mainDir
+			50000, 54348,       // currentPrice, mainEntryPrice  (drop ~8%)
+			50, 0,              // accumulatedPnl, mainReducedUsdt
+			0.001, 0.001,       // qtyStep, minQty
+			nil, false,         // lastPartialCloseAt, signalMet
+		)
+		if req == nil {
+			t.Fatal("expected request, got nil")
+		}
+		if req.Symbol != "BTCUSDT" {
+			t.Errorf("symbol: %s", req.Symbol)
+		}
+		if req.Side != "sell" { // closing a long = sell
+			t.Errorf("side: %s (expected sell)", req.Side)
+		}
+		if req.Qty <= 0 {
+			t.Errorf("qty must be > 0, got %f", req.Qty)
+		}
+	})
+
+	t.Run("trigger not met → nil", func(t *testing.T) {
+		cfg := botCfgJSON{
+			RescuePartialCloseEnabled: true,
+			RescueTriggerPriceMovePct: &pctThresh,
+		}
+		// price only dropped 2% — below 5% threshold
+		req := rescuePartialCloseRequest(cfg, "BTCUSDT", "buy", 98000, 100000, 50, 0, 0.001, 0.001, nil, false)
+		if req != nil {
+			t.Errorf("expected nil, got %+v", req)
+		}
+	})
+
+	t.Run("cooldown not elapsed → nil", func(t *testing.T) {
+		cfg := botCfgJSON{
+			RescuePartialCloseEnabled: true,
+			RescueMinIntervalSec:      300,
+		}
+		recent := time.Now().Add(-60 * time.Second)
+		req := rescuePartialCloseRequest(cfg, "BTCUSDT", "buy", 90000, 100000, 50, 0, 0.001, 0.001, &recent, false)
+		if req != nil {
+			t.Errorf("expected nil (cooldown), got %+v", req)
+		}
+	})
+
+	t.Run("insufficient pnl for minQty → nil", func(t *testing.T) {
+		cfg := botCfgJSON{RescuePartialCloseEnabled: true}
+		// accum=0.5 USDT at price=50000, minQty=0.001 → 0.00001 coin < 0.001
+		req := rescuePartialCloseRequest(cfg, "BTCUSDT", "buy", 50000, 55000, 0.5, 0, 0.001, 0.001, nil, false)
+		if req != nil {
+			t.Errorf("expected nil (insufficient qty), got %+v", req)
+		}
+	})
+
+	t.Run("short main closing side = buy", func(t *testing.T) {
+		cfg := botCfgJSON{RescuePartialCloseEnabled: true}
+		req := rescuePartialCloseRequest(cfg, "ETHUSDT", "sell", 1200, 1000, 100, 0, 0.01, 0.01, nil, false)
+		if req == nil {
+			t.Fatal("expected request for short")
+		}
+		if req.Side != "buy" { // closing a short = buy
+			t.Errorf("side: %s (expected buy)", req.Side)
+		}
+	})
+}
+
 // TestRescueCalcPartialCloseQty проверяет конвертацию доступного PnL → объём
 // частичного закрытия с учётом qtyStep и minQty.
 func TestRescueCalcPartialCloseQty(t *testing.T) {
