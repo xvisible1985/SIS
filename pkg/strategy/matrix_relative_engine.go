@@ -59,16 +59,12 @@ func (sr *StrategyRunner) matrixNextLevelIdx() int {
 	return next + 1
 }
 
-// matrixPlaceRelativeSlot inserts a new pending accumulation level at relative index idx
-// (config idx-1 of the side's config array) and places it via placeMatrixLevel, mirroring
-// matrixReplaceSlots's insert+append+place pattern. Must be called with sr.mu held.
-func (sr *StrategyRunner) matrixPlaceRelativeSlot(ctx context.Context, side string, idx int, target float64, cfg MatrixLevel, currentPrice float64) {
-	slot := idx
-	if side == "below" {
-		slot = -idx
-	}
-
-	sizeUSDT := cfg.SizePct / 100 * sr.effectiveDeposit(currentPrice)
+// matrixRelativeSlotSizing computes size_usdt/qty for a new relative slot from
+// cfg.SizePct of the current effective deposit, bumped up if needed to meet the
+// exchange's minimum notional value. Shared by matrixPlaceRelativeSlot and
+// matrixTriggerRelativeVirtualLevel so both size new slots identically.
+func (sr *StrategyRunner) matrixRelativeSlotSizing(cfg MatrixLevel, target, currentPrice float64) (sizeUSDT float64, qty string) {
+	sizeUSDT = cfg.SizePct / 100 * sr.effectiveDeposit(currentPrice)
 	priceForQty := target
 	if priceForQty == 0 {
 		priceForQty = currentPrice
@@ -84,7 +80,19 @@ func (sr *StrategyRunner) matrixPlaceRelativeSlot(ctx context.Context, side stri
 			}
 		}
 	}
-	qty := rawQty
+	return sizeUSDT, rawQty
+}
+
+// matrixPlaceRelativeSlot inserts a new pending accumulation level at relative index idx
+// (config idx-1 of the side's config array) and places it via placeMatrixLevel, mirroring
+// matrixReplaceSlots's insert+append+place pattern. Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixPlaceRelativeSlot(ctx context.Context, side string, idx int, target float64, cfg MatrixLevel, currentPrice float64) {
+	slot := idx
+	if side == "below" {
+		slot = -idx
+	}
+
+	sizeUSDT, qty := sr.matrixRelativeSlotSizing(cfg, target, currentPrice)
 
 	side2 := matrixLevelSide(sr.strategy.Direction)
 	levelIdx := sr.matrixNextLevelIdx()
@@ -107,10 +115,16 @@ func (sr *StrategyRunner) matrixPlaceRelativeSlot(ctx context.Context, side stri
 	}
 	sr.levels = append(sr.levels, newLevel)
 	placed := &sr.levels[len(sr.levels)-1]
-	if err := sr.placeMatrixLevel(ctx, placed, currentPrice); err != nil {
+	// Pass target (not currentPrice) so matrixEntryOrderType's targetPrice==currentPrice
+	// shortcut forces Market — matrixRelativeExpand only calls this after matrixSlotReached
+	// already confirmed price reached/passed target, so there is no "wait passively" phase
+	// left to serve with a resting Limit/StopMarket order. Without this, a fast price gap
+	// past target between ticks left the order resting as a Limit at the stale target price,
+	// unreachable without a reversal — found live (2026-07-21, HEMIUSDT HEDGE leg).
+	if err := sr.placeMatrixLevel(ctx, placed, target); err != nil {
 		sr.errlog(ctx, fmt.Sprintf("[REL] выставление слота L(%d): %v", slot, err))
 	} else {
-		orderType := "limit"
+		orderType := "market"
 		if placed.ExchangeOrderID == "" {
 			orderType = "virtual"
 		}
@@ -119,23 +133,144 @@ func (sr *StrategyRunner) matrixPlaceRelativeSlot(ctx context.Context, side stri
 	}
 }
 
-// matrixRelativeExpand places the next relative accumulation slot when price reaches its
-// target. Only one new slot is placed at a time (skipped if one is already
-// pending/placed). Must be called with sr.mu held.
-func (sr *StrategyRunner) matrixRelativeExpand(ctx context.Context, currentPrice float64) {
-	if sr.cycle == nil {
-		return
+// matrixTriggerRelativeVirtualLevel inserts and immediately fires a relative slot as a
+// market order — the relative-slots counterpart of matrixTriggerVirtualLevel. Used for
+// (a) the counter/against-direction side, which can only ever be virtual (a resting
+// exchange order can't represent "add more against-direction exposure if price moves
+// against the position" in a placeable way — see matrixIsVirtual), and (b) the
+// accumulation side when the level's config explicitly requests order_type=virtual.
+// Unlike matrixPlaceRelativeSlot, there is no resting-order phase: the row is inserted
+// as 'pending' only for bookkeeping/orderRef registration, then transitions to 'placed'
+// immediately once the market order is accepted — the fill itself arrives via the normal
+// WS execution flow, same as any other order. Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixTriggerRelativeVirtualLevel(ctx context.Context, side string, idx int, target float64, cfg MatrixLevel, currentPrice float64) {
+	slot := idx
+	if side == "below" {
+		slot = -idx
 	}
-	side := matrixAccumSide(sr.strategy.Direction)
-	entry := sr.matrixEntryPrice()
-	cfgLevels := filterMatrixLevels(sr.strategy.MatrixLevels, side)
-	n := len(cfgLevels)
-	if n == 0 {
+
+	sizeUSDT, qty := sr.matrixRelativeSlotSizing(cfg, target, currentPrice)
+
+	side2 := matrixLevelSide(sr.strategy.Direction)
+	levelIdx := sr.matrixNextLevelIdx()
+	s := slot
+
+	var levelID string
+	if err := sr.runner.pool.QueryRow(ctx,
+		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, status, slot)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8) RETURNING id`,
+		sr.strategy.ID, sr.cycle.ID, levelIdx, side2, target, sizeUSDT, qty, slot,
+	).Scan(&levelID); err != nil {
+		sr.errlog(ctx, fmt.Sprintf("[REL-V] вставка виртуального слота L(%d): %v", slot, err))
 		return
 	}
 
-	// Skip if an accumulation slot on this side is already pending/placed — only one new
-	// slot is placed at a time.
+	newLevel := GridLevel{
+		ID: levelID, LevelIdx: levelIdx, Side: side2,
+		TargetPrice: target, SizeUSDT: sizeUSDT, Qty: qty,
+		Status: LevelPending, Slot: &s,
+	}
+	sr.levels = append(sr.levels, newLevel)
+	placed := &sr.levels[len(sr.levels)-1]
+	sr.matrixPlaceRelativeVirtualOrder(ctx, placed, currentPrice)
+}
+
+// matrixPlaceRelativeVirtualOrder places the market order for an already-inserted
+// relative-slot level (l.Status must be LevelPending, l.ExchangeOrderID empty). Shared by
+// matrixTriggerRelativeVirtualLevel (fresh insert+trigger, the normal path) and
+// matrixRetryStuckRelativeSlot (retry after a prior attempt failed or was interrupted by
+// a runner restart between insert and placement) — a stuck slot retries through the exact
+// same order-placement logic as the original attempt, not a parallel copy of it.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixPlaceRelativeVirtualOrder(ctx context.Context, l *GridLevel, currentPrice float64) {
+	linkID := fmt.Sprintf("SIS_STR-%s-%d-%d-v%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, sr.repriceGen)
+	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
+	sr.runner.RegisterOrder(linkID, ref)
+
+	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+		Symbol:      sr.strategy.Symbol,
+		Category:    sr.strategy.Category,
+		Side:        l.Side,
+		OrderType:   "Market",
+		Qty:         l.Qty,
+		PositionIdx: positionIdxForOpen(sr.strategy.HedgeMode, l.Side),
+		OrderLinkId: linkID,
+	})
+	if err != nil {
+		sr.runner.UnregisterOrder(linkID)
+		if isMinOrderValue(err) {
+			sr.warn(ctx, fmt.Sprintf("Matrix relative virtual %s: объём ордера слишком мал (qty=%s) — слот пропущен", slotLabel(l.Slot), l.Qty))
+			l.Status = LevelCancelled
+			sr.runner.pool.Exec(ctx, //nolint:errcheck
+				`UPDATE strategy_levels SET status='cancelled' WHERE id=$1`, l.ID)
+		} else {
+			sr.errlog(ctx, fmt.Sprintf("[REL-V] выставление виртуального слота %s: %v", slotLabel(l.Slot), err))
+		}
+		return
+	}
+	sr.markLevelPlaced(ctx, l, result.OrderId, linkID)
+	sr.runner.RegisterOrder(result.OrderId, ref)
+	sr.info(ctx, fmt.Sprintf("[REL] %s виртуальный запущен @ market (цена_рынка=%.4f)", slotLabel(l.Slot), currentPrice))
+}
+
+// matrixRetryStuckRelativeSlot looks for an already-inserted relative slot on this side
+// that never completed its transition out of 'pending' — a prior PlaceOrder attempt
+// failed (e.g. transient exchange error), or the runner restarted between insert and
+// placement — and retries it. Without this, matrixNextRelativeSlot's "blocked while a
+// pending/placed slot exists" guard leaves that side stuck forever: matrixRelativeExpand
+// only ever tries to create the NEXT slot, it never re-checks an existing stuck one.
+// Mirrors the self-healing retry absolute-mode matrix already has for missing per-level
+// SLs (matrixPriceTick step 4), applied here to the relative-slots insert path. Found
+// live (2026-07-17): a hedge leg's counter side stopped expanding entirely — permanently,
+// with price running far past the target — after one virtual-trigger PlaceOrder attempt
+// didn't complete.
+// Returns true if a stuck slot was found (and a retry attempted), so the caller knows not
+// to also try creating a brand-new slot on the same tick. Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixRetryStuckRelativeSlot(ctx context.Context, side string, currentPrice float64) bool {
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Slot == nil || *l.Slot == 0 {
+			continue
+		}
+		if side == "below" && *l.Slot > 0 {
+			continue
+		}
+		if side == "above" && *l.Slot < 0 {
+			continue
+		}
+		if l.Status != LevelPending || l.ExchangeOrderID != "" {
+			continue
+		}
+		if sr.matrixIsVirtual(l) {
+			sr.matrixPlaceRelativeVirtualOrder(ctx, l, currentPrice)
+			return true
+		}
+		// l.TargetPrice, not currentPrice: this level was only ever inserted because
+		// matrixSlotReached already confirmed price reached/passed it (see
+		// matrixPlaceRelativeSlot), so force Market via placeMatrixLevel's
+		// targetPrice==currentPrice shortcut rather than risk a stale resting Limit.
+		if err := sr.placeMatrixLevel(ctx, l, l.TargetPrice); err != nil {
+			sr.errlog(ctx, fmt.Sprintf("[REL] повтор выставления слота %s: %v", slotLabel(l.Slot), err))
+		}
+		return true
+	}
+	return false
+}
+
+// matrixNextRelativeSlot computes the next relative slot's config index/slot number/
+// target price/virtual-ness for the given side ("above" or "below"), or ok=false when
+// expansion is currently blocked (a slot on this side is already pending/placed) or the
+// concurrency cap is reached. Pure computation, no side effects — the single source of
+// truth shared by matrixRelativeExpand (which places/triggers the slot once price
+// reaches target) and matrixNextRelativeSlotPreview (read-only, for the chart preview
+// before price arrives). Keeping this logic in one place is deliberate: the short-
+// direction sign-inversion bug (2026-07-15) happened because the same computation was
+// duplicated and only one copy got fixed.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixNextRelativeSlot(side string) (idx, slot int, target float64, cfg MatrixLevel, virtual, ok bool) {
+	if sr.cycle == nil {
+		return 0, 0, 0, MatrixLevel{}, false, false
+	}
 	for i := range sr.levels {
 		l := &sr.levels[i]
 		if l.Slot == nil || *l.Slot == 0 {
@@ -148,25 +283,79 @@ func (sr *StrategyRunner) matrixRelativeExpand(ctx context.Context, currentPrice
 			continue
 		}
 		if l.Status == LevelPending || l.Status == LevelPlaced {
-			return
+			return 0, 0, 0, MatrixLevel{}, false, false
 		}
 	}
 
-	idx := nextConfigIndex(sr.levels, side, n)
-	if idx == 0 {
-		return // cap reached
+	entry := sr.matrixEntryPrice()
+	cfgLevels := filterMatrixLevels(sr.strategy.MatrixLevels, side)
+	n := len(cfgLevels)
+	if n == 0 {
+		return 0, 0, 0, MatrixLevel{}, false, false
 	}
-	cfg := cfgLevels[idx-1]
-	target := nextSlotPrice(sr.levels, entry, side, cfg.PriceStepPct)
+	idx = nextConfigIndex(sr.levels, side, n)
+	if idx == 0 {
+		return 0, 0, 0, MatrixLevel{}, false, false // cap reached
+	}
+	cfg = cfgLevels[idx-1]
+	target = nextSlotPrice(sr.levels, entry, side, sr.strategy.Direction, cfg.PriceStepPct)
+	slot = idx
+	if side == "below" {
+		slot = -idx
+	}
+	s := slot
+	virtual = sr.matrixIsVirtual(&GridLevel{Slot: &s})
+	return idx, slot, target, cfg, virtual, true
+}
 
-	reached := (side == "below" && currentPrice <= target) || (side == "above" && currentPrice >= target)
-	if !reached {
+// matrixNextRelativeSlotPreview is the read-only counterpart of matrixNextRelativeSlot,
+// exposed to the API/chart so the upcoming (not-yet-reached) relative target is visible
+// in advance — mirroring how absolute-mode virtual levels are pre-inserted and visible
+// before they trigger. Returns ok=false when the strategy isn't in relative-slots mode
+// or no preview is currently available. Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixNextRelativeSlotPreview(side string) (slot int, price float64, virtual bool, ok bool) {
+	if !sr.strategy.RelativeSlots {
+		return 0, 0, false, false
+	}
+	_, slot, price, _, virtual, ok = sr.matrixNextRelativeSlot(side)
+	return
+}
+
+// matrixRelativeExpand places (or triggers, if virtual) the next relative accumulation
+// slot on the given side ("above" or "below") once price reaches its target. Only one
+// new slot per side is placed at a time. Called once per side per price tick — see
+// matrixPriceTick, which calls it for both the strategy direction's accumulation side
+// (matrixAccumSide) and the opposite/counter side, so relative-slots strategies build a
+// full symmetric chain in both directions, not just the primary accumulation side.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixRelativeExpand(ctx context.Context, side string, currentPrice float64) {
+	// A slot already sitting on this side without ever reaching 'placed' means a prior
+	// attempt didn't complete — retry it instead of trying to create a new one (which
+	// matrixNextRelativeSlot below would refuse to do anyway while it's still pending).
+	if sr.matrixRetryStuckRelativeSlot(ctx, side, currentPrice) {
 		return
 	}
 
-	sr.info(ctx, fmt.Sprintf("[REL] расширение: слот L(%s%d) @ %.4f (шаг %.2f%%)",
-		signForSide(side), idx, target, cfg.PriceStepPct))
-	sr.matrixPlaceRelativeSlot(ctx, side, idx, target, cfg, currentPrice)
+	idx, _, target, cfg, isVirtual, ok := sr.matrixNextRelativeSlot(side)
+	if !ok {
+		return
+	}
+	if !matrixSlotReached(sr.strategy.Direction, cfg.PriceStepPct, currentPrice, target) {
+		return
+	}
+
+	suffix := ""
+	if isVirtual {
+		suffix = " [виртуальный]"
+	}
+	sr.info(ctx, fmt.Sprintf("[REL] расширение: слот L(%s%d) @ %.4f (шаг %.2f%%)%s",
+		signForSide(side), idx, target, cfg.PriceStepPct, suffix))
+
+	if isVirtual {
+		sr.matrixTriggerRelativeVirtualLevel(ctx, side, idx, target, cfg, currentPrice)
+	} else {
+		sr.matrixPlaceRelativeSlot(ctx, side, idx, target, cfg, currentPrice)
+	}
 }
 
 // signForSide returns "-" for the below side (negative slot labels) and "+" otherwise,

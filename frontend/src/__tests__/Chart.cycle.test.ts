@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractCycleNum, isOtherStrategyLinkId, deriveEffectiveCycleNum } from '../components/terminal/Chart'
+import { extractCycleNum, isOtherStrategyLinkId, deriveEffectiveCycleNum, isCycleLive } from '../components/terminal/Chart'
 
 describe('extractCycleNum', () => {
   it('parses cycle from a TP order linkId', () => {
@@ -75,5 +75,31 @@ describe('deriveEffectiveCycleNum', () => {
   it('returns null when the strategy id itself is not known yet', () => {
     const orders = [{ orderLinkId: `SIS_STR-${strat}-5-1` }]
     expect(deriveEffectiveCycleNum(null, null, orders)).toBeNull()
+  })
+})
+
+describe('isCycleLive', () => {
+  const strat = 'abc12345'
+
+  // Regression for a ghost-lines bug distinct from deriveEffectiveCycleNum's (found live
+  // 2026-07-17): once a matrix cycle ends, GetStrategyState deliberately empties
+  // strategyLevels, but leftover exchange orders from that same now-dead cycle still
+  // carry a cycle number that matches (nothing bumps it until a new cycle starts) — so
+  // deriveEffectiveCycleNum/extractCycleNum alone can't catch this case. A live cycle
+  // always has at least L(0), so zero levels + a known cycle number means "ended".
+  it('is false once the cycle has ended (known cycle number, zero levels)', () => {
+    expect(isCycleLive(1, strat, [])).toBe(false)
+  })
+
+  it('is true for a live cycle with at least one level', () => {
+    expect(isCycleLive(1, strat, [{ level_idx: 1 }])).toBe(true)
+  })
+
+  it('is true when the cycle number has not loaded yet (nothing to gate on)', () => {
+    expect(isCycleLive(null, strat, [])).toBe(true)
+  })
+
+  it('is true when no strategy is selected', () => {
+    expect(isCycleLive(1, null, [])).toBe(true)
   })
 })

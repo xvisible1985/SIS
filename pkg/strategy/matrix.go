@@ -27,15 +27,24 @@ func slotLabel(s *int) string {
 	return fmt.Sprintf("L(%d)", *s)
 }
 
+// matrixStepMul returns the direction-aware sign multiplier applied to a configured
+// PriceStepPct when computing matrix slot prices. For short direction it inverts the
+// configured step so positive ("above"-configured) steps land below entry and negative
+// ("below"-configured) steps land above entry — in-direction DCA is downward for both
+// long and short (see matrixIsVirtual for the underlying above/below-per-direction
+// convention). Shared by calculateMatrixPrices (static cycle setup) and the
+// relative-slots engine (matrix_relative.go) so both apply the same sign rule.
+func matrixStepMul(dir Direction) float64 {
+	if dir == DirectionShort {
+		return -1.0
+	}
+	return 1.0
+}
+
 // calculateMatrixPrices returns a map from slot index to target price.
 // Slot 0 = start price (market entry), negative slots = below, positive slots = above.
-// For short direction stepMul=-1 inverts all steps so positive slots land below entry and
-// negative slots land above entry (in-direction DCA for short is downward).
 func calculateMatrixPrices(startPrice float64, above, below []MatrixLevel, dir Direction) map[int]float64 {
-	stepMul := 1.0
-	if dir == DirectionShort {
-		stepMul = -1.0
-	}
+	stepMul := matrixStepMul(dir)
 	prices := map[int]float64{0: startPrice}
 	prev := startPrice
 	for i, lvl := range below {
@@ -132,6 +141,42 @@ func (sr *StrategyRunner) matrixLatestActiveFill() (*GridLevel, bool) {
 		} else {
 			if l.FilledPrice < best.FilledPrice {
 				best = l // lower price = more against a long = more extreme DCA
+			}
+		}
+	}
+	return best, best != nil
+}
+
+// matrixMostFavorableFill is the mirror of matrixLatestActiveFill: it returns the filled
+// DCA level furthest IN FAVOR of the position instead of furthest against it. For LONG
+// that is the HIGHEST fill price (furthest pyramided above entry); for SHORT the LOWEST.
+//
+// Used by matrixUpdateTP once mark price has recovered past ТВХ (avg entry): at that
+// point the level furthest against the position (matrixLatestActiveFill) is no longer
+// the right one to govern the exit order — its %, still measured from ТВХ, would place a
+// plain take-profit LIMIT order behind current price, which fills instantly instead of
+// waiting. The favorable-side level's % is placed as a stop instead (see matrixUpdateTP),
+// which is direction-safe regardless of how far price has already run.
+//
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixMostFavorableFill() (*GridLevel, bool) {
+	var best *GridLevel
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Status != LevelFilled || l.FilledPrice <= 0 {
+			continue
+		}
+		if best == nil {
+			best = l
+			continue
+		}
+		if sr.strategy.Direction == DirectionShort {
+			if l.FilledPrice < best.FilledPrice {
+				best = l // lower price = more in favor of a short
+			}
+		} else {
+			if l.FilledPrice > best.FilledPrice {
+				best = l // higher price = more in favor of a long
 			}
 		}
 	}
@@ -877,55 +922,73 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 	}
 	sr.lastMatrixPrice = currentPrice
 
-	// Relative-slots mode: progressive expansion replaces the absolute waiting/virtual/
-	// stop-cond logic below. See matrixRelativeExpand and the design doc.
+	// Relative-slots mode: progressive expansion replaces the absolute waiting/virtual
+	// logic in steps 1-2 below. See matrixRelativeExpand and the design doc. Expand both
+	// sides: the direction's accumulation side (exchange orders by default, or virtual
+	// per level config) and the opposite/counter side (always virtual — see
+	// matrixIsVirtual — since a resting exchange order can't represent "add more
+	// against-direction exposure" in a placeable way).
+	//
+	// Steps 3-4 (stop-cond SL replace, missing-SL retry) are NOT specific to absolute
+	// mode and must still run here — they used to be skipped entirely for relative-slots
+	// strategies via an early return, so a level's stop-cond SL was only ever evaluated
+	// once, at cycle load (loadMatrixCycle), and never again for the lifetime of the
+	// running process. Any level that filled after that point (the normal case for
+	// relative-slots, since expansion happens live) could go permanently unprotected.
+	// Regression for the MAGMAUSDT live incident (2026-07-15): L2 filled but never got
+	// its stop-cond SL because the process wasn't restarted after the fill.
 	if sr.strategy.RelativeSlots {
-		sr.matrixRelativeExpand(ctx, currentPrice)
-		return
-	}
-
-	// 1. Check waiting slots for re-entry
-	if len(sr.matrixWaitingSlots) > 0 {
-		sr.matrixCheckWaitingReentry(ctx, currentPrice)
-	}
-
-	// 2. Trigger virtual levels whose target price has been crossed.
-	// Crossing condition is slot-based:
-	//   slot < 0 (below levels): fire when price drops to/past target
-	//   slot >= 0 (entry or above): fire when price rises to/past target
-	// For entry (slot=0, targetPrice=0) the condition is always true.
-	for i := range sr.levels {
-		l := &sr.levels[i]
-		if l.Status != LevelPending || l.ExchangeOrderID != "" {
-			continue
+		accumSide := matrixAccumSide(sr.strategy.Direction)
+		counterSide := "below"
+		if accumSide == "below" {
+			counterSide = "above"
 		}
-		if !sr.matrixIsVirtual(l) {
-			continue
+		sr.matrixRelativeExpand(ctx, accumSide, currentPrice)
+		sr.matrixRelativeExpand(ctx, counterSide, currentPrice)
+	} else {
+		// 1. Check waiting slots for re-entry
+		if len(sr.matrixWaitingSlots) > 0 {
+			sr.matrixCheckWaitingReentry(ctx, currentPrice)
 		}
-		var crossed bool
-		if l.TargetPrice == 0 {
-			crossed = true
-		} else if sr.strategy.Direction == DirectionShort {
-			// Short: positive slots land below entry (price must drop), negative above (price must rise).
-			if l.Slot != nil && *l.Slot > 0 {
+
+		// 2. Trigger virtual levels whose target price has been crossed.
+		// Crossing condition is slot-based:
+		//   slot < 0 (below levels): fire when price drops to/past target
+		//   slot >= 0 (entry or above): fire when price rises to/past target
+		// For entry (slot=0, targetPrice=0) the condition is always true.
+		for i := range sr.levels {
+			l := &sr.levels[i]
+			if l.Status != LevelPending || l.ExchangeOrderID != "" {
+				continue
+			}
+			if !sr.matrixIsVirtual(l) {
+				continue
+			}
+			var crossed bool
+			if l.TargetPrice == 0 {
+				crossed = true
+			} else if sr.strategy.Direction == DirectionShort {
+				// Short: positive slots land below entry (price must drop), negative above (price must rise).
+				if l.Slot != nil && *l.Slot > 0 {
+					crossed = currentPrice <= l.TargetPrice
+				} else {
+					crossed = currentPrice >= l.TargetPrice
+				}
+			} else if l.Slot != nil && *l.Slot < 0 {
 				crossed = currentPrice <= l.TargetPrice
 			} else {
 				crossed = currentPrice >= l.TargetPrice
 			}
-		} else if l.Slot != nil && *l.Slot < 0 {
-			crossed = currentPrice <= l.TargetPrice
-		} else {
-			crossed = currentPrice >= l.TargetPrice
-		}
-		if crossed {
-			// ProtectedBuild: don't trigger next virtual level until previous slot has stop confirmed
-			if sr.strategy.ProtectedBuild && l.Slot != nil && *l.Slot > 0 {
-				prevSlot := *l.Slot - 1
-				if prevSlot > 0 && !sr.matrixSlotCovered(prevSlot) {
-					continue // previous slot not yet covered by a stop
+			if crossed {
+				// ProtectedBuild: don't trigger next virtual level until previous slot has stop confirmed
+				if sr.strategy.ProtectedBuild && l.Slot != nil && *l.Slot > 0 {
+					prevSlot := *l.Slot - 1
+					if prevSlot > 0 && !sr.matrixSlotCovered(prevSlot) {
+						continue // previous slot not yet covered by a stop
+					}
 				}
+				sr.matrixTriggerVirtualLevel(ctx, l)
 			}
-			sr.matrixTriggerVirtualLevel(ctx, l)
 		}
 	}
 
@@ -1002,11 +1065,28 @@ func (sr *StrategyRunner) matrixTriggerVirtualLevel(ctx context.Context, l *Grid
 		}
 		return
 	}
-	l.Status = LevelPlaced
-	l.ExchangeOrderID = result.OrderId
-	l.ExchangeLinkID = linkID
+	sr.markLevelPlaced(ctx, l, result.OrderId, linkID)
 	sr.runner.RegisterOrder(result.OrderId, ref)
 	sr.info(ctx, fmt.Sprintf("Matrix virtual %s запущен @ market", slotLabel(l.Slot)))
+}
+
+// markLevelPlaced records that a level's order was successfully placed on the exchange —
+// both in the in-memory GridLevel (read immediately within the same tick) and in
+// strategy_levels (placed_at is used for order-timing/interference-detection diagnostics,
+// see cycle.go's "ИНТЕРФЕРЕНЦИЯ" check). Shared by the two market-order virtual-placement
+// paths (matrixTriggerVirtualLevel here and matrixPlaceRelativeVirtualOrder in
+// matrix_relative_engine.go) — both used to update only the in-memory struct and never
+// wrote placed_at to the DB, unlike placeMatrixLevel's resting-limit-order path, leaving
+// placed_at permanently NULL for every virtual (market-triggered) matrix level.
+// Must be called with sr.mu held (same requirement as its callers).
+func (sr *StrategyRunner) markLevelPlaced(ctx context.Context, l *GridLevel, orderID, linkID string) {
+	l.Status = LevelPlaced
+	l.ExchangeOrderID = orderID
+	l.ExchangeLinkID = linkID
+	l.PlacedAt = time.Now()
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategy_levels SET status='placed', exchange_order_id=$1, exchange_link_id=$2, placed_at=NOW() WHERE id=$3`,
+		orderID, linkID, l.ID)
 }
 
 // matrixReplaceSlots re-places levels for any slot that has no active (pending/placed/filled) row.
@@ -1184,6 +1264,25 @@ func matrixSLTrigger(dir Direction, fillPrice, stopPct float64) float64 {
 	return fillPrice * (1 - stopPct/100) // stopPct < 0 → trigger above fill
 }
 
+// matrixTPIsAdverse reports whether markPrice is still on the adverse side of ТВХ
+// (avgEntryPrice) for the given direction: long → price below ТВХ; short → price above.
+//
+// matrixUpdateTP uses this to decide both which extreme fill governs the single exit
+// order (matrixLatestActiveFill when adverse, matrixMostFavorableFill when not) and how
+// that order is placed: adverse → plain take-profit LIMIT order, since price hasn't
+// reached the target yet and can only fill by genuinely trading to it. Not adverse (price
+// already ran past ТВХ in the position's favor, e.g. after pyramiding into L(1)-L(4)) →
+// reduce-only STOP order instead — a limit order at ТВХ±% can end up behind current
+// price at this point and a reduce-only limit behind market fills instantly, while a stop
+// with the matching trigger direction only fires if price actually falls/rises back to
+// it, so it's safe regardless of how far price already ran.
+func matrixTPIsAdverse(dir Direction, markPrice, avgEntryPrice float64) bool {
+	if dir == DirectionShort {
+		return markPrice > avgEntryPrice
+	}
+	return markPrice < avgEntryPrice
+}
+
 // handleMatrixLevelFill is the matrix-specific handler called when a level fill event arrives
 // for a strategy_type="matrix" strategy.
 // Must be called with sr.mu held.
@@ -1332,7 +1431,44 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	if sr.strategy.HedgeTpSuppressed {
 		return
 	}
-	latest, ok := sr.matrixLatestActiveFill()
+	// TP/SL считается от средневзвешенной цены входа (ТВХ), чтобы гарантировать
+	// закрытие в плюс вне зависимости от глубины DCA.
+	// Используем ТВХ с биржи (pos.EntryPrice), а не расчётный avgEntry(),
+	// чтобы корректно учесть проскальзывание маркет-ордеров.
+	avgEntryPrice, _ := sr.avgEntry()
+	if avgEntryPrice == 0 {
+		return
+	}
+	// Anchor to the exchange's real average entry (source of truth). Prefers the WS
+	// cache, else fetches from the exchange; the computed VWAP is only the last resort —
+	// trusting it while cold once closed a MIRAUSDT short at a loss.
+	{
+		wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
+		avgEntryPrice = sr.resolveExchangeAvgEntry(ctx, wantIdx, avgEntryPrice)
+	}
+
+	// Which side of ТВХ mark price currently sits on decides which extreme fill governs
+	// the exit order, and how it's placed on the exchange:
+	//   - price still on the adverse side of ТВХ (long: below; short: above) → same as
+	//     before, governed by the level furthest AGAINST the position, placed as a plain
+	//     take-profit LIMIT order (price hasn't reached the target yet, so it can only
+	//     fill by genuinely trading up/down to it).
+	//   - price has crossed to the favorable side of ТВХ → governed by the level furthest
+	//     IN FAVOR of the position (matrixMostFavorableFill) instead, placed as a
+	//     reduce-only STOP (conditional) order rather than a limit order. A limit TP at
+	//     ТВХ±% can end up behind current price once the position has pyramided this far
+	//     favorably, and a reduce-only limit behind market fills instantly; a stop with
+	//     the matching trigger direction only fires when price actually falls/rises back
+	//     to it, so it's safe regardless of how far price already ran.
+	adverse := matrixTPIsAdverse(sr.strategy.Direction, sr.lastMatrixPrice, avgEntryPrice)
+
+	var governing *GridLevel
+	var ok bool
+	if adverse {
+		governing, ok = sr.matrixLatestActiveFill()
+	} else {
+		governing, ok = sr.matrixMostFavorableFill()
+	}
 	if !ok {
 		// No active fills — cancel TP if it exists
 		if sr.tpOrderID != "" {
@@ -1351,8 +1487,8 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	}
 
 	var tpPctVal *float64
-	if latest.Slot != nil {
-		tpPctVal, _, _, _ = sr.matrixLevelConfig(*latest.Slot)
+	if governing.Slot != nil {
+		tpPctVal, _, _, _ = sr.matrixLevelConfig(*governing.Slot)
 	}
 	if tpPctVal == nil {
 		// TP percentage removed from config — cancel any standing TP order.
@@ -1373,21 +1509,6 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 		return
 	}
 
-	// TP считается от средневзвешенной цены входа (ТВХ), чтобы гарантировать
-	// закрытие в плюс вне зависимости от глубины DCA.
-	// Используем ТВХ с биржи (pos.EntryPrice), а не расчётный avgEntry(),
-	// чтобы корректно учесть проскальзывание маркет-ордеров.
-	avgEntryPrice, _ := sr.avgEntry()
-	if avgEntryPrice == 0 {
-		return
-	}
-	// Anchor to the exchange's real average entry (source of truth). Prefers the WS
-	// cache, else fetches from the exchange; the computed VWAP is only the last resort —
-	// trusting it while cold once closed a MIRAUSDT short at a loss.
-	{
-		wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
-		avgEntryPrice = sr.resolveExchangeAvgEntry(ctx, wantIdx, avgEntryPrice)
-	}
 	var tpPrice float64
 	var tpSide string
 	if sr.strategy.Direction == DirectionLong {
@@ -1442,27 +1563,59 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	// frontend's "TP L(N)" execution-marker label is lost for matrix TP orders, a minor
 	// display detail traded for correct close attribution.
 	linkID := fmt.Sprintf("SIS_STR-%s-tp-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, sr.tpPlaceSeq)
-	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
-		Symbol:      sr.strategy.Symbol,
-		Category:    sr.strategy.Category,
-		Side:        tpSide,
-		OrderType:   "Limit",
-		Qty:         tpQty,
-		Price:       trader.FormatPrice(tpPrice, sr.instr.TickSize),
-		TimeInForce: "GTC",
-		ReduceOnly:  !sr.strategy.HedgeMode,
-		PositionIdx: positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
-		OrderLinkId: linkID,
-	})
+
+	var result trader.OrderResult
+	var err error
+	kindLabel := "TP"
+	if adverse {
+		result, err = sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+			Symbol:      sr.strategy.Symbol,
+			Category:    sr.strategy.Category,
+			Side:        tpSide,
+			OrderType:   "Limit",
+			Qty:         tpQty,
+			Price:       trader.FormatPrice(tpPrice, sr.instr.TickSize),
+			TimeInForce: "GTC",
+			ReduceOnly:  !sr.strategy.HedgeMode,
+			PositionIdx: positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
+			OrderLinkId: linkID,
+		})
+	} else {
+		kindLabel = "SL"
+		// Long: fires on fall to/below trigger (2). Short: fires on rise to/above (1).
+		// Same trigger-direction convention as matrixPlacePerLevelSL.
+		trigDir := 2
+		if sr.strategy.Direction == DirectionShort {
+			trigDir = 1
+		}
+		result, err = sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+			Symbol:           sr.strategy.Symbol,
+			Category:         sr.strategy.Category,
+			Side:             tpSide,
+			OrderType:        "Market",
+			Qty:              tpQty,
+			TriggerPrice:     trader.FormatPrice(tpPrice, sr.instr.TickSize),
+			TriggerBy:        "LastPrice",
+			TriggerDirection: trigDir,
+			OrderFilter:      "StopOrder",
+			ReduceOnly:       !sr.strategy.HedgeMode,
+			PositionIdx:      positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
+			OrderLinkId:      linkID,
+		})
+	}
 	if err != nil {
-		sr.errlog(ctx, fmt.Sprintf("matrixUpdateTP: place TP: %v", err))
+		sr.errlog(ctx, fmt.Sprintf("matrixUpdateTP: place %s: %v", kindLabel, err))
 		return
 	}
 	sr.tpOrderID = result.OrderId
 	sr.runner.RegisterOrder(result.OrderId, orderRef{strategyID: sr.strategy.ID, refType: "tp"})
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
 		`UPDATE strategy_cycles SET tp_order_id=$1 WHERE id=$2`, result.OrderId, sr.cycle.ID)
-	sr.info(ctx, fmt.Sprintf("Matrix TP @ %.4f qty=%s выставлен (ТВХ=%.4f +%.2f%%)", tpPrice, tpQty, avgEntryPrice, *tpPctVal))
+	sign := ""
+	if *tpPctVal >= 0 {
+		sign = "+"
+	}
+	sr.info(ctx, fmt.Sprintf("Matrix %s @ %.4f qty=%s выставлен (ТВХ=%.4f, %s%.2f%%)", kindLabel, tpPrice, tpQty, avgEntryPrice, sign, *tpPctVal))
 }
 
 // applyNewMatrixPrices recalculates target_price, size_usdt and qty for every pending

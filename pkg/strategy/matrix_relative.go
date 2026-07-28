@@ -74,12 +74,30 @@ func nextConfigIndex(levels []GridLevel, side string, n int) int {
 }
 
 // nextSlotPrice = deepest open slot's fill price stepped by stepPct%, or entry stepped
-// by stepPct if no slots open. stepPct is signed (e.g. -3.0 for 3% below).
-func nextSlotPrice(levels []GridLevel, entry float64, side string, stepPct float64) float64 {
+// by stepPct if no slots open. stepPct is the raw configured step (e.g. -3.0 for a
+// "below"-configured 3% step); matrixStepMul(dir) inverts it for short so the resulting
+// price lands on the in-direction (downward) side of base, mirroring
+// calculateMatrixPrices. Without this inversion, short strategies configured with
+// "above" (positive-stepPct) accumulation levels would step the target UP instead of
+// down — accumulating more short size as price rises against the position.
+func nextSlotPrice(levels []GridLevel, entry float64, side string, dir Direction, stepPct float64) float64 {
 	open := openAccumLevels(levels, entry, side)
 	base := entry
 	if len(open) > 0 {
 		base = open[len(open)-1].FilledPrice
 	}
-	return base * (1 + stepPct/100)
+	return base * (1 + matrixStepMul(dir)*stepPct/100)
+}
+
+// matrixSlotReached reports whether currentPrice has moved far enough to trigger the
+// next relative slot at target. The trigger direction follows the SAME sign inversion
+// nextSlotPrice applied (matrixStepMul(dir)*stepPct), not the raw config-list name
+// ("above"/"below") — for short, an "above"-configured (positive stepPct) level still
+// steps DOWN once inverted, so the trigger must wait for price to fall, not rise.
+func matrixSlotReached(dir Direction, stepPct, currentPrice, target float64) bool {
+	effectiveStep := matrixStepMul(dir) * stepPct
+	if effectiveStep <= 0 {
+		return currentPrice <= target
+	}
+	return currentPrice >= target
 }

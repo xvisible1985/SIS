@@ -285,3 +285,88 @@ func (e *Engine) reconcileStoppedNoCycle(ctx context.Context) {
 		}
 	}
 }
+
+// runReconcileMissingRunnersLoop periodically calls reconcileMissingRunners for as long
+// as ctx is alive. Call once in a goroutine after Engine.Start().
+func (e *Engine) runReconcileMissingRunnersLoop(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.reconcileMissingRunners(ctx)
+		}
+	}
+}
+
+// reconcileMissingRunners re-Notifies any active/finishing strategy that is not
+// currently present in ANY account runner's strategies map — the backstop for a
+// strategy that should be live-managed by the engine but somehow never got registered.
+//
+// Bot-driven strategy creation (services/api-gateway/bot_engine.go createBotStrategy)
+// calls Engine.Notify once, fire-and-forget (`go s.engine.Notify(...)`), with no retry
+// if it fails or the goroutine loses a race for any reason. Engine.Start() only loads
+// strategies that were already active at boot — anything created afterwards by bot
+// automation depends entirely on that single, unretried Notify call succeeding.
+//
+// Found live (2026-07-17): several bot-created matrix strategies kept trading correctly
+// (their exchange orders/fills were completely unaffected — whatever created them also
+// evidently started their own goroutines fine) but were invisible to every e.runners-based
+// lookup (GetSignalState, GetSignalValues, GetMatrixSafeZone, GetMatrixRelativePreview) —
+// all silently returned empty/nil for these strategy IDs, indefinitely. Manually detaching
+// and reattaching the strategy from its bot happened to fix it, because that action also
+// triggers a fresh Notify() call — but only for the specific strategy touched, and only if
+// the user thinks to do it. This makes that self-healing automatic and general, mirroring
+// the reconcileStoppedCycles/reconcileStoppedNoCycle pattern already used for other
+// "DB says one thing, in-memory engine state says another" drift.
+func (e *Engine) reconcileMissingRunners(ctx context.Context) {
+	rows, err := e.pool.Query(ctx,
+		`SELECT id FROM strategies WHERE status IN ('active','finishing')`)
+	if err != nil {
+		log.Printf("strategy engine: reconcileMissingRunners: query: %v", err)
+		return
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return
+	}
+
+	e.mu.RLock()
+	registered := make(map[string]bool, len(ids))
+	for _, runner := range e.runners {
+		runner.mu.RLock()
+		for id := range runner.strategies {
+			registered[id] = true
+		}
+		runner.mu.RUnlock()
+	}
+	e.mu.RUnlock()
+
+	for _, id := range missingIDs(ids, registered) {
+		log.Printf("strategy engine: reconcileMissingRunners: %s has no runner — re-registering", id)
+		e.Notify(ctx, id)
+	}
+}
+
+// missingIDs returns the entries of activeIDs that are absent from registered. Pure and
+// side-effect-free so reconcileMissingRunners' selection logic is unit-testable without a
+// live DB/engine — the DB query and the e.runners scan bracketing this call both require
+// real infrastructure this package has no mock for.
+func missingIDs(activeIDs []string, registered map[string]bool) []string {
+	var missing []string
+	for _, id := range activeIDs {
+		if !registered[id] {
+			missing = append(missing, id)
+		}
+	}
+	return missing
+}

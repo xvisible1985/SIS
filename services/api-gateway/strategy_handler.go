@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"sis/pkg/strategy"
 	"sis/pkg/trader"
 )
 
@@ -931,8 +932,15 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Relative slot labels (Novabot relative_slots mode): rank filled accumulation
-	// slots by distance from entry (closest = 1 → L(-1)). Additive and harmless in
-	// absolute mode; the frontend renders it only when the strategy is in relative mode.
+	// slots by distance from entry (closest = 1), separately per side — positive-slot
+	// fills rank as L(1), L(2)... and negative-slot fills as L(-1), L(-2)..., matching
+	// the sign convention the engine assigns new relative slots (matrixPlaceRelativeSlot:
+	// "above" side → positive, "below" side → negative). Ranking both sides together
+	// (as a single always-negative list) was only correct while relative-slots only ever
+	// expanded one side; now that the counter/against-direction side expands too (see
+	// matrixRelativeExpand), fills on both sides need independent ranks. Additive and
+	// harmless in absolute mode; the frontend renders it only when the strategy is in
+	// relative mode.
 	{
 		entryPrice := 0.0
 		for i := range levels {
@@ -944,7 +952,7 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 			i    int
 			dist float64
 		}
-		var acc []rl
+		var pos, neg []rl
 		for i := range levels {
 			l := &levels[i]
 			if l.Slot == nil || *l.Slot == 0 || l.Status != "filled" {
@@ -961,10 +969,18 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 			if d < 0 {
 				d = -d
 			}
-			acc = append(acc, rl{i, d})
+			if *l.Slot > 0 {
+				pos = append(pos, rl{i, d})
+			} else {
+				neg = append(neg, rl{i, d})
+			}
 		}
-		sort.Slice(acc, func(a, b int) bool { return acc[a].dist < acc[b].dist })
-		for r, a := range acc {
+		sort.Slice(pos, func(a, b int) bool { return pos[a].dist < pos[b].dist })
+		sort.Slice(neg, func(a, b int) bool { return neg[a].dist < neg[b].dist })
+		for r, a := range pos {
+			levels[a.i].RelativeSlot = r + 1
+		}
+		for r, a := range neg {
 			levels[a.i].RelativeSlot = -(r + 1)
 		}
 	}
@@ -977,26 +993,37 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 		High float64 `json:"high"`
 	}
 	var safeZone *safeZoneInfo
+	var relativePreviewAccum, relativePreviewCounter *strategy.MatrixRelativePreview
 	if strategyType == "matrix" {
 		if sz := s.engine.GetMatrixSafeZone(id); sz != nil {
 			safeZone = &safeZoneInfo{Low: sz.Low, High: sz.High}
 		}
+		// Same rule as `levels` above: once the DB-tracked cycle has ended, nothing from
+		// this strategy should keep rendering on the chart. GetMatrixRelativePreview reads
+		// the engine's live in-memory runner state, which isn't guaranteed to have reset
+		// yet in the brief window between a cycle ending and the next one starting — found
+		// live (2026-07-17) as a ghost preview line lingering on a 0/8, cycle-ended card.
+		if !cycleEnded {
+			relativePreviewAccum, relativePreviewCounter = s.engine.GetMatrixRelativePreview(id)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"cycle_num":           cycle.CycleNum,
-		"start_price":         cycle.StartPrice,
-		"tp_order_id":         cycle.TPOrderID,
-		"sl_order_id":         cycle.SLOrderID,
-		"started_at":          cycle.StartedAt,
-		"levels":              levels,
-		"volume_usdt":         volumeUSDT,
-		"avg_entry":           avgEntry,
-		"safe_zone":           safeZone,
-		"signal_state":        s.engine.GetSignalState(id),
-		"signal_values":       s.engine.GetSignalValues(id),
-		"tp_halted":           s.engine.GetTPHalted(id),
-		"trading_halt_reason": s.engine.GetTradingHaltReason(id),
+		"cycle_num":                cycle.CycleNum,
+		"start_price":              cycle.StartPrice,
+		"tp_order_id":              cycle.TPOrderID,
+		"sl_order_id":              cycle.SLOrderID,
+		"started_at":               cycle.StartedAt,
+		"levels":                   levels,
+		"volume_usdt":              volumeUSDT,
+		"avg_entry":                avgEntry,
+		"safe_zone":                safeZone,
+		"signal_state":             s.engine.GetSignalState(id),
+		"signal_values":            s.engine.GetSignalValues(id),
+		"tp_halted":                s.engine.GetTPHalted(id),
+		"trading_halt_reason":      s.engine.GetTradingHaltReason(id),
+		"relative_preview_accum":   relativePreviewAccum,
+		"relative_preview_counter": relativePreviewCounter,
 	})
 }
 

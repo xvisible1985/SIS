@@ -322,6 +322,16 @@ export interface StrategyLevel {
   force_virtual?: boolean
 }
 
+// MatrixRelativePreview is the upcoming (not-yet-triggered) relative slot for one side
+// of a relative_slots matrix strategy — computed live by the engine, not stored in DB,
+// so the chart can show the next target before price actually reaches it (mirrors how
+// absolute-mode virtual levels are visible in advance of triggering).
+export interface MatrixRelativePreview {
+  slot: number
+  price: number
+  virtual: boolean
+}
+
 export interface StrategyEvent {
   message: string
   level: 'info' | 'warn' | 'error'
@@ -344,6 +354,10 @@ export interface StrategyState {
   /** Non-empty when order placement is suppressed: Bybit instrument status (e.g. "Closed")
    *  or "circuit_breaker" if the TP cancel streak reached the limit. */
   trading_halt_reason?: string
+  /** Next upcoming relative slot for the accumulation / counter side of a
+   *  relative_slots matrix strategy — null when not applicable. See MatrixRelativePreview. */
+  relative_preview_accum?: MatrixRelativePreview | null
+  relative_preview_counter?: MatrixRelativePreview | null
 }
 
 export interface HedgeSession {

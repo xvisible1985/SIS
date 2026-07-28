@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, createSeriesMarkers, type IChartApi, type ISeriesApi, ColorType } from 'lightweight-charts'
 import type { Candle } from '../../hooks/terminal/useCandles'
-import type { Position, ActiveOrder, ChartExecution, StrategyLevel } from '../../types'
+import type { Position, ActiveOrder, ChartExecution, StrategyLevel, MatrixRelativePreview } from '../../types'
 
 export interface ChartOverlaySettings {
   showPositions: boolean
@@ -29,6 +29,8 @@ interface Props {
   currentCycleNum?: number | null
   strategyLevels?: StrategyLevel[]
   relativeSlots?: boolean
+  relativePreviewAccum?: MatrixRelativePreview | null
+  relativePreviewCounter?: MatrixRelativePreview | null
   tickerPrices?: Map<string, number>
   safeZone?: { low: number; high: number } | null
   hedgePairTarget?: number | null
@@ -131,7 +133,25 @@ export function deriveEffectiveCycleNum(
   return effective
 }
 
-export function Chart({ candles, candleSymbol, positions, orders, executions, symbol, lastPrice, onLoadMore, overlaySettings, strategyDir, stratIdShort, currentCycleNum, strategyLevels, relativeSlots, tickerPrices, safeZone, hedgePairTarget }: Props) {
+// Reports whether this strategy currently has a live (not-ended) cycle. Once a cycle
+// ends, GetStrategyState deliberately returns an empty strategyLevels array (see its own
+// backend comment) — but leftover exchange orders from that now-dead cycle can still pass
+// the orderLinkId cycle-number check, since nothing bumps the cycle number until a NEW
+// cycle actually starts. A live cycle always has at least L(0), so "we know the cycle
+// number but got zero levels" reliably means "cycle just ended, nothing from it belongs
+// on the chart anymore" — found live (2026-07-17) as ghost L1/L4/L5 lines lingering on a
+// 0/8 ended-cycle card. When no strategy is selected (stratIdShort is null) or the cycle
+// number hasn't loaded yet, there's nothing to gate — default to "live" (unfiltered).
+export function isCycleLive(
+  currentCycleNum: number | null | undefined,
+  stratIdShort: string | null | undefined,
+  strategyLevels: { level_idx: number }[] | null | undefined,
+): boolean {
+  if (!stratIdShort || currentCycleNum == null) return true
+  return (strategyLevels?.length ?? 0) > 0
+}
+
+export function Chart({ candles, candleSymbol, positions, orders, executions, symbol, lastPrice, onLoadMore, overlaySettings, strategyDir, stratIdShort, currentCycleNum, strategyLevels, relativeSlots, relativePreviewAccum, relativePreviewCounter, tickerPrices, safeZone, hedgePairTarget }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -409,6 +429,8 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
 
     const effectiveCycleNum = deriveEffectiveCycleNum(currentCycleNum, stratIdShort, orders)
 
+    const cycleIsLive = isCycleLive(currentCycleNum, stratIdShort, strategyLevels)
+
     for (const pos of positions.filter(p => {
       if (p.symbol !== symbol) return false
       if (overlaySettings && !overlaySettings.showPositions) return false
@@ -493,10 +515,15 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       if (o.symbol !== symbol) return false
       // Hide orders belonging to a different strategy (ghost orders from deleted strategies).
       if (isOtherStrategyLinkId(o.orderLinkId, stratIdShort)) return false
-      // Show only orders from the current cycle — hide any other cycle (old or phantom).
-      if (stratIdShort && effectiveCycleNum != null && o.orderLinkId?.includes(stratIdShort)) {
-        const ordCycle = extractCycleNum(o.orderLinkId)
-        if (ordCycle !== null && ordCycle !== effectiveCycleNum) return false
+      if (stratIdShort && o.orderLinkId?.includes(stratIdShort)) {
+        // Cycle has ended — leftover exchange orders from it don't belong on the chart
+        // even though their embedded cycle number still matches (see cycleIsLive above).
+        if (!cycleIsLive) return false
+        // Show only orders from the current cycle — hide any other cycle (old or phantom).
+        if (effectiveCycleNum != null) {
+          const ordCycle = extractCycleNum(o.orderLinkId)
+          if (ordCycle !== null && ordCycle !== effectiveCycleNum) return false
+        }
       }
       const lbl = parseOrderLabel(o.orderLinkId, o.side)
       // Skip exchange orders whose level is tracked as virtual in strategyLevels
@@ -578,6 +605,34 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
           axisLabelVisible: false,
           title: '',
         }))
+      }
+    }
+
+    // Relative-slots preview — the next upcoming accumulation/counter slot for a
+    // relative_slots matrix strategy, computed live by the backend and NOT yet an actual
+    // strategy_levels row (unlike the virtual-pending block above). Shown so the next
+    // target is visible before price reaches it, same idea as absolute-mode virtual
+    // levels — both accum and counter previews use the same order side as the strategy's
+    // own direction (matrixLevelSide is direction-only, not side-specific on the backend).
+    if ((!overlaySettings || overlaySettings.showPlacedOrders) && stratIdShort) {
+      const isLong = effectiveDir === 'long'
+      if (!dirFilter || (dirFilter === 'long') === isLong) {
+        for (const preview of [relativePreviewAccum, relativePreviewCounter]) {
+          if (!preview || preview.price <= 0) continue
+          const p = preview.price
+          const pct = currentPrice > 0 ? ` ${pctFromPrice(p, currentPrice, isLong)}` : ''
+          const color = isLong ? '#6ee7b7' : '#fca5a5'
+          const vText = `L(${preview.slot})${pct}${preview.virtual ? ' [V]' : ''}`
+          priceLineTitlesRef.current.push({ price: p, color, text: vText, filled: false })
+          priceLines.current.push(series.createPriceLine({
+            price: p,
+            color,
+            lineWidth: 1,
+            lineStyle: 3,
+            axisLabelVisible: false,
+            title: '',
+          }))
+        }
       }
     }
 
@@ -711,7 +766,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         }))
       }
     }
-  }, [positions, orders, executions, symbol, lastPrice, afterSetData, overlaySettings, effectiveDir, stratIdShort, currentCycleNum, strategyLevels])
+  }, [positions, orders, executions, symbol, lastPrice, afterSetData, overlaySettings, effectiveDir, stratIdShort, currentCycleNum, strategyLevels, relativePreviewAccum, relativePreviewCounter])
 
   // Price line title labels overlay — custom HTML, since v5 couples title with axisLabelVisible
   useEffect(() => {
@@ -768,7 +823,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
     update()
     let rafId = requestAnimationFrame(function loop() { update(); rafId = requestAnimationFrame(loop) })
     return () => { cancelAnimationFrame(rafId); container.innerHTML = '' }
-  }, [positions, orders, executions, symbol, lastPrice, afterSetData, overlaySettings, effectiveDir, stratIdShort, currentCycleNum, strategyLevels])
+  }, [positions, orders, executions, symbol, lastPrice, afterSetData, overlaySettings, effectiveDir, stratIdShort, currentCycleNum, strategyLevels, relativePreviewAccum, relativePreviewCounter])
 
   // Execution markers
   useEffect(() => {

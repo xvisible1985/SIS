@@ -1,15 +1,19 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Layers, Camera, Smile, Trash2 } from 'lucide-react';
+import { X, Layers, Camera, Smile, Trash2, Search, Loader2 } from 'lucide-react';
 import { BotIconPicker } from './BotIconPicker';
-import { Toggle, Tip } from '../../../components/strategies/FormWidgets';
+import { Toggle, Tip, SignalPickerField } from '../../../components/strategies/FormWidgets';
+import type { SignalConfig } from '../../../types';
 import { getStrategyDefaults } from '../../admin-defaults/api';
-import { CoinMultiPicker } from '../../../components/common/CoinMultiPicker';
+import { CoinMultiPicker, getAllSymbols, matchesPattern } from '../../../components/common/CoinMultiPicker';
 import { getInstrumentConstraints, type InstrumentConstraints } from '../../../api/strategies';
 import { useSelectedAccount } from '../../../contexts/AccountContext';
+import { apiClient } from '../../../api/client';
 import type { Bot as BotType, CreateBotInput, StrategyConfig, MatrixLevel, MatrixEntryLevel } from '../types';
 import { BOT_KIND_META } from '../botKindMeta';
 import { ResetStatsConfirmModal } from './ResetStatsConfirmModal';
+
+type ScanItem = { symbol: string; state: 'buy' | 'sell' };
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -21,7 +25,7 @@ type Props = {
   takenSymbols?: Map<string, string>;
 };
 
-type OuterTab = 'basic' | 'strategy' | 'close';
+type OuterTab = 'basic' | 'strategy' | 'activation' | 'close';
 type StratTab = 'entry' | 'matrix' | 'params';
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
@@ -70,6 +74,7 @@ function defaultStratConfig(bot?: BotType): StrategyConfig {
     hedge_breakeven_profit:  s.hedge_breakeven_profit  ?? 0,
     hedge_profit_lazy:       s.hedge_profit_lazy       ?? false,
     hedge_profit_lazy_pct:   s.hedge_profit_lazy_pct   ?? 2,
+    activation_signals:      s.activation_signals      ?? [],
   };
 }
 
@@ -116,6 +121,11 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
   const [whitelist, setWhitelist] = useState<string[]>(bot?.symbolWhitelist ?? []);
   const [blacklist, setBlacklist] = useState<string[]>(bot?.symbolBlacklist ?? []);
 
+  const [allSymbols,  setAllSymbols]  = useState<string[]>([]);
+  const [scanLoading, setScanLoading] = useState(false);
+  const [scanResult,  setScanResult]  = useState<ScanItem[] | null>(null);
+  const [scanError,   setScanError]   = useState<string | null>(null);
+
   const [deactCloseValDraft,    setDeactCloseValDraft]    = useState<string | null>(null);
   const [breakevenProfitDraft,  setBreakevenProfitDraft]  = useState<string | null>(null);
   const [profitLazyPctDraft, setProfitLazyPctDraft] = useState<string | null>(null);
@@ -136,6 +146,59 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
     window.addEventListener('keydown', fn);
     return () => window.removeEventListener('keydown', fn);
   }, [onClose]);
+
+  // Загружаем все доступные символы при открытии вкладки Активация
+  useEffect(() => {
+    if (outerTab === 'activation' && allSymbols.length === 0) {
+      getAllSymbols().then(setAllSymbols);
+    }
+  }, [outerTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Итоговый список монет: применяем правила whitelist и blacklist (с поддержкой масок)
+  const resolvedSymbols = useMemo(() => {
+    if (allSymbols.length === 0) return [];
+    let result = allSymbols;
+    if (whitelist.length > 0) {
+      result = result.filter(sym => whitelist.some(rule => matchesPattern(sym, rule)));
+    }
+    result = result.filter(sym => !blacklist.some(rule => matchesPattern(sym, rule)));
+    return result;
+  }, [allSymbols, whitelist, blacklist]);
+
+  const handleScan = async () => {
+    const signals = (config.activation_signals as SignalConfig[]) ?? [];
+    if (signals.length === 0) {
+      setScanError('Добавьте хотя бы один сигнал для проверки');
+      return;
+    }
+    const targets = resolvedSymbols.length > 0 ? resolvedSymbols : allSymbols;
+    if (targets.length === 0) {
+      setScanError('Список символов ещё загружается');
+      return;
+    }
+    // Extract interval from signal config (params.tf), fall back to '15'.
+    const interval: string = signals.reduce<string>((acc, s) => {
+      const tf = (s as { params?: Record<string, unknown> }).params?.tf;
+      return acc !== '15' ? acc : (typeof tf === 'string' && tf ? tf : acc);
+    }, '15');
+    setScanLoading(true);
+    setScanError(null);
+    setScanResult(null);
+    try {
+      const res = await apiClient.post<{ results: ScanItem[] }>('/bots/signal-scan', {
+        signal_configs: signals,
+        whitelist: targets,   // уже разрешённый список, маски применены на фронте
+        blacklist: [],
+        interval,
+        direction: 'both',    // Matrix открывает обе стороны сразу — направление сигнала не важно
+      });
+      setScanResult(res.data.results ?? []);
+    } catch {
+      setScanError('Ошибка при проверке символов');
+    } finally {
+      setScanLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (outerTab === 'strategy' && stratTab === 'entry' && config.symbol) {
@@ -301,9 +364,10 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
   const META = BOT_KIND_META['matrix'];
 
   const outerTabs: { id: OuterTab; label: string }[] = [
-    { id: 'basic',    label: 'Основное'  },
-    { id: 'strategy', label: 'Стратегия' },
-    { id: 'close',    label: 'Закрытие'  },
+    { id: 'basic',      label: 'Основное'   },
+    { id: 'strategy',   label: 'Стратегия'  },
+    { id: 'activation', label: 'Активация'  },
+    { id: 'close',      label: 'Закрытие'   },
   ];
   const stratTabs: { id: StratTab; label: string }[] = [
     { id: 'entry',  label: '1. Базовые'   },
@@ -452,16 +516,6 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
                   />
                 </Field>
               )}
-
-              {/* Whitelist / Blacklist */}
-              <div className="flex flex-col gap-3">
-                <Field label="Whitelist монет" hint="Бот торгует только этими монетами (пусто = все)">
-                  <CoinMultiPicker values={whitelist} onChange={setWhitelist} takenSymbols={takenSymbols} />
-                </Field>
-                <Field label="Blacklist монет" hint="Монеты, исключённые из торговли">
-                  <CoinMultiPicker values={blacklist} onChange={setBlacklist} color="red" />
-                </Field>
-              </div>
 
               {/* Лимиты */}
               <div className="grid grid-cols-3 gap-3">
@@ -836,6 +890,138 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* ═══ ACTIVATION ═══════════════════════════════════════════════════ */}
+          {outerTab === 'activation' && (
+            <div className="flex flex-col gap-4">
+
+              <div className="rounded-lg border border-violet-500/20 bg-violet-950/[.10] px-4 py-3 text-[12px] text-violet-300 leading-relaxed">
+                Без сигналов бот открывает <b>Long + Short</b> сразу по всем символам из whitelist (как сейчас).
+                С сигналами — ждёт, пока они сработают, и только тогда открывает пару по символу.
+                В отличие от других ботов, направление сигнала (Buy/Sell) не важно — сработал сигнал в любую
+                сторону — открываются сразу обе стороны, Long и Short.
+              </div>
+
+              <div>
+                <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 pb-1 border-b border-white/[.05] mb-2">
+                  Сигналы активации
+                  <Tip text="AND-логика: все указанные сигналы должны совпасть, чтобы пара была активирована. Например, «Изменение цены» здесь используется только как порог |движения| — режим тренд/контр-тренд на активацию Matrix-бота не влияет." />
+                </div>
+                <SignalPickerField
+                  configs={(config.activation_signals as SignalConfig[]) ?? []}
+                  onChange={v => patch({ activation_signals: v })}
+                />
+              </div>
+
+              {/* Whitelist */}
+              <div>
+                <div className="mb-1 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                  Whitelist
+                </div>
+                <div className="mb-2 text-[11px] text-slate-500">
+                  Бот торгует только этими символами. Пусто — без ограничений.
+                </div>
+                <CoinMultiPicker values={whitelist} onChange={setWhitelist} takenSymbols={takenSymbols} />
+              </div>
+
+              {/* Blacklist */}
+              <div>
+                <div className="mb-1 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                  Blacklist
+                </div>
+                <div className="mb-2 text-[11px] text-slate-500">
+                  Эти символы исключены.
+                </div>
+                <CoinMultiPicker values={blacklist} onChange={setBlacklist} color="red" />
+              </div>
+
+              {/* Resolved symbols */}
+              <div>
+                <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 pb-1 border-b border-white/[.05]">
+                  Итоговый список символов
+                </div>
+                {allSymbols.length === 0 ? (
+                  <div className="text-[11px] text-slate-500">Загрузка символов...</div>
+                ) : resolvedSymbols.length === 0 && (whitelist.length > 0 || blacklist.length > 0) ? (
+                  <div className="text-[11px] text-rose-400">Все символы исключены правилами</div>
+                ) : (
+                  <div>
+                    <div className="mb-1.5 text-[11px] text-slate-400">
+                      {whitelist.length === 0 && blacklist.length === 0
+                        ? <span>Все символы биржи: <span className="font-semibold text-slate-200">{allSymbols.length}</span></span>
+                        : <span>Подходит: <span className="font-semibold text-slate-200">{resolvedSymbols.length}</span> из {allSymbols.length}</span>
+                      }
+                    </div>
+                    {(whitelist.length > 0 || blacklist.length > 0) && resolvedSymbols.length > 0 && (
+                      <div className="flex flex-wrap gap-1 max-h-[100px] overflow-y-auto">
+                        {resolvedSymbols.map(sym => (
+                          <span key={sym} className="rounded-md border border-white/[.08] bg-white/[.03] px-1.5 py-0.5 font-mono text-[10px] text-slate-300">
+                            {sym.replace(/USDT$/i, '')}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Scan button + results */}
+              <div>
+                <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 pb-1 border-b border-white/[.05]">
+                  Проверка в моменте
+                </div>
+                <p className="mb-3 text-[11px] text-slate-500">
+                  Запускает проверку доступных символов на соответствие выбранным сигналам прямо сейчас.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleScan}
+                  disabled={scanLoading}
+                  className="inline-flex items-center gap-2 rounded-lg border border-[#5b8cff]/30 bg-[#5b8cff]/[.12] px-4 py-2 text-[12px] font-semibold text-[#a0b8ff] hover:bg-[#5b8cff]/[.20] disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {scanLoading
+                    ? <><Loader2 size={13} className="animate-spin" />Проверяем...</>
+                    : <><Search size={13} />Проверить</>
+                  }
+                </button>
+
+                {scanError && (
+                  <div className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/[.08] px-3 py-2 text-[12px] text-rose-300">
+                    {scanError}
+                  </div>
+                )}
+
+                {scanResult !== null && (
+                  <div className="mt-3">
+                    {scanResult.length === 0 ? (
+                      <div className="text-[12px] text-slate-500">Совпадений не найдено</div>
+                    ) : (
+                      <>
+                        <div className="mb-1.5 text-[11px] text-slate-400">
+                          Найдено символов: <span className="font-semibold text-slate-200">{scanResult.length}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 max-h-[160px] overflow-y-auto">
+                          {scanResult.map(r => (
+                            <span
+                              key={r.symbol}
+                              className={
+                                'rounded-md border px-2 py-0.5 font-mono text-[11px] font-semibold ' +
+                                (r.state === 'buy'
+                                  ? 'border-emerald-500/30 bg-emerald-500/[.12] text-emerald-300'
+                                  : 'border-rose-500/30 bg-rose-500/[.12] text-rose-300')
+                              }
+                            >
+                              {r.symbol}
+                            </span>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

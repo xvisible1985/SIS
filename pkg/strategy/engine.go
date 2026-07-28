@@ -101,6 +101,10 @@ func (e *Engine) Start(ctx context.Context) {
 	// Load stopped strategies (no active cycle) that have a real open position
 	// and TP/SL configured — one FetchPositions call per account, done in background.
 	go e.reconcileStoppedNoCycle(ctx)
+	// Ongoing backstop (not just at boot): re-registers any active strategy that ended up
+	// with no runner at all — e.g. a bot-created strategy whose one-shot, unretried
+	// Notify() call failed. See reconcileMissingRunners for the live incident this fixes.
+	go e.runReconcileMissingRunnersLoop(ctx)
 }
 
 // Notify reloads a strategy from DB after a REST update (status change or param edit).
@@ -457,6 +461,53 @@ func (e *Engine) GetMatrixSafeZone(strategyID string) *MatrixSafeZone {
 		return &MatrixSafeZone{Low: low, High: high}
 	}
 	return nil
+}
+
+// MatrixRelativePreview describes the upcoming (not-yet-triggered) relative slot for one
+// side of a relative_slots matrix strategy — used by the chart to show the next target
+// before price actually reaches it, mirroring how absolute-mode virtual levels are
+// visible in advance of triggering.
+type MatrixRelativePreview struct {
+	Slot    int     `json:"slot"`
+	Price   float64 `json:"price"`
+	Virtual bool    `json:"virtual"`
+}
+
+// GetMatrixRelativePreview returns the next accumulation-side and counter-side relative
+// slot targets for a relative_slots matrix strategy. Either return value is nil when not
+// applicable (not a relative-slots strategy, no active cycle, expansion currently
+// blocked by a pending/placed slot on that side, or the concurrency cap is reached).
+// Read-only — computes exactly what matrixRelativeExpand would place, without any side
+// effects, via the same matrixNextRelativeSlot the live engine uses.
+func (e *Engine) GetMatrixRelativePreview(strategyID string) (accum, counter *MatrixRelativePreview) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, runner := range e.runners {
+		runner.mu.RLock()
+		sr, ok := runner.strategies[strategyID]
+		runner.mu.RUnlock()
+		if !ok {
+			continue
+		}
+		sr.mu.RLock()
+		defer sr.mu.RUnlock()
+		if !sr.strategy.RelativeSlots {
+			return nil, nil
+		}
+		accumSide := matrixAccumSide(sr.strategy.Direction)
+		counterSide := "below"
+		if accumSide == "below" {
+			counterSide = "above"
+		}
+		if s, p, v, ok := sr.matrixNextRelativeSlotPreview(accumSide); ok {
+			accum = &MatrixRelativePreview{Slot: s, Price: p, Virtual: v}
+		}
+		if s, p, v, ok := sr.matrixNextRelativeSlotPreview(counterSide); ok {
+			counter = &MatrixRelativePreview{Slot: s, Price: p, Virtual: v}
+		}
+		return accum, counter
+	}
+	return nil, nil
 }
 
 // PushSignalOverride recomputes and directly sets currentSignalState for every
@@ -829,6 +880,7 @@ func (ar *AccountRunner) addStrategy(s Strategy) {
 		prevConfigsLen := len(existing.strategy.SignalConfigs)
 		prevTpSuppressed := existing.strategy.HedgeTpSuppressed
 		prevSlSuppressed := existing.strategy.HedgeSlSuppressed
+		hadNoCycle := existing.cycle == nil
 		if existing.strategy.HedgeMode != s.HedgeMode {
 			existing.positionModeVerified = false
 		}
@@ -836,6 +888,19 @@ func (ar *AccountRunner) addStrategy(s Strategy) {
 		existing.mu.Unlock()
 		// Re-activate: runner was stopped/idle, now active again — start a fresh cycle.
 		if prevStatus != StatusActive && s.Status == StatusActive {
+			existing.submit(func(ctx context.Context) { existing.loadOrStart(ctx) })
+		}
+		// Self-heal: an already-registered, still-active runner with no in-memory cycle
+		// must reload it — e.g. after reviveMatrixSplitBrain (matrix_engine.go) clears
+		// strategy_cycles.ended_at without ever notifying THIS runner to reload it: only
+		// a status transition (above) retriggers loadOrStart, but a split-brain revival
+		// only touches strategy_cycles, leaving sr.cycle permanently nil even though the
+		// strategy is otherwise healthy and active. Without this, the runner can never
+		// place/manage TP/SL/levels again, and reconcile()'s orphan sweep keeps cancelling
+		// its real resting orders every ~20s as "no active cycle" — found live
+		// (2026-07-20): a matrix pair flapped "цикл оживлён" ~46 times over 2+ hours while
+		// its TP/SL orders were repeatedly cancelled and never re-placed.
+		if strategyNeedsCycleReload(prevStatus, s.Status, hadNoCycle) {
 			existing.submit(func(ctx context.Context) { existing.loadOrStart(ctx) })
 		}
 		// Stop: cancel placed L-orders but keep TP/SL so the cycle ends naturally.
@@ -896,6 +961,17 @@ func (ar *AccountRunner) addStrategy(s Strategy) {
 	ar.mu.Unlock()
 	sr.startWorker()
 	sr.submit(func(ctx context.Context) { sr.loadOrStart(ctx) })
+}
+
+// strategyNeedsCycleReload reports whether an already-registered runner must reload its
+// in-memory cycle: the strategy was and remains active, yet the runner currently has no
+// cycle object. This is always an inconsistent state — a healthy active strategy always
+// has an in-memory cycle once loadOrStart has run. When true, without a fresh reload
+// the runner can never place/manage TP/SL/levels for that strategy again. Genuine
+// reactivation (prevStatus != Active) is intentionally excluded — that case is already
+// handled by the reactivation branch right above this check's call site.
+func strategyNeedsCycleReload(prevStatus, status Status, hadNoCycle bool) bool {
+	return prevStatus == StatusActive && status == StatusActive && hadNoCycle
 }
 
 func (ar *AccountRunner) removeStrategy(strategyID string) {

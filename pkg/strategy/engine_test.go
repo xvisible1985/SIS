@@ -71,6 +71,33 @@ func TestMatrixPlacementDecision(t *testing.T) {
 	}
 }
 
+// Regression: matrixPlaceRelativeSlot / matrixRetryStuckRelativeSlot (matrix_relative_engine.go)
+// are only ever called AFTER matrixSlotReached has already confirmed price reached/passed
+// target — there is no "wait passively" phase to preserve for relative slots. They force
+// this Market branch by passing target itself as the currentPrice argument to
+// placeMatrixLevel, so this equality shortcut must always resolve to Market regardless of
+// direction — pins the exact mechanism that fix relies on.
+// Found live (2026-07-21): HEMIUSDT HEDGE (short) leg's L(-1) sat as an unfillable resting
+// Limit far above a gapped-down market, because the order was placed at the stale target
+// price instead of firing immediately once the trigger condition was already satisfied.
+func TestMatrixPlacementDecision_TargetEqualsCurrentForcesMarket(t *testing.T) {
+	orderType, trigDir := matrixEntryOrderType("short", 98.0, 98.0)
+	if orderType != "Market" {
+		t.Errorf("target==current (short): want Market, got %s", orderType)
+	}
+	if trigDir != 0 {
+		t.Errorf("target==current (short): want trigDir=0, got %d", trigDir)
+	}
+
+	orderType, trigDir = matrixEntryOrderType("long", 102.0, 102.0)
+	if orderType != "Market" {
+		t.Errorf("target==current (long): want Market, got %s", orderType)
+	}
+	if trigDir != 0 {
+		t.Errorf("target==current (long): want trigDir=0, got %d", trigDir)
+	}
+}
+
 func TestCalculateGridLevels_Long(t *testing.T) {
 	prices := calculateGridLevels(100.0, 1.0, 5, "Buy")
 	expected := []float64{99.0, 98.01, 97.0299, 96.0596, 95.0990}
@@ -201,6 +228,77 @@ func TestMatrixStopReplaceNewTrigger(t *testing.T) {
 	trigger = matrixStopReplaceTrigger(DirectionShort, 100.0, 0.5)
 	if math.Abs(trigger-99.5) > 0.0001 {
 		t.Errorf("Short replace trigger: want 99.5, got %.4f", trigger)
+	}
+}
+
+// matrixTPIsAdverse decides whether matrixUpdateTP places a plain take-profit LIMIT
+// order (adverse=true) or a reduce-only STOP order (adverse=false, price already ran
+// past ТВХ in the position's favor — a limit order there would fill instantly).
+func TestMatrixTPIsAdverse(t *testing.T) {
+	if !matrixTPIsAdverse(DirectionLong, 99.0, 100.0) {
+		t.Error("long: price below ТВХ should be adverse (classic recovery TP)")
+	}
+	if matrixTPIsAdverse(DirectionLong, 101.0, 100.0) {
+		t.Error("long: price above ТВХ should not be adverse (pyramided favorably → SL path)")
+	}
+	if !matrixTPIsAdverse(DirectionShort, 101.0, 100.0) {
+		t.Error("short: price above ТВХ should be adverse (mirrored)")
+	}
+	if matrixTPIsAdverse(DirectionShort, 99.0, 100.0) {
+		t.Error("short: price below ТВХ should not be adverse (pyramided favorably → SL path)")
+	}
+}
+
+// matrixMostFavorableFill is the mirror of matrixLatestActiveFill, used once price has
+// crossed to the favorable side of ТВХ (see TestMatrixTPIsAdverse).
+func TestMatrixMostFavorableFill_Long(t *testing.T) {
+	negOne, one, two := -1, 1, 2
+	sr := &StrategyRunner{
+		strategy: Strategy{Direction: DirectionLong},
+		levels: []GridLevel{
+			{Slot: &negOne, Status: LevelFilled, FilledPrice: 98.0},
+			{Slot: &one, Status: LevelFilled, FilledPrice: 102.0},
+			{Slot: &two, Status: LevelFilled, FilledPrice: 104.0},
+		},
+	}
+	got, ok := sr.matrixMostFavorableFill()
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got.FilledPrice != 104.0 {
+		t.Fatalf("favorable fill = %.2f, want 104.0 (highest price for long)", got.FilledPrice)
+	}
+}
+
+func TestMatrixMostFavorableFill_Short(t *testing.T) {
+	one, negOne, negTwo := 1, -1, -2
+	sr := &StrategyRunner{
+		strategy: Strategy{Direction: DirectionShort},
+		levels: []GridLevel{
+			{Slot: &one, Status: LevelFilled, FilledPrice: 102.0},
+			{Slot: &negOne, Status: LevelFilled, FilledPrice: 98.0},
+			{Slot: &negTwo, Status: LevelFilled, FilledPrice: 96.0},
+		},
+	}
+	got, ok := sr.matrixMostFavorableFill()
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got.FilledPrice != 96.0 {
+		t.Fatalf("favorable fill = %.2f, want 96.0 (lowest price for short)", got.FilledPrice)
+	}
+}
+
+func TestMatrixMostFavorableFill_IgnoresUnfilledAndEmpty(t *testing.T) {
+	one := 1
+	sr := &StrategyRunner{
+		strategy: Strategy{Direction: DirectionLong},
+		levels: []GridLevel{
+			{Slot: &one, Status: LevelPending, FilledPrice: 0},
+		},
+	}
+	if _, ok := sr.matrixMostFavorableFill(); ok {
+		t.Fatal("expected ok=false — no filled levels")
 	}
 }
 
