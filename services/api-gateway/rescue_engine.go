@@ -1,6 +1,9 @@
 package main
 
-import "math"
+import (
+	"math"
+	"time"
+)
 
 // rescueSignalTrigger describes a signal-based condition for the RescueBot
 // partial-close trigger. Name is the signal name (e.g. "st-flip"); Params are
@@ -46,6 +49,48 @@ func rescuePriceLevelReached(level, currentAt float64, mainDir string) bool {
 		return currentAt >= level
 	}
 	return false
+}
+
+// rescueTriggersMet returns true when ALL active (non-nil) triggers are
+// satisfied simultaneously (AND logic). signalMet is pre-computed by the caller
+// (requires signal.Engine, so it's injected rather than evaluated here to keep
+// this function pure/testable).
+//
+// When no triggers are configured, returns true — the outer gate
+// (RescuePartialCloseEnabled check) is the caller's responsibility.
+func rescueTriggersMet(cfg botCfgJSON, currentPrice, mainEntryPrice float64, mainDir string, accumulatedPnl float64, signalMet bool) bool {
+	if cfg.RescueTriggerPriceMovePct != nil {
+		if rescuePriceMoveTowardMainPct(mainEntryPrice, currentPrice, mainDir) < *cfg.RescueTriggerPriceMovePct {
+			return false
+		}
+	}
+	if cfg.RescueTriggerPriceLevel != nil {
+		if !rescuePriceLevelReached(*cfg.RescueTriggerPriceLevel, currentPrice, mainDir) {
+			return false
+		}
+	}
+	if cfg.RescueTriggerAccumulatedMinUsdt != nil {
+		if accumulatedPnl < *cfg.RescueTriggerAccumulatedMinUsdt {
+			return false
+		}
+	}
+	if cfg.RescueTriggerSignal != nil && !signalMet {
+		return false
+	}
+	return true
+}
+
+// rescueCooldownElapsed returns true when enough time has passed since the last
+// partial close to allow another one. lastPartialCloseAt nil means "never closed"
+// → always allowed. minIntervalSec=0 means no cooldown.
+func rescueCooldownElapsed(lastPartialCloseAt *time.Time, minIntervalSec int) bool {
+	if lastPartialCloseAt == nil {
+		return true
+	}
+	if minIntervalSec <= 0 {
+		return true
+	}
+	return time.Since(*lastPartialCloseAt) >= time.Duration(minIntervalSec)*time.Second
 }
 
 // rescueCalcPartialCloseQty returns the coin quantity to partially close on the

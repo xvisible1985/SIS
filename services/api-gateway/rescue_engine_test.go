@@ -3,6 +3,7 @@ package main
 import (
 	"math"
 	"testing"
+	"time"
 )
 
 // TestRescuePriceMoveTowardMainPct проверяет расчёт движения цены в сторону
@@ -87,6 +88,132 @@ func TestRescuePriceLevelReached(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := rescuePriceLevelReached(tc.level, tc.currentAt, tc.mainDir)
+			if got != tc.want {
+				t.Errorf("want %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+// TestRescueTriggersMet проверяет AND-логику проверки всех активных триггеров.
+func TestRescueTriggersMet(t *testing.T) {
+	pctThresh := 5.0
+	levelThresh := 90.0
+	accumThresh := 20.0
+
+	cases := []struct {
+		name    string
+		cfg     botCfgJSON
+		current float64
+		entry   float64
+		mainDir string
+		accum   float64
+		want    bool
+	}{
+		{
+			name: "no triggers configured → always true (gate is elsewhere)",
+			cfg:  botCfgJSON{RescuePartialCloseEnabled: true},
+			want: true,
+		},
+		{
+			name: "price move trigger met",
+			cfg:  botCfgJSON{RescueTriggerPriceMovePct: &pctThresh},
+			// long: entry=100, current=93 → move=7% ≥ 5%
+			entry: 100, current: 93, mainDir: "buy",
+			want: true,
+		},
+		{
+			name: "price move trigger not met",
+			cfg:  botCfgJSON{RescueTriggerPriceMovePct: &pctThresh},
+			// long: entry=100, current=97 → move=3% < 5%
+			entry: 100, current: 97, mainDir: "buy",
+			want: false,
+		},
+		{
+			name: "price level trigger met",
+			cfg:  botCfgJSON{RescueTriggerPriceLevel: &levelThresh},
+			// long: current=88 ≤ 90
+			entry: 100, current: 88, mainDir: "buy",
+			want: true,
+		},
+		{
+			name: "price level trigger not met",
+			cfg:  botCfgJSON{RescueTriggerPriceLevel: &levelThresh},
+			// long: current=95 > 90
+			entry: 100, current: 95, mainDir: "buy",
+			want: false,
+		},
+		{
+			name: "accumulated trigger met",
+			cfg:  botCfgJSON{RescueTriggerAccumulatedMinUsdt: &accumThresh},
+			accum: 25,
+			want:  true,
+		},
+		{
+			name: "accumulated trigger not met",
+			cfg:  botCfgJSON{RescueTriggerAccumulatedMinUsdt: &accumThresh},
+			accum: 10,
+			want:  false,
+		},
+		{
+			name: "all three conditions, all met",
+			cfg: botCfgJSON{
+				RescueTriggerPriceMovePct:       &pctThresh,
+				RescueTriggerPriceLevel:         &levelThresh,
+				RescueTriggerAccumulatedMinUsdt: &accumThresh,
+			},
+			entry: 100, current: 85, mainDir: "buy",
+			accum: 30,
+			want:  true,
+		},
+		{
+			name: "all three conditions, accum not met",
+			cfg: botCfgJSON{
+				RescueTriggerPriceMovePct:       &pctThresh,
+				RescueTriggerPriceLevel:         &levelThresh,
+				RescueTriggerAccumulatedMinUsdt: &accumThresh,
+			},
+			entry: 100, current: 85, mainDir: "buy",
+			accum: 5, // < 20
+			want:  false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Signal trigger is tested separately (requires signal.Engine); pass nil here.
+			got := rescueTriggersMet(tc.cfg, tc.current, tc.entry, tc.mainDir, tc.accum, false)
+			if got != tc.want {
+				t.Errorf("want %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+// TestRescueCooldownElapsed проверяет кулдаун между шагами частичного закрытия.
+func TestRescueCooldownElapsed(t *testing.T) {
+	now := time.Now()
+
+	cases := []struct {
+		name           string
+		lastClosedAgo  int // seconds ago; 0 = nil (never closed)
+		minIntervalSec int
+		want           bool
+	}{
+		{"never closed → elapsed", 0, 300, true},
+		{"closed 400s ago, interval 300 → elapsed", 400, 300, true},
+		{"closed 100s ago, interval 300 → not elapsed", 100, 300, false},
+		{"closed exactly interval ago → elapsed (>=)", 300, 300, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var lastAt *time.Time
+			if tc.lastClosedAgo > 0 {
+				ts := now.Add(-time.Duration(tc.lastClosedAgo) * time.Second)
+				lastAt = &ts
+			}
+			got := rescueCooldownElapsed(lastAt, tc.minIntervalSec)
 			if got != tc.want {
 				t.Errorf("want %v, got %v", tc.want, got)
 			}
