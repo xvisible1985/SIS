@@ -203,7 +203,7 @@ func (h *KlineHub) runConn(hc *hubConn) {
 		default:
 		}
 
-		conn, _, err := websocket.DefaultDialer.DialContext(h.ctx, bybitPublicWS, nil)
+		conn, _, err := proxy.WSDialer().DialContext(h.ctx, bybitPublicWS, nil)
 		if err != nil {
 			log.Printf("kline hub: dial: %v; retry in %s", err, wsReconnectDelay)
 			time.Sleep(wsReconnectDelay)
