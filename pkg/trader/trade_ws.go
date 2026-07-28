@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"sis/pkg/proxy"
 )
 
 const bybitTradeWS = "wss://stream.bybit.com/v5/trade"
@@ -68,7 +70,11 @@ func (ts *TradeStream) Run(ctx context.Context) {
 }
 
 func (ts *TradeStream) runOnce(ctx context.Context) error {
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, bybitTradeWS, nil)
+	dialer, err := proxy.WSDialerFor(ts.creds.WhitelistedIPs)
+	if err != nil {
+		return err
+	}
+	conn, _, err := dialer.DialContext(ctx, bybitTradeWS, nil)
 	if err != nil {
 		return err
 	}
