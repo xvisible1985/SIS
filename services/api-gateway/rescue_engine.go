@@ -82,7 +82,7 @@ func rescueTriggersMet(cfg botCfgJSON, currentPrice, mainEntryPrice float64, mai
 			return false
 		}
 	}
-	if cfg.RescueTriggerSignal != nil && !signalMet {
+	if len(cfg.RescueTriggerSignal) > 0 && !signalMet {
 		return false
 	}
 	return true
@@ -244,24 +244,25 @@ func (s *Server) checkRescuePartialClose(ctx context.Context, botID, accountID s
 		currentPrice := mainPos.MarkPrice
 		mainEntryPrice := mainPos.EntryPrice
 
-		// Evaluate signal trigger if configured.
+		// Evaluate signal triggers (AND logic — all must match rescue direction).
 		signalMet := true
-		if cfg.RescueTriggerSignal != nil {
-			trig := cfg.RescueTriggerSignal
+		var want signal.State
+		if sr.mainDir == "buy" {
+			want = signal.Sell // price falling → sell signal confirms rescue for long main
+		} else {
+			want = signal.Buy
+		}
+		for _, trig := range cfg.RescueTriggerSignal {
 			sc := signal.Config{Name: trig.Name, Params: trig.Params}
 			interval := "15"
 			if v, ok := trig.Params["tf"].(string); ok && v != "" {
 				interval = v
 			}
 			state := s.signalEngine.ComputeStateForce(sr.symbol, interval, []signal.Config{sc})
-			// Signal must confirm the rescue direction (adverse to main = beneficial for hedge).
-			var want signal.State
-			if sr.mainDir == "buy" {
-				want = signal.Sell // price falling → sell signal confirms rescue for long main
-			} else {
-				want = signal.Buy
+			if state != want {
+				signalMet = false
+				break
 			}
-			signalMet = (state == want)
 		}
 
 		// Fetch instrument constraints (cached 5m by trader package).
@@ -289,12 +290,20 @@ func (s *Server) checkRescuePartialClose(ctx context.Context, botID, accountID s
 			posIdx = 2 // short main (Sell position) → positionIdx 2
 		}
 
+		// Use SizeStr verbatim when the calculated qty meets or exceeds the remaining
+		// position — same convention as matrixLegCloseRequest — so the order closes the
+		// position exactly rather than leaving sub-step dust from float rounding.
+		qtyStr := trader.FormatQty(req.Qty, pubInfo.QtyStep, pubInfo.MinQty)
+		if req.Qty >= mainPos.Size && mainPos.SizeStr != "" {
+			qtyStr = mainPos.SizeStr
+		}
+
 		orderReq := trader.OrderRequest{
 			Symbol:      req.Symbol,
 			Category:    "linear",
 			Side:        apiSide,
 			OrderType:   "Market",
-			Qty:         trader.FormatQty(req.Qty, pubInfo.QtyStep, pubInfo.MinQty),
+			Qty:         qtyStr,
 			ReduceOnly:  true,
 			PositionIdx: posIdx,
 		}

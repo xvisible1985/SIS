@@ -23,7 +23,7 @@ type Props = {
   takenSymbols?: Map<string, string>;
 };
 
-type OuterTab = 'basic' | 'activation' | 'strategy';
+type OuterTab = 'basic' | 'activation' | 'completion' | 'strategy';
 type StratTab = 'entry' | 'matrix' | 'params';
 
 // Hedge activation/deactivation config
@@ -196,8 +196,7 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
   const [rescuePriceMovePct, setRescuePriceMovePct] = useState<number | null>(bot?.strategyConfig?.rescue_trigger_price_move_pct ?? null);
   const [rescuePriceLevel,   setRescuePriceLevel]   = useState<number | null>(bot?.strategyConfig?.rescue_trigger_price_level ?? null);
   const [rescueAccumMin,     setRescueAccumMin]      = useState<number | null>(bot?.strategyConfig?.rescue_trigger_accumulated_min_usdt ?? null);
-  const [rescueSignalName,   setRescueSignalName]   = useState((bot?.strategyConfig?.rescue_trigger_signal?.name) ?? '');
-  const [rescueSignalTf,     setRescueSignalTf]     = useState(((bot?.strategyConfig?.rescue_trigger_signal?.params?.tf) as string | undefined) ?? '15');
+  const [rescueSignalConfigs, setRescueSignalConfigs] = useState<SignalConfig[]>((bot?.strategyConfig?.rescue_trigger_signal as SignalConfig[] | null) ?? []);
   const [rescueIntervalSec,  setRescueIntervalSec]  = useState(bot?.strategyConfig?.rescue_min_interval_sec ?? 300);
 
   const [submitting,            setSubmitting]            = useState(false);
@@ -408,7 +407,7 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
           rescue_trigger_price_move_pct:      rescueEnabled && rescuePriceMovePct !== null ? rescuePriceMovePct : undefined,
           rescue_trigger_price_level:         rescueEnabled && rescuePriceLevel !== null ? rescuePriceLevel : undefined,
           rescue_trigger_accumulated_min_usdt: rescueEnabled && rescueAccumMin !== null ? rescueAccumMin : undefined,
-          rescue_trigger_signal:              rescueEnabled && rescueSignalName.trim() ? { name: rescueSignalName.trim(), params: { tf: rescueSignalTf } } : undefined,
+          rescue_trigger_signal:              rescueEnabled && rescueSignalConfigs.length > 0 ? rescueSignalConfigs : undefined,
           rescue_min_interval_sec:            rescueIntervalSec,
         },
         maxStrategies,
@@ -444,9 +443,10 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
   };
 
   const outerTabs: { id: OuterTab; label: string }[] = [
-    { id: 'basic',      label: 'Основное'  },
-    { id: 'activation', label: 'Активация' },
-    { id: 'strategy',   label: 'Стратегия' },
+    { id: 'basic',      label: 'Основное'   },
+    { id: 'activation', label: 'Активация'  },
+    { id: 'completion', label: 'Завершение' },
+    { id: 'strategy',   label: 'Стратегия'  },
   ];
   const stratTabs: { id: StratTab; label: string }[] = [
     { id: 'entry',  label: '1. Базовые'   },
@@ -960,13 +960,17 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
                 />
               </div>
 
-              {/* ── Секция: Деактивация ── */}
+            </div>
+          )}
+
+          {/* ════════════════════════ COMPLETION ════════════════════════════ */}
+          {outerTab === 'completion' && (
+            <div className="flex flex-col gap-5">
+
+              {/* ── Деактивация хеджа ── */}
               <SectionHeader icon="◀" color="blue">Деактивация хеджа</SectionHeader>
 
-              {/* Деактивация — два пикера в одну строку */}
               <div className="grid grid-cols-2 gap-3">
-
-                {/* Закрыть обе позиции */}
                 <div>
                   <label className={labelCls}>
                     Закрыть обе позиции при
@@ -1011,7 +1015,6 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
                   </div>
                 </div>
 
-                {/* Деактивировать хедж */}
                 <div>
                   <label className={labelCls}>
                     Деактивировать хедж при
@@ -1053,7 +1056,6 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
                     )}
                   </div>
                 </div>
-
               </div>
 
               {/* Отложенный профит */}
@@ -1078,6 +1080,134 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
                         className={`${inputCls} w-28`}
                       />
                     </Field>
+                  </div>
+                )}
+              </div>
+
+              {/* ── Rescue Bot ── */}
+              <SectionHeader icon="🛟" color="amber">Rescue — частичное закрытие мэйна</SectionHeader>
+
+              <div className="rounded-lg border border-white/[.06] bg-white/[.02] p-3 space-y-4">
+                <div className="flex items-center gap-2.5">
+                  <ToggleSwitch
+                    enabled={rescueEnabled}
+                    onToggle={() => setRescueEnabled(v => !v)}
+                  />
+                  <span className="flex items-center gap-1 text-[12px] font-semibold text-slate-300">
+                    Включить Rescue
+                    <Tip text="Когда хедж накопил достаточно PnL — частично закрываем убыточную мэйн-позицию за счёт этого PnL. Все триггеры работают по AND-логике: срабатывают только если выполнены все включённые условия." />
+                  </span>
+                </div>
+
+                {rescueEnabled && (
+                  <div className="space-y-3 pt-1">
+                    {/* Trigger: price move */}
+                    <div className="flex items-center gap-3">
+                      <ToggleSwitch
+                        enabled={rescuePriceMovePct !== null}
+                        onToggle={() => setRescuePriceMovePct(v => v === null ? 5 : null)}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1 text-[11px] font-medium text-slate-300">
+                          Движение цены против мэйна
+                          <Tip text="Триггер срабатывает, когда цена ушла против мэйн-позиции на указанный % от ТВХ. Лонг: цена упала; Шорт: выросла." />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <input
+                          type="number" min={0} step={0.5}
+                          disabled={rescuePriceMovePct === null}
+                          value={rescuePriceMovePct ?? 5}
+                          onChange={e => setRescuePriceMovePct(Math.max(0, parseFloat(e.target.value) || 0))}
+                          className={`${inputCls} w-20 text-center disabled:opacity-40`}
+                        />
+                        <span className="text-[10px] text-slate-500 shrink-0">%</span>
+                      </div>
+                    </div>
+
+                    {/* Trigger: price level */}
+                    <div className="flex items-center gap-3">
+                      <ToggleSwitch
+                        enabled={rescuePriceLevel !== null}
+                        onToggle={() => setRescuePriceLevel(v => v === null ? 0 : null)}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1 text-[11px] font-medium text-slate-300">
+                          Ценовой уровень
+                          <Tip text="Цена, при достижении которой срабатывает rescue. Лонг: уровень ниже ТВХ (цена упала до). Шорт: уровень выше ТВХ." />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <input
+                          type="number" min={0} step={1}
+                          disabled={rescuePriceLevel === null}
+                          value={rescuePriceLevel ?? 0}
+                          onChange={e => setRescuePriceLevel(Math.max(0, parseFloat(e.target.value) || 0))}
+                          className={`${inputCls} w-24 text-center disabled:opacity-40`}
+                        />
+                        <span className="text-[10px] text-slate-500 shrink-0">USDT</span>
+                      </div>
+                    </div>
+
+                    {/* Trigger: accumulated PnL */}
+                    <div className="flex items-center gap-3">
+                      <ToggleSwitch
+                        enabled={rescueAccumMin !== null}
+                        onToggle={() => setRescueAccumMin(v => v === null ? 20 : null)}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1 text-[11px] font-medium text-slate-300">
+                          Мин. накопленный PnL хеджа
+                          <Tip text="Rescue срабатывает только если хедж уже накопил не менее указанной суммы реализованного PnL. Защита от преждевременного закрытия на малых движениях." />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <input
+                          type="number" min={0} step={5}
+                          disabled={rescueAccumMin === null}
+                          value={rescueAccumMin ?? 20}
+                          onChange={e => setRescueAccumMin(Math.max(0, parseFloat(e.target.value) || 0))}
+                          className={`${inputCls} w-20 text-center disabled:opacity-40`}
+                        />
+                        <span className="text-[10px] text-slate-500 shrink-0">USDT</span>
+                      </div>
+                    </div>
+
+                    {/* Trigger: signals */}
+                    <div>
+                      <div className="flex items-center gap-1 text-[11px] font-medium text-slate-300 mb-1.5">
+                        Сигналы (AND)
+                        <Tip text="Дополнительное подтверждение от сигнального движка. AND-логика: все добавленные сигналы должны совпасть. Лонг-мэйн: сигнал должен быть Sell. Шорт-мэйн: Buy. Оставьте пустым, если сигнал не нужен." />
+                      </div>
+                      <SignalPickerField
+                        configs={rescueSignalConfigs}
+                        onChange={setRescueSignalConfigs}
+                      />
+                    </div>
+
+                    {/* Warning: rescue enabled but no triggers configured */}
+                    {rescuePriceMovePct === null && rescuePriceLevel === null && rescueAccumMin === null && rescueSignalConfigs.length === 0 && (
+                      <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                        <span className="text-amber-400 text-[11px] leading-relaxed">
+                          Ни один триггер не настроен — Rescue будет срабатывать на каждом тике без ограничений. Рекомендуется включить хотя бы один триггер (например, мин. накопленный PnL).
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Cooldown */}
+                    <div className="pt-2 border-t border-white/[.05]">
+                      <Field label="Мин. интервал между шагами" hint="секунды">
+                        <input
+                          type="number" min={0} step={60}
+                          value={rescueIntervalSec}
+                          onChange={e => setRescueIntervalSec(Math.max(0, parseInt(e.target.value) || 0))}
+                          className={`${inputCls} w-28`}
+                        />
+                      </Field>
+                      <p className="mt-1 text-[10px] text-slate-500">
+                        Минимальное время между двумя частичными закрытиями. 0 — без кулдауна.
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1543,154 +1673,6 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
                           optionColors={{ true: 'bg-emerald-700 text-white' }}
                         />
                       </div>
-                    </div>
-                  </div>
-
-                  {/* ── Rescue Bot ── */}
-                  <div>
-                    <div className="flex items-center gap-2 text-[10px] text-gray-400 uppercase tracking-wider pb-1 border-b border-gray-800 mb-3">
-                      <span>🛟 Rescue — частичное закрытие мэйна</span>
-                      <Tip text="Когда хедж накопил достаточно PnL — частично закрываем убыточную мэйн-позицию за счёт этого PnL. Все триггеры работают по AND-логике: срабатывают только если выполнены все включённые условия." />
-                    </div>
-                    <div className="rounded-lg border border-white/[.06] bg-white/[.02] p-3 space-y-4">
-                      {/* Master toggle */}
-                      <div className="flex items-center gap-2.5">
-                        <ToggleSwitch
-                          enabled={rescueEnabled}
-                          onToggle={() => setRescueEnabled(v => !v)}
-                        />
-                        <span className="text-[12px] font-semibold text-slate-300">
-                          Включить Rescue
-                        </span>
-                      </div>
-
-                      {rescueEnabled && (
-                        <div className="space-y-3 pt-1">
-                          {/* Trigger: price move */}
-                          <div className="flex items-center gap-3">
-                            <ToggleSwitch
-                              enabled={rescuePriceMovePct !== null}
-                              onToggle={() => setRescuePriceMovePct(v => v === null ? 5 : null)}
-                            />
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1 text-[11px] font-medium text-slate-300">
-                                Движение цены против мэйна
-                                <Tip text="Триггер срабатывает, когда цена ушла против мэйн-позиции на указанный % от ТВХ. Лонг: цена упала; Шорт: выросла." />
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <input
-                                type="number" min={0} step={0.5}
-                                disabled={rescuePriceMovePct === null}
-                                value={rescuePriceMovePct ?? 5}
-                                onChange={e => setRescuePriceMovePct(Math.max(0, parseFloat(e.target.value) || 0))}
-                                className={`${inputCls} w-20 text-center disabled:opacity-40`}
-                              />
-                              <span className="text-[10px] text-slate-500 shrink-0">%</span>
-                            </div>
-                          </div>
-
-                          {/* Trigger: price level */}
-                          <div className="flex items-center gap-3">
-                            <ToggleSwitch
-                              enabled={rescuePriceLevel !== null}
-                              onToggle={() => setRescuePriceLevel(v => v === null ? 0 : null)}
-                            />
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1 text-[11px] font-medium text-slate-300">
-                                Ценовой уровень
-                                <Tip text="Цена, при достижении которой срабатывает rescue. Лонг: уровень ниже ТВХ (цена упала до). Шорт: уровень выше ТВХ." />
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <input
-                                type="number" min={0} step={1}
-                                disabled={rescuePriceLevel === null}
-                                value={rescuePriceLevel ?? 0}
-                                onChange={e => setRescuePriceLevel(Math.max(0, parseFloat(e.target.value) || 0))}
-                                className={`${inputCls} w-24 text-center disabled:opacity-40`}
-                              />
-                              <span className="text-[10px] text-slate-500 shrink-0">USDT</span>
-                            </div>
-                          </div>
-
-                          {/* Trigger: accumulated PnL */}
-                          <div className="flex items-center gap-3">
-                            <ToggleSwitch
-                              enabled={rescueAccumMin !== null}
-                              onToggle={() => setRescueAccumMin(v => v === null ? 20 : null)}
-                            />
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1 text-[11px] font-medium text-slate-300">
-                                Мин. накопленный PnL хеджа
-                                <Tip text="Rescue срабатывает только если хедж уже накопил не менее указанной суммы реализованного PnL. Защита от преждевременного закрытия на малых движениях." />
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <input
-                                type="number" min={0} step={5}
-                                disabled={rescueAccumMin === null}
-                                value={rescueAccumMin ?? 20}
-                                onChange={e => setRescueAccumMin(Math.max(0, parseFloat(e.target.value) || 0))}
-                                className={`${inputCls} w-20 text-center disabled:opacity-40`}
-                              />
-                              <span className="text-[10px] text-slate-500 shrink-0">USDT</span>
-                            </div>
-                          </div>
-
-                          {/* Trigger: signal */}
-                          <div className="flex items-start gap-3">
-                            <div className="mt-1">
-                              <ToggleSwitch
-                                enabled={rescueSignalName !== ''}
-                                onToggle={() => setRescueSignalName(v => v !== '' ? '' : 'st-flip')}
-                              />
-                            </div>
-                            <div className="flex-1 min-w-0 space-y-1.5">
-                              <div className="flex items-center gap-1 text-[11px] font-medium text-slate-300">
-                                Сигнал
-                                <Tip text="Дополнительное подтверждение от сигнального движка. Лонг-мэйн: сигнал должен быть Sell. Шорт-мэйн: Buy. Оставьте выключенным, если сигнал не нужен." />
-                              </div>
-                              {rescueSignalName !== '' && (
-                                <div className="grid grid-cols-[1fr_80px] gap-2">
-                                  <input
-                                    type="text"
-                                    placeholder="Название сигнала (напр. st-flip)"
-                                    value={rescueSignalName}
-                                    onChange={e => setRescueSignalName(e.target.value)}
-                                    className={inputCls}
-                                  />
-                                  <div className="flex items-center gap-1">
-                                    <span className="text-[10px] text-slate-500 shrink-0">TF</span>
-                                    <input
-                                      type="text"
-                                      placeholder="15"
-                                      value={rescueSignalTf}
-                                      onChange={e => setRescueSignalTf(e.target.value)}
-                                      className={`${inputCls} text-center`}
-                                    />
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Cooldown */}
-                          <div className="pt-2 border-t border-white/[.05]">
-                            <Field label="Мин. интервал между шагами" hint="секунды">
-                              <input
-                                type="number" min={0} step={60}
-                                value={rescueIntervalSec}
-                                onChange={e => setRescueIntervalSec(Math.max(0, parseInt(e.target.value) || 0))}
-                                className={`${inputCls} w-28`}
-                              />
-                            </Field>
-                            <p className="mt-1 text-[10px] text-slate-500">
-                              Минимальное время между двумя частичными закрытиями. 0 — без кулдауна.
-                            </p>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   </div>
 
