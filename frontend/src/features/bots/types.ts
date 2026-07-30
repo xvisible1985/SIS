@@ -97,7 +97,7 @@ export type StrategyConfig = {
   rescue_trigger_price_move_pct?: number | null;
   rescue_trigger_price_level?: number | null;
   rescue_trigger_accumulated_min_usdt?: number | null;
-  rescue_trigger_signal?: { name: string; params?: Record<string, unknown> } | null;
+  rescue_trigger_signal?: SignalConfig[] | null;
   rescue_min_interval_sec?: number;
 };
 

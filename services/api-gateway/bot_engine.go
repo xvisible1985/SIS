@@ -968,7 +968,7 @@ type botCfgJSON struct {
 	RescueTriggerPriceMovePct       *float64             `json:"rescue_trigger_price_move_pct,omitempty"`
 	RescueTriggerPriceLevel         *float64             `json:"rescue_trigger_price_level,omitempty"`
 	RescueTriggerAccumulatedMinUsdt *float64             `json:"rescue_trigger_accumulated_min_usdt,omitempty"`
-	RescueTriggerSignal             *rescueSignalTrigger `json:"rescue_trigger_signal,omitempty"`
+	RescueTriggerSignal             []rescueSignalTrigger `json:"rescue_trigger_signal,omitempty"`
 	RescueMinIntervalSec            int                  `json:"rescue_min_interval_sec"`
 }
 

@@ -1523,6 +1523,10 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 		CumulativeHedgePnl float64    `json:"cumulative_hedge_pnl"`
 		CloseType          int        `json:"close_type"`      // 0=pnl$, 1=roi%, 2=breakeven
 		CloseThreshold     float64    `json:"close_threshold"` // cfg value for the active close_type
+		// RescueBot stats
+		MainReducedCoin    float64    `json:"main_reduced_coin"`
+		MainReducedUsdt    float64    `json:"main_reduced_usdt"`
+		LastPartialCloseAt *time.Time `json:"last_partial_close_at"`
 	}
 
 	// accumulated_pnl is incremented directly by the code that realizes each PnL
@@ -1542,7 +1546,10 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 			hs.gap_at_start,
 			hs.started_at,
 			hs.ended_at,
-			hs.accumulated_pnl::float8
+			hs.accumulated_pnl::float8,
+			hs.main_reduced_coin::float8,
+			hs.main_reduced_usdt::float8,
+			hs.last_partial_close_at
 		FROM hedge_sessions hs
 		WHERE (hs.main_strategy_id = $1 OR hs.hedge_strategy_id = $1)
 		  AND hs.bot_id IN (SELECT id FROM bots WHERE owner_id = $2)
@@ -1553,6 +1560,7 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 		&resp.ID, &resp.BotID, &resp.MainStrategyID, &resp.HedgeStrategyID,
 		&resp.MainEntryAtStart, &resp.HedgeEntryAtStart, &resp.GapAtStart,
 		&resp.StartedAt, &resp.EndedAt, &resp.CumulativeHedgePnl,
+		&resp.MainReducedCoin, &resp.MainReducedUsdt, &resp.LastPartialCloseAt,
 	)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "session not found")

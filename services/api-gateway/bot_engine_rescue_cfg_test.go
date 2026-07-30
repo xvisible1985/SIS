@@ -7,20 +7,23 @@ import (
 
 // TestBotCfgJSON_RescueFieldsRoundTrip проверяет, что новые RescueBot-поля
 // корректно проходят JSON-маршалинг/анмаршалинг, включая nil-указатели
-// (означающие "триггер выключен") и вложенный TriggerSignal.
+// (означающие "триггер выключен") и вложенный TriggerSignal (теперь массив).
 func TestBotCfgJSON_RescueFieldsRoundTrip(t *testing.T) {
 	movePct := 1.5
 	level := 61200.0
 	minAccum := 25.0
 
 	original := botCfgJSON{
-		BotKind:                         "hedge", // не "rescue" — это доработка hedge-бота, не новый bot_kind
+		BotKind:                         "hedge",
 		RescuePartialCloseEnabled:       true,
 		RescueTriggerPriceMovePct:       &movePct,
 		RescueTriggerPriceLevel:         &level,
 		RescueTriggerAccumulatedMinUsdt: &minAccum,
 		RescueMinIntervalSec:            300,
-		RescueTriggerSignal:             &rescueSignalTrigger{Name: "st-flip", Params: map[string]interface{}{"tf": "15"}},
+		RescueTriggerSignal: []rescueSignalTrigger{
+			{Name: "st-flip", Params: map[string]interface{}{"tf": "15"}},
+			{Name: "ma-cross", Params: map[string]interface{}{"tf": "1h"}},
+		},
 	}
 
 	raw, err := json.Marshal(original)
@@ -45,15 +48,14 @@ func TestBotCfgJSON_RescueFieldsRoundTrip(t *testing.T) {
 	if decoded.RescueTriggerAccumulatedMinUsdt == nil || *decoded.RescueTriggerAccumulatedMinUsdt != minAccum {
 		t.Errorf("RescueTriggerAccumulatedMinUsdt mismatch: %+v", decoded.RescueTriggerAccumulatedMinUsdt)
 	}
-	if decoded.RescueTriggerSignal == nil || decoded.RescueTriggerSignal.Name != "st-flip" {
+	if len(decoded.RescueTriggerSignal) != 2 || decoded.RescueTriggerSignal[0].Name != "st-flip" || decoded.RescueTriggerSignal[1].Name != "ma-cross" {
 		t.Errorf("RescueTriggerSignal mismatch: %+v", decoded.RescueTriggerSignal)
 	}
 	if decoded.RescueMinIntervalSec != 300 {
 		t.Errorf("RescueMinIntervalSec mismatch: %d", decoded.RescueMinIntervalSec)
 	}
 
-	// Триггер без указателя (nil) должен остаться nil после round-trip — это
-	// "выключенное" состояние тумблера, критично для rescueTriggersMet.
+	// Пустой массив сигналов должен десериализоваться в nil (omitempty).
 	original2 := botCfgJSON{BotKind: "hedge"}
 	raw2, _ := json.Marshal(original2)
 	var decoded2 botCfgJSON

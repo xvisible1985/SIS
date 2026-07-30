@@ -809,6 +809,28 @@ export function HedgePairCard({
                     label="Сессия начата"
                     value={hedgeSession != null ? fmtDateTime(hedgeSession.started_at) : '—'}
                   />
+
+                  {hedgeBot?.strategyConfig?.rescue_partial_close_enabled && hedgeSession && (
+                    <>
+                      <div className="h-px bg-white/[.05] my-1.5" />
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-[.5px]" style={{ color: '#a78bfa' }}>Rescue</span>
+                      </div>
+                      <StatRow
+                        label="Снято монет"
+                        value={hedgeSession.main_reduced_coin > 0 ? hedgeSession.main_reduced_coin.toFixed(6) : '—'}
+                      />
+                      <StatRow
+                        label="Снято USDT"
+                        value={hedgeSession.main_reduced_usdt > 0 ? `${hedgeSession.main_reduced_usdt.toFixed(2)}$` : '—'}
+                        color={hedgeSession.main_reduced_usdt > 0 ? '#6ee7b7' : undefined}
+                      />
+                      <StatRow
+                        label="Последнее закрытие"
+                        value={hedgeSession.last_partial_close_at ? fmtDateTime(hedgeSession.last_partial_close_at) : '—'}
+                      />
+                    </>
+                  )}
                 </>)}
               </div>
 

@@ -373,6 +373,10 @@ export interface HedgeSession {
   cumulative_hedge_pnl: number
   close_type:           number  // 0=pnl$, 1=roi%, 2=breakeven
   close_threshold:      number  // cfg value for the active close_type
+  // RescueBot stats (populated when rescue_partial_close_enabled)
+  main_reduced_coin:      number
+  main_reduced_usdt:      number
+  last_partial_close_at:  string | null
 }
 
 export interface StrategyTemplate {
