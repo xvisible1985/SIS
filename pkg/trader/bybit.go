@@ -25,10 +25,10 @@ import (
 // Callers should treat this as a permanent condition and skip the switch.
 var ErrPositionModeUnsupported = errors.New("symbol does not support position mode switch")
 
-const (
-	bybitBase  = "https://api.bybit.com"
-	recvWindow = "10000"
-)
+const recvWindow = "10000"
+
+// bybitBase is a var (not const) so tests can point it at an httptest.Server.
+var bybitBase = "https://api.bybit.com"
 
 func sign(timestamp, apiKey, secret, recvWin, payload string) string {
 	msg := timestamp + apiKey + recvWin + payload

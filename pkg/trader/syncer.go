@@ -138,7 +138,12 @@ func (s *Syncer) runAccount(ctx context.Context, a accountRow) {
 // QueryAPI and persists it to exchange_accounts.whitelisted_ips, also updating creds
 // in place so subsequent calls in this same runAccount cycle use the fresh value.
 func (s *Syncer) refreshWhitelistedIPs(ctx context.Context, a *accountRow, creds *Credentials) {
-	raw, err := QueryAPI(ctx, *creds)
+	// Deliberately unrestricted: this call exists to DISCOVER the whitelist, so it must
+	// not itself be constrained by creds.WhitelistedIPs (which, from the 2nd refresh
+	// onward, holds the PREVIOUS result). Reusing it here would self-lock the account
+	// forever the moment the whitelist ever narrows to IPs our proxy pool can't match.
+	unrestricted := Credentials{APIKey: creds.APIKey, SecretKey: creds.SecretKey}
+	raw, err := QueryAPI(ctx, unrestricted)
 	if err != nil {
 		log.Printf("syncer: refresh whitelist account=%s: %v", a.id, err)
 		return
