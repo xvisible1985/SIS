@@ -194,10 +194,16 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
   // Rescue Bot state
   const [rescueEnabled,      setRescueEnabled]      = useState(bot?.strategyConfig?.rescue_partial_close_enabled ?? false);
   const [rescuePriceMovePct, setRescuePriceMovePct] = useState<number | null>(bot?.strategyConfig?.rescue_trigger_price_move_pct ?? null);
+  const [rescueHedgePriceMovePct, setRescueHedgePriceMovePct] = useState<number | null>(bot?.strategyConfig?.rescue_trigger_hedge_price_move_pct ?? null);
   const [rescuePriceLevel,   setRescuePriceLevel]   = useState<number | null>(bot?.strategyConfig?.rescue_trigger_price_level ?? null);
   const [rescueAccumMin,     setRescueAccumMin]      = useState<number | null>(bot?.strategyConfig?.rescue_trigger_accumulated_min_usdt ?? null);
   const [rescueSignalConfigs, setRescueSignalConfigs] = useState<SignalConfig[]>((bot?.strategyConfig?.rescue_trigger_signal as SignalConfig[] | null) ?? []);
   const [rescueIntervalSec,  setRescueIntervalSec]  = useState(bot?.strategyConfig?.rescue_min_interval_sec ?? 300);
+  // Строковые буферы для rescue-полей (позволяют вводить отрицательные числа и промежуточные состояния)
+  const [rescuePriceMovePctStr,      setRescuePriceMovePctStr]      = useState(String(bot?.strategyConfig?.rescue_trigger_price_move_pct ?? -5));
+  const [rescueHedgePriceMovePctStr, setRescueHedgePriceMovePctStr] = useState(String(bot?.strategyConfig?.rescue_trigger_hedge_price_move_pct ?? -2));
+  const [rescuePriceLevelStr,        setRescuePriceLevelStr]        = useState(String(bot?.strategyConfig?.rescue_trigger_price_level ?? 0));
+  const [rescueAccumMinStr,          setRescueAccumMinStr]          = useState(String(bot?.strategyConfig?.rescue_trigger_accumulated_min_usdt ?? 20));
 
   const [submitting,            setSubmitting]            = useState(false);
   const [submitError,           setSubmitError]           = useState<string | null>(null);
@@ -404,7 +410,8 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
           hedge_bot_blacklist:     botBlacklist,
           size_as_main:            sizeAsMain,
           rescue_partial_close_enabled:       rescueEnabled,
-          rescue_trigger_price_move_pct:      rescueEnabled && rescuePriceMovePct !== null ? rescuePriceMovePct : undefined,
+          rescue_trigger_price_move_pct:       rescueEnabled && rescuePriceMovePct !== null ? rescuePriceMovePct : undefined,
+          rescue_trigger_hedge_price_move_pct: rescueEnabled && rescueHedgePriceMovePct !== null ? rescueHedgePriceMovePct : undefined,
           rescue_trigger_price_level:         rescueEnabled && rescuePriceLevel !== null ? rescuePriceLevel : undefined,
           rescue_trigger_accumulated_min_usdt: rescueEnabled && rescueAccumMin !== null ? rescueAccumMin : undefined,
           rescue_trigger_signal:              rescueEnabled && rescueSignalConfigs.length > 0 ? rescueSignalConfigs : undefined,
@@ -1101,76 +1108,163 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
 
                 {rescueEnabled && (
                   <div className="space-y-3 pt-1">
-                    {/* Trigger: price move */}
-                    <div className="flex items-center gap-3">
-                      <ToggleSwitch
-                        enabled={rescuePriceMovePct !== null}
-                        onToggle={() => setRescuePriceMovePct(v => v === null ? 5 : null)}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1 text-[11px] font-medium text-slate-300">
-                          Движение цены против мэйна
-                          <Tip text="Триггер срабатывает, когда цена ушла против мэйн-позиции на указанный % от ТВХ. Лонг: цена упала; Шорт: выросла." />
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <input
-                          type="number" min={0} step={0.5}
-                          disabled={rescuePriceMovePct === null}
-                          value={rescuePriceMovePct ?? 5}
-                          onChange={e => setRescuePriceMovePct(Math.max(0, parseFloat(e.target.value) || 0))}
-                          className={`${inputCls} w-20 text-center disabled:opacity-40`}
-                        />
-                        <span className="text-[10px] text-slate-500 shrink-0">%</span>
-                      </div>
-                    </div>
+                    {/* Триггеры — 2 колонки */}
+                    <div className="grid grid-cols-2 gap-2">
 
-                    {/* Trigger: price level */}
-                    <div className="flex items-center gap-3">
-                      <ToggleSwitch
-                        enabled={rescuePriceLevel !== null}
-                        onToggle={() => setRescuePriceLevel(v => v === null ? 0 : null)}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1 text-[11px] font-medium text-slate-300">
-                          Ценовой уровень
-                          <Tip text="Цена, при достижении которой срабатывает rescue. Лонг: уровень ниже ТВХ (цена упала до). Шорт: уровень выше ТВХ." />
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <input
-                          type="number" min={0} step={1}
-                          disabled={rescuePriceLevel === null}
-                          value={rescuePriceLevel ?? 0}
-                          onChange={e => setRescuePriceLevel(Math.max(0, parseFloat(e.target.value) || 0))}
-                          className={`${inputCls} w-24 text-center disabled:opacity-40`}
-                        />
-                        <span className="text-[10px] text-slate-500 shrink-0">USDT</span>
-                      </div>
-                    </div>
+                      {/* Движение цены мэйна */}
+                      {(() => {
+                        const invalid = isNaN(parseFloat(rescuePriceMovePctStr));
+                        return (
+                          <div className="rounded-lg border border-white/[.06] bg-white/[.02] p-2.5 flex flex-col gap-2">
+                            <div className="flex items-center gap-2">
+                              <ToggleSwitch
+                                enabled={rescuePriceMovePct !== null}
+                                onToggle={() => {
+                                  if (rescuePriceMovePct === null) { setRescuePriceMovePct(-5); setRescuePriceMovePctStr('-5'); }
+                                  else { setRescuePriceMovePct(null); }
+                                }}
+                              />
+                              <div className="flex items-center gap-1 text-[11px] font-medium text-slate-300 leading-tight">
+                                Движение мэйна
+                                <Tip text="Знак задаёт направление: −5% — цена ушла против мэйна на 5% (убыток); +5% — в сторону мэйна (прибыль)." />
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 pl-[26px]">
+                              <input
+                                type="text" inputMode="decimal"
+                                disabled={rescuePriceMovePct === null}
+                                value={rescuePriceMovePctStr}
+                                onChange={e => setRescuePriceMovePctStr(e.target.value)}
+                                onBlur={() => {
+                                  const v = parseFloat(rescuePriceMovePctStr);
+                                  if (!isNaN(v)) { setRescuePriceMovePct(v); setRescuePriceMovePctStr(String(v)); }
+                                  else { setRescuePriceMovePctStr(String(rescuePriceMovePct ?? -5)); }
+                                }}
+                                className={`${inputCls} w-full text-center disabled:opacity-40 ${invalid ? 'border-red-500/60' : ''}`}
+                              />
+                              <span className="text-[10px] text-slate-500 shrink-0">%</span>
+                            </div>
+                            {invalid && <p className="text-[10px] text-red-400 pl-[26px]">Некорректное число</p>}
+                          </div>
+                        );
+                      })()}
 
-                    {/* Trigger: accumulated PnL */}
-                    <div className="flex items-center gap-3">
-                      <ToggleSwitch
-                        enabled={rescueAccumMin !== null}
-                        onToggle={() => setRescueAccumMin(v => v === null ? 20 : null)}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1 text-[11px] font-medium text-slate-300">
-                          Мин. накопленный PnL хеджа
-                          <Tip text="Rescue срабатывает только если хедж уже накопил не менее указанной суммы реализованного PnL. Защита от преждевременного закрытия на малых движениях." />
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <input
-                          type="number" min={0} step={5}
-                          disabled={rescueAccumMin === null}
-                          value={rescueAccumMin ?? 20}
-                          onChange={e => setRescueAccumMin(Math.max(0, parseFloat(e.target.value) || 0))}
-                          className={`${inputCls} w-20 text-center disabled:opacity-40`}
-                        />
-                        <span className="text-[10px] text-slate-500 shrink-0">USDT</span>
-                      </div>
+                      {/* Движение цены хеджа */}
+                      {(() => {
+                        const invalid = isNaN(parseFloat(rescueHedgePriceMovePctStr));
+                        return (
+                          <div className="rounded-lg border border-white/[.06] bg-white/[.02] p-2.5 flex flex-col gap-2">
+                            <div className="flex items-center gap-2">
+                              <ToggleSwitch
+                                enabled={rescueHedgePriceMovePct !== null}
+                                onToggle={() => {
+                                  if (rescueHedgePriceMovePct === null) { setRescueHedgePriceMovePct(-2); setRescueHedgePriceMovePctStr('-2'); }
+                                  else { setRescueHedgePriceMovePct(null); }
+                                }}
+                              />
+                              <div className="flex items-center gap-1 text-[11px] font-medium text-slate-300 leading-tight">
+                                Движение хеджа
+                                <Tip text="Знак задаёт направление: −2% — цена ушла против хеджа на 2% (убыток хеджа); +2% — в сторону хеджа (прибыль хеджа)." />
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 pl-[26px]">
+                              <input
+                                type="text" inputMode="decimal"
+                                disabled={rescueHedgePriceMovePct === null}
+                                value={rescueHedgePriceMovePctStr}
+                                onChange={e => setRescueHedgePriceMovePctStr(e.target.value)}
+                                onBlur={() => {
+                                  const v = parseFloat(rescueHedgePriceMovePctStr);
+                                  if (!isNaN(v)) { setRescueHedgePriceMovePct(v); setRescueHedgePriceMovePctStr(String(v)); }
+                                  else { setRescueHedgePriceMovePctStr(String(rescueHedgePriceMovePct ?? -2)); }
+                                }}
+                                className={`${inputCls} w-full text-center disabled:opacity-40 ${invalid ? 'border-red-500/60' : ''}`}
+                              />
+                              <span className="text-[10px] text-slate-500 shrink-0">%</span>
+                            </div>
+                            {invalid && <p className="text-[10px] text-red-400 pl-[26px]">Некорректное число</p>}
+                          </div>
+                        );
+                      })()}
+
+                      {/* Ценовой уровень */}
+                      {(() => {
+                        const v = parseFloat(rescuePriceLevelStr);
+                        const invalid = isNaN(v) || v < 0;
+                        return (
+                          <div className="rounded-lg border border-white/[.06] bg-white/[.02] p-2.5 flex flex-col gap-2">
+                            <div className="flex items-center gap-2">
+                              <ToggleSwitch
+                                enabled={rescuePriceLevel !== null}
+                                onToggle={() => {
+                                  if (rescuePriceLevel === null) { setRescuePriceLevel(0); setRescuePriceLevelStr('0'); }
+                                  else { setRescuePriceLevel(null); }
+                                }}
+                              />
+                              <div className="flex items-center gap-1 text-[11px] font-medium text-slate-300 leading-tight">
+                                Ценовой уровень
+                                <Tip text="Цена, при достижении которой срабатывает rescue. Лонг: уровень ниже ТВХ. Шорт: уровень выше ТВХ." />
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 pl-[26px]">
+                              <input
+                                type="text" inputMode="decimal"
+                                disabled={rescuePriceLevel === null}
+                                value={rescuePriceLevelStr}
+                                onChange={e => setRescuePriceLevelStr(e.target.value)}
+                                onBlur={() => {
+                                  const parsed = parseFloat(rescuePriceLevelStr);
+                                  if (!isNaN(parsed) && parsed >= 0) { setRescuePriceLevel(parsed); setRescuePriceLevelStr(String(parsed)); }
+                                  else { setRescuePriceLevelStr(String(rescuePriceLevel ?? 0)); }
+                                }}
+                                className={`${inputCls} w-full text-center disabled:opacity-40 ${invalid ? 'border-red-500/60' : ''}`}
+                              />
+                              <span className="text-[10px] text-slate-500 shrink-0">USDT</span>
+                            </div>
+                            {invalid && <p className="text-[10px] text-red-400 pl-[26px]">Введите число ≥ 0</p>}
+                          </div>
+                        );
+                      })()}
+
+                      {/* Мин. накопленный PnL */}
+                      {(() => {
+                        const v = parseFloat(rescueAccumMinStr);
+                        const invalid = isNaN(v) || v < 0;
+                        return (
+                          <div className="rounded-lg border border-white/[.06] bg-white/[.02] p-2.5 flex flex-col gap-2">
+                            <div className="flex items-center gap-2">
+                              <ToggleSwitch
+                                enabled={rescueAccumMin !== null}
+                                onToggle={() => {
+                                  if (rescueAccumMin === null) { setRescueAccumMin(20); setRescueAccumMinStr('20'); }
+                                  else { setRescueAccumMin(null); }
+                                }}
+                              />
+                              <div className="flex items-center gap-1 text-[11px] font-medium text-slate-300 leading-tight">
+                                Мин. PnL хеджа
+                                <Tip text="Rescue срабатывает только если хедж накопил не менее указанной суммы реализованного PnL. Защита от преждевременного закрытия." />
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 pl-[26px]">
+                              <input
+                                type="text" inputMode="decimal"
+                                disabled={rescueAccumMin === null}
+                                value={rescueAccumMinStr}
+                                onChange={e => setRescueAccumMinStr(e.target.value)}
+                                onBlur={() => {
+                                  const parsed = parseFloat(rescueAccumMinStr);
+                                  if (!isNaN(parsed) && parsed >= 0) { setRescueAccumMin(parsed); setRescueAccumMinStr(String(parsed)); }
+                                  else { setRescueAccumMinStr(String(rescueAccumMin ?? 20)); }
+                                }}
+                                className={`${inputCls} w-full text-center disabled:opacity-40 ${invalid ? 'border-red-500/60' : ''}`}
+                              />
+                              <span className="text-[10px] text-slate-500 shrink-0">USDT</span>
+                            </div>
+                            {invalid && <p className="text-[10px] text-red-400 pl-[26px]">Введите число ≥ 0</p>}
+                          </div>
+                        );
+                      })()}
+
                     </div>
 
                     {/* Trigger: signals */}
@@ -1186,7 +1280,7 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
                     </div>
 
                     {/* Warning: rescue enabled but no triggers configured */}
-                    {rescuePriceMovePct === null && rescuePriceLevel === null && rescueAccumMin === null && rescueSignalConfigs.length === 0 && (
+                    {rescuePriceMovePct === null && rescueHedgePriceMovePct === null && rescuePriceLevel === null && rescueAccumMin === null && rescueSignalConfigs.length === 0 && (
                       <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2">
                         <span className="text-amber-400 text-[11px] leading-relaxed">
                           Ни один триггер не настроен — Rescue будет срабатывать на каждом тике без ограничений. Рекомендуется включить хотя бы один триггер (например, мин. накопленный PnL).

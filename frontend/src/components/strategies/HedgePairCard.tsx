@@ -118,7 +118,12 @@ function fmtPrice(v: number | null, d = 4): string {
 
 function fmtTime(iso: string): string {
   const d = new Date(iso)
-  return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  const day = String(d.getDate()).padStart(2, '0')
+  const mon = String(d.getMonth() + 1).padStart(2, '0')
+  const hh  = String(d.getHours()).padStart(2, '0')
+  const mm  = String(d.getMinutes()).padStart(2, '0')
+  const ss  = String(d.getSeconds()).padStart(2, '0')
+  return `${day}.${mon} ${hh}:${mm}:${ss}`
 }
 
 function fmtDateTime(iso: string): string {
@@ -863,7 +868,7 @@ export function HedgePairCard({
                       >
                         {e.tag}
                       </span>
-                      <span className="shrink-0 text-[10px] text-slate-600 tabular-nums mt-[1px] w-[58px]">
+                      <span className="shrink-0 text-[10px] text-slate-600 tabular-nums mt-[1px] w-[96px]">
                         {fmtTime(e.created_at)}
                       </span>
                       <span

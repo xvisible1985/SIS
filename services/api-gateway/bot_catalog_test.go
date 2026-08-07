@@ -46,6 +46,8 @@ func TestPublishBot_DetachedCopySurvivesDelete(t *testing.T) {
 	userID := createAdminTestUser(t, s, "catalog_detach@example.com", "pass1234", false)
 	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM users WHERE id=$1", userID) })
 
+	// Pre-cleanup: remove catalog copies left by interrupted previous runs.
+	s.pool.Exec(ctx, `DELETE FROM bots WHERE name='Detach Bot' AND owner_id=$1`, catalogOwnerID)
 	botID := createTestBot(t, s, userID, "Detach Bot", false)
 	// Non-official bots require approval before publishing.
 	s.pool.Exec(ctx, `UPDATE bots SET approval_status='approved' WHERE id=$1`, botID)
@@ -121,6 +123,8 @@ func TestPublishBot_RepublishUpdatesSameCopy(t *testing.T) {
 	userID := createAdminTestUser(t, s, "catalog_republish@example.com", "pass1234", false)
 	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM users WHERE id=$1", userID) })
 
+	// Pre-cleanup: remove catalog copies left by interrupted previous runs.
+	s.pool.Exec(ctx, `DELETE FROM bots WHERE name='Republish Bot' AND owner_id=$1`, catalogOwnerID)
 	botID := createTestBot(t, s, userID, "Republish Bot", false)
 	s.pool.Exec(ctx, `UPDATE bots SET approval_status='approved' WHERE id=$1`, botID)
 	t.Cleanup(func() {

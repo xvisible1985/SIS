@@ -98,14 +98,17 @@ func (s *Server) checkMatrixZombieStrategies(ctx context.Context, botID string, 
 			}
 		}
 		if posOpen {
-			// Position still open on the exchange while the latest cycle is marked ended:
-			// a false close (ghost_close) left the position live and trading continued on
-			// the ended cycle. Revive it so the DB matches reality — stopping instead would
-			// let ensureMatrixStrategies open a SECOND position on top of the existing one.
-			if z.cycleID != nil {
-				s.reviveMatrixSplitBrain(ctx, botID, z.id, *z.cycleID, z.cycleNum, z.symbol, z.dir)
+			// Ghost-close: a position is open while the latest cycle is ended.
+			// Revive the cycle only when it has filled levels — there is real state to preserve.
+			// If cycleID=nil (no cycle at all) or hasFilled=false (cycle had no fills before it
+			// ended), the position was not created by this zombie's cycle — either the position
+			// belongs to another strategy/bot, or it is a posMap artifact. Fall through to stop
+			// the zombie; ensureMatrixStrategies will create a fresh replacement that properly
+			// adopts the exchange position via posMap on this same tick.
+			if z.cycleID != nil && s.reviveMatrixSplitBrain(ctx, botID, z.id, *z.cycleID, z.cycleNum, z.symbol, z.dir) {
+				continue // successfully revived — engine resumes managing the live position
 			}
-			continue
+			// Not revived (no cycle, or 0-fill ended cycle): stop the zombie below.
 		}
 		if _, err := s.pool.Exec(ctx,
 			`UPDATE strategies SET status='stopped', updated_at=NOW() WHERE id=$1 AND status='active'`, z.id,
@@ -127,19 +130,23 @@ func (s *Server) checkMatrixZombieStrategies(ctx context.Context, botID string, 
 // removes the phantom ghost_close trade recorded for that false close so realised PnL is not
 // double-counted when the position eventually closes for real. Notify makes the runner adopt
 // the revived cycle's existing orders without placing a duplicate entry.
-func (s *Server) reviveMatrixSplitBrain(ctx context.Context, botID, stratID, cycleID string, cycleNum *int, symbol, dir string) {
+//
+// Returns true when the cycle was successfully revived, false when the cycle has no filled
+// levels (nothing to revive — the caller should stop the zombie strategy instead and let
+// ensureMatrixStrategies create a fresh replacement that adopts the position via posMap).
+func (s *Server) reviveMatrixSplitBrain(ctx context.Context, botID, stratID, cycleID string, cycleNum *int, symbol, dir string) bool {
 	// Only revive a cycle that actually holds a filled level — otherwise there is no cycle
 	// state to preserve and ensureMatrixStrategies' adopt path is the right handler.
 	var hasFilled bool
 	if err := s.pool.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM strategy_levels WHERE cycle_id=$1 AND status='filled')`, cycleID,
 	).Scan(&hasFilled); err != nil || !hasFilled {
-		return
+		return false
 	}
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE strategy_cycles SET ended_at=NULL, result=NULL WHERE id=$1 AND ended_at IS NOT NULL`, cycleID)
 	if err != nil || tag.RowsAffected() == 0 {
-		return
+		return false
 	}
 	if cycleNum != nil {
 		s.pool.Exec(ctx, //nolint:errcheck
@@ -152,6 +159,7 @@ func (s *Server) reviveMatrixSplitBrain(ctx context.Context, botID, stratID, cyc
 	s.logBotEvent(ctx, botID,
 		fmt.Sprintf("Матрикс: %s %s — цикл оживлён (был помечен завершённым, но позиция открыта — ложное закрытие)", symbol, dir),
 		"warn", "matrix")
+	return true
 }
 
 // buildAdoptData returns adopt_position_data JSON ({size, entry_price}) for an open
@@ -233,7 +241,9 @@ func (s *Server) checkMatrixPairedClose(ctx context.Context, botID, accountID st
 		s.pool.Exec(ctx, //nolint:errcheck
 			`INSERT INTO hedge_sessions (bot_id, main_strategy_id, hedge_strategy_id)
 			 VALUES ($1, $2, $3)
-			 ON CONFLICT (hedge_strategy_id) WHERE ended_at IS NULL DO NOTHING`,
+			 ON CONFLICT (hedge_strategy_id) WHERE ended_at IS NULL
+			 DO UPDATE SET main_strategy_id = EXCLUDED.main_strategy_id
+			 WHERE hedge_sessions.main_strategy_id IS NULL`,
 			botID, p.longID, p.shortID)
 
 		bySymbol, ok := posMap[sym]
@@ -425,9 +435,15 @@ func (s *Server) matrixRepairCandidates(ctx context.Context, botID string) map[s
 	result := make(map[string]string)
 	for sym, dirs := range haveDir {
 		long, short := dirs["long"], dirs["short"]
-		if long.live && !short.live && !short.paused {
+		// In a matrix bot, 'paused' is set automatically when a position is externally
+		// closed (phantom-adopt, manual exchange close, etc.) — not by user action. A
+		// paused leg with an active partner is therefore a repair candidate: the partner
+		// is still live and the pair needs to be restored. We intentionally no longer
+		// exclude paused directions here; the repair pass will clear the paused row to
+		// 'stopped' before creating the replacement, keeping state consistent.
+		if long.live && !short.live {
 			result[sym] = "short"
-		} else if short.live && !long.live && !long.paused {
+		} else if short.live && !long.live {
 			result[sym] = "long"
 		}
 	}
@@ -462,8 +478,13 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 	}
 	var activeLong, activeShort int
 	if err := s.pool.QueryRow(ctx,
+		// Include 'paused' in slot accounting: a paused leg (externally closed, e.g.
+		// phantom-adopt) still occupies its pair's slot and must not free it for the main
+		// loop to fill with a brand-new symbol. Without this, a one-legged pair with its
+		// partner paused looks like a half-empty slot → the main loop opens a new pair
+		// for a different symbol, exceeding the configured pair limit.
 		`SELECT count(*) FILTER (WHERE direction='long'), count(*) FILTER (WHERE direction='short')
-		 FROM strategies WHERE bot_id=$1 AND status IN ('active','finishing')`,
+		 FROM strategies WHERE bot_id=$1 AND status IN ('active','finishing','paused')`,
 		botID,
 	).Scan(&activeLong, &activeShort); err != nil {
 		s.logBotEvent(ctx, botID, fmt.Sprintf("Матрикс: ошибка подсчёта активных стратегий: %v", err), "error", "matrix")
@@ -504,6 +525,29 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 	// order rejected, etc.) from spamming createBotStrategy and logBotEvent every 30s tick.
 	const repairCooldown = 5 * time.Minute
 
+	// adoptCooldown: if a strategy transitioned to 'stopped' within the last 30 seconds
+	// (e.g. just TP'd), posMap may still show the now-closed position — a stale WS snapshot
+	// that arrives in the gap between the TP fill event and the subsequent position-0 update.
+	// Adopting a phantom position causes cycle N+1 to "manage" a non-existent position for
+	// minutes, then close as manual_close/paused. Fix: skip that (symbol, dir) this tick;
+	// on the next tick (≤30s later) posMap will reflect the true 0 position.
+	const adoptCooldown = 30 * time.Second
+	type symDirKey struct{ sym, dir string }
+	recentlyStopped := make(map[symDirKey]bool)
+	if cdRows, cdErr := s.pool.Query(ctx,
+		`SELECT symbol, direction FROM strategies
+		 WHERE bot_id=$1 AND status='stopped' AND updated_at > NOW() - $2::interval`,
+		botID, adoptCooldown,
+	); cdErr == nil {
+		for cdRows.Next() {
+			var sym, dir string
+			if cdRows.Scan(&sym, &dir) == nil {
+				recentlyStopped[symDirKey{sym, dir}] = true
+			}
+		}
+		cdRows.Close()
+	}
+
 	// Repair pass: symbols already missing one leg get priority over brand-new candidates
 	// for the same scarce long/short capacity — see matrixRepairCandidates' doc comment
 	// and docs/superpowers/specs/2026-07-24-matrix-slot-repair-priority-design.md for why.
@@ -512,20 +556,50 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 	// getting its other leg back without waiting for a fresh signal — same philosophy the
 	// existing adopt-orphan-position path below already uses.
 	for symbol, dir := range s.matrixRepairCandidates(ctx, botID) {
-		if maxTotal > 0 && activeTotal >= maxTotal {
-			break
-		}
+		// Repair restores a missing leg of an ALREADY-EXISTING pair — the partner is
+		// still live and the slot was already allocated before the leg went paused/stopped.
+		// Strategy limits (maxTotal/maxLong/maxShort) must NOT block repair: applying them
+		// here would permanently strand one-legged pairs whenever the bot is at capacity
+		// (e.g. max_total=4, 4 active legs across 2 complete pairs + 2 partners of broken
+		// pairs → activeTotal=4=maxTotal → break before any repair candidate is processed).
+		// Limits are checked in the main-pair loop below, which only opens brand-new pairs.
 		if !symbolPassesHedgeFilter(symbol, nil, blacklist, delistSymbols) {
 			continue
 		}
-		if s.directionHasLiveStrategy(ctx, accountID, symbol, dir, botID) {
-			continue // became live since the candidates query ran, or is actually 'paused'
-		}
-		if dir == "long" && maxLong > 0 && activeLong >= maxLong {
+		// Narrower than directionHasLiveStrategy: only block on active/finishing.
+		// A paused leg (externally closed, partner still live) is exactly what the
+		// repair pass is here to fix — don't treat it as a blocker.
+		// Cross-bot race is still caught: if another bot opened this (account, symbol,
+		// dir) between the candidates query and now, it shows up as 'active' here.
+		var activeLive bool
+		if err := s.pool.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM strategies WHERE account_id=$1 AND symbol=$2 AND direction=$3 AND status IN ('active','finishing'))`,
+			accountID, symbol, dir,
+		).Scan(&activeLive); err != nil || activeLive {
 			continue
 		}
-		if dir == "short" && maxShort > 0 && activeShort >= maxShort {
+		// If the missing leg is paused (external close / phantom-adopt), reset it to
+		// 'stopped' so the new repair strategy doesn't coexist with a stale paused row.
+		pauseTag, uerr := s.pool.Exec(ctx,
+			`UPDATE strategies SET status='stopped' WHERE bot_id=$1 AND symbol=$2 AND direction=$3 AND status='paused'`,
+			botID, symbol, dir,
+		)
+		if uerr != nil {
+			s.logBotEvent(ctx, botID,
+				fmt.Sprintf("Матрикс[repair]: %s %s — ошибка сброса паузы перед восстановлением: %v", symbol, dir, uerr),
+				"error", "matrix")
 			continue
+		}
+		// wasPaused=true means the leg was paused: its slot was already counted in
+		// activeLong/activeShort (initial query includes 'paused'). Restoring it does not
+		// add a new slot — it's the same slot transitioning paused→active. So we must NOT
+		// increment the counters after repair in this case (to avoid double-counting and
+		// incorrectly blocking the main loop from opening legitimately new pairs).
+		wasPaused := pauseTag.RowsAffected() > 0
+		if wasPaused {
+			s.logBotEvent(ctx, botID,
+				fmt.Sprintf("Матрикс[repair]: %s %s — паузированная нога переведена в stopped, создаю замену", symbol, dir),
+				"info", "matrix")
 		}
 
 		cooldownKey := botID + ":" + symbol + ":" + dir
@@ -541,6 +615,20 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 			accountID: accountID,
 			whitelist: whitelist,
 			blacklist: blacklist,
+		}
+
+		// Skip adopt if posMap may be stale: the leg just TP'd and the position-0 WS event
+		// hasn't landed yet. On the next tick posMap will be accurate.
+		if recentlyStopped[symDirKey{symbol, dir}] {
+			if bySymbol, ok := posMap[symbol]; ok {
+				exchangeSide := "Buy"
+				if dir == "short" {
+					exchangeSide = "Sell"
+				}
+				if pos, hasPos := bySymbol[exchangeSide]; hasPos && pos.Size > 0 {
+					continue // posMap stale post-TP; retry next tick with fresh snapshot
+				}
+			}
 		}
 
 		var adoptJSON *string
@@ -568,9 +656,12 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 			s.logBotEvent(ctx, botID,
 				fmt.Sprintf("Матрикс[repair]: %s %s — ошибка восстановления: %v", symbol, dir, err),
 				"error", "matrix")
-		} else {
+		} else if id != "" {
 			s.repairFailedAt.Delete(cooldownKey)
-			if id != "" {
+			if !wasPaused {
+				// The restored leg was stopped/missing (not paused), so it was NOT
+				// counted in the initial activeLong/activeShort query. Increment now
+				// so the main loop knows this slot is occupied for this tick.
 				activeTotal++
 				if dir == "long" {
 					activeLong++
@@ -582,6 +673,14 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 				fmt.Sprintf("Матрикс[repair]: %s %s — восстановлена недостающая нога стало total=%d long=%d short=%d",
 					symbol, dir, activeTotal, activeLong, activeShort),
 				"info", "matrix")
+		} else {
+			// createBotStrategy returned empty id without error: ON CONFLICT DO NOTHING fired —
+			// another process claimed the slot between our activeLive check and the INSERT.
+			// The repair will retry on the next tick (repairFailedAt NOT set — this is not a
+			// persistent failure, just a transient race).
+			s.logBotEvent(ctx, botID,
+				fmt.Sprintf("Матрикс[repair]: %s %s — слот занят (race), повтор через 30с", symbol, dir),
+				"warn", "matrix")
 		}
 	}
 
@@ -646,16 +745,21 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 			}
 			if bySymbol, ok := posMap[symbol]; ok {
 				if pos, hasPos := bySymbol[exchangeSide]; hasPos && pos.Size > 0 {
-					type adoptData struct {
-						Size       string `json:"size"`
-						EntryPrice string `json:"entry_price"`
+					// Guard against stale posMap: if this direction just TP'd, the position-0
+					// WS event may not have arrived yet. Skip adopt; the activation gate below
+					// will still allow a fresh open if the signal confirms.
+					if !recentlyStopped[symDirKey{symbol, dir}] {
+						type adoptData struct {
+							Size       string `json:"size"`
+							EntryPrice string `json:"entry_price"`
+						}
+						raw, _ := json.Marshal(adoptData{
+							Size:       strconv.FormatFloat(pos.Size, 'f', -1, 64),
+							EntryPrice: strconv.FormatFloat(pos.EntryPrice, 'f', -1, 64),
+						})
+						adoptStr := string(raw)
+						adoptJSON = &adoptStr
 					}
-					raw, _ := json.Marshal(adoptData{
-						Size:       strconv.FormatFloat(pos.Size, 'f', -1, 64),
-						EntryPrice: strconv.FormatFloat(pos.EntryPrice, 'f', -1, 64),
-					})
-					adoptStr := string(raw)
-					adoptJSON = &adoptStr
 				}
 			}
 

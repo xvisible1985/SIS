@@ -288,8 +288,10 @@ func TestBotApprovalFlow(t *testing.T) {
 	adminID := createAdminTestUser(t, s, "approval_admin@example.com", "pass1234", true)
 	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", adminID)
 
+	// Pre-cleanup: remove catalog copies left by interrupted previous runs.
+	s.pool.Exec(context.Background(), `DELETE FROM bots WHERE name='Approval Bot' AND owner_id=$1`, catalogOwnerID)
 	botID := createTestBot(t, s, userID, "Approval Bot", false)
-	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1", botID)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE published_from_id=$1 OR id=$1", botID)
 
 	// ── Case 1: insufficient time → 422 ──────────────────────────────────────
 	rec := httptest.NewRecorder()

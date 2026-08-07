@@ -69,23 +69,27 @@ func TestMatrixZombie_StopsWhenPositionGone(t *testing.T) {
 	}
 }
 
-// TestMatrixZombie_SkipsWhenPositionOpen: a zombie leg whose exchange position is still
-// open must NOT be stopped (avoids double-opening).
-func TestMatrixZombie_SkipsWhenPositionOpen(t *testing.T) {
+// TestMatrixZombie_StopsWhenPositionOpenButNoCycleFills: a zombie leg whose cycle has no
+// filled levels AND the exchange shows a position. The position cannot belong to this zombie's
+// cycle (a cycle with zero fills never placed any orders), so it comes from another source.
+// The correct action is to STOP the zombie — ensureMatrixStrategies will then create a fresh
+// replacement that properly adopts the exchange position via posMap (no double-opening).
+func TestMatrixZombie_StopsWhenPositionOpenButNoCycleFills(t *testing.T) {
 	s := newTestServer(t)
 	userID := createWHUser(t, s, "zomb2")
 	accID := createTestAccount(t, s, userID)
 	botID := createZombieBot(t, s, userID, "2")
 	stratID := seedZombieMatrixStrategy(t, s, botID, accID, userID, "ZMBUSDT", "short")
 
-	// posMap shows an open short (Sell) position → must be skipped.
+	// posMap shows an open short (Sell) position, but the zombie's cycle has no filled levels.
+	// The position does not belong to this zombie → zombie must be stopped for repair.
 	posMap := map[string]map[string]hedgePosInfo{
 		"ZMBUSDT": {"Sell": {Symbol: "ZMBUSDT", Side: "Sell", Size: 100}},
 	}
 	s.checkMatrixZombieStrategies(context.Background(), botID, posMap)
 
-	if got := statusOf(t, s, stratID); got != "active" {
-		t.Errorf("zombie with open position status = %q, want active (skipped)", got)
+	if got := statusOf(t, s, stratID); got != "stopped" {
+		t.Errorf("zombie (no fills) with orphan position status = %q, want stopped", got)
 	}
 }
 

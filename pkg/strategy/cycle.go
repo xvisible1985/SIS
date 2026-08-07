@@ -4442,12 +4442,13 @@ func (sr *StrategyRunner) handlePositionCloseRetry(ctx context.Context) {
 // (not by our own TP/SL fill). The source parameter describes the trigger for the log.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) closeManualPosition(ctx context.Context) {
-	sr.closePositionExternal(ctx, "вручную", true)
+	sr.closePositionExternal(ctx, "внешне (не наш TP/SL)", true)
 }
 
-// manualCloseStatus возвращает статус, в который переводится нога после ПОДТВЕРЖДЁННОГО
-// ручного/внешнего закрытия. Нога matrix-бота уходит в paused (пользователь закрыл — бот
-// не пересоздаёт), всё остальное — в stopped (прежнее поведение).
+// manualCloseStatus возвращает статус для ноги после ПОДТВЕРЖДЁННОГО внешнего закрытия
+// (result="manual_close", т.е. не наш TP/SL и не bot-initiated). Нога matrix-бота уходит
+// в paused (пользователь/ликвидация — бот не пересоздаёт), всё остальное — в stopped.
+// Bot-initiated закрытия (result != "manual_close") обходят эту функцию — см. closePositionExternal.
 func manualCloseStatus(strategy Strategy) Status {
 	if strategy.BotID != nil && strategy.StrategyType == "matrix" {
 		return StatusPaused
@@ -4496,6 +4497,13 @@ func (sr *StrategyRunner) closePositionExternal(ctx context.Context, source stri
 		if sr.levels[i].Status == LevelFilled {
 			sr.levels[i].Status = LevelCancelled
 		}
+	}
+	// Bot-initiated close (paired_close, rescue_close, …): never pause the strategy —
+	// the bot engine drives its lifecycle and will recreate the leg on the next tick.
+	// Only a genuinely external close (user on exchange, liquidation) should pause a
+	// matrix leg to prevent immediate auto-restart against the user's intent.
+	if result != "manual_close" {
+		pauseEligible = false
 	}
 	newStatus := StatusStopped
 	if pauseEligible {

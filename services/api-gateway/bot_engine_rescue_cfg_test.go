@@ -9,17 +9,19 @@ import (
 // корректно проходят JSON-маршалинг/анмаршалинг, включая nil-указатели
 // (означающие "триггер выключен") и вложенный TriggerSignal (теперь массив).
 func TestBotCfgJSON_RescueFieldsRoundTrip(t *testing.T) {
-	movePct := 1.5
+	movePct := -1.5
+	hedgeMovePct := -3.0
 	level := 61200.0
 	minAccum := 25.0
 
 	original := botCfgJSON{
-		BotKind:                         "hedge",
-		RescuePartialCloseEnabled:       true,
-		RescueTriggerPriceMovePct:       &movePct,
-		RescueTriggerPriceLevel:         &level,
-		RescueTriggerAccumulatedMinUsdt: &minAccum,
-		RescueMinIntervalSec:            300,
+		BotKind:                          "hedge",
+		RescuePartialCloseEnabled:        true,
+		RescueTriggerPriceMovePct:        &movePct,
+		RescueTriggerHedgePriceMovePct:   &hedgeMovePct,
+		RescueTriggerPriceLevel:          &level,
+		RescueTriggerAccumulatedMinUsdt:  &minAccum,
+		RescueMinIntervalSec:             300,
 		RescueTriggerSignal: []rescueSignalTrigger{
 			{Name: "st-flip", Params: map[string]interface{}{"tf": "15"}},
 			{Name: "ma-cross", Params: map[string]interface{}{"tf": "1h"}},
@@ -42,6 +44,9 @@ func TestBotCfgJSON_RescueFieldsRoundTrip(t *testing.T) {
 	if decoded.RescueTriggerPriceMovePct == nil || *decoded.RescueTriggerPriceMovePct != movePct {
 		t.Errorf("RescueTriggerPriceMovePct mismatch: %+v", decoded.RescueTriggerPriceMovePct)
 	}
+	if decoded.RescueTriggerHedgePriceMovePct == nil || *decoded.RescueTriggerHedgePriceMovePct != hedgeMovePct {
+		t.Errorf("RescueTriggerHedgePriceMovePct mismatch: %+v", decoded.RescueTriggerHedgePriceMovePct)
+	}
 	if decoded.RescueTriggerPriceLevel == nil || *decoded.RescueTriggerPriceLevel != level {
 		t.Errorf("RescueTriggerPriceLevel mismatch: %+v", decoded.RescueTriggerPriceLevel)
 	}
@@ -62,7 +67,7 @@ func TestBotCfgJSON_RescueFieldsRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw2, &decoded2); err != nil {
 		t.Fatalf("unmarshal (empty): %v", err)
 	}
-	if decoded2.RescueTriggerPriceMovePct != nil || decoded2.RescueTriggerSignal != nil {
+	if decoded2.RescueTriggerPriceMovePct != nil || decoded2.RescueTriggerHedgePriceMovePct != nil || decoded2.RescueTriggerSignal != nil {
 		t.Errorf("expected all rescue triggers nil when unset, got: %+v", decoded2)
 	}
 }

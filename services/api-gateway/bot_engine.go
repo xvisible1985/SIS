@@ -964,12 +964,13 @@ type botCfgJSON struct {
 
 	// RescueBot: опциональное частичное закрытие мейн-позиции за счёт накопленного
 	// хедж-PnL. Триггеры — указатели: nil = триггер выключен (AND по активным).
-	RescuePartialCloseEnabled       bool                 `json:"rescue_partial_close_enabled"`
-	RescueTriggerPriceMovePct       *float64             `json:"rescue_trigger_price_move_pct,omitempty"`
-	RescueTriggerPriceLevel         *float64             `json:"rescue_trigger_price_level,omitempty"`
-	RescueTriggerAccumulatedMinUsdt *float64             `json:"rescue_trigger_accumulated_min_usdt,omitempty"`
-	RescueTriggerSignal             []rescueSignalTrigger `json:"rescue_trigger_signal,omitempty"`
-	RescueMinIntervalSec            int                  `json:"rescue_min_interval_sec"`
+	RescuePartialCloseEnabled        bool                  `json:"rescue_partial_close_enabled"`
+	RescueTriggerPriceMovePct        *float64              `json:"rescue_trigger_price_move_pct,omitempty"`
+	RescueTriggerHedgePriceMovePct   *float64              `json:"rescue_trigger_hedge_price_move_pct,omitempty"`
+	RescueTriggerPriceLevel          *float64              `json:"rescue_trigger_price_level,omitempty"`
+	RescueTriggerAccumulatedMinUsdt  *float64              `json:"rescue_trigger_accumulated_min_usdt,omitempty"`
+	RescueTriggerSignal              []rescueSignalTrigger `json:"rescue_trigger_signal,omitempty"`
+	RescueMinIntervalSec             int                   `json:"rescue_min_interval_sec"`
 }
 
 // effectivePrioritySignal resolves the ranking key computeOpportunityScore should use:

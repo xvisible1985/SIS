@@ -494,78 +494,85 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
                 </div>
               </div>
 
-              {/* Description */}
-              <Field label="Описание">
-                <input
-                  type="text"
-                  value={description}
-                  onChange={e => setDescription(e.target.value.slice(0, 120))}
-                  placeholder="Краткое описание стратегии"
-                  className={inputCls}
-                />
-              </Field>
-
-              {mode === 'admin' && (
-                <Field label="Полное описание">
+              {/* Краткое описание */}
+              <Field label="Краткое описание">
+                <div className="relative">
                   <textarea
-                    value={fullDescription}
-                    onChange={e => setFullDescription(e.target.value)}
+                    value={description}
+                    onChange={e => setDescription(e.target.value.slice(0, 120))}
                     rows={3}
-                    placeholder="Расширенное описание для витрины"
+                    placeholder="Краткое описание стратегии"
                     className={inputCls + ' resize-none'}
                   />
-                </Field>
-              )}
+                  <span className="absolute bottom-2 right-3 text-[10px] text-slate-600">{description.length}/120</span>
+                </div>
+              </Field>
 
-              {/* Лимиты */}
+              {/* Подробное описание */}
+              <Field label="Подробное описание">
+                <div className="relative">
+                  <textarea
+                    value={fullDescription}
+                    onChange={e => setFullDescription(e.target.value.slice(0, 1000))}
+                    rows={5}
+                    placeholder="Подробное описание для витрины"
+                    className={inputCls + ' resize-none'}
+                  />
+                  <span className="absolute bottom-2 right-3 text-[10px] text-slate-600">{fullDescription.length}/1000</span>
+                </div>
+              </Field>
+
+              {/* Ограничения */}
+              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 pt-1">
+                <span>Ограничения</span>
+                <div className="h-px flex-1 bg-white/[.06]" />
+              </div>
               <div className="grid grid-cols-3 gap-3">
-                <Field label="Макс. стратегий" hint="0 = не ограничено">
+                <Field label="Всего стратегий" hint="0 = ∞">
                   <input type="number" min={0} value={maxStrategies} onChange={e => setMaxStrategies(+e.target.value)} className={inputCls} />
                 </Field>
-                <Field label="Макс. Long">
+                <Field label="Макс. Long" hint="0 = ∞">
                   <input type="number" min={0} value={maxLongStrategies} onChange={e => setMaxLongStrategies(+e.target.value)} className={inputCls} />
                 </Field>
-                <Field label="Макс. Short">
+                <Field label="Макс. Short" hint="0 = ∞">
                   <input type="number" min={0} value={maxShortStrategies} onChange={e => setMaxShortStrategies(+e.target.value)} className={inputCls} />
                 </Field>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Field label="Макс. маржа, USDT" hint="0 = не ограничено">
+                <Field label="Лимит маржи, USDT" hint="0 — без ограничений">
                   <input type="number" min={0} value={maxMarginUsdt} onChange={e => setMaxMarginUsdt(+e.target.value)} className={inputCls} />
                 </Field>
-                <Field label="Макс. повт. по монете" hint="0 = не ограничено">
+                <Field label="Повторов подряд" hint="0 = ∞">
                   <input type="number" min={0} value={maxSymConsecutiveRuns} onChange={e => setMaxSymConsecutiveRuns(+e.target.value)} className={inputCls} />
                 </Field>
               </div>
 
-              {/* Авторежим / Публичный */}
+              {/* Настройки бота */}
               <div className="rounded-xl border border-white/[.06] bg-white/[.02] divide-y divide-white/[.04]">
-                <div className="flex items-center justify-between px-4 py-2.5">
+                <div className="flex items-center justify-between gap-4 px-4 py-3">
                   <div>
-                    <div className="text-[12px] font-semibold text-slate-200">Авторежим</div>
-                    <div className="text-[10px] text-slate-500">Автоматически запускать бота</div>
+                    <div className="text-[12px] font-semibold text-slate-200">Публичный бот</div>
+                    <div className="text-[11px] text-slate-500">Другие пользователи смогут подписаться на этого бота</div>
                   </div>
-                  <button type="button" onClick={() => setAutoMode(v => !v)} className="text-slate-400">
-                    {autoMode
-                      ? <span className="inline-block w-[28px] h-[16px] rounded-full relative" style={{ background: META.color }}><span className="absolute right-0.5 top-0.5 w-3.5 h-3.5 bg-white rounded-full" /></span>
-                      : <span className="inline-block w-[28px] h-[16px] rounded-full bg-gray-700 relative"><span className="absolute left-0.5 top-0.5 w-3.5 h-3.5 bg-white rounded-full" /></span>
-                    }
-                  </button>
+                  <ToggleSwitch enabled={isPublic} onToggle={() => setIsPublic(v => !v)} />
                 </div>
-                {mode === 'admin' && (
-                  <div className="flex items-center justify-between px-4 py-2.5">
-                    <div>
-                      <div className="text-[12px] font-semibold text-slate-200">Публичный</div>
-                      <div className="text-[10px] text-slate-500">Показывать в витрине</div>
-                    </div>
-                    <button type="button" onClick={() => setIsPublic(v => !v)} className="text-slate-400">
-                      {isPublic
-                        ? <span className="inline-block w-[28px] h-[16px] rounded-full relative" style={{ background: META.color }}><span className="absolute right-0.5 top-0.5 w-3.5 h-3.5 bg-white rounded-full" /></span>
-                        : <span className="inline-block w-[28px] h-[16px] rounded-full bg-gray-700 relative"><span className="absolute left-0.5 top-0.5 w-3.5 h-3.5 bg-white rounded-full" /></span>
-                      }
-                    </button>
+                <div className="flex items-center justify-between gap-4 px-4 py-3">
+                  <div>
+                    <div className="text-[12px] font-semibold text-slate-200">Авто-режим</div>
+                    <div className="text-[11px] text-slate-500">Бот сам открывает стратегии при срабатывании сигналов — без подтверждения</div>
                   </div>
-                )}
+                  <ToggleSwitch enabled={autoMode} onToggle={() => setAutoMode(v => !v)} />
+                </div>
+                <div className="flex items-center justify-between gap-4 px-4 py-3">
+                  <div>
+                    <div className="text-[12px] font-semibold text-slate-200">Удалять стратегию после TP/SL</div>
+                    <div className="text-[11px] text-slate-500">Стратегия удаляется — бот сможет открыть новую на той же монете</div>
+                  </div>
+                  <ToggleSwitch
+                    enabled={config.after_stop_mode === 'delete'}
+                    onToggle={() => patch({ after_stop_mode: config.after_stop_mode === 'delete' ? 'restart' : 'delete' })}
+                  />
+                </div>
               </div>
             </div>
           )}

@@ -95,6 +95,7 @@ export type StrategyConfig = {
   // Trigger fields are nullable: null / undefined = trigger disabled (AND logic across active triggers).
   rescue_partial_close_enabled?: boolean;
   rescue_trigger_price_move_pct?: number | null;
+  rescue_trigger_hedge_price_move_pct?: number | null;
   rescue_trigger_price_level?: number | null;
   rescue_trigger_accumulated_min_usdt?: number | null;
   rescue_trigger_signal?: SignalConfig[] | null;

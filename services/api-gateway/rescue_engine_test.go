@@ -6,62 +6,64 @@ import (
 	"time"
 )
 
-// TestRescuePriceMoveTowardMainPct проверяет расчёт движения цены в сторону
-// мейн-позиции (т.е. против неё — убыток для мейна).
-func TestRescuePriceMoveTowardMainPct(t *testing.T) {
+// TestRescuePriceMovePct проверяет знаковый расчёт движения цены относительно
+// позиции: отрицательно = против позиции (убыток), положительно = в сторону прибыли.
+func TestRescuePriceMovePct(t *testing.T) {
 	cases := []struct {
 		name      string
 		entryAt   float64
 		currentAt float64
-		mainDir   string // "buy" = long, "sell" = short
+		dir       string
 		wantPct   float64
 	}{
-		{
-			// Long main, price fell 5% from entry → движение к убытку = 5%
-			name:      "long: price down 5pct",
-			entryAt:   100,
-			currentAt: 95,
-			mainDir:   "buy",
-			wantPct:   5.0,
-		},
-		{
-			// Long main, price rose → движение в сторону прибыли, возвращаем 0
-			name:      "long: price up — no adverse move",
-			entryAt:   100,
-			currentAt: 110,
-			mainDir:   "buy",
-			wantPct:   0,
-		},
-		{
-			// Short main, price rose 10% from entry → убыток для мейна = 10%
-			name:      "short: price up 10pct",
-			entryAt:   100,
-			currentAt: 110,
-			mainDir:   "sell",
-			wantPct:   10.0,
-		},
-		{
-			// Short main, price fell → в сторону прибыли
-			name:      "short: price down — no adverse move",
-			entryAt:   100,
-			currentAt: 90,
-			mainDir:   "sell",
-			wantPct:   0,
-		},
-		{
-			name:    "zero entry returns 0",
-			entryAt: 0, currentAt: 90, mainDir: "buy",
-			wantPct: 0,
-		},
+		{"long: price down 5pct → -5", 100, 95, "buy", -5.0},
+		{"long: price up 10pct → +10", 100, 110, "buy", 10.0},
+		{"long: at entry → 0", 100, 100, "buy", 0},
+		{"short: price up 10pct → -10 (adverse)", 100, 110, "sell", -10.0},
+		{"short: price down 10pct → +10 (profit)", 100, 90, "sell", 10.0},
+		{"short: at entry → 0", 100, 100, "sell", 0},
+		{"zero entry returns 0", 0, 90, "buy", 0},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := rescuePriceMoveTowardMainPct(tc.entryAt, tc.currentAt, tc.mainDir)
+			got := rescuePriceMovePct(tc.entryAt, tc.currentAt, tc.dir)
 			if math.Abs(got-tc.wantPct) > 1e-9 {
 				t.Errorf("want %.6f, got %.6f", tc.wantPct, got)
 			}
 		})
+	}
+}
+
+// TestRescuePriceMoveExceeds проверяет знаковое пересечение порога.
+func TestRescuePriceMoveExceeds(t *testing.T) {
+	cases := []struct {
+		movePct   float64
+		threshold float64
+		want      bool
+	}{
+		// Negative threshold: fire when loss ≥ |threshold|
+		{-5, -5, true},  // ровно на пороге
+		{-7, -5, true},  // хуже порога
+		{-3, -5, false}, // не достигли
+		{0, -5, false},  // прибыль — тем более нет
+		{5, -5, false},  // прибыль — нет
+		// Positive threshold: fire when profit ≥ threshold
+		{5, 5, true},   // ровно на пороге
+		{7, 5, true},   // больше порога
+		{3, 5, false},  // не достигли
+		{-3, 5, false}, // убыток — нет
+		// Zero threshold: always true
+		{-5, 0, true},
+		{5, 0, true},
+		{0, 0, true},
+	}
+
+	for _, tc := range cases {
+		got := rescuePriceMoveExceeds(tc.movePct, tc.threshold)
+		if got != tc.want {
+			t.Errorf("rescuePriceMoveExceeds(%.1f, %.1f) = %v, want %v", tc.movePct, tc.threshold, got, tc.want)
+		}
 	}
 }
 
@@ -96,93 +98,164 @@ func TestRescuePriceLevelReached(t *testing.T) {
 }
 
 // TestRescueTriggersMet проверяет AND-логику проверки всех активных триггеров.
+// Знак порога: отрицательный = против позиции (убыток), положительный = в сторону прибыли.
 func TestRescueTriggersMet(t *testing.T) {
-	pctThresh := 5.0
+	mainAdversePct := -5.0  // срабатывает когда мэйн просел на 5%
+	mainProfitPct := 2.0    // срабатывает когда мэйн в прибыли на 2%
+	hedgeAdversePct := -3.0 // срабатывает когда хедж просел на 3%
+	hedgeProfitPct := 4.0   // срабатывает когда хедж в прибыли на 4%
 	levelThresh := 90.0
 	accumThresh := 20.0
 
 	cases := []struct {
-		name    string
-		cfg     botCfgJSON
-		current float64
-		entry   float64
-		mainDir string
-		accum   float64
-		want    bool
+		name         string
+		cfg          botCfgJSON
+		current      float64
+		entry        float64
+		mainDir      string
+		accum        float64
+		hedgeEntry   float64
+		hedgeCurrent float64
+		hedgeDir     string
+		want         bool
 	}{
 		{
-			name: "no triggers configured → always true (gate is elsewhere)",
+			name: "no triggers → always true",
 			cfg:  botCfgJSON{RescuePartialCloseEnabled: true},
 			want: true,
 		},
+		// Main price move (отрицательный порог = убыток)
 		{
-			name: "price move trigger met",
-			cfg:  botCfgJSON{RescueTriggerPriceMovePct: &pctThresh},
-			// long: entry=100, current=93 → move=7% ≥ 5%
+			name: "main adverse move met",
+			cfg:  botCfgJSON{RescueTriggerPriceMovePct: &mainAdversePct},
+			// long: entry=100, current=93 → movePct=-7 ≤ -5 → met
 			entry: 100, current: 93, mainDir: "buy",
 			want: true,
 		},
 		{
-			name: "price move trigger not met",
-			cfg:  botCfgJSON{RescueTriggerPriceMovePct: &pctThresh},
-			// long: entry=100, current=97 → move=3% < 5%
+			name: "main adverse move not met",
+			cfg:  botCfgJSON{RescueTriggerPriceMovePct: &mainAdversePct},
+			// long: entry=100, current=97 → movePct=-3 > -5 → not met
 			entry: 100, current: 97, mainDir: "buy",
 			want: false,
 		},
 		{
+			name: "main profit move met",
+			cfg:  botCfgJSON{RescueTriggerPriceMovePct: &mainProfitPct},
+			// long: entry=100, current=103 → movePct=+3 ≥ +2 → met
+			entry: 100, current: 103, mainDir: "buy",
+			want: true,
+		},
+		{
+			name: "main profit move not met",
+			cfg:  botCfgJSON{RescueTriggerPriceMovePct: &mainProfitPct},
+			// long: entry=100, current=101 → movePct=+1 < +2 → not met
+			entry: 100, current: 101, mainDir: "buy",
+			want: false,
+		},
+		// Hedge price move
+		{
+			name: "hedge adverse move met",
+			cfg:  botCfgJSON{RescueTriggerHedgePriceMovePct: &hedgeAdversePct},
+			// hedge=short: entry=100, current=104 → movePct=(100-104)/100*100=-4 ≤ -3 → met
+			hedgeEntry: 100, hedgeCurrent: 104, hedgeDir: "sell",
+			want: true,
+		},
+		{
+			name: "hedge adverse move not met",
+			cfg:  botCfgJSON{RescueTriggerHedgePriceMovePct: &hedgeAdversePct},
+			// hedge=short: entry=100, current=102 → movePct=-2 > -3 → not met
+			hedgeEntry: 100, hedgeCurrent: 102, hedgeDir: "sell",
+			want: false,
+		},
+		{
+			name: "hedge profit move met",
+			cfg:  botCfgJSON{RescueTriggerHedgePriceMovePct: &hedgeProfitPct},
+			// hedge=short: entry=100, current=95 → movePct=(100-95)/100*100=+5 ≥ +4 → met
+			hedgeEntry: 100, hedgeCurrent: 95, hedgeDir: "sell",
+			want: true,
+		},
+		{
+			name: "hedge profit move not met",
+			cfg:  botCfgJSON{RescueTriggerHedgePriceMovePct: &hedgeProfitPct},
+			// hedge=short: entry=100, current=97 → movePct=+3 < +4 → not met
+			hedgeEntry: 100, hedgeCurrent: 97, hedgeDir: "sell",
+			want: false,
+		},
+		// Price level
+		{
 			name: "price level trigger met",
 			cfg:  botCfgJSON{RescueTriggerPriceLevel: &levelThresh},
-			// long: current=88 ≤ 90
 			entry: 100, current: 88, mainDir: "buy",
 			want: true,
 		},
 		{
 			name: "price level trigger not met",
 			cfg:  botCfgJSON{RescueTriggerPriceLevel: &levelThresh},
-			// long: current=95 > 90
 			entry: 100, current: 95, mainDir: "buy",
 			want: false,
 		},
+		// Accumulated
 		{
 			name: "accumulated trigger met",
 			cfg:  botCfgJSON{RescueTriggerAccumulatedMinUsdt: &accumThresh},
-			accum: 25,
-			want:  true,
+			accum: 25, want: true,
 		},
 		{
 			name: "accumulated trigger not met",
 			cfg:  botCfgJSON{RescueTriggerAccumulatedMinUsdt: &accumThresh},
-			accum: 10,
-			want:  false,
+			accum: 10, want: false,
 		},
+		// AND logic
 		{
-			name: "all three conditions, all met",
+			name: "main+level+accum all met",
 			cfg: botCfgJSON{
-				RescueTriggerPriceMovePct:       &pctThresh,
+				RescueTriggerPriceMovePct:       &mainAdversePct,
 				RescueTriggerPriceLevel:         &levelThresh,
 				RescueTriggerAccumulatedMinUsdt: &accumThresh,
 			},
-			entry: 100, current: 85, mainDir: "buy",
-			accum: 30,
-			want:  true,
+			entry: 100, current: 85, mainDir: "buy", accum: 30,
+			want: true,
 		},
 		{
-			name: "all three conditions, accum not met",
+			name: "main+level+accum, accum not met",
 			cfg: botCfgJSON{
-				RescueTriggerPriceMovePct:       &pctThresh,
+				RescueTriggerPriceMovePct:       &mainAdversePct,
 				RescueTriggerPriceLevel:         &levelThresh,
 				RescueTriggerAccumulatedMinUsdt: &accumThresh,
 			},
-			entry: 100, current: 85, mainDir: "buy",
-			accum: 5, // < 20
-			want:  false,
+			entry: 100, current: 85, mainDir: "buy", accum: 5,
+			want: false,
+		},
+		{
+			name: "main+hedge both met",
+			cfg: botCfgJSON{
+				RescueTriggerPriceMovePct:      &mainAdversePct,
+				RescueTriggerHedgePriceMovePct: &hedgeAdversePct,
+			},
+			// main long in -7% loss, hedge short in -4% loss
+			entry: 100, current: 93, mainDir: "buy",
+			hedgeEntry: 100, hedgeCurrent: 104, hedgeDir: "sell",
+			want: true,
+		},
+		{
+			name: "main met, hedge not met → false",
+			cfg: botCfgJSON{
+				RescueTriggerPriceMovePct:      &mainAdversePct,
+				RescueTriggerHedgePriceMovePct: &hedgeAdversePct,
+			},
+			entry: 100, current: 93, mainDir: "buy",
+			hedgeEntry: 100, hedgeCurrent: 102, hedgeDir: "sell", // hedge only -2% < -3%
+			want: false,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Signal trigger is tested separately (requires signal.Engine); pass nil here.
-			got := rescueTriggersMet(tc.cfg, tc.current, tc.entry, tc.mainDir, tc.accum, false)
+			got := rescueTriggersMet(
+				tc.cfg, tc.current, tc.entry, tc.mainDir, tc.accum, false,
+				tc.hedgeEntry, tc.hedgeCurrent, tc.hedgeDir,
+			)
 			if got != tc.want {
 				t.Errorf("want %v, got %v", tc.want, got)
 			}
@@ -223,32 +296,31 @@ func TestRescueCooldownElapsed(t *testing.T) {
 
 // TestRescuePartialCloseRequest проверяет сборку запроса частичного закрытия.
 func TestRescuePartialCloseRequest(t *testing.T) {
-	pctThresh := 5.0
+	mainAdversePct := -5.0 // убыток мэйна ≥ 5%
 	accumMin := 20.0
+
+	// helper: вызов с нулевыми hedge-данными (триггер хеджа не настроен)
+	call := func(cfg botCfgJSON, symbol, mainDir string, current, entry, accum, reduced, step, minQ float64, last *time.Time, sig bool) *rescueCloseReq {
+		return rescuePartialCloseRequest(cfg, symbol, mainDir, current, entry, accum, reduced, step, minQ, last, sig, 0, 0, "sell")
+	}
 
 	t.Run("all conditions met → request returned", func(t *testing.T) {
 		cfg := botCfgJSON{
 			RescuePartialCloseEnabled:       true,
-			RescueTriggerPriceMovePct:       &pctThresh,
+			RescueTriggerPriceMovePct:       &mainAdversePct,
 			RescueTriggerAccumulatedMinUsdt: &accumMin,
 			RescueMinIntervalSec:            300,
 		}
-		// long main, price dropped 8% from entry, 50 USDT accumulated
-		req := rescuePartialCloseRequest(cfg,
-			"BTCUSDT", "buy",   // symbol, mainDir
-			50000, 54348,       // currentPrice, mainEntryPrice  (drop ~8%)
-			50, 0,              // accumulatedPnl, mainReducedUsdt
-			0.001, 0.001,       // qtyStep, minQty
-			nil, false,         // lastPartialCloseAt, signalMet
-		)
+		// long main, price dropped ~8% from entry, 50 USDT accumulated
+		req := call(cfg, "BTCUSDT", "buy", 50000, 54348, 50, 0, 0.001, 0.001, nil, false)
 		if req == nil {
 			t.Fatal("expected request, got nil")
 		}
 		if req.Symbol != "BTCUSDT" {
 			t.Errorf("symbol: %s", req.Symbol)
 		}
-		if req.Side != "sell" { // closing a long = sell
-			t.Errorf("side: %s (expected sell)", req.Side)
+		if req.Side != "sell" {
+			t.Errorf("side: %s (expected sell for long)", req.Side)
 		}
 		if req.Qty <= 0 {
 			t.Errorf("qty must be > 0, got %f", req.Qty)
@@ -258,10 +330,10 @@ func TestRescuePartialCloseRequest(t *testing.T) {
 	t.Run("trigger not met → nil", func(t *testing.T) {
 		cfg := botCfgJSON{
 			RescuePartialCloseEnabled: true,
-			RescueTriggerPriceMovePct: &pctThresh,
+			RescueTriggerPriceMovePct: &mainAdversePct,
 		}
-		// price only dropped 2% — below 5% threshold
-		req := rescuePartialCloseRequest(cfg, "BTCUSDT", "buy", 98000, 100000, 50, 0, 0.001, 0.001, nil, false)
+		// price dropped only 2% → movePct=-2 > -5 → not met
+		req := call(cfg, "BTCUSDT", "buy", 98000, 100000, 50, 0, 0.001, 0.001, nil, false)
 		if req != nil {
 			t.Errorf("expected nil, got %+v", req)
 		}
@@ -273,7 +345,7 @@ func TestRescuePartialCloseRequest(t *testing.T) {
 			RescueMinIntervalSec:      300,
 		}
 		recent := time.Now().Add(-60 * time.Second)
-		req := rescuePartialCloseRequest(cfg, "BTCUSDT", "buy", 90000, 100000, 50, 0, 0.001, 0.001, &recent, false)
+		req := call(cfg, "BTCUSDT", "buy", 90000, 100000, 50, 0, 0.001, 0.001, &recent, false)
 		if req != nil {
 			t.Errorf("expected nil (cooldown), got %+v", req)
 		}
@@ -281,8 +353,7 @@ func TestRescuePartialCloseRequest(t *testing.T) {
 
 	t.Run("insufficient pnl for minQty → nil", func(t *testing.T) {
 		cfg := botCfgJSON{RescuePartialCloseEnabled: true}
-		// accum=0.5 USDT at price=50000, minQty=0.001 → 0.00001 coin < 0.001
-		req := rescuePartialCloseRequest(cfg, "BTCUSDT", "buy", 50000, 55000, 0.5, 0, 0.001, 0.001, nil, false)
+		req := call(cfg, "BTCUSDT", "buy", 50000, 55000, 0.5, 0, 0.001, 0.001, nil, false)
 		if req != nil {
 			t.Errorf("expected nil (insufficient qty), got %+v", req)
 		}
@@ -290,12 +361,38 @@ func TestRescuePartialCloseRequest(t *testing.T) {
 
 	t.Run("short main closing side = buy", func(t *testing.T) {
 		cfg := botCfgJSON{RescuePartialCloseEnabled: true}
-		req := rescuePartialCloseRequest(cfg, "ETHUSDT", "sell", 1200, 1000, 100, 0, 0.01, 0.01, nil, false)
+		req := call(cfg, "ETHUSDT", "sell", 1200, 1000, 100, 0, 0.01, 0.01, nil, false)
 		if req == nil {
 			t.Fatal("expected request for short")
 		}
-		if req.Side != "buy" { // closing a short = buy
-			t.Errorf("side: %s (expected buy)", req.Side)
+		if req.Side != "buy" {
+			t.Errorf("side: %s (expected buy for short)", req.Side)
+		}
+	})
+
+	t.Run("hedge trigger met → request returned", func(t *testing.T) {
+		hedgePct := -4.0 // хедж просел на 4%
+		cfg := botCfgJSON{
+			RescuePartialCloseEnabled:      true,
+			RescueTriggerHedgePriceMovePct: &hedgePct,
+		}
+		// hedge=short: entry=100, current=105 → movePct=-5 ≤ -4 → met
+		req := rescuePartialCloseRequest(cfg, "SOLUSDT", "buy", 100, 110, 50, 0, 0.1, 0.1, nil, false, 100, 105, "sell")
+		if req == nil {
+			t.Fatal("expected request when hedge trigger met")
+		}
+	})
+
+	t.Run("hedge trigger not met → nil", func(t *testing.T) {
+		hedgePct := -4.0
+		cfg := botCfgJSON{
+			RescuePartialCloseEnabled:      true,
+			RescueTriggerHedgePriceMovePct: &hedgePct,
+		}
+		// hedge=short: entry=100, current=102 → movePct=-2 > -4 → not met
+		req := rescuePartialCloseRequest(cfg, "SOLUSDT", "buy", 100, 110, 50, 0, 0.1, 0.1, nil, false, 100, 102, "sell")
+		if req != nil {
+			t.Errorf("expected nil when hedge trigger not met, got %+v", req)
 		}
 	})
 }

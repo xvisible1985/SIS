@@ -21,26 +21,39 @@ type rescueSignalTrigger struct {
 	Params map[string]interface{} `json:"params,omitempty"`
 }
 
-// rescuePriceMoveTowardMainPct returns how many percent the price has moved
-// against the main position (toward the loss side) since its entry. Returns 0
-// when the move is in the profitable direction (not a rescue-trigger condition).
+// rescuePriceMovePct returns the signed percentage move of a position relative to
+// its entry price, from the perspective of that position's profit/loss.
+// Positive = move toward profit (in the direction of the position).
+// Negative = move against the position (adverse, toward loss).
 //
-// mainDir: "buy" = long position, "sell" = short position.
-func rescuePriceMoveTowardMainPct(entryAt, currentAt float64, mainDir string) float64 {
+// For long (buy): positive when price rose above entry.
+// For short (sell): positive when price fell below entry.
+func rescuePriceMovePct(entryAt, currentAt float64, dir string) float64 {
 	if entryAt <= 0 {
 		return 0
 	}
-	var movePct float64
-	switch mainDir {
-	case "buy": // long — adverse move is price falling
-		movePct = (entryAt - currentAt) / entryAt * 100
-	case "sell": // short — adverse move is price rising
-		movePct = (currentAt - entryAt) / entryAt * 100
+	switch dir {
+	case "buy":
+		return (currentAt - entryAt) / entryAt * 100
+	case "sell":
+		return (entryAt - currentAt) / entryAt * 100
 	}
-	if movePct < 0 {
-		return 0
+	return 0
+}
+
+// rescuePriceMoveExceeds reports whether movePct has crossed threshold in the
+// direction indicated by threshold's sign:
+//   - negative threshold (-2): fire when loss ≥ 2% (movePct ≤ threshold)
+//   - positive threshold (+2): fire when profit ≥ 2% (movePct ≥ threshold)
+//   - zero: always true
+func rescuePriceMoveExceeds(movePct, threshold float64) bool {
+	if threshold == 0 {
+		return true
 	}
-	return movePct
+	if threshold < 0 {
+		return movePct <= threshold
+	}
+	return movePct >= threshold
 }
 
 // rescuePriceLevelReached returns true when the current price has reached or
@@ -64,11 +77,24 @@ func rescuePriceLevelReached(level, currentAt float64, mainDir string) bool {
 // (requires signal.Engine, so it's injected rather than evaluated here to keep
 // this function pure/testable).
 //
+// Signed price-move triggers: negative threshold = fire when loss reached N%
+// (price moved against the position); positive = fire when profit reached N%.
+//
 // When no triggers are configured, returns true — the outer gate
 // (RescuePartialCloseEnabled check) is the caller's responsibility.
-func rescueTriggersMet(cfg botCfgJSON, currentPrice, mainEntryPrice float64, mainDir string, accumulatedPnl float64, signalMet bool) bool {
+func rescueTriggersMet(
+	cfg botCfgJSON,
+	currentPrice, mainEntryPrice float64, mainDir string,
+	accumulatedPnl float64, signalMet bool,
+	hedgeEntryPrice, hedgeCurrentPrice float64, hedgeDir string,
+) bool {
 	if cfg.RescueTriggerPriceMovePct != nil {
-		if rescuePriceMoveTowardMainPct(mainEntryPrice, currentPrice, mainDir) < *cfg.RescueTriggerPriceMovePct {
+		if !rescuePriceMoveExceeds(rescuePriceMovePct(mainEntryPrice, currentPrice, mainDir), *cfg.RescueTriggerPriceMovePct) {
+			return false
+		}
+	}
+	if cfg.RescueTriggerHedgePriceMovePct != nil {
+		if !rescuePriceMoveExceeds(rescuePriceMovePct(hedgeEntryPrice, hedgeCurrentPrice, hedgeDir), *cfg.RescueTriggerHedgePriceMovePct) {
 			return false
 		}
 	}
@@ -120,11 +146,12 @@ func rescuePartialCloseRequest(
 	qtyStep, minQty float64,
 	lastPartialCloseAt *time.Time,
 	signalMet bool,
+	hedgeEntryPrice, hedgeCurrentPrice float64, hedgeDir string,
 ) *rescueCloseReq {
 	if !rescueCooldownElapsed(lastPartialCloseAt, cfg.RescueMinIntervalSec) {
 		return nil
 	}
-	if !rescueTriggersMet(cfg, currentPrice, mainEntryPrice, mainDir, accumulatedPnl, signalMet) {
+	if !rescueTriggersMet(cfg, currentPrice, mainEntryPrice, mainDir, accumulatedPnl, signalMet, hedgeEntryPrice, hedgeCurrentPrice, hedgeDir) {
 		return nil
 	}
 	qty := rescueCalcPartialCloseQty(accumulatedPnl, mainReducedUsdt, currentPrice, qtyStep, minQty)
@@ -232,6 +259,12 @@ func (s *Server) checkRescuePartialClose(ctx context.Context, botID, accountID s
 
 	for _, sr := range sessions {
 		mainSide := hedgeDirToSide(sr.mainDir)
+		hedgeDir := "sell"
+		if sr.mainDir == "sell" {
+			hedgeDir = "buy"
+		}
+		hedgeSide := hedgeDirToSide(hedgeDir)
+
 		bySymbol, ok := posMap[sr.symbol]
 		if !ok {
 			continue
@@ -243,6 +276,13 @@ func (s *Server) checkRescuePartialClose(ctx context.Context, botID, accountID s
 
 		currentPrice := mainPos.MarkPrice
 		mainEntryPrice := mainPos.EntryPrice
+
+		hedgeCurrentPrice := 0.0
+		hedgeEntryPrice := 0.0
+		if hp, ok := bySymbol[hedgeSide]; ok {
+			hedgeCurrentPrice = hp.MarkPrice
+			hedgeEntryPrice = hp.EntryPrice
+		}
 
 		// Evaluate signal triggers (AND logic — all must match rescue direction).
 		signalMet := true
@@ -278,6 +318,7 @@ func (s *Server) checkRescuePartialClose(ctx context.Context, botID, accountID s
 			sr.accumulatedPnl, sr.mainReducedUsdt,
 			pubInfo.QtyStep, pubInfo.MinQty,
 			sr.lastCloseAt, signalMet,
+			hedgeEntryPrice, hedgeCurrentPrice, hedgeDir,
 		)
 		if req == nil {
 			continue
