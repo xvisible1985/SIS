@@ -625,13 +625,14 @@ type accountInfo struct {
 func (e *Engine) loadAccountInfo(ctx context.Context, accountID string) (accountInfo, error) {
 	var apiKeyEnc, secretEnc, label string
 	var username *string
+	var whitelistedIPs []string
 	if err := e.pool.QueryRow(ctx,
-		`SELECT ea.api_key_enc, ea.secret_enc, ea.label,
+		`SELECT ea.api_key_enc, ea.secret_enc, ea.label, ea.whitelisted_ips,
 		        NULLIF(COALESCE(u.username, ''), '')
 		 FROM exchange_accounts ea
 		 JOIN users u ON u.id = ea.owner_id
 		 WHERE ea.id = $1`, accountID,
-	).Scan(&apiKeyEnc, &secretEnc, &label, &username); err != nil {
+	).Scan(&apiKeyEnc, &secretEnc, &label, &whitelistedIPs, &username); err != nil {
 		return accountInfo{}, err
 	}
 	apiKey, err := crypto.Decrypt(apiKeyEnc, e.encKey)
@@ -647,7 +648,7 @@ func (e *Engine) loadAccountInfo(ctx context.Context, accountID string) (account
 		un = *username
 	}
 	return accountInfo{
-		creds:         trader.Credentials{APIKey: apiKey, SecretKey: secret},
+		creds:         trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: accountID, WhitelistedIPs: whitelistedIPs},
 		accountLabel:  label,
 		ownerUsername: un,
 	}, nil

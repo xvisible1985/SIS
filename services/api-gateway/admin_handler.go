@@ -182,9 +182,10 @@ func (s *Server) AdminSignAgreement(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var apiKeyEnc, secretEnc string
+	var whitelistedIPs []string
 	err := s.pool.QueryRow(r.Context(),
-		`SELECT api_key_enc, secret_enc FROM exchange_accounts WHERE id=$1`, accID,
-	).Scan(&apiKeyEnc, &secretEnc)
+		`SELECT api_key_enc, secret_enc, whitelisted_ips FROM exchange_accounts WHERE id=$1`, accID,
+	).Scan(&apiKeyEnc, &secretEnc, &whitelistedIPs)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
@@ -199,7 +200,7 @@ func (s *Server) AdminSignAgreement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "decrypt secret failed")
 		return
 	}
-	creds := trader.Credentials{APIKey: apiKey, SecretKey: secret}
+	creds := trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: accID, WhitelistedIPs: whitelistedIPs}
 
 	if err := trader.SignAgreement(r.Context(), creds, body.CategoryV2); err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())

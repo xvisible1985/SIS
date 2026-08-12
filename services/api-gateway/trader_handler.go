@@ -14,10 +14,11 @@ import (
 // loadCreds looks up an exchange account by id (must be owned by userID), decrypts keys.
 func (s *Server) loadCreds(r *http.Request, accountID, userID string) (trader.Credentials, error) {
 	var apiKeyEnc, secretEnc string
+	var whitelistedIPs []string
 	err := s.pool.QueryRow(r.Context(),
-		`SELECT api_key_enc, secret_enc FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
+		`SELECT api_key_enc, secret_enc, whitelisted_ips FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
 		accountID, userID,
-	).Scan(&apiKeyEnc, &secretEnc)
+	).Scan(&apiKeyEnc, &secretEnc, &whitelistedIPs)
 	if err != nil {
 		return trader.Credentials{}, fmt.Errorf("account not found")
 	}
@@ -29,7 +30,7 @@ func (s *Server) loadCreds(r *http.Request, accountID, userID string) (trader.Cr
 	if err != nil {
 		return trader.Credentials{}, fmt.Errorf("decrypt: %w", err)
 	}
-	return trader.Credentials{APIKey: apiKey, SecretKey: secret}, nil
+	return trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: accountID, WhitelistedIPs: whitelistedIPs}, nil
 }
 
 // makeOrderLinkID returns a SIS_TRM-N order link ID for terminal (manual) orders.

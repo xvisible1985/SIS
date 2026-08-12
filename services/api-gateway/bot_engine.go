@@ -1436,9 +1436,10 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 // loadBotAccountCreds decrypts and returns trading credentials for an exchange account.
 func (s *Server) loadBotAccountCreds(ctx context.Context, accountID string) (trader.Credentials, error) {
 	var apiKeyEnc, secretEnc string
+	var whitelistedIPs []string
 	if err := s.pool.QueryRow(ctx,
-		`SELECT api_key_enc, secret_enc FROM exchange_accounts WHERE id=$1`, accountID,
-	).Scan(&apiKeyEnc, &secretEnc); err != nil {
+		`SELECT api_key_enc, secret_enc, whitelisted_ips FROM exchange_accounts WHERE id=$1`, accountID,
+	).Scan(&apiKeyEnc, &secretEnc, &whitelistedIPs); err != nil {
 		return trader.Credentials{}, err
 	}
 	apiKey, err := crypto.Decrypt(apiKeyEnc, s.encKey)
@@ -1449,7 +1450,7 @@ func (s *Server) loadBotAccountCreds(ctx context.Context, accountID string) (tra
 	if err != nil {
 		return trader.Credentials{}, err
 	}
-	return trader.Credentials{APIKey: apiKey, SecretKey: secret}, nil
+	return trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: accountID, WhitelistedIPs: whitelistedIPs}, nil
 }
 
 // cleanupStoppedBotStrategies deletes stopped bot strategies that have no open exchange position.

@@ -38,8 +38,9 @@ func (e *Engine) reconcileStoppedCycles(ctx context.Context) {
 		hedgeMode bool
 		botID     *string
 		// credentials (encrypted)
-		apiKeyEnc string
-		secretEnc string
+		apiKeyEnc      string
+		secretEnc      string
+		whitelistedIPs []string
 	}
 
 	rows, err := e.pool.Query(ctx, `
@@ -48,7 +49,7 @@ func (e *Engine) reconcileStoppedCycles(ctx context.Context) {
 		       s.id, s.account_id, s.owner_id, s.symbol, s.category,
 		       s.direction, COALESCE(s.hedge_mode, true),
 		       s.bot_id,
-		       ea.api_key_enc, ea.secret_enc
+		       ea.api_key_enc, ea.secret_enc, ea.whitelisted_ips
 		FROM strategy_cycles sc
 		JOIN strategies       s  ON s.id  = sc.strategy_id
 		JOIN exchange_accounts ea ON ea.id = s.account_id
@@ -71,7 +72,7 @@ func (e *Engine) reconcileStoppedCycles(ctx context.Context) {
 			&r.stratID, &r.accountID, &r.ownerID, &r.symbol, &r.category,
 			&r.direction, &r.hedgeMode,
 			&r.botID,
-			&r.apiKeyEnc, &r.secretEnc,
+			&r.apiKeyEnc, &r.secretEnc, &r.whitelistedIPs,
 		); err != nil {
 			log.Printf("startup reconcile (stopped): scan: %v", err)
 			continue
@@ -86,7 +87,10 @@ func (e *Engine) reconcileStoppedCycles(ctx context.Context) {
 	log.Printf("startup reconcile: %d незакрытых циклов у остановленных стратегий", len(cycles))
 
 	// Cache decrypted credentials and fetched positions per account.
-	type creds struct{ apiKey, secret string }
+	type creds struct {
+		apiKey, secret string
+		whitelistedIPs []string
+	}
 	credCache := make(map[string]*creds)
 	posCache  := make(map[string][]trader.Position)
 
@@ -105,7 +109,7 @@ func (e *Engine) reconcileStoppedCycles(ctx context.Context) {
 				credCache[c.accountID] = nil
 				continue
 			}
-			credCache[c.accountID] = &creds{apiKey: apiKey, secret: secret}
+			credCache[c.accountID] = &creds{apiKey: apiKey, secret: secret, whitelistedIPs: c.whitelistedIPs}
 		}
 		cr := credCache[c.accountID]
 		if cr == nil {
@@ -115,7 +119,7 @@ func (e *Engine) reconcileStoppedCycles(ctx context.Context) {
 		// ── fetch all positions for this account (once per account) ───────────
 		if _, seen := posCache[c.accountID]; !seen {
 			positions, err := trader.FetchPositions(ctx, trader.Credentials{
-				APIKey: cr.apiKey, SecretKey: cr.secret,
+				APIKey: cr.apiKey, SecretKey: cr.secret, AccountID: c.accountID, WhitelistedIPs: cr.whitelistedIPs,
 			})
 			if err != nil {
 				log.Printf("startup reconcile: fetch positions account=%s: %v", c.accountID, err)
@@ -186,7 +190,7 @@ func (e *Engine) reconcileStoppedCycles(ctx context.Context) {
 			TPOrderID: c.tpOrderID,
 			SLOrderID: c.slOrderID,
 		}
-		go RecordStrategyTrade(e.pool, trader.Credentials{APIKey: cr.apiKey, SecretKey: cr.secret}, in)
+		go RecordStrategyTrade(e.pool, trader.Credentials{APIKey: cr.apiKey, SecretKey: cr.secret, AccountID: c.accountID, WhitelistedIPs: cr.whitelistedIPs}, in)
 	}
 }
 
@@ -201,16 +205,17 @@ func (e *Engine) reconcileStoppedNoCycle(ctx context.Context) {
 		hedgeMode bool
 	}
 	type accountInfo struct {
-		apiKeyEnc string
-		secretEnc string
-		strats    []stratInfo
+		apiKeyEnc      string
+		secretEnc      string
+		whitelistedIPs []string
+		strats         []stratInfo
 	}
 
 	// One query: accounts that have relevant stopped strategies + their strategies.
 	rows, err := e.pool.Query(ctx, `
 		SELECT s.id, s.account_id, s.symbol, s.direction,
 		       COALESCE(s.hedge_mode, false),
-		       ea.api_key_enc, ea.secret_enc
+		       ea.api_key_enc, ea.secret_enc, ea.whitelisted_ips
 		FROM strategies s
 		JOIN exchange_accounts ea ON ea.id = s.account_id
 		WHERE s.status = 'stopped'
@@ -230,12 +235,13 @@ func (e *Engine) reconcileStoppedNoCycle(ctx context.Context) {
 	for rows.Next() {
 		var s stratInfo
 		var accountID, apiKeyEnc, secretEnc string
+		var whitelistedIPs []string
 		if err := rows.Scan(&s.stratID, &accountID, &s.symbol, &s.direction,
-			&s.hedgeMode, &apiKeyEnc, &secretEnc); err != nil {
+			&s.hedgeMode, &apiKeyEnc, &secretEnc, &whitelistedIPs); err != nil {
 			continue
 		}
 		if accounts[accountID] == nil {
-			accounts[accountID] = &accountInfo{apiKeyEnc: apiKeyEnc, secretEnc: secretEnc}
+			accounts[accountID] = &accountInfo{apiKeyEnc: apiKeyEnc, secretEnc: secretEnc, whitelistedIPs: whitelistedIPs}
 		}
 		accounts[accountID].strats = append(accounts[accountID].strats, s)
 	}
@@ -257,7 +263,7 @@ func (e *Engine) reconcileStoppedNoCycle(ctx context.Context) {
 		}
 
 		positions, err := trader.FetchPositions(ctx, trader.Credentials{
-			APIKey: apiKey, SecretKey: secret,
+			APIKey: apiKey, SecretKey: secret, AccountID: accountID, WhitelistedIPs: acc.whitelistedIPs,
 		})
 		if err != nil {
 			log.Printf("reconcileStoppedNoCycle: fetch positions account=%s: %v", accountID, err)

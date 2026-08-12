@@ -32,10 +32,11 @@ func (s *Server) PositionsStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var apiKeyEnc, secretEnc, label string
+	var whitelistedIPs []string
 	err = s.pool.QueryRow(r.Context(),
-		`SELECT api_key_enc, secret_enc, label FROM exchange_accounts WHERE id=$1 AND owner_id=$2 AND is_active=TRUE`,
+		`SELECT api_key_enc, secret_enc, label, whitelisted_ips FROM exchange_accounts WHERE id=$1 AND owner_id=$2 AND is_active=TRUE`,
 		accountID, userID,
-	).Scan(&apiKeyEnc, &secretEnc, &label)
+	).Scan(&apiKeyEnc, &secretEnc, &label, &whitelistedIPs)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			log.Printf("trader ws: query account %s: %v", accountID, err)
@@ -48,9 +49,9 @@ func (s *Server) PositionsStream(w http.ResponseWriter, r *http.Request) {
 		}
 		// Admin fallback: allow streaming any account regardless of ownership.
 		err = s.pool.QueryRow(r.Context(),
-			`SELECT api_key_enc, secret_enc, label FROM exchange_accounts WHERE id=$1 AND is_active=TRUE`,
+			`SELECT api_key_enc, secret_enc, label, whitelisted_ips FROM exchange_accounts WHERE id=$1 AND is_active=TRUE`,
 			accountID,
-		).Scan(&apiKeyEnc, &secretEnc, &label)
+		).Scan(&apiKeyEnc, &secretEnc, &label, &whitelistedIPs)
 		if err != nil {
 			if !errors.Is(err, pgx.ErrNoRows) {
 				log.Printf("trader ws: query account %s (admin): %v", accountID, err)
@@ -80,7 +81,7 @@ func (s *Server) PositionsStream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	creds := trader.Credentials{APIKey: apiKey, SecretKey: secretKey}
+	creds := trader.Credentials{APIKey: apiKey, SecretKey: secretKey, AccountID: accountID, WhitelistedIPs: whitelistedIPs}
 	broadcastCh, unsub := s.subscribeBroadcast(accountID)
 	defer unsub()
 	trader.RunPositionStream(r.Context(), conn, creds, label, broadcastCh)

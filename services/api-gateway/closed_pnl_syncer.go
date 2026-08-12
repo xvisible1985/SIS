@@ -54,15 +54,16 @@ func (s *ClosedPnlSyncer) Start(ctx context.Context) {
 }
 
 type closedPnlAccount struct {
-	id        string
-	ownerID   string
-	apiKeyEnc string
-	secretEnc string
+	id             string
+	ownerID        string
+	apiKeyEnc      string
+	secretEnc      string
+	whitelistedIPs []string
 }
 
 func (s *ClosedPnlSyncer) loadAndLaunch(ctx context.Context) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, owner_id, api_key_enc, secret_enc FROM exchange_accounts WHERE is_active = TRUE`)
+		`SELECT id, owner_id, api_key_enc, secret_enc, whitelisted_ips FROM exchange_accounts WHERE is_active = TRUE`)
 	if err != nil {
 		log.Printf("closed_pnl_syncer: load accounts: %v", err)
 		return
@@ -70,7 +71,7 @@ func (s *ClosedPnlSyncer) loadAndLaunch(ctx context.Context) {
 	defer rows.Close()
 	for rows.Next() {
 		var a closedPnlAccount
-		if err := rows.Scan(&a.id, &a.ownerID, &a.apiKeyEnc, &a.secretEnc); err != nil {
+		if err := rows.Scan(&a.id, &a.ownerID, &a.apiKeyEnc, &a.secretEnc, &a.whitelistedIPs); err != nil {
 			continue
 		}
 		s.mu.Lock()
@@ -108,7 +109,7 @@ func (s *ClosedPnlSyncer) runAccount(ctx context.Context, a closedPnlAccount) {
 		log.Printf("closed_pnl_syncer: decrypt account=%s: %v", a.id, err)
 		return
 	}
-	creds := trader.Credentials{APIKey: apiKey, SecretKey: secret}
+	creds := trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: a.id, WhitelistedIPs: a.whitelistedIPs}
 
 	// Offset from execution syncer (60s) to spread API calls.
 	time.Sleep(30 * time.Second)
