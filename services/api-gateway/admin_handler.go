@@ -78,10 +78,15 @@ func (s *Server) GetAdminMetrics(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetSystemHealth returns a live server-health snapshot (CPU, RAM, Disk, DB).
+// GetSystemHealth returns a live server-health snapshot (CPU, RAM, Disk, DB) plus
+// whether this instance holds trading leadership — see leader.go. When false, the
+// strategy/bot/hedge engines are NOT running on this instance at all.
 // GET /admin/system-health
 func (s *Server) GetSystemHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, LatestSystemHealth())
+	writeJSON(w, http.StatusOK, struct {
+		SystemHealthSnapshot
+		TradingLeader bool `json:"trading_leader"`
+	}{LatestSystemHealth(), tradingLeaderStatus.Load()})
 }
 
 // serviceInfo describes a Go service in the system.

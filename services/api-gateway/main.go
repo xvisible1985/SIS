@@ -94,10 +94,22 @@ func main() {
 	// order-managing engines (strategy/bot/hedge). Prevents a second instance
 	// (accidental double-start, overlapping deploy) from double-managing accounts
 	// and placing duplicate orders on the exchange. See leader.go for the design.
+	//
+	// AcquireWithRetry (bounded by the lock's own TTL) covers a same-window restart
+	// after an ungraceful death (Release below covers the graceful-shutdown case).
 	leader := NewTradingLeader(rdb)
-	isTradingLeader := leader.Acquire(ctx)
+	isTradingLeader := leader.AcquireWithRetry(ctx, tradingLeaderTTL)
+	tradingLeaderStatus.Store(isTradingLeader)
 	if isTradingLeader {
 		go leader.RenewLoop(ctx)
+		// Release on graceful shutdown so a subsequent restart acquires instantly
+		// instead of waiting out the TTL. Uses a fresh context — by the time deferred
+		// funcs run, ctx (tied to the shutdown signal) is already cancelled.
+		defer func() {
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			leader.Release(releaseCtx)
+		}()
 	} else {
 		log.Printf("WARNING: another api-gateway instance holds trading leadership — order-managing engines (strategy/bot/hedge) will NOT start on this instance")
 	}
