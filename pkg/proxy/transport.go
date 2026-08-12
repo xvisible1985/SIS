@@ -66,3 +66,35 @@ func (t *BalancedTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	}
 	return resp, err
 }
+
+// filteredTransport routes each request through a proxy selected via
+// Manager.PickForIPs(allowedIPs), reusing the same per-proxy connection pools as
+// BalancedTransport (via shared.transportFor). Used by HTTPClientFor for accounts with
+// an IP-restricted exchange API key.
+type filteredTransport struct {
+	manager    *Manager
+	allowedIPs []string
+	shared     *BalancedTransport
+}
+
+func (t *filteredTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	p, err := t.manager.PickForIPs(t.allowedIPs)
+	if err != nil {
+		return nil, err
+	}
+	if p == nil {
+		// allowedIPs empty and no proxy available — direct connection (matches
+		// BalancedTransport.RoundTrip's existing fallback behavior).
+		return t.shared.base.RoundTrip(req)
+	}
+
+	p.IncPending()
+	p.IncTotal()
+	defer p.DecPending()
+
+	resp, err := t.shared.transportFor(p.URL).RoundTrip(req)
+	if err != nil {
+		p.IncFailures()
+	}
+	return resp, err
+}

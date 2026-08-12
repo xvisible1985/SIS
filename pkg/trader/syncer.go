@@ -2,6 +2,7 @@ package trader
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -13,11 +14,12 @@ import (
 )
 
 type accountRow struct {
-	id        string
-	ownerID   string
-	exchange  string
-	apiKeyEnc string
-	secretEnc string
+	id             string
+	ownerID        string
+	exchange       string
+	apiKeyEnc      string
+	secretEnc      string
+	whitelistedIPs []string
 }
 
 // Syncer periodically pulls execution history from Bybit and upserts into trader_executions.
@@ -59,7 +61,7 @@ func (s *Syncer) Start(ctx context.Context) {
 
 func (s *Syncer) loadAndLaunch(ctx context.Context) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, owner_id, exchange, api_key_enc, secret_enc
+		`SELECT id, owner_id, exchange, api_key_enc, secret_enc, whitelisted_ips
 		 FROM exchange_accounts WHERE is_active = TRUE`)
 	if err != nil {
 		log.Printf("syncer: load accounts: %v", err)
@@ -68,7 +70,7 @@ func (s *Syncer) loadAndLaunch(ctx context.Context) {
 	defer rows.Close()
 	for rows.Next() {
 		var a accountRow
-		if err := rows.Scan(&a.id, &a.ownerID, &a.exchange, &a.apiKeyEnc, &a.secretEnc); err != nil {
+		if err := rows.Scan(&a.id, &a.ownerID, &a.exchange, &a.apiKeyEnc, &a.secretEnc, &a.whitelistedIPs); err != nil {
 			continue
 		}
 		s.mu.Lock()
@@ -107,14 +109,16 @@ func (s *Syncer) runAccount(ctx context.Context, a accountRow) {
 		log.Printf("syncer: decrypt secret account=%s: %v", a.id, err)
 		return
 	}
-	creds := Credentials{APIKey: apiKey, SecretKey: secret}
+	creds := Credentials{APIKey: apiKey, SecretKey: secret, AccountID: a.id, WhitelistedIPs: a.whitelistedIPs}
 
 	s.syncExecutions(ctx, a, creds)
 
 	execTicker := time.NewTicker(60 * time.Second)
 	histTicker := time.NewTicker(5 * time.Minute)
+	whitelistTicker := time.NewTicker(5 * time.Minute)
 	defer execTicker.Stop()
 	defer histTicker.Stop()
+	defer whitelistTicker.Stop()
 
 	for {
 		select {
@@ -124,8 +128,42 @@ func (s *Syncer) runAccount(ctx context.Context, a accountRow) {
 			s.syncExecutions(ctx, a, creds)
 		case <-histTicker.C:
 			s.syncOrderHistory(ctx, a, creds)
+		case <-whitelistTicker.C:
+			s.refreshWhitelistedIPs(ctx, &a, &creds)
 		}
 	}
+}
+
+// refreshWhitelistedIPs re-fetches the account's Bybit API key IP whitelist via
+// QueryAPI and persists it to exchange_accounts.whitelisted_ips, also updating creds
+// in place so subsequent calls in this same runAccount cycle use the fresh value.
+func (s *Syncer) refreshWhitelistedIPs(ctx context.Context, a *accountRow, creds *Credentials) {
+	// Deliberately unrestricted: this call exists to DISCOVER the whitelist, so it must
+	// not itself be constrained by creds.WhitelistedIPs (which, from the 2nd refresh
+	// onward, holds the PREVIOUS result). Reusing it here would self-lock the account
+	// forever the moment the whitelist ever narrows to IPs our proxy pool can't match.
+	unrestricted := Credentials{APIKey: creds.APIKey, SecretKey: creds.SecretKey}
+	raw, err := QueryAPI(ctx, unrestricted)
+	if err != nil {
+		log.Printf("syncer: refresh whitelist account=%s: %v", a.id, err)
+		return
+	}
+	var parsed struct {
+		IPs []string `json:"ips"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		log.Printf("syncer: parse whitelist account=%s: %v", a.id, err)
+		return
+	}
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE exchange_accounts SET whitelisted_ips=$1 WHERE id=$2`,
+		parsed.IPs, a.id,
+	); err != nil {
+		log.Printf("syncer: persist whitelist account=%s: %v", a.id, err)
+		return
+	}
+	a.whitelistedIPs = parsed.IPs
+	creds.WhitelistedIPs = parsed.IPs
 }
 
 func (s *Syncer) syncExecutions(ctx context.Context, a accountRow, creds Credentials) {

@@ -69,7 +69,11 @@ func (ts *TradeStream) Run(ctx context.Context) {
 }
 
 func (ts *TradeStream) runOnce(ctx context.Context) error {
-	conn, _, err := proxy.WSDialer().DialContext(ctx, bybitTradeWS, nil)
+	dialer, err := proxy.WSDialerFor(ts.creds.WhitelistedIPs)
+	if err != nil {
+		return err
+	}
+	conn, _, err := dialer.DialContext(ctx, bybitTradeWS, nil)
 	if err != nil {
 		return err
 	}

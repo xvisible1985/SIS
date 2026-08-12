@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"sync"
@@ -98,46 +99,42 @@ func (m *Manager) buildProxyURL(p *DBProxy) (*url.URL, error) {
 	return u, nil
 }
 
-// Pick selects the best proxy using least-connections (primary) + round-robin (tie-break).
-// Returns nil if no healthy proxies are available — caller should fall back to direct connection.
-func (m *Manager) Pick() *Proxy {
-	m.mu.RLock()
-	proxies := m.proxies
-	m.mu.RUnlock()
+// ErrNoWhitelistedProxy is returned by PickForIPs when allowedIPs is non-empty but no
+// proxy in the pool matches any of the given IPs — the caller must not fall back to a
+// direct connection or an unlisted proxy (the account's exchange API key would very
+// likely reject the request with the same IP-mismatch error anyway).
+var ErrNoWhitelistedProxy = errors.New("proxy: no proxy matches account's IP whitelist")
 
-	if len(proxies) == 0 {
+// pickFrom applies least-connections (primary) + round-robin (tie-break) scoring to
+// candidates and returns the winner, or nil if candidates is empty. Records the pick as
+// the manager's last-picked host. Shared by Pick() and PickForIPs() so both use
+// identical selection logic over different candidate sets.
+func (m *Manager) pickFrom(candidates []*Proxy) *Proxy {
+	if len(candidates) == 0 {
 		return nil
 	}
 
 	var best *Proxy
 	bestScore := float64(1<<63 - 1)
-	candidates := 0
-
-	for _, p := range proxies {
-		if !p.IsActive || p.Status() != "healthy" {
-			continue
-		}
+	tied := 0
+	for _, p := range candidates {
 		score := float64(p.Pending()) / float64(p.Weight)
 		if score < bestScore {
 			bestScore = score
 			best = p
-			candidates = 1
+			tied = 1
 		} else if score == bestScore {
-			candidates++
+			tied++
 		}
 	}
 
-	// Round-robin tie-break among equally-scored candidates.
-	if candidates > 1 {
+	if tied > 1 {
 		start := int(m.rrIdx.Add(1))
 		idx := 0
-		for _, p := range proxies {
-			if !p.IsActive || p.Status() != "healthy" {
-				continue
-			}
+		for _, p := range candidates {
 			score := float64(p.Pending()) / float64(p.Weight)
 			if score == bestScore {
-				if idx == start%candidates {
+				if idx == start%tied {
 					best = p
 					break
 				}
@@ -146,13 +143,59 @@ func (m *Manager) Pick() *Proxy {
 		}
 	}
 
-	if best != nil {
-		host := fmt.Sprintf("%s:%d", best.URL.Hostname(), portFromURL(best.URL))
-		m.lastPickMu.Lock()
-		m.lastPickHost = host
-		m.lastPickMu.Unlock()
-	}
+	host := fmt.Sprintf("%s:%d", best.URL.Hostname(), portFromURL(best.URL))
+	m.lastPickMu.Lock()
+	m.lastPickHost = host
+	m.lastPickMu.Unlock()
 	return best
+}
+
+// Pick selects the best proxy using least-connections (primary) + round-robin (tie-break).
+// Returns nil if no healthy proxies are available — caller should fall back to direct connection.
+func (m *Manager) Pick() *Proxy {
+	m.mu.RLock()
+	proxies := m.proxies
+	m.mu.RUnlock()
+
+	var candidates []*Proxy
+	for _, p := range proxies {
+		if p.IsActive && p.Status() == "healthy" {
+			candidates = append(candidates, p)
+		}
+	}
+	return m.pickFrom(candidates)
+}
+
+// PickForIPs selects a proxy the same way Pick() does, but when allowedIPs is non-empty
+// it first restricts candidates to proxies whose host is in allowedIPs. Empty allowedIPs
+// means "no IP restriction" and behaves exactly like Pick() (nil, nil = fall back to
+// direct connection — the existing, backward-compatible behavior). Non-empty allowedIPs
+// with zero matching candidates returns (nil, ErrNoWhitelistedProxy) — the caller must
+// not send the request through an unlisted IP.
+func (m *Manager) PickForIPs(allowedIPs []string) (*Proxy, error) {
+	if len(allowedIPs) == 0 {
+		return m.Pick(), nil
+	}
+
+	allowed := make(map[string]bool, len(allowedIPs))
+	for _, ip := range allowedIPs {
+		allowed[ip] = true
+	}
+
+	m.mu.RLock()
+	proxies := m.proxies
+	m.mu.RUnlock()
+
+	var candidates []*Proxy
+	for _, p := range proxies {
+		if p.IsActive && p.Status() == "healthy" && allowed[p.URL.Hostname()] {
+			candidates = append(candidates, p)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, ErrNoWhitelistedProxy
+	}
+	return m.pickFrom(candidates), nil
 }
 
 // LastPickedHost returns the "host:port" of the last proxy selected by Pick.

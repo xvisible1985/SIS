@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"sis/pkg/proxy"
 )
 
 // TickerHub maintains Bybit tickers WS connections and dispatches markPrice
@@ -163,7 +164,7 @@ func (h *TickerHub) runConn(tc *tickerConn) {
 		}
 
 		// bybitPublicWS is declared in hub.go (same package)
-		conn, _, err := websocket.DefaultDialer.DialContext(h.ctx, bybitPublicWS, nil)
+		conn, _, err := proxy.WSDialer().DialContext(h.ctx, bybitPublicWS, nil)
 		if err != nil {
 			log.Printf("ticker hub: dial: %v; retry in %s", err, wsReconnectDelay)
 			time.Sleep(wsReconnectDelay)

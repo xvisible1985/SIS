@@ -77,7 +77,11 @@ func runPrivateOnce(ctx context.Context, creds Credentials, handler PrivateStrea
 	sigStr := fmt.Sprintf("GET/realtime%d", expires)
 	wsSign := hmacHex(creds.SecretKey, sigStr)
 
-	conn, _, err := proxy.WSDialer().DialContext(ctx, bybitPrivateWS, nil)
+	dialer, err := proxy.WSDialerFor(creds.WhitelistedIPs)
+	if err != nil {
+		return err
+	}
+	conn, _, err := dialer.DialContext(ctx, bybitPrivateWS, nil)
 	if err != nil {
 		return err
 	}

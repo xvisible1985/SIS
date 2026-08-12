@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"sis/pkg/proxy"
 )
 
 const bybitPrivateWS = "wss://stream.bybit.com/v5/private"
@@ -40,7 +42,12 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 	sigStr := fmt.Sprintf("GET/realtime%d", expires)
 	wsSign := hmacHex(creds.SecretKey, sigStr)
 
-	bwsConn, _, err := websocket.DefaultDialer.DialContext(ctx, bybitPrivateWS, nil)
+	dialer, err := proxy.WSDialerFor(creds.WhitelistedIPs)
+	if err != nil {
+		logMsg("Ошибка выбора прокси для Bybit WS: "+err.Error(), true)
+		return
+	}
+	bwsConn, _, err := dialer.DialContext(ctx, bybitPrivateWS, nil)
 	if err != nil {
 		logMsg("Ошибка подключения к Bybit WS: "+err.Error(), true)
 		return
