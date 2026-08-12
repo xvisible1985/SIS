@@ -1588,6 +1588,63 @@ func (s *Server) GetHedgeSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// GetPairTradeSummary returns aggregated trade_history stats (count by result,
+// fees, funding, gross/net PnL) across both legs of a pair (hedge main+hedge or
+// matrix long+short) — the finished-pair equivalent of PairedCloseProgress's
+// live view. GET /strategies/{id}/pair-trade-summary?other_id=
+func (s *Server) GetPairTradeSummary(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	stratID := chi.URLParam(r, "id")
+	otherID := r.URL.Query().Get("other_id")
+
+	ids := []string{stratID}
+	if otherID != "" && otherID != stratID {
+		ids = append(ids, otherID)
+	}
+
+	type pairTradeSummary struct {
+		Total    int            `json:"total"`
+		ByResult map[string]int `json:"by_result"`
+		Fees     float64        `json:"fees"`
+		Funding  float64        `json:"funding"`
+		GrossPnl float64        `json:"gross_pnl"`
+		NetPnl   float64        `json:"net_pnl"`
+	}
+	resp := pairTradeSummary{ByResult: map[string]int{}}
+
+	rows, err := s.pool.Query(r.Context(), `
+		SELECT th.result, COUNT(*)::int,
+		       COALESCE(SUM(th.fees), 0), COALESCE(SUM(th.funding), 0),
+		       COALESCE(SUM(th.pnl), 0), COALESCE(SUM(th.net_pnl), 0)
+		FROM trade_history th
+		WHERE th.owner_id = $1 AND th.strategy_id = ANY($2)
+		GROUP BY th.result`,
+		userID, ids,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var result string
+		var count int
+		var fees, funding, gross, net float64
+		if err := rows.Scan(&result, &count, &fees, &funding, &gross, &net); err != nil {
+			continue
+		}
+		resp.ByResult[result] = count
+		resp.Total += count
+		resp.Fees += fees
+		resp.Funding += funding
+		resp.GrossPnl += gross
+		resp.NetPnl += net
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // GetStrategyCumulativePnl returns the total net PnL from trade_history for a strategy.
 // GET /strategies/{id}/cumulative-pnl
 func (s *Server) GetStrategyCumulativePnl(w http.ResponseWriter, r *http.Request) {

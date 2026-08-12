@@ -236,6 +236,7 @@ func main() {
 		// Strategy state and events
 		r.Get("/strategies/{id}/state", s.GetStrategyState)
 		r.Get("/strategies/{id}/hedge-session", s.GetHedgeSession)
+		r.Get("/strategies/{id}/pair-trade-summary", s.GetPairTradeSummary)
 		r.Get("/strategies/{id}/cumulative-pnl", s.GetStrategyCumulativePnl)
 		r.Get("/strategies/{id}/cycle-audit", s.GetCycleAudit)
 		r.Post("/strategies/{id}/cycle-restart", s.RestartCycle)

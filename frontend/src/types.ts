@@ -379,6 +379,15 @@ export interface HedgeSession {
   last_partial_close_at:  string | null
 }
 
+export interface PairTradeSummary {
+  total:     number
+  by_result: Record<string, number>
+  fees:      number
+  funding:   number
+  gross_pnl: number
+  net_pnl:   number
+}
+
 export interface StrategyTemplate {
   id: string
   name: string

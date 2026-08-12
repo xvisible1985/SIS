@@ -3,13 +3,13 @@ import { Shield, Layers } from 'lucide-react'
 import { getBotKindMeta } from '../../features/bots/botKindMeta'
 import {
   getStrategyState, getStrategyEvents,
-  setStrategyStatus, detachWithAction, getHedgeSession, deleteStrategy,
+  setStrategyStatus, detachWithAction, getHedgeSession, getPairTradeSummary, deleteStrategy,
   type DetachPositionData,
 } from '../../api/strategies'
 import { placeOrder } from '../../api/trader'
 import { ClosePositionModal, makeCloseConfirm, type CloseConfirm } from '../common/ClosePositionModal'
 import { CoinIcon } from '../common/CoinIcon'
-import type { Strategy, ExchangeAccount, ActiveOrder, Position, StrategyState, StrategyEvent, HedgeSession, WsMsg } from '../../types'
+import type { Strategy, ExchangeAccount, ActiveOrder, Position, StrategyState, StrategyEvent, HedgeSession, PairTradeSummary, WsMsg } from '../../types'
 import type { Bot } from '../../features/bots/types'
 
 export interface HedgePairCardProps {
@@ -187,6 +187,55 @@ function PairedCloseProgress({
         </span>
         <span className="text-[14px] text-slate-400 tabular-nums">{fmtCloseValue(threshold, closeType)}</span>
       </div>
+    </div>
+  )
+}
+
+// ── PairTradeSummaryPanel ──────────────────────────────────────────────────
+// Shown once a pair has finished (both legs stopped) in place of the live
+// PairedCloseProgress — a breakdown of every closed cycle recorded for this
+// pair in trade_history: how it closed, fees/funding paid, and the net result.
+
+const RESULT_LABEL: Record<string, string> = {
+  tp: 'TP',
+  sl: 'SL',
+  ghost_close: 'Ложное закрытие',
+  paired_close: 'Парное закрытие',
+  manual_close: 'Ручное закрытие',
+  manual: 'Вручную',
+  stopped: 'Остановлен',
+  settings_changed: 'Смена настроек',
+  position_gone: 'Позиция пропала',
+}
+
+function PairTradeSummaryPanel({ summary }: { summary: PairTradeSummary }) {
+  if (summary.total === 0) {
+    return <div className="text-center text-[11px] text-slate-600 py-2">Циклов не было</div>
+  }
+  const resultEntries = Object.entries(summary.by_result).sort(([, a], [, b]) => b - a)
+  return (
+    <div className="space-y-1.5">
+      <StatRow label="Циклов всего" value={String(summary.total)} />
+      {resultEntries.map(([result, count]) => (
+        <StatRow key={result} label={RESULT_LABEL[result] ?? result} value={String(count)} />
+      ))}
+
+      <div className="h-px bg-white/[.05] my-1.5" />
+
+      <StatRow label="Комиссии" value={`-${summary.fees.toFixed(4)}$`} color={summary.fees > 0 ? '#fca5a5' : undefined} />
+      <StatRow
+        label="Фандинг"
+        value={fmtPnlPrecise(-summary.funding)}
+        color={summary.funding !== 0 ? (summary.funding < 0 ? '#6ee7b7' : '#fca5a5') : undefined}
+      />
+
+      <div className="h-px bg-white/[.05] my-1.5" />
+
+      <StatRow
+        label="Итог"
+        value={fmtPnlPrecise(summary.net_pnl)}
+        color={summary.net_pnl > 0 ? '#6ee7b7' : summary.net_pnl < 0 ? '#fca5a5' : undefined}
+      />
     </div>
   )
 }
@@ -444,6 +493,16 @@ export function HedgePairCard({
   const [dataLoading, setDataLoading] = useState(false)
   const [hedgeSession, setHedgeSession] = useState<HedgeSession | null>(null)
   const [matrixPnl, setMatrixPnl] = useState<number | null>(null)
+  const [pairSummary, setPairSummary] = useState<PairTradeSummary | null>(null)
+
+  // Pair is finished (both legs stopped) — no live paired-close progress to show,
+  // so the right column shows a summary of the completed cycles instead.
+  const pairFinished = main.status === 'stopped' && hedge.status === 'stopped'
+
+  useEffect(() => {
+    if (!expanded || !pairFinished) { setPairSummary(null); return }
+    getPairTradeSummary(main.id, hedge.id).then(setPairSummary).catch(() => setPairSummary(null))
+  }, [expanded, pairFinished, main.id, hedge.id])
 
   useEffect(() => {
     if (!expanded) return
@@ -841,13 +900,17 @@ export function HedgePairCard({
 
               {/* ── Правая колонка ── */}
               <div className="space-y-1.5 bg-black/[.18] border border-white/[.05] rounded-[10px] p-3">
-                {pairedCloseWs && (
+                {pairedCloseWs ? (
                   <PairedCloseProgress
                     closeType={pairedCloseWs.close_type}
                     current={pairedCloseWs.current}
                     threshold={pairedCloseWs.threshold}
                   />
-                )}
+                ) : pairFinished ? (
+                  pairSummary
+                    ? <PairTradeSummaryPanel summary={pairSummary} />
+                    : <div className="text-center text-[11px] text-slate-600 py-2">Загрузка итогов…</div>
+                ) : null}
               </div>
 
             </div>

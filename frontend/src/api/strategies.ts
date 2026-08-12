@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { Strategy, StrategyState, StrategyEvent, StrategyFormData, CycleAuditData, HedgeSession } from '../types'
+import type { Strategy, StrategyState, StrategyEvent, StrategyFormData, CycleAuditData, HedgeSession, PairTradeSummary } from '../types'
 
 export async function listStrategies(asAccountId?: string): Promise<Strategy[]> {
   const params = asAccountId ? { as_account_id: asAccountId } : undefined
@@ -110,6 +110,17 @@ export async function getInstrumentConstraints(symbol: string, category = 'linea
 export async function getHedgeSession(strategyId: string): Promise<HedgeSession | null> {
   try {
     const res = await apiClient.get<HedgeSession>(`/strategies/${strategyId}/hedge-session`)
+    return res.data
+  } catch {
+    return null
+  }
+}
+
+export async function getPairTradeSummary(strategyId: string, otherId: string): Promise<PairTradeSummary | null> {
+  try {
+    const res = await apiClient.get<PairTradeSummary>(`/strategies/${strategyId}/pair-trade-summary`, {
+      params: { other_id: otherId },
+    })
     return res.data
   } catch {
     return null
