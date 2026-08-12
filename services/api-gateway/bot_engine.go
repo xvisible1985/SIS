@@ -101,11 +101,21 @@ type botWorkerEntry struct {
 
 // ensureBotWorker starts a worker goroutine for botID if one is not already running.
 // Idempotent and goroutine-safe.
+//
+// The worker's context is always derived from s.botEngineCtx (the whole engine's
+// lifetime), NEVER from the ctx parameter — a caller's ctx may be scoped far shorter
+// than the worker needs to live (e.g. botEngineTick's own per-tick ctx.WithTimeout,
+// which is cancelled the instant that single tick returns). See the doc on
+// Server.botEngineCtx for the incident this fixes.
 func (s *Server) ensureBotWorker(ctx context.Context, botID string) {
 	if _, ok := s.botWorkers.Load(botID); ok {
 		return
 	}
-	wCtx, cancel := context.WithCancel(ctx)
+	rootCtx := s.botEngineCtx
+	if rootCtx == nil {
+		rootCtx = ctx // defensive fallback — should never happen once RunBotEngine has started
+	}
+	wCtx, cancel := context.WithCancel(rootCtx)
 	entry := &botWorkerEntry{
 		ch:   make(chan botOpportunity, 64),
 		stop: cancel,
@@ -195,6 +205,7 @@ func (s *Server) applyBotOpportunities(ctx context.Context, botID string, opps [
 	}
 	s.botSnapshotMu.RUnlock()
 	if !found {
+		log.Printf("applyBotOpportunities: bot %s not in snapshot — dropping %d queued opportunities", botID, len(opps))
 		return // bot was removed while the opportunities were queued
 	}
 
@@ -230,6 +241,9 @@ func (s *Server) applyBotOpportunities(ctx context.Context, botID string, opps [
 			if err := s.pool.QueryRow(ctx,
 				`SELECT COUNT(*) FROM strategies WHERE bot_id=$1 AND status IN ('active','finishing')`,
 				b.id).Scan(&cnt); err != nil || cnt >= b.maxStrat {
+				s.logBotEvent(ctx, b.id,
+					fmt.Sprintf("[%s] Пропуск %s %s: достигнут общий лимит стратегий (%d)", o.source, o.sym, o.dir, b.maxStrat),
+					"info", "strategy")
 				break // global limit reached; no point checking further
 			}
 		}
@@ -238,6 +252,9 @@ func (s *Server) applyBotOpportunities(ctx context.Context, botID string, opps [
 			if err := s.pool.QueryRow(ctx,
 				`SELECT COUNT(*) FROM strategies WHERE bot_id=$1 AND direction='long' AND status IN ('active','finishing')`,
 				b.id).Scan(&cnt); err != nil || cnt >= dirLimit {
+				s.logBotEvent(ctx, b.id,
+					fmt.Sprintf("[%s] Пропуск %s %s: достигнут лимит long-стратегий (%d)", o.source, o.sym, o.dir, dirLimit),
+					"info", "strategy")
 				continue
 			}
 		}
@@ -246,6 +263,9 @@ func (s *Server) applyBotOpportunities(ctx context.Context, botID string, opps [
 			if err := s.pool.QueryRow(ctx,
 				`SELECT COUNT(*) FROM strategies WHERE bot_id=$1 AND direction='short' AND status IN ('active','finishing')`,
 				b.id).Scan(&cnt); err != nil || cnt >= dirLimit {
+				s.logBotEvent(ctx, b.id,
+					fmt.Sprintf("[%s] Пропуск %s %s: достигнут лимит short-стратегий (%d)", o.source, o.sym, o.dir, dirLimit),
+					"info", "strategy")
 				continue
 			}
 		}
@@ -256,6 +276,11 @@ func (s *Server) applyBotOpportunities(ctx context.Context, botID string, opps [
 			 WHERE symbol=$1 AND direction=$2 AND status IN ('active','finishing')
 			   AND (bot_id=$3 OR (bot_id IS NULL AND owner_id=$4 AND account_id=$5))`,
 			o.sym, o.dir, b.id, b.ownerID, b.accountID).Scan(&existing); err != nil || existing > 0 {
+			if err != nil {
+				s.logBotEvent(ctx, b.id,
+					fmt.Sprintf("[%s] Пропуск %s %s: ошибка проверки дубликата: %v", o.source, o.sym, o.dir, err),
+					"error", "strategy")
+			}
 			continue
 		}
 		if b.maxSymConsecutive > 0 {
@@ -277,6 +302,9 @@ func (s *Server) applyBotOpportunities(ctx context.Context, botID string, opps [
 				}
 				symRows.Close()
 				if consecutive >= b.maxSymConsecutive {
+					s.logBotEvent(ctx, b.id,
+						fmt.Sprintf("[%s] Пропуск %s %s: символ повторялся подряд %d+ раз (лимит %d)", o.source, o.sym, o.dir, consecutive, b.maxSymConsecutive),
+						"info", "strategy")
 					continue // this symbol ran too many times in a row; skip until another pair runs
 				}
 			}
@@ -292,9 +320,16 @@ func (s *Server) applyBotOpportunities(ctx context.Context, botID string, opps [
 		}
 
 		if _, err := s.createBotStrategy(ctx, b, cfg, o.sym, o.dir, 0, "", nil); err != nil {
-			if !strings.Contains(err.Error(), "unique") {
-				s.logBotEvent(ctx, b.id, fmt.Sprintf("[%s] Ошибка открытия %s %s: %v", o.source, o.sym, o.dir, err), "error", "strategy")
+			// A "unique" error here is a genuine race (another tick/worker beat us to the
+			// same symbol+direction between our dedup check above and this INSERT) — log
+			// it at info instead of fully suppressing, so a *persistent* unique failure
+			// (which would mean the dedup check above has a bug) is still visible instead
+			// of silently repeating forever with zero trace anywhere.
+			level := "error"
+			if strings.Contains(err.Error(), "unique") {
+				level = "info"
 			}
+			s.logBotEvent(ctx, b.id, fmt.Sprintf("[%s] Ошибка открытия %s %s: %v", o.source, o.sym, o.dir, err), level, "strategy")
 		} else {
 			s.logBotEvent(ctx, b.id, fmt.Sprintf("[%s] Открыта стратегия %s %s", o.source, o.sym, o.dir), "info", "strategy")
 		}
@@ -366,6 +401,9 @@ func recoverEngine(label string) {
 }
 
 func (s *Server) RunBotEngine(ctx context.Context) {
+	// Long-lived context for ensureBotWorker — see the field doc on Server.botEngineCtx.
+	s.botEngineCtx = ctx
+
 	// Register global signal callback once before the ticker loop.
 	s.signalEngine.OnStateChange(func(sym, iv, h string, st signal.State) {
 		if st == signal.Buy || st == signal.Sell {
@@ -784,6 +822,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 				// Apply direction / duplicate filtering
 				var opportunities []string
 				var skippedDir []string
+				var skippedOpen []string
 				for _, r := range results {
 					var openDir string
 					switch cfg.Direction {
@@ -807,6 +846,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 						continue
 					}
 					if opened[openDirectionKey{r.sym, openDir}] {
+						skippedOpen = append(skippedOpen, fmt.Sprintf("%s→%s", r.sym, openDir))
 						continue
 					}
 					opportunities = append(opportunities, fmt.Sprintf("%s→%s", r.sym, openDir))
@@ -816,6 +856,15 @@ func (s *Server) botEngineTick(ctx context.Context) {
 					s.logBotEvent(ctx, b.id,
 						fmt.Sprintf("Тик: %d сигналов не соответствуют направлению бота (%s): %s",
 							len(skippedDir), cfg.Direction, joinMax(skippedDir, 5)), "info", "tick")
+				}
+				if len(skippedOpen) > 0 {
+					// opened is account-wide (loadOpenDirections), not just this bot's own
+					// strategies — a signal here already has an active/finishing strategy
+					// from ANY bot on the same exchange account, so opening another would
+					// double up on the same symbol+direction.
+					s.logBotEvent(ctx, b.id,
+						fmt.Sprintf("Тик: %d сигналов совпадают с уже открытыми слотами на аккаунте: %s",
+							len(skippedOpen), joinMax(skippedOpen, 5)), "info", "tick")
 				}
 				if len(opportunities) > 0 {
 					totalOppsMu.Lock()

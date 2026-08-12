@@ -46,6 +46,18 @@ type Server struct {
 	// candidate opportunities and applies limits/ranking before creating strategies.
 	botWorkers sync.Map // key: botID string → *botWorkerEntry
 
+	// botEngineCtx is the long-lived context for the whole bot engine (set once at
+	// RunBotEngine startup, cancelled only on process shutdown). ensureBotWorker derives
+	// each worker's context from THIS, never from whatever ctx a caller happens to pass —
+	// a worker must outlive the single tick or reactive-signal callback that created it.
+	// Bug found live (2026-08-12): ensureBotWorker used to derive from botEngineTick's own
+	// per-tick ctx.WithTimeout, which is cancelled the moment that tick returns — the
+	// freshly spawned worker then raced its own cancellation against receiving the very
+	// opportunity it was created for, and had been silently losing that race for every
+	// tick-sourced opportunity system-wide since 2026-07-21 (reactive-sourced ones were
+	// unaffected — runReactiveProcessor already passes the root ctx straight through).
+	botEngineCtx context.Context
+
 	allSymbolsSnapMu sync.RWMutex
 	allSymbolsSnap   []string
 
