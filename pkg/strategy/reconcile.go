@@ -158,6 +158,29 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 	}
 	cycleRows.Close()
 
+	// --- 2b. Query active Matrix cycles with TP order IDs ---
+	// Matrix TP (block 7b below) only needs tp_order_id — SL is per-level, handled
+	// entirely by block 8, not by this cycle-level SL self-heal.
+	matrixCycleRows, mcErr := ar.pool.Query(ctx,
+		`SELECT sc.id, sc.strategy_id, COALESCE(sc.tp_order_id,'')
+		 FROM strategy_cycles sc
+		 JOIN strategies s ON s.id = sc.strategy_id
+		 WHERE s.account_id = $1 AND s.strategy_type = 'matrix' AND sc.ended_at IS NULL`,
+		ar.accountID,
+	)
+	var activeMatrixCycles []cycleTPSL
+	if mcErr != nil {
+		log.Printf("strategy reconcile %s: query matrix cycles: %v", ar.accountID, mcErr)
+	} else {
+		for matrixCycleRows.Next() {
+			var c cycleTPSL
+			if err := matrixCycleRows.Scan(&c.cycleID, &c.strategyID, &c.tpOrderID); err == nil {
+				activeMatrixCycles = append(activeMatrixCycles, c)
+			}
+		}
+		matrixCycleRows.Close()
+	}
+
 	// --- 3. Query ALL strategy IDs (any status, any type) for orphan scan ---
 	// This covers stopped strategies whose orders might still be on the exchange.
 	// Matrix strategies use the same SIS_STR-{id8}-{cycleNum}-... linkId format and
@@ -492,6 +515,59 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 					if err := sr.updateSL(ctx); err != nil {
 						log.Printf("strategy reconcile: SL missing-place cycle %s: %v", cycleID, err)
 					}
+				}
+			})
+		}
+	}
+
+	// --- 7b. Check TP: active Matrix cycle DB row but missing from exchange ---
+	// Matrix previously had no equivalent of block 7 — a position could sit unprotected
+	// indefinitely if matrixUpdateTP silently no-op'd at fill time (e.g. instrument info
+	// not loaded yet) and resumeMatrixCycle didn't re-check TP on every subsequent
+	// restart/reconnect either. This closes that gap the same way block 7 does for grid.
+	for _, c := range activeMatrixCycles {
+		id8 := c.strategyID
+		if len(id8) > 8 {
+			id8 = id8[:8]
+		}
+		snap, ok := stratByID8[id8]
+		if !ok {
+			continue
+		}
+
+		if c.tpOrderID != "" && !live[c.tpOrderID] {
+			log.Printf("strategy reconcile: matrix cycle %s TP %s missing from exchange — clearing and re-placing", c.cycleID, c.tpOrderID)
+			ar.pool.Exec(ctx, //nolint:errcheck
+				`UPDATE strategy_cycles SET tp_order_id=NULL WHERE id=$1`, c.cycleID)
+			ar.UnregisterOrder(c.tpOrderID)
+			cycleID := c.cycleID
+			tpOrderID := c.tpOrderID
+			sr := snap.sr
+			sr.submit(func(ctx context.Context) {
+				sr.mu.Lock()
+				defer sr.mu.Unlock()
+				if sr.strategy.HedgeTpSuppressed {
+					return
+				}
+				if sr.tpOrderID == tpOrderID {
+					sr.tpOrderID = ""
+					_, posQty := sr.avgEntry()
+					if posQty > 0 {
+						log.Printf("strategy reconcile: matrix cycle %s re-placing TP", cycleID)
+						sr.matrixUpdateTP(ctx)
+					}
+				}
+			})
+		} else if c.tpOrderID == "" {
+			cycleID := c.cycleID
+			sr := snap.sr
+			sr.submit(func(ctx context.Context) {
+				sr.mu.Lock()
+				defer sr.mu.Unlock()
+				_, posQty := sr.avgEntry()
+				if matrixNeedsTPRestore(sr.tpOrderID, posQty > 0, sr.strategy.HedgeTpSuppressed) {
+					log.Printf("strategy reconcile: matrix cycle %s has position (qty=%.6f) but no TP — placing", cycleID, posQty)
+					sr.matrixUpdateTP(ctx)
 				}
 			})
 		}

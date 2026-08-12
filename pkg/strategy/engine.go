@@ -761,6 +761,12 @@ type AccountRunner struct {
 	positions           map[string]float64
 	posAvgEntry         map[string]float64
 	discrepancyLoggedAt map[string]time.Time
+
+	// authDead guards stopAllOnPermanentAuthFailure against re-entry: the private WS
+	// keeps retrying (and re-reporting the same auth failure) every few seconds, but
+	// the account only needs to be stopped once. Cleared on a successful reconnect so
+	// a later genuine failure (e.g. after the user rotates the key again) is handled.
+	authDead bool
 }
 
 func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trader.Credentials, pool *pgxpool.Pool, signalEngine *signal.Engine, eng *Engine, cancel context.CancelFunc) *AccountRunner {
@@ -1217,10 +1223,68 @@ func (ar *AccountRunner) OnOrderEvent(ev trader.OrderEvent) {
 // OnConnected implements trader.PrivateStreamHandler.
 func (ar *AccountRunner) OnConnected() {
 	log.Printf("strategy: bybit WS connected account=%s", ar.accountID)
+	ar.mu.Lock()
+	ar.authDead = false
+	ar.mu.Unlock()
 	go ar.tryReconcile(context.Background())
 }
 
 // OnDisconnected implements trader.PrivateStreamHandler.
 func (ar *AccountRunner) OnDisconnected(err error) {
 	log.Printf("strategy: bybit WS disconnected account=%s err=%v", ar.accountID, err)
+	if !trader.IsPermanentAuthError(err) {
+		return
+	}
+	ar.mu.Lock()
+	already := ar.authDead
+	ar.authDead = true
+	ar.mu.Unlock()
+	if !already {
+		go ar.stopAllOnPermanentAuthFailure(context.Background(), err)
+	}
+}
+
+// stopAllOnPermanentAuthFailure stops every active/finishing bot and strategy on this
+// account after the exchange reports the API key as expired (trader.IsPermanentAuthError).
+// Left running, every strategy's retry loop (order placement, matrix reconcile, TP/SL
+// health-check) hammers the same dead key every few seconds forever — this was observed
+// live on 2026-08-12: an expired key spammed WS reconnects and order-placement retries
+// across 4 strategies indefinitely, and deactivating the exchange_accounts row alone did
+// NOT stop it, since that flag isn't read by any of the retry loops.
+// Runs once per account (ar.authDead guards re-entry); OnConnected clears the guard so a
+// later genuine failure (e.g. after the user rotates the key again) is handled too.
+func (ar *AccountRunner) stopAllOnPermanentAuthFailure(ctx context.Context, cause error) {
+	log.Printf("strategy: account=%s API key expired (%v) — stopping all bots/strategies", ar.accountID, cause)
+
+	if _, err := ar.pool.Exec(ctx,
+		`UPDATE bots SET status='stopped', updated_at=NOW() WHERE account_id=$1 AND status='active'`,
+		ar.accountID,
+	); err != nil {
+		log.Printf("strategy: account=%s stop bots after auth failure: %v", ar.accountID, err)
+	}
+
+	ar.mu.RLock()
+	ids := make([]string, 0, len(ar.strategies))
+	for id, sr := range ar.strategies {
+		sr.mu.Lock()
+		active := sr.strategy.Status == StatusActive || sr.strategy.Status == StatusFinishing
+		sr.mu.Unlock()
+		if active {
+			ids = append(ids, id)
+		}
+	}
+	ar.mu.RUnlock()
+
+	const msg = "API-ключ биржи истёк — стратегия автоматически остановлена. Обновите ключ в настройках аккаунта и запустите заново."
+	for _, id := range ids {
+		if _, err := ar.pool.Exec(ctx,
+			`UPDATE strategies SET status='stopped', updated_at=NOW() WHERE id=$1 AND status IN ('active','finishing')`,
+			id,
+		); err != nil {
+			log.Printf("strategy: account=%s stop strategy %s after auth failure: %v", ar.accountID, id, err)
+			continue
+		}
+		ar.engine.LogUserAction(ctx, id, msg)
+		ar.engine.Notify(ctx, id)
+	}
 }

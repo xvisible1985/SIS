@@ -124,6 +124,24 @@ func checkRetCode(data []byte) error {
 	return nil
 }
 
+// IsPermanentAuthError reports whether err indicates the exchange API key is expired
+// (retCode=33004) — a condition no amount of retrying will fix, unlike rate limits,
+// a transient IP mismatch (retCode=10010, self-heals once a healthy proxy is picked
+// again), or a request timeout. Deliberately narrow: only the confirmed-unambiguous
+// "key is dead" signal, not e.g. 10003/10005 which wsPermDenied already treats as a
+// scoped WS-permission gap (REST can still work fine on the same key).
+//
+// Matches both the REST form ("bybit: retCode=33004: ...") and the private-stream WS
+// auth-failure form (private_stream.go wraps the raw ret_msg as "auth failed: <msg>",
+// with no retCode field at all — hence the text fallback).
+func IsPermanentAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "retcode=33004") || strings.Contains(s, "api key has expired")
+}
+
 /*
 // extractRetCode unmarshals retCode/retMsg without allocating an error.
 func extractRetCode(data []byte) (int, string) {

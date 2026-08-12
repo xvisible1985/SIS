@@ -1419,12 +1419,33 @@ func (sr *StrategyRunner) matrixPlacePerLevelSL(ctx context.Context, l *GridLeve
 	sr.info(ctx, fmt.Sprintf("Matrix SL для %s @ %.4f выставлен", slotLabel(l.Slot), trigger))
 }
 
+// matrixNeedsTPRestore reports whether a matrix cycle should have matrixUpdateTP
+// invoked to (re)place a missing TP: there is an open position (a filled level, or —
+// from reconcile.go's caller — a positive exchange qty) but no tp_order_id tracked,
+// and no active hedge is intentionally suppressing TP for this leg.
+// Shared by resumeMatrixCycle (process restart/reconnect) and reconcile.go's block 7b
+// (periodic self-heal) — the two places that must catch a TP placement that silently
+// no-op'd or was lost, since matrix (unlike grid) has no built-in retry on the next tick.
+func matrixNeedsTPRestore(tpOrderID string, hasPosition bool, hedgeTpSuppressed bool) bool {
+	return tpOrderID == "" && hasPosition && !hedgeTpSuppressed
+}
+
 // matrixUpdateTP cancels the existing global TP and places a new one based on the
 // latest active filled level's fill_price and that level's tp_pct config.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	defer sr.setOp("matrix-update-tp")()
 	if sr.instr.QtyStep == 0 {
+		// A brand-new runner (e.g. just created by the matrix repair path) may not have
+		// its instrument cache populated yet when the first level fill arrives — try to
+		// load it now instead of silently giving up, same as grid's updateTP already does.
+		if instr, err := trader.GetInstrumentInfo(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol); err == nil {
+			sr.instr = instr
+			sr.instrFetchedAt = time.Now()
+		}
+	}
+	if sr.instr.QtyStep == 0 {
+		sr.warn(ctx, "matrixUpdateTP: инструмент не загружен (QtyStep=0) — TP не выставлен, повтор при следующем событии")
 		return
 	}
 	// TP suppressed by active hedge — do not place/re-place TP.

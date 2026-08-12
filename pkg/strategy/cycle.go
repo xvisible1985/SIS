@@ -426,6 +426,22 @@ func (sr *StrategyRunner) resumeMatrixCycle(ctx context.Context) {
 		// Seed lastMatrixPrice so the first level fill immediately triggers virtual
 		// levels via matrixPriceTick instead of waiting up to minutes for the next tick.
 		sr.lastMatrixPrice = resumePrice
+
+		// Restore a missing TP: a filled level with no tp_order_id means the initial
+		// placement never happened or was lost (e.g. sr.instr wasn't loaded yet at fill
+		// time — see matrixUpdateTP). Unlike resumeGridCycle, this path previously only
+		// re-placed pending entry levels and never re-checked TP, so the gap persisted
+		// across every subsequent restart/reconnect instead of self-healing.
+		hasFill := false
+		for _, l := range sr.levels {
+			if l.Status == LevelFilled {
+				hasFill = true
+				break
+			}
+		}
+		if matrixNeedsTPRestore(sr.tpOrderID, hasFill, sr.strategy.HedgeTpSuppressed) {
+			sr.matrixUpdateTP(ctx)
+		}
 	}
 
 	sr.mu.Unlock()
