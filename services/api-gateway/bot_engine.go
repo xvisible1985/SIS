@@ -1556,17 +1556,23 @@ func (s *Server) cleanupStoppedBotStrategies(ctx context.Context, b botEngineRow
 				fmt.Sprintf("Очистка: стратегия %s — позиция не закрылась за %v, принудительное удаление", st.symbol, cleanupMaxWait),
 				"warn", "strategy")
 		}
-		// Record symbol run in history before deletion so consecutive-run
-		// checks remain accurate even after the strategy row is removed.
-		s.pool.Exec(ctx, //nolint:errcheck
-			`INSERT INTO bot_symbol_history (bot_id, symbol) VALUES ($1, $2)`,
-			b.id, st.symbol)
+		// Delete first, record the symbol run in history only once that actually
+		// succeeds. Previously this order was reversed ("record before deletion so
+		// consecutive-run checks stay accurate even after the row is gone") — but a
+		// DELETE can fail (e.g. FK violation: another strategy's hedged_strategy_id
+		// still points at this row) and then just repeats every tick forever, writing
+		// a fresh bot_symbol_history row each time while the strategy itself is never
+		// actually removed. Found live (2026-08-13): a strategy stuck behind
+		// strategies_hedged_strategy_id_fkey wrote 10+ history rows in 5 minutes.
 		if _, err := s.pool.Exec(ctx, `DELETE FROM strategies WHERE id=$1`, st.id); err != nil {
 			s.logBotEvent(ctx, b.id,
 				fmt.Sprintf("Очистка: ошибка удаления стратегии %s: %v", st.symbol, err),
 				"error", "strategy")
 			continue
 		}
+		s.pool.Exec(ctx, //nolint:errcheck
+			`INSERT INTO bot_symbol_history (bot_id, symbol) VALUES ($1, $2)`,
+			b.id, st.symbol)
 		s.cleanupWaiters.Delete(st.id)
 		s.engine.ForceRemoveStrategy(ctx, st.id, b.accountID)
 		s.logBotEvent(ctx, b.id,
