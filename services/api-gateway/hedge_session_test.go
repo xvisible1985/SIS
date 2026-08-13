@@ -166,6 +166,46 @@ func TestGetHedgeSession_ResetsOnlyOnPairedClose(t *testing.T) {
 	}
 }
 
+// TestStopHedgeStrategy_OnlyEndsSessionOnPairedClose is the write-side counterpart to
+// TestGetHedgeSession_ResetsOnlyOnPairedClose above: it pins stopHedgeStrategy itself,
+// not just how GetHedgeSession reads whatever rows already exist. Found live
+// (2026-08-13): stopHedgeStrategy unconditionally ended the session for every
+// endReason, so a bot's "Накоплено хеджем" reset to 0 on every ordinary
+// drawdown-activate/deactivate cycle instead of only on a genuine paired close.
+func TestStopHedgeStrategy_OnlyEndsSessionOnPairedClose(t *testing.T) {
+	s := newTestServer(t)
+	userID := createWHUser(t, s, "shsonly")
+	accID := createTestAccount(t, s, userID)
+	botID, stratID := createHSFixture(t, s, userID, accID, "shsonly")
+	ctx := context.Background()
+
+	var sessionID string
+	if err := s.pool.QueryRow(ctx,
+		`INSERT INTO hedge_sessions (bot_id, hedge_strategy_id) VALUES ($1,$2) RETURNING id`,
+		botID, stratID).Scan(&sessionID); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+
+	endedAt := func() (ok bool) {
+		s.pool.QueryRow(ctx, `SELECT ended_at IS NOT NULL FROM hedge_sessions WHERE id=$1`, sessionID).Scan(&ok) //nolint:errcheck
+		return
+	}
+
+	for _, reason := range []string{"deactivation", "position_gone", "main_closed", "trailing_profit"} {
+		s.stopHedgeStrategy(ctx, botID, stratID, "HSUSDT", reason, "test")
+		if endedAt() {
+			t.Fatalf("endReason=%q ended the session — must stay open so the pair can keep accumulating on reactivation", reason)
+		}
+		// Reset status so the next reason's UPDATE strategies SET status='stopped' still runs cleanly.
+		s.pool.Exec(ctx, `UPDATE strategies SET status='active' WHERE id=$1`, stratID) //nolint:errcheck
+	}
+
+	s.stopHedgeStrategy(ctx, botID, stratID, "HSUSDT", "paired_close", "test")
+	if !endedAt() {
+		t.Fatal("endReason=paired_close must end the session")
+	}
+}
+
 // TestGetHedgeSession_IncludesCloseTypeAndThreshold: the response must surface the bot's
 // active paired-close mode and threshold so the frontend can render a progress indicator
 // without a second API call.

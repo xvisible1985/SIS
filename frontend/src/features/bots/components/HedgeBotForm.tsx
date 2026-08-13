@@ -35,6 +35,7 @@ type HedgeActivation = {
   close_value:       number;
   deact_close_type:  number;          // 0=pnl$, 1=roi%, 2=breakeven
   deact_close_value: number;
+  breakeven_profit:  number;          // profit target for deact_close_type=2 (0 = true breakeven)
   profit_lazy:       boolean;
   profit_lazy_pct:   number;
   deact_type:        number;          // 0=drawdown%, 1=pnl$, 2=roi%, 3=last_order%, 4=wait_pair
@@ -73,6 +74,7 @@ function defaultHedgeAct(s?: StrategyConfig): HedgeActivation {
     close_value:       s?.hedge_close_value        ?? 10,
     deact_close_type:  s?.hedge_deact_close_type   ?? 0,
     deact_close_value: s?.hedge_deact_close_value  ?? 50,
+    breakeven_profit:  s?.hedge_breakeven_profit   ?? 0,
     profit_lazy:       s?.hedge_profit_lazy        ?? false,
     profit_lazy_pct:   s?.hedge_profit_lazy_pct    ?? 2,
     deact_type:        s?.hedge_deact_type         ?? 0,
@@ -186,6 +188,7 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
   const [actValDraft,        setActValDraft]        = useState<string | null>(null);
   const [closeValDraft,      setCloseValDraft]      = useState<string | null>(null);
   const [deactCloseValDraft, setDeactCloseValDraft] = useState<string | null>(null);
+  const [breakevenProfitDraft, setBreakevenProfitDraft] = useState<string | null>(null);
   const [deactValDraft,      setDeactValDraft]      = useState<string | null>(null);
 
   const [sizeAsMain,   setSizeAsMain]   = useState<boolean>(bot?.strategyConfig?.size_as_main ?? false);
@@ -402,6 +405,7 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
           hedge_close_value:       ha.close_value,
           hedge_deact_close_type:  ha.deact_close_type,
           hedge_deact_close_value: ha.deact_close_value,
+          hedge_breakeven_profit:  ha.breakeven_profit,
           hedge_profit_lazy:       ha.profit_lazy,
           hedge_profit_lazy_pct:   ha.profit_lazy_pct,
           hedge_deact_type:        ha.deact_type,
@@ -988,10 +992,10 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
                       <EnumPicker
                         options={DEACT_CLOSE_TYPES}
                         value={ha.deact_close_type}
-                        onChange={v => patchHa({ deact_close_type: v })}
+                        onChange={v => patchHa({ deact_close_type: v, ...(v === 2 ? { breakeven_profit: 0 } : {}) })}
                       />
                     </div>
-                    {ha.deact_close_type !== 2 && (
+                    {ha.deact_close_type !== 2 ? (
                       <div className="flex w-[30%] items-center gap-1 min-w-0">
                         <span className="text-[10px] text-slate-500 shrink-0">
                           {ha.deact_close_type === 0 ? '$' : '%'}
@@ -1013,6 +1017,31 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
                               const v = parseFloat(deactCloseValDraft);
                               patchHa({ deact_close_value: isNaN(v) ? ha.deact_close_value : v });
                               setDeactCloseValDraft(null);
+                            }
+                          }}
+                          className={`${inputCls} flex-1 min-w-0 text-center`}
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex w-[30%] items-center gap-1 min-w-0">
+                        <span className="text-[10px] text-slate-500 shrink-0">$</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={breakevenProfitDraft !== null ? breakevenProfitDraft : String(ha.breakeven_profit)}
+                          onChange={e => {
+                            const raw = e.target.value;
+                            setBreakevenProfitDraft(raw);
+                            if (/^-?\d*\.?\d*$/.test(raw) && raw !== '' && raw !== '-') {
+                              const v = parseFloat(raw);
+                              if (!isNaN(v)) patchHa({ breakeven_profit: v });
+                            }
+                          }}
+                          onBlur={() => {
+                            if (breakevenProfitDraft !== null) {
+                              const v = parseFloat(breakevenProfitDraft);
+                              patchHa({ breakeven_profit: isNaN(v) ? ha.breakeven_profit : v });
+                              setBreakevenProfitDraft(null);
                             }
                           }}
                           className={`${inputCls} flex-1 min-w-0 text-center`}

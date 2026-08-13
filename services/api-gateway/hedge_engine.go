@@ -2120,11 +2120,20 @@ func (s *Server) stopHedgeStrategy(ctx context.Context, botID, strategyID, symbo
 		return
 	}
 	go s.engine.Notify(context.Background(), strategyID)
-	// Close the hedge session.
-	s.pool.Exec(ctx, //nolint:errcheck
-		`UPDATE hedge_sessions SET ended_at = NOW(), end_reason = $2
-		 WHERE hedge_strategy_id = $1 AND ended_at IS NULL`,
-		strategyID, endReason)
+	// Close the hedge session — but ONLY on a genuine paired close. Every other
+	// endReason is an intermediate stop the pair is expected to reactivate from
+	// (createBotStrategy reuses this same stopped strategy row, and its
+	// ON CONFLICT(hedge_strategy_id) WHERE ended_at IS NULL insert then finds this
+	// still-open session and keeps accumulating into it instead of starting fresh
+	// at 0). Was previously unconditional, so accumulated_pnl reset on every
+	// ordinary drawdown-activate/deactivate cycle — found live (2026-08-13):
+	// a hedge bot's "Накоплено хеджем" never grew past a single cycle's PnL.
+	if endReason == "paired_close" {
+		s.pool.Exec(ctx, //nolint:errcheck
+			`UPDATE hedge_sessions SET ended_at = NOW(), end_reason = $2
+			 WHERE hedge_strategy_id = $1 AND ended_at IS NULL`,
+			strategyID, endReason)
+	}
 	// Restore main strategy controls when this hedge deactivates.
 	s.restoreHedgeMainControls(ctx, botID, strategyID)
 	s.logBotEvent(ctx, botID,
