@@ -105,11 +105,10 @@ func (s *Server) VerifyAccount(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
 	var apiKeyEnc, secretEnc string
-	var whitelistedIPs []string
 	if err := s.pool.QueryRow(r.Context(),
-		`SELECT api_key_enc, secret_enc, whitelisted_ips FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
+		`SELECT api_key_enc, secret_enc FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
 		id, userID,
-	).Scan(&apiKeyEnc, &secretEnc, &whitelistedIPs); err != nil {
+	).Scan(&apiKeyEnc, &secretEnc); err != nil {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}
@@ -119,8 +118,13 @@ func (s *Server) VerifyAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "decryption error")
 		return
 	}
-	creds := trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: id, WhitelistedIPs: whitelistedIPs}
-	raw, err := trader.QueryAPI(r.Context(), creds)
+	// Deliberately unrestricted for this call: VerifyAccount exists to (re)discover the
+	// whitelist, so it must not be constrained by whatever was previously stored — a
+	// stale or malformed whitelisted_ips (e.g. no proxy matching it) would otherwise
+	// self-lock the account out of ever correcting it. Mirrors Syncer.refreshWhitelistedIPs
+	// (pkg/trader/syncer.go), which learned this the same way.
+	unrestricted := trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: id}
+	raw, err := trader.QueryAPI(r.Context(), unrestricted)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
 		return
@@ -144,11 +148,12 @@ func (s *Server) VerifyAccount(w http.ResponseWriter, r *http.Request) {
 			expiresAt, id, userID)
 	}
 	// Persist the key's actual IP whitelist so future requests route only through
-	// proxies whose exit IP is in it (pkg/proxy.PickForIPs) — empty parsed.IPs means
-	// the key has no IP restriction on Bybit's side, matching NULL/empty column semantics.
+	// proxies whose exit IP is in it (pkg/proxy.PickForIPs). Bybit returns ["*"] (not [])
+	// for a key with no IP restriction — NormalizeWhitelistedIPs maps both to nil/NULL.
+	normalizedIPs := trader.NormalizeWhitelistedIPs(parsed.IPs)
 	_, _ = s.pool.Exec(r.Context(),
 		`UPDATE exchange_accounts SET whitelisted_ips=$1 WHERE id=$2 AND owner_id=$3`,
-		parsed.IPs, id, userID)
+		normalizedIPs, id, userID)
 	var proxyHost string
 	if s.proxyManager != nil {
 		proxyHost = s.proxyManager.LastPickedHost()

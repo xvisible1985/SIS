@@ -191,6 +191,27 @@ func TestPickForIPs_EmptyAllowedBehavesLikePick(t *testing.T) {
 	}
 }
 
+// Regression (2026-08-13): Bybit's GET /v5/user/query-api returns ips=["*"], not [],
+// for a key with no IP restriction. Two live accounts got whitelisted_ips={*} persisted
+// verbatim, after which PickForIPs searched for a proxy host literally equal to "*" and
+// always returned ErrNoWhitelistedProxy — accounts permanently unable to route anything.
+// Callers now normalize before calling (trader.NormalizeWhitelistedIPs), but PickForIPs
+// treats a literal ["*"] the same as nil/[] too, as defense in depth.
+func TestPickForIPs_WildcardAllowedBehavesLikePick(t *testing.T) {
+	m := &Manager{
+		proxies: []*Proxy{
+			{ID: 1, URL: mustURL("http://proxy1.example.com:3128"), Weight: 1, IsActive: true, status: "healthy"},
+		},
+	}
+	p, err := m.PickForIPs([]string{"*"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p == nil {
+		t.Fatal("expected a proxy, got nil")
+	}
+}
+
 func TestPickForIPs_FiltersToAllowedHost(t *testing.T) {
 	p1 := &Proxy{ID: 1, URL: mustURL("http://10.0.0.1:3128"), Weight: 1, IsActive: true, status: "healthy"}
 	p2 := &Proxy{ID: 2, URL: mustURL("http://10.0.0.2:3128"), Weight: 1, IsActive: true, status: "healthy"}

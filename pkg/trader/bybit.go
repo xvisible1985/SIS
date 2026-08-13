@@ -907,6 +907,23 @@ func SwitchPositionMode(ctx context.Context, creds Credentials, category, symbol
 }
 
 // QueryAPI calls /v5/user/query-api and returns the raw result JSON.
+// NormalizeWhitelistedIPs interprets the "ips" field from Bybit's GET /v5/user/query-api
+// response for storage/routing purposes. An API key with no IP restriction returns
+// ["*"] (a literal wildcard entry), not an empty array — found live (2026-08-13) when
+// two accounts got whitelisted_ips={*} persisted verbatim, after which PickForIPs could
+// never find a proxy whose host equals the literal string "*" and every request failed
+// with ErrNoWhitelistedProxy. Both ["*"] and [] mean "no restriction" → nil, matching the
+// existing NULL/empty semantics used everywhere else in the whitelist-routing code.
+func NormalizeWhitelistedIPs(ips []string) []string {
+	if len(ips) == 0 {
+		return nil
+	}
+	if len(ips) == 1 && ips[0] == "*" {
+		return nil
+	}
+	return ips
+}
+
 func QueryAPI(ctx context.Context, creds Credentials) (json.RawMessage, error) {
 	data, err := doSignedGET(ctx, creds, "/v5/user/query-api", "")
 	if err != nil {

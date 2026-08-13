@@ -173,6 +173,13 @@ func (m *Manager) Pick() *Proxy {
 // with zero matching candidates returns (nil, ErrNoWhitelistedProxy) — the caller must
 // not send the request through an unlisted IP.
 func (m *Manager) PickForIPs(allowedIPs []string) (*Proxy, error) {
+	// Bybit represents "no IP restriction" as ["*"], not []. Callers are expected to
+	// normalize before this ever gets called (see trader.NormalizeWhitelistedIPs), but
+	// treat it the same way here too — a literal "*" should never make PickForIPs
+	// search for a proxy host equal to the string "*" and always fail.
+	if len(allowedIPs) == 1 && allowedIPs[0] == "*" {
+		allowedIPs = nil
+	}
 	if len(allowedIPs) == 0 {
 		return m.Pick(), nil
 	}

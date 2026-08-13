@@ -155,15 +155,19 @@ func (s *Syncer) refreshWhitelistedIPs(ctx context.Context, a *accountRow, creds
 		log.Printf("syncer: parse whitelist account=%s: %v", a.id, err)
 		return
 	}
+	// Bybit returns ["*"] (not []) for a key with no IP restriction — normalize both to
+	// nil/NULL so PickForIPs treats them identically as "no restriction", instead of
+	// searching for a proxy whose host is literally "*" and never finding one.
+	ips := NormalizeWhitelistedIPs(parsed.IPs)
 	if _, err := s.pool.Exec(ctx,
 		`UPDATE exchange_accounts SET whitelisted_ips=$1 WHERE id=$2`,
-		parsed.IPs, a.id,
+		ips, a.id,
 	); err != nil {
 		log.Printf("syncer: persist whitelist account=%s: %v", a.id, err)
 		return
 	}
-	a.whitelistedIPs = parsed.IPs
-	creds.WhitelistedIPs = parsed.IPs
+	a.whitelistedIPs = ips
+	creds.WhitelistedIPs = ips
 }
 
 func (s *Syncer) syncExecutions(ctx context.Context, a accountRow, creds Credentials) {

@@ -36,6 +36,36 @@ func TestIsPermanentAuthError(t *testing.T) {
 	}
 }
 
+// Regression (2026-08-13): Bybit's GET /v5/user/query-api returns ips=["*"] (not [])
+// for a key with no IP restriction. Storing that verbatim in whitelisted_ips made
+// PickForIPs search for a proxy host literally equal to "*" — never found, so the
+// account could never route anything and VerifyAccount/Syncer could not self-correct.
+func TestNormalizeWhitelistedIPs(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"nil — already unrestricted", nil, nil},
+		{"empty — unrestricted", []string{}, nil},
+		{"wildcard — unrestricted", []string{"*"}, nil},
+		{"real IPs — pass through", []string{"1.2.3.4", "5.6.7.8"}, []string{"1.2.3.4", "5.6.7.8"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := NormalizeWhitelistedIPs(c.in)
+			if len(got) != len(c.want) {
+				t.Fatalf("NormalizeWhitelistedIPs(%v) = %v, want %v", c.in, got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Fatalf("NormalizeWhitelistedIPs(%v) = %v, want %v", c.in, got, c.want)
+				}
+			}
+		})
+	}
+}
+
 func TestSign(t *testing.T) {
 	got := sign("1000", "APIKEY", "SECRET", "10000", "symbol=BTCUSDT")
 	if got == "" {
