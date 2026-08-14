@@ -210,24 +210,36 @@ func accumulateMatrixLevelSLPnlNow(ctx context.Context, pool *pgxpool.Pool, in M
 // it — observed in production always 0 or NULL, even for accounts genuinely holding
 // simultaneous long+short positions on the same symbol (Bybit hedge mode). A prior
 // position_idx = 1/2 filter here never matched real rows, silently summing to zero for
-// every automatic TP/SL close. Matches the same account+symbol+time-only pattern
-// services/api-gateway/closed_pnl_syncer.go's manual-close fee lookup already uses
-// successfully. Trade-off: if both legs of a hedge/matrix pair generate fee-bearing
-// executions on the same symbol within the same narrow time window, this can't
-// distinguish which leg a given execution belongs to — accepted as strictly better than
-// the prior always-zero behavior.
-func feesAndFundingInRange(ctx context.Context, pool *pgxpool.Pool, accountID, symbol string, from, to time.Time) (fees, funding float64) {
+// every automatic TP/SL close.
+//
+// stratID8 is this strategy's ID prefix (matches the "SIS_STR-{id8}-..." order-link-id
+// convention every order-placement call site uses — see pkg/strategy/cycle.go/matrix.go).
+// Trade executions are excluded when their order_link_id is tagged as belonging to a
+// DIFFERENT SIS_STR strategy — the concurrent-legs case (a matrix/hedge pair's two legs,
+// or two unrelated bots, trading the same symbol at overlapping times) where the blunt
+// account+symbol+time query would otherwise double-count or cross-attribute a fee that
+// really belongs to the other leg's cycle close. Anything NOT tagged as ours (manual
+// fills, no link at all) is still included — fail-open, same as before, since we can't
+// prove it belongs to someone else. Funding executions never carry an order_link_id at
+// all (Bybit ties funding to the position, not an order), so this filter is a no-op for
+// them — funding keeps the old account+symbol+time-only behavior, same trade-off as
+// before, accepted as strictly better than the prior always-zero regression.
+func feesAndFundingInRange(ctx context.Context, pool *pgxpool.Pool, accountID, symbol, stratID8 string, from, to time.Time) (fees, funding float64) {
+	notOthers := "(order_link_id LIKE $5 OR order_link_id NOT LIKE 'SIS_STR-%' OR order_link_id IS NULL)"
+	linkPrefix := "SIS_STR-" + stratID8 + "-%"
 	pool.QueryRow(ctx, //nolint:errcheck
 		`SELECT COALESCE(SUM(ABS(exec_fee)), 0)
 		 FROM trader_executions
-		 WHERE account_id = $1 AND symbol = $2 AND exec_type = 'Trade' AND exec_time BETWEEN $3 AND $4`,
-		accountID, symbol, from, to,
+		 WHERE account_id = $1 AND symbol = $2 AND exec_type = 'Trade' AND exec_time BETWEEN $3 AND $4
+		   AND `+notOthers,
+		accountID, symbol, from, to, linkPrefix,
 	).Scan(&fees)
 	pool.QueryRow(ctx, //nolint:errcheck
 		`SELECT COALESCE(SUM(ABS(exec_fee)), 0)
 		 FROM trader_executions
-		 WHERE account_id = $1 AND symbol = $2 AND exec_type = 'Funding' AND exec_time BETWEEN $3 AND $4`,
-		accountID, symbol, from, to,
+		 WHERE account_id = $1 AND symbol = $2 AND exec_type = 'Funding' AND exec_time BETWEEN $3 AND $4
+		   AND `+notOthers,
+		accountID, symbol, from, to, linkPrefix,
 	).Scan(&funding)
 	return
 }
@@ -340,7 +352,7 @@ func RecordStrategyTrade(pool *pgxpool.Pool, creds trader.Credentials, in TradeR
 
 	// ── 4/5. Fees + funding (Trade/Funding executions) by time range ───────────
 	closedAt := time.Now()
-	fees, funding := feesAndFundingInRange(ctx, pool, in.Strategy.AccountID, in.Strategy.Symbol, in.StartedAt, closedAt)
+	fees, funding := feesAndFundingInRange(ctx, pool, in.Strategy.AccountID, in.Strategy.Symbol, in.Strategy.ID[:8], in.StartedAt, closedAt)
 
 	// ── 6. Fix result attribution ─────────────────────────────────────────────
 	// If cycle was ghost_close but our TP order is the one that fired → "tp".
