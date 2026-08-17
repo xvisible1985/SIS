@@ -249,6 +249,38 @@ func TestMatrixTPIsAdverse(t *testing.T) {
 	}
 }
 
+// matrixTPCrossed decides LIMIT vs STOP for the TP order matrixUpdateTP actually places —
+// distinct from matrixTPIsAdverse (which only tracks ТВХ crossing, used to pick the
+// governing level). Regression for the production incident: ALLOUSDT short sat with price
+// between ТВХ and tpPrice — already "favorable" per matrixTPIsAdverse, but not yet at the
+// TP target — for 2.5 days, during which matrixUpdateTP kept computing a STOP trigger price
+// on the wrong side of current price and Bybit rejected it every tick (110092).
+func TestMatrixTPCrossed(t *testing.T) {
+	if !matrixTPCrossed(DirectionLong, 101.0, 100.0) {
+		t.Error("long: price at/above tpPrice should be crossed (STOP path)")
+	}
+	if matrixTPCrossed(DirectionLong, 99.0, 100.0) {
+		t.Error("long: price below tpPrice should not be crossed (LIMIT path)")
+	}
+	if !matrixTPCrossed(DirectionShort, 99.0, 100.0) {
+		t.Error("short: price at/below tpPrice should be crossed (STOP path)")
+	}
+	if matrixTPCrossed(DirectionShort, 101.0, 100.0) {
+		t.Error("short: price above tpPrice should not be crossed (LIMIT path)")
+	}
+
+	// The incident gap: short, ТВХ=100 (avgEntryPrice), tpPrice=98 (2% favorable target),
+	// price=99 — already past ТВХ into profit (matrixTPIsAdverse says "favorable"), but
+	// short of tpPrice itself. matrixTPCrossed must say "not crossed" here so
+	// matrixUpdateTP takes the LIMIT path instead of computing an invalid STOP trigger.
+	if matrixTPIsAdverse(DirectionShort, 99.0, 100.0) {
+		t.Fatal("test setup: price=99 vs ТВХ=100 must read as favorable for this scenario to reproduce the incident")
+	}
+	if matrixTPCrossed(DirectionShort, 99.0, 98.0) {
+		t.Error("short: price=99 has not reached tpPrice=98 yet — must not be crossed, else matrixUpdateTP tries an invalid STOP trigger (production incident: 110092 for 2.5 days)")
+	}
+}
+
 // matrixMostFavorableFill is the mirror of matrixLatestActiveFill, used once price has
 // crossed to the favorable side of ТВХ (see TestMatrixTPIsAdverse).
 func TestMatrixMostFavorableFill_Long(t *testing.T) {

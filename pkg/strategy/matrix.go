@@ -1283,6 +1283,22 @@ func matrixTPIsAdverse(dir Direction, markPrice, avgEntryPrice float64) bool {
 	return markPrice < avgEntryPrice
 }
 
+// matrixTPCrossed reports whether the market has already reached/passed tpPrice itself —
+// used by matrixUpdateTP to decide LIMIT vs reduce-only STOP. This is deliberately NOT the
+// same check as matrixTPIsAdverse (which only compares against ТВХ/avgEntryPrice): price can
+// sit in the gap between ТВХ and tpPrice — already past entry into profit, but short of the
+// TP target — where a LIMIT order is still safe and correct. Using matrixTPIsAdverse there
+// instead would force the STOP branch with a trigger price on the wrong side of current
+// price, which Bybit rejects every tick (110092: "expect Rising/Falling, but
+// trigger_price <=/>= current") until price happens to cross one boundary or the other —
+// this left a matrix short cycle with zero working TP/SL for 2.5 days in production.
+func matrixTPCrossed(dir Direction, markPrice, tpPrice float64) bool {
+	if dir == DirectionLong {
+		return markPrice >= tpPrice
+	}
+	return markPrice <= tpPrice
+}
+
 // handleMatrixLevelFill is the matrix-specific handler called when a level fill event arrives
 // for a strategy_type="matrix" strategy.
 // Must be called with sr.mu held.
@@ -1585,10 +1601,12 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	// display detail traded for correct close attribution.
 	linkID := fmt.Sprintf("SIS_STR-%s-tp-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, sr.tpPlaceSeq)
 
+	tpAlreadyCrossed := matrixTPCrossed(sr.strategy.Direction, sr.lastMatrixPrice, tpPrice)
+
 	var result trader.OrderResult
 	var err error
 	kindLabel := "TP"
-	if adverse {
+	if !tpAlreadyCrossed {
 		result, err = sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
 			Symbol:      sr.strategy.Symbol,
 			Category:    sr.strategy.Category,
