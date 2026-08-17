@@ -17,6 +17,19 @@ type accountRow struct {
 	IsActive  bool       `json:"is_active"`
 	CreatedAt time.Time  `json:"created_at"`
 	ExpiresAt *time.Time `json:"expires_at"`
+
+	// Risk guardrails — configurable via PATCH /accounts/{id}/risk-settings, enforced by
+	// pkg/strategy's risk-monitor loop and placeMatrixLevel's risk gate.
+	MarginWarnPct        float64 `json:"margin_warn_pct"`
+	MarginPausePct       float64 `json:"margin_pause_pct"`
+	MaxSymbolNotionalPct float64 `json:"max_symbol_notional_pct"`
+
+	// Live risk snapshot from the running AccountRunner, if one exists for this account
+	// right now (nil fields when the engine hasn't loaded this account, e.g. inactive).
+	CurrentMMRatePct *float64   `json:"current_mm_rate_pct,omitempty"`
+	CurrentEquity    *float64   `json:"current_equity,omitempty"`
+	RiskPaused       *bool      `json:"risk_paused,omitempty"`
+	RiskUpdatedAt    *time.Time `json:"risk_updated_at,omitempty"`
 }
 
 // ListAccounts returns exchange accounts for the authenticated user (no keys).
@@ -24,7 +37,8 @@ type accountRow struct {
 func (s *Server) ListAccounts(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	rows, err := s.pool.Query(r.Context(),
-		`SELECT id, exchange, label, is_active, created_at, expires_at
+		`SELECT id, exchange, label, is_active, created_at, expires_at,
+		        margin_warn_pct, margin_pause_pct, max_symbol_notional_pct
 		 FROM exchange_accounts WHERE owner_id=$1 ORDER BY created_at DESC`, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
@@ -34,13 +48,63 @@ func (s *Server) ListAccounts(w http.ResponseWriter, r *http.Request) {
 	result := make([]accountRow, 0)
 	for rows.Next() {
 		var a accountRow
-		if err := rows.Scan(&a.ID, &a.Exchange, &a.Label, &a.IsActive, &a.CreatedAt, &a.ExpiresAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.Exchange, &a.Label, &a.IsActive, &a.CreatedAt, &a.ExpiresAt,
+			&a.MarginWarnPct, &a.MarginPausePct, &a.MaxSymbolNotionalPct); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan error")
 			return
+		}
+		if ar := s.engine.GetAccountRunner(a.ID); ar != nil {
+			equity, mmRate, paused, updatedAt := ar.RiskSnapshot()
+			if !updatedAt.IsZero() {
+				a.CurrentMMRatePct = &mmRate
+				a.CurrentEquity = &equity
+				a.RiskPaused = &paused
+				a.RiskUpdatedAt = &updatedAt
+			}
 		}
 		result = append(result, a)
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// PatchAccountRiskSettings updates the configurable risk thresholds for an account.
+// PATCH /accounts/{id}/risk-settings
+func (s *Server) PatchAccountRiskSettings(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	id := chi.URLParam(r, "id")
+	var req struct {
+		MarginWarnPct        float64 `json:"margin_warn_pct"`
+		MarginPausePct       float64 `json:"margin_pause_pct"`
+		MaxSymbolNotionalPct float64 `json:"max_symbol_notional_pct"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.MarginWarnPct < 0 || req.MarginWarnPct > 100 ||
+		req.MarginPausePct < 0 || req.MarginPausePct > 100 ||
+		req.MaxSymbolNotionalPct <= 0 || req.MaxSymbolNotionalPct > 100 {
+		writeError(w, http.StatusBadRequest, "thresholds must be within 0-100 (max_symbol_notional_pct > 0)")
+		return
+	}
+	if req.MarginPausePct < req.MarginWarnPct {
+		writeError(w, http.StatusBadRequest, "margin_pause_pct must be >= margin_warn_pct")
+		return
+	}
+	tag, err := s.pool.Exec(r.Context(),
+		`UPDATE exchange_accounts
+		 SET margin_warn_pct=$1, margin_pause_pct=$2, max_symbol_notional_pct=$3
+		 WHERE id=$4 AND owner_id=$5`,
+		req.MarginWarnPct, req.MarginPausePct, req.MaxSymbolNotionalPct, id, userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // CreateAccount encrypts and stores a new exchange account.

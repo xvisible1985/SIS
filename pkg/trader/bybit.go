@@ -876,6 +876,45 @@ func GetWalletBalance(ctx context.Context, creds Credentials) (equity, available
 	return equity, available, nil
 }
 
+// GetAccountMarginInfo returns equity and Bybit's own account maintenance-margin rate
+// (accountMMRate), expressed as a 0-100 percentage — the same signal Bybit itself uses to
+// decide liquidation, so no need to reconstruct it from positions ourselves. Used by the
+// risk-monitor loop (pkg/strategy/engine.go) to warn/pause before the exchange liquidates.
+// Tries UNIFIED account first, then CONTRACT (classic accounts don't report accountMMRate,
+// mmRatePct stays 0 in that case).
+func GetAccountMarginInfo(ctx context.Context, creds Credentials) (equity, available, mmRatePct float64, err error) {
+	for _, accType := range []string{"UNIFIED", "CONTRACT"} {
+		data, e := doSignedGET(ctx, creds, "/v5/account/wallet-balance", "accountType="+accType)
+		if e != nil {
+			continue
+		}
+		if e := checkRetCode(data); e != nil {
+			continue
+		}
+		var r struct {
+			Result struct {
+				List []struct {
+					TotalEquity           string `json:"totalEquity"`
+					TotalAvailableBalance string `json:"totalAvailableBalance"`
+					AccountMMRate         string `json:"accountMMRate"`
+				} `json:"list"`
+			} `json:"result"`
+		}
+		if e := json.Unmarshal(data, &r); e != nil || len(r.Result.List) == 0 {
+			continue
+		}
+		fmt.Sscanf(r.Result.List[0].TotalEquity, "%f", &equity)
+		fmt.Sscanf(r.Result.List[0].TotalAvailableBalance, "%f", &available)
+		var mmRate float64
+		fmt.Sscanf(r.Result.List[0].AccountMMRate, "%f", &mmRate)
+		mmRatePct = mmRate * 100
+		if equity > 0 {
+			return equity, available, mmRatePct, nil
+		}
+	}
+	return equity, available, mmRatePct, nil
+}
+
 // SwitchPositionMode switches between one-way (mode=0) and hedge (mode=3) for a symbol.
 func SwitchPositionMode(ctx context.Context, creds Credentials, category, symbol string, mode int) error {
 	body := map[string]any{

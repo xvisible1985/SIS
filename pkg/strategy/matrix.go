@@ -538,6 +538,23 @@ func (sr *StrategyRunner) placeMatrixLevel(ctx context.Context, l *GridLevel, cu
 		return nil
 	}
 
+	// Risk gate — account-wide margin pause and per-symbol notional cap (see risk.go).
+	// Only guards entry-ADDING orders (this function); TP/SL/reduce-only closes go
+	// through matrixUpdateTP/matrixPlacePerLevelSL instead and are never blocked here.
+	{
+		priceForNotional := l.TargetPrice
+		if priceForNotional == 0 {
+			priceForNotional = currentPrice
+		}
+		var qtyFloat float64
+		fmt.Sscanf(l.Qty, "%f", &qtyFloat)
+		gatePositionIdx := positionIdxForOpen(sr.strategy.HedgeMode, l.Side)
+		if allowed, reason := sr.runner.riskGate(sr.strategy.Symbol, gatePositionIdx, qtyFloat*priceForNotional); !allowed {
+			sr.warn(ctx, fmt.Sprintf("Matrix %s: вход заблокирован (%s)", slotLabel(l.Slot), reason))
+			return nil
+		}
+	}
+
 	linkID := fmt.Sprintf("SIS_STR-%s-%d-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, sr.repriceGen)
 	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
 

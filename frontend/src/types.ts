@@ -120,6 +120,17 @@ export interface ExchangeAccount {
   is_active: boolean
   created_at: string
   expires_at?: string
+
+  // Risk guardrails — configurable, see AccountsPage's risk settings section.
+  margin_warn_pct: number
+  margin_pause_pct: number
+  max_symbol_notional_pct: number
+
+  // Live snapshot from the running engine, absent if the account isn't currently loaded.
+  current_mm_rate_pct?: number
+  current_equity?: number
+  risk_paused?: boolean
+  risk_updated_at?: string
 }
 
 // Job progress (WebSocket frame)

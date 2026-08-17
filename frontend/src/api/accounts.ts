@@ -59,3 +59,13 @@ export async function toggleAccountActive(id: string): Promise<ExchangeAccount> 
   const res = await apiClient.patch<ExchangeAccount>(`/accounts/${id}/active`)
   return res.data
 }
+
+export interface RiskSettingsInput {
+  margin_warn_pct: number
+  margin_pause_pct: number
+  max_symbol_notional_pct: number
+}
+
+export async function patchAccountRiskSettings(id: string, data: RiskSettingsInput): Promise<void> {
+  await apiClient.patch(`/accounts/${id}/risk-settings`, data)
+}

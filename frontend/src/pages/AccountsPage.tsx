@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo, useCallback, type CSSProperties } from 'react'
 import {
   listAccounts, createAccount, deleteAccount,
-  verifyAccount, getAccountBalance, toggleAccountActive,
-  type VerifyResult, type BalanceResult,
+  verifyAccount, getAccountBalance, toggleAccountActive, patchAccountRiskSettings,
+  type VerifyResult, type BalanceResult, type RiskSettingsInput,
 } from '../api/accounts'
 import type { ExchangeAccount } from '../types'
 
@@ -239,9 +239,146 @@ interface KeyCardProps {
   onDelete: () => void
   onRotate: () => void
   onPause: () => void
+  onSaveRisk: (values: RiskSettingsInput) => Promise<void>
 }
 
-function KeyCard({ acc, balance, verify, latency, expanded, testing, onToggle, onTest, onDelete, onRotate, onPause }: KeyCardProps) {
+/* ─── RiskSettingsSection ────────────────────────────────────────────────── */
+function InfoTip({ text }: { text: string }) {
+  const [show, setShow] = useState(false)
+  return (
+    <span
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+      style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', cursor: 'help' }}
+    >
+      <span style={{
+        width: 13, height: 13, borderRadius: '50%', background: 'rgba(255,255,255,.08)',
+        border: `1px solid ${T.border}`, color: T.dim, fontSize: 9, fontWeight: 700,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
+      }}>?</span>
+      {show && (
+        <span style={{
+          position: 'absolute', bottom: '140%', left: '50%', transform: 'translateX(-50%)',
+          width: 230, padding: '8px 10px', background: '#11161f', border: `1px solid ${T.border}`,
+          borderRadius: 8, fontSize: 11, fontWeight: 400, color: T.body, lineHeight: 1.5,
+          boxShadow: '0 8px 24px -8px rgba(0,0,0,.6)', zIndex: 200, whiteSpace: 'normal',
+        }}>
+          {text}
+        </span>
+      )}
+    </span>
+  )
+}
+
+function RiskField({ label, tip, value, onChange }: { label: string; tip: string; value: number; onChange: (v: number) => void }) {
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
+        <span style={{ fontSize: 10, color: T.dim }}>{label}</span>
+        <InfoTip text={tip} />
+      </div>
+      <input
+        type="number" min={0} max={100} step={1}
+        value={value}
+        onChange={e => onChange(Number(e.target.value))}
+        style={{
+          width: '100%', background: '#0e1320', color: T.text,
+          border: `1px solid ${T.border}`, borderRadius: 8, padding: '7px 10px',
+          fontSize: 12, fontFamily: 'inherit', outline: 'none', colorScheme: 'dark',
+        }}
+      />
+    </div>
+  )
+}
+
+function RiskSettingsSection({ acc, onSave }: { acc: ExchangeAccount; onSave: (values: RiskSettingsInput) => Promise<void> }) {
+  const [warnPct, setWarnPct]         = useState(acc.margin_warn_pct)
+  const [pausePct, setPausePct]       = useState(acc.margin_pause_pct)
+  const [notionalPct, setNotionalPct] = useState(acc.max_symbol_notional_pct)
+  const [saving, setSaving]           = useState(false)
+
+  useEffect(() => {
+    setWarnPct(acc.margin_warn_pct)
+    setPausePct(acc.margin_pause_pct)
+    setNotionalPct(acc.max_symbol_notional_pct)
+  }, [acc.margin_warn_pct, acc.margin_pause_pct, acc.max_symbol_notional_pct])
+
+  const dirty = warnPct !== acc.margin_warn_pct || pausePct !== acc.margin_pause_pct || notionalPct !== acc.max_symbol_notional_pct
+  const invalid = pausePct < warnPct || notionalPct <= 0
+
+  async function handleSave() {
+    if (invalid) return
+    setSaving(true)
+    try {
+      await onSave({ margin_warn_pct: warnPct, margin_pause_pct: pausePct, max_symbol_notional_pct: notionalPct })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const mmRate = acc.current_mm_rate_pct
+  const paused = acc.risk_paused
+  const mmColor = mmRate == null ? T.dim : mmRate >= pausePct ? T.red : mmRate >= warnPct ? T.orange : T.green
+
+  return (
+    <div style={{
+      marginTop: 14, padding: '12px 14px',
+      background: 'rgba(0,0,0,.2)', border: `1px solid ${T.border}`, borderRadius: 10,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+        <IcShield s={14} c={T.dim} w={2} />
+        <span style={{ fontSize: 10, color: T.dim, textTransform: 'uppercase', letterSpacing: 1.2, fontWeight: 600 }}>
+          Риск-настройки
+        </span>
+        {mmRate != null && (
+          <span style={{
+            marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6,
+            fontSize: 11, fontWeight: 700, color: mmColor,
+          }}>
+            {paused && <IcAlert s={11} c={T.red} w={2.2} />}
+            margin ratio: {mmRate.toFixed(1)}%
+            {paused && ' · вход приостановлен'}
+          </span>
+        )}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+        <RiskField
+          label="Предупреждение, % margin ratio"
+          tip="Порог margin ratio биржи (accountMMRate), при достижении которого в лог пишется предупреждение. Ничего не блокирует — это ранний сигнал, что счёт приближается к риску ликвидации. Также порог, ниже которого должна опуститься margin ratio, чтобы автоматически снять паузу входов (см. «Пауза входов»)."
+          value={warnPct} onChange={setWarnPct}
+        />
+        <RiskField
+          label="Пауза входов, % margin ratio"
+          tip="Порог margin ratio, при достижении которого движок перестаёт открывать НОВЫЕ уровни (DCA-входы) по всем стратегиям на этом аккаунте — до тех пор, пока margin ratio не опустится ниже порога «Предупреждение». Уже открытые позиции, а также их TP/SL не трогает и не закрывает."
+          value={pausePct} onChange={setPausePct}
+        />
+        <RiskField
+          label="Лимит на монету, % от equity"
+          tip="Максимальный суммарный объём (notional) позиции по одной монете — сложенный по ВСЕМ стратегиям на этот символ на аккаунте — относительно текущего equity. При превышении новые входы по этой монете блокируются, пока объём не сократится. Не влияет на закрытие/TP/SL."
+          value={notionalPct} onChange={setNotionalPct}
+        />
+      </div>
+      {invalid && (
+        <div style={{ marginTop: 8, fontSize: 11, color: T.orange }}>
+          «Пауза» должна быть ≥ «Предупреждения», лимит на монету должен быть больше 0
+        </div>
+      )}
+      <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end' }}>
+        <button onClick={handleSave} disabled={!dirty || invalid || saving} style={{
+          padding: '7px 14px',
+          background: dirty && !invalid ? 'linear-gradient(180deg, #4a7dff 0%, #3a67e6 100%)' : 'rgba(255,255,255,.04)',
+          color: dirty && !invalid ? '#fff' : T.dim, border: 0, borderRadius: 8,
+          fontSize: 12, fontWeight: 600, cursor: dirty && !invalid && !saving ? 'pointer' : 'not-allowed',
+          fontFamily: 'inherit', opacity: saving ? 0.6 : 1,
+        }}>
+          {saving ? 'Сохраняем…' : 'Сохранить'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function KeyCard({ acc, balance, verify, latency, expanded, testing, onToggle, onTest, onDelete, onRotate, onPause, onSaveRisk }: KeyCardProps) {
   const [tab, setTab] = useState<'activity' | 'audit' | 'bots'>('activity')
   const status = getStatus(acc, verify ?? undefined)
   const isErr  = status === 'error'
@@ -390,6 +527,8 @@ function KeyCard({ acc, balance, verify, latency, expanded, testing, onToggle, o
             <Detail label="IP whitelist" mono  value={ip ?? (verify ? 'не настроен' : '—')} accent={ip ? T.body : (verify ? T.orange : T.dim)} />
             <Detail label="Прокси"       mono  value={verify?.proxy_host || 'прямое соединение'} accent={verify?.proxy_host ? T.body : T.dim} />
           </div>
+
+          <RiskSettingsSection acc={acc} onSave={onSaveRisk} />
 
           {/* error block */}
           {isErr && (
@@ -1401,6 +1540,12 @@ export function AccountsPage() {
     }
   }
 
+  async function handleSaveRiskSettings(acc: ExchangeAccount, values: RiskSettingsInput) {
+    await patchAccountRiskSettings(acc.id, values)
+    setAccounts(prev => prev.map(a => a.id === acc.id ? { ...a, ...values } : a))
+    showToast({ kind: 'info', title: 'Риск-настройки сохранены', desc: `«${acc.label}»` })
+  }
+
   async function confirmDelete() {
     if (!modal || modal.type !== 'delete') return
     const acc = modal.acc
@@ -1497,6 +1642,7 @@ export function AccountsPage() {
                         onDelete={() => setModal({ type: 'delete', acc })}
                         onRotate={() => setModal({ type: 'rotate', acc })}
                         onPause={() => handleToggle(acc)}
+                        onSaveRisk={(values) => handleSaveRiskSettings(acc, values)}
                       />
                     ))}
                     {visible.length === 0 && (

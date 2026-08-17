@@ -824,6 +824,11 @@ type AccountRunner struct {
 	// the account only needs to be stopped once. Cleared on a successful reconnect so
 	// a later genuine failure (e.g. after the user rotates the key again) is handled.
 	authDead bool
+
+	// riskMu guards risk (see risk.go): equity/mmRate/thresholds refreshed periodically
+	// by runRiskMonitorLoop, read synchronously by placeMatrixLevel on every new entry.
+	riskMu sync.RWMutex
+	risk   accountRiskState
 }
 
 func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trader.Credentials, pool *pgxpool.Pool, signalEngine *signal.Engine, eng *Engine, cancel context.CancelFunc) *AccountRunner {
@@ -919,6 +924,7 @@ func (ar *AccountRunner) SnapshotOrderIndex() map[string]bool {
 func (ar *AccountRunner) run(ctx context.Context) {
 	go safeLoop(ctx, "tradeStream/"+ar.accountID, ar.tradeStream.Run)
 	go safeLoop(ctx, "reconcile/"+ar.accountID, ar.startReconcileLoop)
+	go safeLoop(ctx, "riskMonitor/"+ar.accountID, ar.runRiskMonitorLoop)
 	safeLoop(ctx, "privateStream/"+ar.accountID, func(ctx context.Context) {
 		trader.RunPrivateStream(ctx, ar.creds, ar)
 	})

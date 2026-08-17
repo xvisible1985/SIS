@@ -235,6 +235,7 @@ func main() {
 		r.Get("/accounts/{id}/balance", s.GetAccountBalance)
 		r.Get("/accounts/{id}/positions", s.GetAccountPositions)
 		r.Patch("/accounts/{id}/active", s.ToggleAccountActive)
+		r.Patch("/accounts/{id}/risk-settings", s.PatchAccountRiskSettings)
 
 		// Strategies
 		r.Get("/strategies", s.ListStrategies)
