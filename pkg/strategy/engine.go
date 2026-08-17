@@ -105,6 +105,62 @@ func (e *Engine) Start(ctx context.Context) {
 	// with no runner at all — e.g. a bot-created strategy whose one-shot, unretried
 	// Notify() call failed. See reconcileMissingRunners for the live incident this fixes.
 	go e.runReconcileMissingRunnersLoop(ctx)
+	// Safety net for ApplyUnappliedFunding's primary path (AccountRunner.OnExecutionEvent,
+	// which reacts within moments of Bybit's real-time WS "execution" push) — catches
+	// funding settlements the WS path missed during a disconnect/reconnect gap.
+	go e.runFundingReconcileLoop(ctx)
+}
+
+// fundingReconcileInterval bounds how stale accumulated_pnl's funding component can get
+// if the WS "execution" feed misses a settlement (disconnect, reconnect gap) — the
+// primary path (AccountRunner.OnExecutionEvent) applies funding within moments of the
+// real Bybit settlement, so this is a backstop, not the main channel.
+const fundingReconcileInterval = 4 * time.Hour
+
+// runFundingReconcileLoop periodically calls ApplyUnappliedFunding for every
+// account+symbol that currently has an active (paired) hedge_sessions row. Safe to run
+// concurrently with the WS-driven path — ApplyUnappliedFunding's atomic claim guarantees
+// each funding execution is applied exactly once regardless of which path gets there first.
+func (e *Engine) runFundingReconcileLoop(ctx context.Context) {
+	ticker := time.NewTicker(fundingReconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.reconcileFundingOnce(ctx)
+		}
+	}
+}
+
+func (e *Engine) reconcileFundingOnce(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("strategy: reconcileFundingOnce: panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	rows, err := e.pool.Query(ctx,
+		`SELECT DISTINCT s.account_id, s.symbol
+		 FROM hedge_sessions hs
+		 JOIN strategies s ON s.id = hs.main_strategy_id OR s.id = hs.hedge_strategy_id
+		 WHERE hs.ended_at IS NULL`)
+	if err != nil {
+		log.Printf("strategy: reconcileFundingOnce: query active pairs: %v", err)
+		return
+	}
+	type pair struct{ accountID, symbol string }
+	var pairs []pair
+	for rows.Next() {
+		var p pair
+		if rows.Scan(&p.accountID, &p.symbol) == nil {
+			pairs = append(pairs, p)
+		}
+	}
+	rows.Close()
+	for _, p := range pairs {
+		ApplyUnappliedFunding(ctx, e.pool, p.accountID, p.symbol)
+	}
 }
 
 // Notify reloads a strategy from DB after a REST update (status change or param edit).
@@ -1219,6 +1275,47 @@ func (ar *AccountRunner) OnOrderEvent(ev trader.OrderEvent) {
 		levelID := ref.levelID
 		sr.submit(func(ctx context.Context) { sr.handleMatrixSLFill(ctx, levelID, fillPrice) })
 	}
+}
+
+// OnExecutionEvent implements trader.PrivateStreamHandler. Only Funding executions are
+// acted on here — Trade executions are still driven entirely by OnOrderEvent/
+// OnPositionEvent's fill handling, which already has richer per-strategy context
+// (cycle, level) this generic execution feed doesn't carry.
+//
+// Funding is the one thing Bybit only tells us about at the account+symbol level, tied
+// to no order — this is the sole real-time signal for it. Persists the execution (same
+// upsert the REST syncer uses, so whichever of the two sees a given exec_id first wins —
+// harmless either way) and immediately tries to apply any unclaimed funding for this
+// symbol into the active pair's accumulated_pnl, if one exists right now. See
+// ApplyUnappliedFunding's doc comment for the full picture (why per-cycle net_pnl no
+// longer includes funding at all, and why the periodic runFundingReconcileLoop exists
+// as a backstop for whatever a WS disconnect causes this path to miss).
+func (ar *AccountRunner) OnExecutionEvent(ev trader.Execution) {
+	if ev.ExecType != "Funding" {
+		return
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("strategy: OnExecutionEvent funding: panic: %v\n%s", r, debug.Stack())
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		var ownerID, exchange string
+		if err := ar.pool.QueryRow(ctx,
+			`SELECT owner_id, exchange FROM exchange_accounts WHERE id = $1`, ar.accountID,
+		).Scan(&ownerID, &exchange); err != nil {
+			log.Printf("strategy: OnExecutionEvent funding: owner lookup account=%s: %v", ar.accountID, err)
+			return
+		}
+		if err := trader.UpsertExecution(ctx, ar.pool, ownerID, ar.accountID, exchange, ev.Category, ev); err != nil {
+			log.Printf("strategy: OnExecutionEvent funding: upsert exec=%s: %v", ev.ExecId, err)
+			return
+		}
+		ApplyUnappliedFunding(ctx, ar.pool, ar.accountID, ev.Symbol)
+	}()
 }
 
 // OnConnected implements trader.PrivateStreamHandler.

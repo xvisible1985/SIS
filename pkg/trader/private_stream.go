@@ -45,6 +45,11 @@ type PositionEvent struct {
 type PrivateStreamHandler interface {
 	OnOrderEvent(ev OrderEvent)
 	OnPositionEvent(ev PositionEvent)
+	// OnExecutionEvent fires for every fill on the "execution" topic, including
+	// execType="Funding" — Bybit settles funding directly against the position (not an
+	// order), so this is the only push-based signal for it. Reuses the REST Execution
+	// type (pkg/trader/types.go) — the WS payload shares its field names.
+	OnExecutionEvent(ev Execution)
 	OnConnected()
 	OnDisconnected(err error)
 }
@@ -136,7 +141,7 @@ func runPrivateOnce(ctx context.Context, creds Credentials, handler PrivateStrea
 				if ok, _ := raw["success"].(bool); ok && !subscribed {
 					sub, _ := json.Marshal(map[string]any{
 						"op":   "subscribe",
-						"args": []string{"order", "position"},
+						"args": []string{"order", "position", "execution"},
 					})
 					conn.WriteMessage(websocket.TextMessage, sub) //nolint:errcheck
 					subscribed = true
@@ -169,6 +174,14 @@ func runPrivateOnce(ctx context.Context, creds Credentials, handler PrivateStrea
 						var ev PositionEvent
 						if json.Unmarshal(b, &ev) == nil {
 							handler.OnPositionEvent(ev)
+						}
+					}
+				case "execution":
+					for _, item := range items {
+						b, _ := json.Marshal(item)
+						var ev Execution
+						if json.Unmarshal(b, &ev) == nil {
+							handler.OnExecutionEvent(ev)
 						}
 					}
 				}

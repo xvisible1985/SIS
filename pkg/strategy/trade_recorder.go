@@ -159,6 +159,102 @@ func AccumulateHedgeSessionPnl(ctx context.Context, pool *pgxpool.Pool, stratID 
 	}
 }
 
+// ApplyUnappliedFunding claims every not-yet-applied Funding execution recorded for
+// account+symbol (trader_executions.applied_to_session=false) and, if an active
+// (ended_at IS NULL) hedge_sessions pairing currently exists for that account+symbol,
+// feeds their total into it — same accumulated_pnl this bot's paired-close (incl.
+// breakeven) decision reads. If no pairing is active right now, the funding rows are
+// left unclaimed: a standalone (non-paired) strategy simply doesn't track funding in
+// accumulated_pnl, and a pairing that activates later can still pick up funding that
+// happened just before it did.
+//
+// Called from two places: AccountRunner.OnExecutionEvent (pkg/strategy/engine.go) reacts
+// within moments of the real Bybit funding settlement via the WS "execution" topic; a
+// periodic sweep (runFundingReconcileLoop) catches whatever the WS path missed during a
+// disconnect. Both share this one function, and the atomic claim (UPDATE ... WHERE
+// applied_to_session=false, inside the same transaction as the accumulate) guarantees
+// each execution is ever applied exactly once regardless of which path gets there first
+// or how many times either runs.
+//
+// Root cause this exists for (2026-08-14): feesAndFundingInRange's Funding sum has no
+// per-leg attribution at all (Bybit doesn't tie funding to an order — see its doc
+// comment) — two legs of a pair with overlapping close-time windows could each
+// independently re-sum the same funding executions into their own cycle's net_pnl,
+// inflating the pair's true cost. Funding is no longer part of per-cycle net_pnl at all
+// (see RecordStrategyTrade) — this is now the only path that feeds it into
+// accumulated_pnl, exactly once per execution, account+symbol-wide rather than
+// per-leg-guessed.
+func ApplyUnappliedFunding(ctx context.Context, pool *pgxpool.Pool, accountID, symbol string) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		log.Printf("ApplyUnappliedFunding %s/%s: begin: %v", accountID, symbol, err)
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			tx.Rollback(ctx) //nolint:errcheck
+		}
+	}()
+
+	var stratID string
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(hs.hedge_strategy_id::text, hs.main_strategy_id::text)
+		 FROM hedge_sessions hs
+		 JOIN strategies s ON s.id = hs.main_strategy_id OR s.id = hs.hedge_strategy_id
+		 WHERE hs.ended_at IS NULL AND s.account_id = $1 AND s.symbol = $2
+		 LIMIT 1`,
+		accountID, symbol,
+	).Scan(&stratID); err != nil || stratID == "" {
+		return // no active pair for this symbol right now — leave funding unclaimed
+	}
+
+	rows, err := tx.Query(ctx,
+		`UPDATE trader_executions SET applied_to_session = true
+		 WHERE account_id = $1 AND symbol = $2 AND exec_type = 'Funding' AND applied_to_session = false
+		 RETURNING exec_fee`,
+		accountID, symbol,
+	)
+	if err != nil {
+		log.Printf("ApplyUnappliedFunding %s/%s: claim: %v", accountID, symbol, err)
+		return
+	}
+	var total float64
+	for rows.Next() {
+		var fee float64
+		if rows.Scan(&fee) == nil {
+			total += fee
+		}
+	}
+	rows.Close()
+	if total == 0 {
+		if err := tx.Commit(ctx); err == nil {
+			committed = true
+		}
+		return
+	}
+
+	// Funding paid (positive exec_fee, Bybit convention) reduces PnL; funding received
+	// (negative exec_fee) adds to it — same sign as AccumulateHedgeSessionPnl's netPnl.
+	delta := -total
+	if _, err := tx.Exec(ctx,
+		`UPDATE hedge_sessions SET accumulated_pnl = accumulated_pnl + $1
+		 WHERE (main_strategy_id = $2 OR hedge_strategy_id = $2) AND ended_at IS NULL`,
+		delta, stratID,
+	); err != nil {
+		log.Printf("ApplyUnappliedFunding %s/%s: accumulate: %v", accountID, symbol, err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("ApplyUnappliedFunding %s/%s: commit: %v", accountID, symbol, err)
+		return
+	}
+	committed = true
+	if OnAccumulate != nil {
+		OnAccumulate(stratID, delta)
+	}
+}
+
 // MatrixLevelSLAccumulateInput carries the data needed to fee-adjust and accumulate one
 // per-level matrix SL close into hedge_sessions.accumulated_pnl.
 type MatrixLevelSLAccumulateInput struct {
@@ -367,7 +463,11 @@ func RecordStrategyTrade(pool *pgxpool.Pool, creds trader.Credentials, in TradeR
 	}
 
 	// ── 7. Derived metrics ────────────────────────────────────────────────────
-	netPnl := grossPnl - fees - funding
+	// funding is stored in its own column (below) but deliberately NOT subtracted here
+	// — see ApplyUnappliedFunding's doc comment for why per-cycle funding attribution
+	// can't be trusted for a paired (matrix/hedge) symbol. Funding now only reaches
+	// accumulated_pnl (the value paired-close/breakeven decisions read) via that path.
+	netPnl := grossPnl - fees
 	pnlPct := 0.0
 	if totalUSDT > 0 {
 		pnlPct = grossPnl / totalUSDT * 100

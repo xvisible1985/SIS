@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strconv"
 	"sync"
 	"time"
 
@@ -170,6 +169,31 @@ func (s *Syncer) refreshWhitelistedIPs(ctx context.Context, a *accountRow, creds
 	creds.WhitelistedIPs = ips
 }
 
+// UpsertExecution inserts one execution row into trader_executions, matching by
+// (account_id, exec_id) — a duplicate (the same exchange execution observed twice, e.g.
+// via both this REST syncer and the real-time WS "execution" topic — see
+// AccountRunner.OnExecutionEvent in pkg/strategy) is silently ignored.
+func UpsertExecution(ctx context.Context, pool *pgxpool.Pool, ownerID, accountID, exchange, category string, e Execution) error {
+	var execTimeMs int64
+	fmt.Sscanf(e.ExecTimeMs, "%d", &execTimeMs)
+	execTime := time.UnixMilli(execTimeMs)
+	_, err := pool.Exec(ctx, `
+		INSERT INTO trader_executions
+		  (owner_id, account_id, exec_id, order_id, order_link_id,
+		   exchange, symbol, category, side, exec_type,
+		   qty, price, exec_value, exec_fee, fee_rate, is_maker, exec_time,
+		   position_idx)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+		ON CONFLICT (account_id, exec_id) DO NOTHING`,
+		ownerID, accountID, e.ExecId, nullStr(e.OrderId), nullStr(e.OrderLinkId),
+		exchange, e.Symbol, category, nullStr(e.Side), e.ExecType,
+		nullNum(e.ExecQty), nullNum(e.ExecPrice), nullNum(e.ExecValue),
+		nullNum(e.ExecFee), nullNum(e.FeeRate), e.IsMaker, execTime,
+		e.PositionIdx,
+	)
+	return err
+}
+
 func (s *Syncer) syncExecutions(ctx context.Context, a accountRow, creds Credentials) {
 	since := time.Now().AddDate(0, 0, -s.syncDays)
 	for _, category := range []string{"linear", "inverse", "spot"} {
@@ -188,24 +212,7 @@ func (s *Syncer) syncExecutions(ctx context.Context, a accountRow, creds Credent
 					next = ""
 					break
 				}
-				isMaker := strconv.FormatBool(e.IsMaker)
-				_ = isMaker
-				posIdx := e.PositionIdx
-				_, err := s.pool.Exec(ctx, `
-					INSERT INTO trader_executions
-					  (owner_id, account_id, exec_id, order_id, order_link_id,
-					   exchange, symbol, category, side, exec_type,
-					   qty, price, exec_value, exec_fee, fee_rate, is_maker, exec_time,
-					   position_idx)
-					VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-					ON CONFLICT (account_id, exec_id) DO NOTHING`,
-					a.ownerID, a.id, e.ExecId, nullStr(e.OrderId), nullStr(e.OrderLinkId),
-					a.exchange, e.Symbol, category, nullStr(e.Side), e.ExecType,
-					nullNum(e.ExecQty), nullNum(e.ExecPrice), nullNum(e.ExecValue),
-					nullNum(e.ExecFee), nullNum(e.FeeRate), e.IsMaker, execTime,
-					posIdx,
-				)
-				if err != nil {
+				if err := UpsertExecution(ctx, s.pool, a.ownerID, a.id, a.exchange, category, e); err != nil {
 					log.Printf("syncer: upsert exec %s: %v", e.ExecId, err)
 				}
 			}
