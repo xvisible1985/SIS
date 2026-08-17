@@ -11,10 +11,36 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"sis/pkg/signal"
 	"sis/pkg/trader"
 )
+
+// ensureMatrixHedgeSession makes sure a hedge_sessions row exists for this matrix pair
+// (idempotent — matches the bootstrap pattern used for grid+matrix hedge pairs). long=main,
+// hedge=short by convention; GetHedgeSession sums whichever leg's own strategy_id is
+// requested using this row's started_at/end_reason as the accumulation window boundary.
+//
+// Always syncs main_strategy_id to the caller-supplied longID, not just when it was
+// previously NULL: createBotStrategy refuses to reuse a stopped strategy row with a still-
+// open cycle (would resurrect a stale cycle), so the long leg can get a brand-new
+// strategy_id after a restart while hedge_strategy_id (the short leg) stays the same. A
+// narrower guard (update only if NULL) left main_strategy_id pointing at the superseded
+// stopped strategy forever — GetHedgeSession looks up by the CURRENT main.id and found no
+// row, so the UI's "Накоплено матрикс" silently went blank even though this row kept
+// accumulating correctly via hedge_strategy_id. longID here is always the caller's current
+// tick's live main leg, so it's always safe to write.
+func ensureMatrixHedgeSession(ctx context.Context, pool *pgxpool.Pool, botID, longID, shortID string) error {
+	_, err := pool.Exec(ctx,
+		`INSERT INTO hedge_sessions (bot_id, main_strategy_id, hedge_strategy_id)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (hedge_strategy_id) WHERE ended_at IS NULL
+		 DO UPDATE SET main_strategy_id = EXCLUDED.main_strategy_id
+		 WHERE hedge_sessions.main_strategy_id IS DISTINCT FROM EXCLUDED.main_strategy_id`,
+		botID, longID, shortID)
+	return err
+}
 
 // processMatrixBot processes a single matrix bot for one tick:
 //  1. Checks existing strategy pairs for the paired-close condition.
@@ -233,18 +259,7 @@ func (s *Server) checkMatrixPairedClose(ctx context.Context, botID, accountID st
 		if p.longID == "" || p.shortID == "" {
 			continue
 		}
-		// Ensure a session row exists for this pair (idempotent — matches the
-		// hedge_sessions bootstrap pattern used for grid+matrix hedge pairs).
-		// long=main, short=hedge by convention; GetHedgeSession sums whichever
-		// leg's own strategy_id is requested using this row's started_at/end_reason
-		// as the accumulation window boundary.
-		s.pool.Exec(ctx, //nolint:errcheck
-			`INSERT INTO hedge_sessions (bot_id, main_strategy_id, hedge_strategy_id)
-			 VALUES ($1, $2, $3)
-			 ON CONFLICT (hedge_strategy_id) WHERE ended_at IS NULL
-			 DO UPDATE SET main_strategy_id = EXCLUDED.main_strategy_id
-			 WHERE hedge_sessions.main_strategy_id IS NULL`,
-			botID, p.longID, p.shortID)
+		ensureMatrixHedgeSession(ctx, s.pool, botID, p.longID, p.shortID) //nolint:errcheck
 
 		bySymbol, ok := posMap[sym]
 		if !ok {
