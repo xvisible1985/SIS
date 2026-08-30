@@ -277,8 +277,8 @@ func (m *Manager) UpdateProxy(ctx context.Context, id int, updates map[string]an
 	i++
 	args = append(args, id)
 
-	query := fmt.Sprintf("UPDATE proxies SET %s WHERE id = $%d", 
-		joinStrings(setParts, ", "), i-1)
+	query := fmt.Sprintf("UPDATE proxies SET %s WHERE id = $%d",
+		joinStrings(setParts, ", "), i)
 	_, err := m.db.Exec(ctx, query, args...)
 	if err != nil {
 		return err
