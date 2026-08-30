@@ -1,14 +1,12 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 import { SignalPreviewChart } from '../features/webhooks/SignalPreviewChart'
-import { apiClient } from '../api/client'
-
-vi.mock('../api/client', () => ({ apiClient: { get: vi.fn() } }))
+import { SIGNALS } from '../features/indicators/signals'
 
 // lightweight-charts needs real canvas/matchMedia/layout that jsdom doesn't provide (no
 // existing test in this repo exercises a chart component either — see SignalChartPage,
-// Chart.tsx). Stub it so we test this component's own logic (toggle/fetch/filter), not
-// the charting library's canvas internals.
+// Chart.tsx). Stub it so we test this component's own logic (fetch/cache on
+// activeSignal), not the charting library's canvas internals.
 vi.mock('lightweight-charts', () => ({
   createChart: vi.fn(() => ({
     addSeries: vi.fn(() => ({
@@ -24,46 +22,52 @@ vi.mock('lightweight-charts', () => ({
   ColorType: { Solid: 'solid' },
 }))
 
-beforeEach(() => {
-  vi.clearAllMocks()
-  vi.mocked(apiClient.get).mockImplementation((url: string) => {
-    if (url === '/admin/signal-types') return Promise.reject(new Error('forbidden'))
-    if (url === '/signal-types') return Promise.resolve({ data: [{ id: 'rsi-os', panel: 'signal' }] })
-    return Promise.reject(new Error('unexpected url ' + url))
-  })
-  // Bybit kline call fired once the panel is opened — return an empty candle list so the
-  // chart-creation effect completes without needing a real network round trip.
-  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-    ok: true,
-    json: () => Promise.resolve({ result: { list: [] } }),
-    text: () => Promise.resolve(''),
+const rsiSignal = SIGNALS.find(s => s.id === 'rsi-os')!
+
+function mockFetch() {
+  vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
+    if (url.includes('/signals/chart-history')) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ events: [{ time: 1000, state: 'buy', price: 100 }] }),
+        text: () => Promise.resolve(''),
+      })
+    }
+    // Bybit kline call fired by the chart-creation effect.
+    return Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ result: { list: [] } }),
+      text: () => Promise.resolve(''),
+    })
   }))
-})
+}
 
 afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-test('is collapsed by default — no chart/search mounted, no candle fetch fired', async () => {
-  render(<SignalPreviewChart />)
-  expect(screen.getByText('Просмотр на графике')).toBeInTheDocument()
-  expect(screen.queryByPlaceholderText('Поиск сигнала…')).not.toBeInTheDocument()
-  expect(global.fetch).not.toHaveBeenCalled()
+test('renders without a selected signal and does not fetch signal history', async () => {
+  mockFetch()
+  render(<SignalPreviewChart symbol="BTCUSDT" tf="15m" activeSignal={null} />)
+  await waitFor(() => expect(global.fetch).toHaveBeenCalled()) // candle fetch only
+  expect(global.fetch).not.toHaveBeenCalledWith(expect.stringContaining('/signals/chart-history'))
 })
 
-test('opening the panel shows the search box and the catalog card', async () => {
-  render(<SignalPreviewChart />)
-  fireEvent.click(screen.getByText('Просмотр на графике'))
-  await waitFor(() => expect(screen.getByPlaceholderText('Поиск сигнала…')).toBeInTheDocument())
-  await waitFor(() => expect(screen.getByText('RSI Oversold')).toBeInTheDocument())
+test('fetches and shows a loading indicator when a signal is selected', async () => {
+  mockFetch()
+  render(<SignalPreviewChart symbol="BTCUSDT" tf="15m" activeSignal={rsiSignal} />)
+  await waitFor(() =>
+    expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining('/signals/chart-history'), expect.anything())
+  )
 })
 
-test('search filters the signal cards', async () => {
-  render(<SignalPreviewChart />)
-  fireEvent.click(screen.getByText('Просмотр на графике'))
-  await waitFor(() => screen.getByText('RSI Oversold'))
-
-  fireEvent.change(screen.getByPlaceholderText('Поиск сигнала…'), { target: { value: 'nothing-matches-this' } })
-  await waitFor(() => expect(screen.getByText('Ничего не найдено')).toBeInTheDocument())
-  expect(screen.queryByText('RSI Oversold')).not.toBeInTheDocument()
+test('shows an error message when the signal history request fails', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
+    if (url.includes('/signals/chart-history')) {
+      return Promise.resolve({ ok: false, text: () => Promise.resolve('boom') })
+    }
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ result: { list: [] } }) })
+  }))
+  render(<SignalPreviewChart symbol="BTCUSDT" tf="15m" activeSignal={rsiSignal} />)
+  await waitFor(() => expect(screen.getByText('boom')).toBeInTheDocument())
 })

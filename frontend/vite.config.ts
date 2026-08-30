@@ -13,6 +13,7 @@ export default defineConfig({
       '/auth': { target: 'http://localhost:8081', changeOrigin: true },
       '/signals': { target: 'http://localhost:8081', changeOrigin: true },
       '/webhooks': { target: 'http://localhost:8081', changeOrigin: true },
+      '/custom-signals': { target: 'http://localhost:8081', changeOrigin: true },
       '/accounts': { target: 'http://localhost:8081', changeOrigin: true },
       '/strategies': { target: 'http://localhost:8081', changeOrigin: true },
       '/strategy-templates': { target: 'http://localhost:8081', changeOrigin: true },

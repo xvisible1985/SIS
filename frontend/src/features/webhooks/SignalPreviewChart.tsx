@@ -2,44 +2,40 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { createChart, CandlestickSeries, ColorType } from 'lightweight-charts'
 import type { IChartApi } from 'lightweight-charts'
 import { SIGNALS } from '../indicators/signals'
-import { useEnabledSignals } from '../indicators/useEnabledSignals'
-import { SignalPickCard } from '../indicators/components/SignalPickCard'
 import {
   toBybitTF, loadSignalHistory, SignalLabelsPrimitive,
   type ChartEvent, type SignalLabel,
 } from '../indicators/signalChartShared'
-
-// Same exclusion as WebhooksPage's alert catalog — bybit-news has no pkg/signal registry
-// entry (fundamental trigger, not candle-based), so /signals/chart-history can't compute it.
-const PREVIEWABLE_SIGNALS = SIGNALS.filter(s => s.id !== 'bybit-news')
-
-const TF_OPTIONS = ['1m', '5m', '15m', '30m', '1h', '4h', '1D']
-const COINS = [
-  'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT',
-  'ADAUSDT', 'DOGEUSDT', 'AVAXUSDT', 'DOTUSDT', 'MATICUSDT',
-]
+import type { SignalDef } from '../indicators/types'
 
 type CacheEntry =
   | { status: 'loading' }
   | { status: 'done'; events: ChartEvent[] }
   | { status: 'error'; msg: string }
 
-// TradingView-style preview: a price chart with a searchable signal catalog below it.
-// Clicking a card plots that signal's buy/sell fire history as arrows on the chart.
-// Collapsed by default — this is a preview on top of the alert constructor above, not
-// the primary flow, and it avoids firing a Bybit candle fetch on every page load.
-export function SignalPreviewChart() {
-  const [open, setOpen] = useState(false)
+// Combo mode: the parent (WebhooksPage) already fetched combined AND-logic events via
+// /signals/combo-preview (multiple legs) — pass them in directly instead of this component
+// doing its own single-signal fetch/cache.
+interface ComboPreview {
+  events: ChartEvent[]
+  loading: boolean
+  error: string | null
+}
 
-  const enabledIds = useEnabledSignals()
-  const catalog = enabledIds ? PREVIEWABLE_SIGNALS.filter(s => enabledIds.has(s.id)) : PREVIEWABLE_SIGNALS
+interface Props {
+  symbol: string
+  tf: string
+  activeSignal: SignalDef | null
+  combo?: ComboPreview | null
+}
 
-  const [symbol, setSymbol] = useState('BTCUSDT')
-  const [tf, setTf]         = useState('15m')
-  const [query, setQuery]   = useState('')
-  const [activeId, setActiveId] = useState<string | null>(null)
-  const [cache, setCache]       = useState<Record<string, CacheEntry>>({})
-
+// TradingView-style preview chart: candles for `symbol`/`tf`, with either a single
+// `activeSignal`'s fire history (fetched here, from /signals/chart-history) or a
+// parent-supplied `combo` preview plotted as buy/sell arrows. Symbol/timeframe and the
+// selected signal are owned by the parent — shared with the alert constructor, same as the
+// terminal shares one `symbol` between its chart and side panel.
+export function SignalPreviewChart({ symbol, tf, activeSignal, combo }: Props) {
+  const [cache, setCache] = useState<Record<string, CacheEntry>>({})
   const pendingRef    = useRef<Set<string>>(new Set())
   const generationRef = useRef(0)
 
@@ -70,18 +66,14 @@ export function SignalPreviewChart() {
   }, [symbol, tf])
 
   useEffect(() => {
-    if (!activeId || cache[activeId]) return
-    fetchEvents(activeId)
-  }, [activeId, cache, fetchEvents])
+    if (combo || !activeSignal || cache[activeSignal.id]) return
+    fetchEvents(activeSignal.id)
+  }, [combo, activeSignal, cache, fetchEvents])
 
-  function toggleSignal(id: string) {
-    setActiveId(prev => prev === id ? null : id)
-  }
-
-  const activeEvents: ChartEvent[] =
-    activeId && cache[activeId]?.status === 'done'
-      ? (cache[activeId] as { status: 'done'; events: ChartEvent[] }).events
-      : []
+  const activeEntry = activeSignal ? cache[activeSignal.id] : undefined
+  const activeEvents: ChartEvent[] = combo
+    ? combo.events
+    : activeEntry?.status === 'done' ? activeEntry.events : []
 
   // ── chart ────────────────────────────────────────────────────────────────
   const containerRef    = useRef<HTMLDivElement>(null)
@@ -109,10 +101,7 @@ export function SignalPreviewChart() {
     plugin.setLabels(labels)
   }
 
-  // Create/recreate the chart when opened or when symbol/tf changes. Skipped while
-  // collapsed — no point fetching candles for a panel the user hasn't opened.
   useEffect(() => {
-    if (!open) return
     const el = containerRef.current
     if (!el) return
     let cancelled = false
@@ -197,109 +186,32 @@ export function SignalPreviewChart() {
       chartRef.current        = null
       labelsPluginRef.current = null
     }
-  }, [open, symbol, tf]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [symbol, tf]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { applyLabels() }, [activeEvents]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const filtered = query.trim()
-    ? catalog.filter(s =>
-        s.name.toLowerCase().includes(query.toLowerCase()) ||
-        s.abbr.toLowerCase().includes(query.toLowerCase())
-      )
-    : catalog
-
   return (
-    <div className="flex flex-col overflow-hidden rounded-xl border border-white/[.07] bg-[#0d1018]">
-      <button
-        type="button"
-        onClick={() => setOpen(v => !v)}
-        className="flex w-full items-center gap-2 border-b border-white/[.06] bg-sky-500/[.07] px-4 py-2.5 text-left"
-      >
-        <span className="text-xs font-semibold uppercase tracking-wider text-sky-300/70">
-          Просмотр на графике
-        </span>
-        <span className="text-[10px] text-slate-500">свечи + точки срабатывания сигнала</span>
-        <svg
-          width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#5b6479" strokeWidth={2.5}
-          strokeLinecap="round" strokeLinejoin="round"
-          className="ml-auto transition-transform"
-          style={{ transform: open ? 'rotate(180deg)' : 'none' }}
-        >
-          <path d="M6 9l6 6 6-6" />
-        </svg>
-      </button>
-
-      {open && (
-        <>
-          {/* toolbar */}
-          <div className="flex flex-shrink-0 items-center gap-2 border-b border-white/[.06] px-4 py-2">
-            <input
-              list="preview-coins"
-              value={symbol}
-              onChange={e => setSymbol(e.target.value.toUpperCase())}
-              className="w-28 rounded-lg border border-white/[.08] bg-black/25 px-2.5 py-1 text-[12px] text-slate-200 outline-none focus:border-[#5b8cff]/50"
-            />
-            <datalist id="preview-coins">
-              {COINS.map(c => <option key={c} value={c} />)}
-            </datalist>
-            <div className="flex items-center gap-px rounded-lg border border-white/[.08] bg-black/25 p-px">
-              {TF_OPTIONS.map(t => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setTf(t)}
-                  className={`rounded-[5px] px-2 py-1 text-[11px] font-semibold transition-colors ${
-                    tf === t ? 'bg-[#5b8cff] text-white' : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-            {activeId && (
-              <span className="ml-auto text-[11px] text-slate-500">
-                {SIGNALS.find(s => s.id === activeId)?.name}
-                {cache[activeId]?.status === 'loading' && ' — загрузка…'}
-                {cache[activeId]?.status === 'error' && (
-                  <span className="text-rose-400"> — {(cache[activeId] as { status: 'error'; msg: string }).msg}</span>
-                )}
-              </span>
-            )}
-          </div>
-
-          {/* chart */}
-          <div className="h-[360px] flex-shrink-0 p-2.5">
-            <div ref={containerRef} className="h-full w-full overflow-hidden rounded-[10px] border border-white/[.07]" />
-          </div>
-
-          {/* search */}
-          <div className="flex-shrink-0 border-t border-white/[.06] px-4 py-2.5">
-            <input
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder="Поиск сигнала…"
-              className="w-full rounded-lg border border-white/[.08] bg-black/25 px-3 py-1.5 text-[12px] text-slate-200 outline-none placeholder:text-slate-600 focus:border-[#5b8cff]/50"
-            />
-          </div>
-
-          {/* card grid */}
-          <div className="max-h-[280px] overflow-auto p-3">
-            {filtered.length === 0 ? (
-              <p className="py-6 text-center text-[12px] text-slate-500">Ничего не найдено</p>
-            ) : (
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2.5">
-                {filtered.map(def => (
-                  <SignalPickCard
-                    key={def.id}
-                    def={def}
-                    selected={activeId === def.id}
-                    onClick={() => toggleSignal(def.id)}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        </>
+    <div className="relative h-full w-full">
+      <div ref={containerRef} className="h-full w-full" />
+      {combo?.loading && (
+        <div className="absolute left-2 top-2 rounded-md bg-black/50 px-2 py-1 text-[10px] text-slate-400">
+          Загрузка комбо…
+        </div>
+      )}
+      {combo?.error && (
+        <div className="absolute left-2 top-2 rounded-md bg-rose-500/10 px-2 py-1 text-[10px] text-rose-400">
+          {combo.error}
+        </div>
+      )}
+      {!combo && activeSignal && activeEntry?.status === 'loading' && (
+        <div className="absolute left-2 top-2 rounded-md bg-black/50 px-2 py-1 text-[10px] text-slate-400">
+          Загрузка сигнала…
+        </div>
+      )}
+      {!combo && activeSignal && activeEntry?.status === 'error' && (
+        <div className="absolute left-2 top-2 rounded-md bg-rose-500/10 px-2 py-1 text-[10px] text-rose-400">
+          {activeEntry.msg}
+        </div>
       )}
     </div>
   )

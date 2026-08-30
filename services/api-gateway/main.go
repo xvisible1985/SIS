@@ -130,7 +130,9 @@ func main() {
 	closedPnlSyncer := NewClosedPnlSyncer(pool, encKey)
 	closedPnlSyncer.Start(ctx)
 
-	// Start max-leverage DB refresher (every 10 min, covers all active strategy symbols)
+	// Start max-leverage DB refresher (every 10 min, covers the full exchange symbol
+	// universe — the "leverage" activation signal needs whitelist candidates too, not
+	// just symbols already being traded)
 	RunLeverageRefresher(ctx, pool)
 
 	// Start bot + hedge automation engines (order-managing — leader only)
@@ -141,6 +143,9 @@ func main() {
 
 	// Start Telegram notification polling
 	go s.startTgNotifier(ctx)
+
+	// Subscribe active Webhooks-tab alerts to the signal engine (see webhooks_engine.go).
+	s.loadWebhookAlerts(ctx)
 
 	// Start TRON deposit watcher
 	go s.startTronWatcher(ctx)
@@ -178,6 +183,11 @@ func main() {
 	r.With(s.rateLimitAuth("login", loginRateLimit, loginRateWindow)).Post("/auth/login", s.Login)
 	r.Post("/auth/telegram-callback", s.TelegramLoginCallback)
 
+	// Webhook alert relay — internal-only (see webhooks_engine.go): the token in the path
+	// is the credential, so this must not require a JWT (services/webhook's dispatcher has
+	// no user session to present).
+	r.Post("/webhooks/relay/{token}", s.WebhookRelay)
+
 	// Bot-to-gateway internal routes — authenticated via TELEGRAM_BOT_SECRET
 	r.Group(func(r chi.Router) {
 		r.Use(s.RequireBotSecret)
@@ -194,6 +204,11 @@ func main() {
 		r.Use(s.RequireAuth)
 
 		r.Get("/signals/chart-history", s.SignalChartHistory)
+		r.Post("/signals/combo-preview", s.SignalComboPreview)
+
+		r.Get("/custom-signals", s.ListCustomSignals)
+		r.Post("/custom-signals", s.CreateCustomSignal)
+		r.Delete("/custom-signals/{id}", s.DeleteCustomSignal)
 		r.Get("/signals", s.ListSignals)
 		r.Post("/signals", s.CreateSignal)
 		r.Get("/signals/{id}", s.GetSignal)
@@ -210,6 +225,7 @@ func main() {
 		r.Get("/webhooks/{id}", s.GetWebhook)
 		r.Put("/webhooks/{id}", s.UpdateWebhook)
 		r.Delete("/webhooks/{id}", s.DeleteWebhook)
+		r.Get("/webhooks/{id}/logs", s.ListWebhookLogs)
 
 		// User profile
 		r.Get("/account/profile", s.GetProfile)
@@ -236,6 +252,7 @@ func main() {
 		r.Get("/accounts/{id}/positions", s.GetAccountPositions)
 		r.Patch("/accounts/{id}/active", s.ToggleAccountActive)
 		r.Patch("/accounts/{id}/risk-settings", s.PatchAccountRiskSettings)
+		r.Patch("/accounts/{id}/clear-stats", s.ClearAccountStats)
 
 		// Strategies
 		r.Get("/strategies", s.ListStrategies)

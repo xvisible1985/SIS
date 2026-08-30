@@ -1,6 +1,6 @@
 import type { SignalDef } from '../types'
 
-const CAT_LABEL: Record<string, string> = {
+export const CAT_LABEL: Record<string, string> = {
   momentum: 'Моментум', trend: 'Тренд', volatility: 'Волатильность',
   volume: 'Объём', fundamental: 'Фундаментал',
 }

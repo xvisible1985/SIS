@@ -9,162 +9,151 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 )
 
-// createWHUser creates a test user with an explicit suffix to avoid email collisions.
-func createWHUser(t *testing.T, s *Server, suffix string) string {
+func createTestWebhook(t *testing.T, s *Server, userID, catalogSignalID, symbol string) webhookRow {
 	t.Helper()
-	email := "wh_" + suffix + "@example.com"
-	var userID string
-	err := s.pool.QueryRow(context.Background(),
-		`INSERT INTO users (email, password_hash) VALUES ($1, '') RETURNING id`, email,
-	).Scan(&userID)
-	if err != nil {
-		t.Fatalf("createWHUser %s: %v", suffix, err)
-	}
-	t.Cleanup(func() {
-		s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", userID)
+	body, _ := json.Marshal(map[string]any{
+		"catalog_signal_id": catalogSignalID,
+		"symbol":            symbol,
+		"timeframe":         "15m",
+		"params":            map[string]any{},
+		"platform":          "custom",
 	})
-	return userID
-}
-
-func TestCreateAndGetWebhook(t *testing.T) {
-	s := newTestServer(t)
-	userID := createWHUser(t, s, "cagwh")
-	sigID := createTestSignal(t, s, userID)
-
-	body := `{"signal_id":"` + sigID + `","url":"https://example.com/hook","platform":"custom"}`
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/webhooks", bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
+	req := httptest.NewRequest(http.MethodPost, "/webhooks", bytes.NewReader(body))
 	req = withUserID(req, userID)
+	rec := httptest.NewRecorder()
 	s.CreateWebhook(rec, req)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("create: got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("CreateWebhook: got %d: %s", rec.Code, rec.Body.String())
 	}
-	var created map[string]any
-	json.NewDecoder(rec.Body).Decode(&created)
-	whID, _ := created["id"].(string)
-	if whID == "" {
-		t.Fatal("expected webhook id in response")
+	var row webhookRow
+	if err := json.NewDecoder(rec.Body).Decode(&row); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
-	if created["url"] != "https://example.com/hook" {
-		t.Errorf("unexpected url: %v", created["url"])
-	}
-
-	// GET /webhooks/:id
-	rec2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodGet, "/webhooks/"+whID, nil)
-	req2 = withUserID(req2, userID)
-	req2 = withChiParams(req2, map[string]string{"id": whID})
-	s.GetWebhook(rec2, req2)
-	if rec2.Code != http.StatusOK {
-		t.Fatalf("get: got %d: %s", rec2.Code, rec2.Body.String())
-	}
-	var got map[string]any
-	json.NewDecoder(rec2.Body).Decode(&got)
-	if got["id"] != whID {
-		t.Errorf("got id=%v, want %s", got["id"], whID)
-	}
+	t.Cleanup(func() {
+		s.signalEngine.Unsubscribe(row.ID)
+		s.pool.Exec(context.Background(), "DELETE FROM webhooks WHERE id=$1", row.ID)
+	})
+	return row
 }
 
-func TestListWebhooks_Empty(t *testing.T) {
+// TestCreateWebhook_RejectsNonComputableCatalogSignal is the regression for the
+// signal.Build validation in CreateWebhook: a catalog_signal_id that isn't a real
+// pkg/signal registry entry (e.g. it exists only as an admin-catalog row, or doesn't
+// exist at all) must be rejected at creation time, not silently accepted and then never
+// actually fire because the engine can't build it.
+func TestCreateWebhook_RejectsNonComputableCatalogSignal(t *testing.T) {
 	s := newTestServer(t)
-	userID := createWHUser(t, s, "listwh")
+	userID := createWHUser(t, s, "wh_reject1")
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/webhooks", nil)
+	body, _ := json.Marshal(map[string]any{
+		"catalog_signal_id": "not-a-real-signal",
+		"symbol":            "BTCUSDT",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/webhooks", bytes.NewReader(body))
 	req = withUserID(req, userID)
-	s.ListWebhooks(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
-	}
-	var resp []any
-	json.NewDecoder(rec.Body).Decode(&resp)
-	if len(resp) != 0 {
-		t.Errorf("expected 0 webhooks, got %d", len(resp))
-	}
-}
-
-func TestUpdateWebhook(t *testing.T) {
-	s := newTestServer(t)
-	userID := createWHUser(t, s, "updwh")
-	sigID := createTestSignal(t, s, userID)
-
-	body := `{"signal_id":"` + sigID + `","url":"https://old.example.com/hook","platform":"custom"}`
-	recC := httptest.NewRecorder()
-	reqC := httptest.NewRequest(http.MethodPost, "/webhooks", bytes.NewBufferString(body))
-	reqC.Header.Set("Content-Type", "application/json")
-	reqC = withUserID(reqC, userID)
-	s.CreateWebhook(recC, reqC)
-	var created map[string]any
-	json.NewDecoder(recC.Body).Decode(&created)
-	whID, _ := created["id"].(string)
-
-	updateBody := `{"url":"https://new.example.com/hook"}`
-	recU := httptest.NewRecorder()
-	reqU := httptest.NewRequest(http.MethodPut, "/webhooks/"+whID, bytes.NewBufferString(updateBody))
-	reqU.Header.Set("Content-Type", "application/json")
-	reqU = withUserID(reqU, userID)
-	reqU = withChiParams(reqU, map[string]string{"id": whID})
-	s.UpdateWebhook(recU, reqU)
-	if recU.Code != http.StatusOK {
-		t.Fatalf("update: got %d: %s", recU.Code, recU.Body.String())
-	}
-	var updated map[string]any
-	json.NewDecoder(recU.Body).Decode(&updated)
-	if updated["url"] != "https://new.example.com/hook" {
-		t.Errorf("url not updated: got %v", updated["url"])
-	}
-}
-
-func TestDeleteWebhook(t *testing.T) {
-	s := newTestServer(t)
-	userID := createWHUser(t, s, "delwh")
-	sigID := createTestSignal(t, s, userID)
-
-	body := `{"signal_id":"` + sigID + `","url":"https://example.com/hook"}`
-	recC := httptest.NewRecorder()
-	reqC := httptest.NewRequest(http.MethodPost, "/webhooks", bytes.NewBufferString(body))
-	reqC.Header.Set("Content-Type", "application/json")
-	reqC = withUserID(reqC, userID)
-	s.CreateWebhook(recC, reqC)
-	var created map[string]any
-	json.NewDecoder(recC.Body).Decode(&created)
-	whID, _ := created["id"].(string)
-
-	recD := httptest.NewRecorder()
-	reqD := httptest.NewRequest(http.MethodDelete, "/webhooks/"+whID, nil)
-	reqD = withUserID(reqD, userID)
-	reqD = withChiParams(reqD, map[string]string{"id": whID})
-	s.DeleteWebhook(recD, reqD)
-	if recD.Code != http.StatusNoContent {
-		t.Errorf("got %d, want 204", recD.Code)
-	}
-
-	rec2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodGet, "/webhooks/"+whID, nil)
-	req2 = withUserID(req2, userID)
-	req2 = withChiParams(req2, map[string]string{"id": whID})
-	s.GetWebhook(rec2, req2)
-	if rec2.Code != http.StatusNotFound {
-		t.Errorf("expected 404 after delete, got %d", rec2.Code)
-	}
-}
-
-func TestCreateWebhook_SignalNotOwned(t *testing.T) {
-	s := newTestServer(t)
-	userA := createWHUser(t, s, "ownA")
-	userB := createWHUser(t, s, "ownB")
-	sigID := createTestSignal(t, s, userA)
-
-	body := `{"signal_id":"` + sigID + `","url":"https://example.com/hook"}`
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/webhooks", bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = withUserID(req, userB)
 	s.CreateWebhook(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("got %d, want 404", rec.Code)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestCreateWebhook_GeneratesRelayURL pins that SIS itself generates webhooks.url (never
+// user-supplied) — an internal /webhooks/relay/{token} endpoint, one per alert.
+func TestCreateWebhook_GeneratesRelayURL(t *testing.T) {
+	s := newTestServer(t)
+	userID := createWHUser(t, s, "wh_create1")
+
+	row := createTestWebhook(t, s, userID, "rsi-os", "BTCUSDT")
+	if row.URL == "" {
+		t.Fatal("expected a generated URL, got empty string")
+	}
+	if want := "/webhooks/relay/"; !bytes.Contains([]byte(row.URL), []byte(want)) {
+		t.Errorf("URL = %q, want it to contain %q", row.URL, want)
+	}
+	if row.CatalogSignalName == "" {
+		t.Error("expected CatalogSignalName resolved from signal_types, got empty")
+	}
+}
+
+// TestDeleteWebhook_RemovesRow verifies delete actually removes the alert (and, by not
+// panicking, that Unsubscribe on a since-deleted alert is safe).
+func TestDeleteWebhook_RemovesRow(t *testing.T) {
+	s := newTestServer(t)
+	userID := createWHUser(t, s, "wh_delete1")
+	row := createTestWebhook(t, s, userID, "rsi-os", "ETHUSDT")
+
+	req := httptest.NewRequest(http.MethodDelete, "/webhooks/"+row.ID, nil)
+	req = withUserID(req, userID)
+	req = withChiParams(req, map[string]string{"id": row.ID})
+	rec := httptest.NewRecorder()
+	s.DeleteWebhook(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DeleteWebhook: got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var exists bool
+	s.pool.QueryRow(context.Background(), "SELECT EXISTS(SELECT 1 FROM webhooks WHERE id=$1)", row.ID).Scan(&exists)
+	if exists {
+		t.Error("webhook row still exists after delete")
+	}
+}
+
+// TestWebhookRelay_UnknownToken404s ensures a bad/stale token doesn't panic and reports
+// not-found rather than silently succeeding.
+func TestWebhookRelay_UnknownToken404s(t *testing.T) {
+	s := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/relay/does-not-exist", bytes.NewReader([]byte(`{}`)))
+	req = withChiParams(req, map[string]string{"token": "does-not-exist"})
+	rec := httptest.NewRecorder()
+	s.WebhookRelay(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("got %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestWebhookRelay_KnownToken200s exercises the full path a real delivery takes: look up
+// the alert by its token (not owner-scoped — the dispatcher has no user session) and
+// respond 200 so the dispatcher records a successful delivery in webhook_logs. No Telegram
+// connection is set up for this user, so the forward step is a no-op — this only pins that
+// absence doesn't turn into an error response.
+func TestWebhookRelay_KnownToken200s(t *testing.T) {
+	s := newTestServer(t)
+	userID := createWHUser(t, s, "wh_relay1")
+	row := createTestWebhook(t, s, userID, "rsi-os", "SOLUSDT")
+
+	var token string
+	if err := s.pool.QueryRow(context.Background(), "SELECT token FROM webhooks WHERE id=$1", row.ID).Scan(&token); err != nil {
+		t.Fatalf("read back token: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"direction": "buy", "symbol": "SOLUSDT"})
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/relay/"+token, bytes.NewReader(body))
+	req = withChiParams(req, map[string]string{"token": token})
+	rec := httptest.NewRecorder()
+	s.WebhookRelay(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// createWHUser mirrors the other _test.go files' per-suite user helper, scoped to this
+// file's tests specifically (webhooks_*) to avoid cross-test collisions on unique fields.
+func createWHUser(t *testing.T, s *Server, label string) string {
+	t.Helper()
+	email := label + "@example.com"
+	var id string
+	if err := s.pool.QueryRow(context.Background(),
+		`INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id`, email,
+	).Scan(&id); err != nil {
+		t.Fatalf("createWHUser: %v", err)
+	}
+	t.Cleanup(func() { s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", id) })
+	return id
+}
+
+var _ = chi.URLParam // keep chi imported if unused directly in this file

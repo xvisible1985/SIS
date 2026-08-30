@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -23,6 +24,12 @@ const (
 )
 
 // FiredSignal is the payload published to the signals:fired Redis Stream.
+// SignalID identifies the ALERT to deliver to (webhooks.id, the row's own primary key) —
+// not a shared "signal" grouping. Each alert is a unique (catalog signal, symbol,
+// timeframe, params) combination configured by exactly one user, so there is no fan-out:
+// one fired event always resolves to exactly one delivery target. The field keeps its
+// original name for wire-format stability even though its meaning narrowed from "signal"
+// to "alert" when the Webhooks tab was redesigned around the pkg/signal catalog.
 type FiredSignal struct {
 	SignalID   string `json:"signal_id"`
 	SignalName string `json:"signal_name"`
@@ -149,36 +156,34 @@ func (d *Dispatcher) handleMessage(ctx context.Context, msg redis.XMessage) {
 		d.ack(ctx, msg.ID)
 		return
 	}
-	targets, err := d.fetchWebhooks(ctx, signal.SignalID)
+	target, ok, err := d.fetchWebhook(ctx, signal.SignalID)
 	if err != nil {
-		log.Printf("webhook-dispatcher: fetch webhooks signal %s: %v", signal.SignalID, err)
+		log.Printf("webhook-dispatcher: fetch webhook alert %s: %v", signal.SignalID, err)
 		d.ack(ctx, msg.ID)
 		return
 	}
-	for _, target := range targets {
+	if ok {
 		d.deliverWithRetry(ctx, target, signal)
 	}
 	d.ack(ctx, msg.ID)
 }
 
-func (d *Dispatcher) fetchWebhooks(ctx context.Context, signalID string) ([]WebhookTarget, error) {
-	rows, err := d.pool.Query(ctx,
-		`SELECT id, url FROM webhooks WHERE signal_id=$1 AND is_active=TRUE`,
-		signalID,
-	)
+// fetchWebhook looks up the single alert this event targets by its own row id (see
+// FiredSignal.SignalID's doc comment). ok=false (no error) means the alert was deleted or
+// deactivated between firing and delivery — not an error, just nothing to deliver.
+func (d *Dispatcher) fetchWebhook(ctx context.Context, webhookID string) (WebhookTarget, bool, error) {
+	var t WebhookTarget
+	err := d.pool.QueryRow(ctx,
+		`SELECT id, url FROM webhooks WHERE id=$1 AND is_active=TRUE`,
+		webhookID,
+	).Scan(&t.ID, &t.URL)
 	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var targets []WebhookTarget
-	for rows.Next() {
-		var t WebhookTarget
-		if err := rows.Scan(&t.ID, &t.URL); err != nil {
-			return nil, err
+		if err == pgx.ErrNoRows {
+			return WebhookTarget{}, false, nil
 		}
-		targets = append(targets, t)
+		return WebhookTarget{}, false, err
 	}
-	return targets, nil
+	return t, true, nil
 }
 
 func (d *Dispatcher) deliverWithRetry(ctx context.Context, target WebhookTarget, payload FiredSignal) {
