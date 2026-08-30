@@ -11,6 +11,21 @@ import (
 
 const riskMonitorInterval = 20 * time.Second
 
+// OnRiskEvent, if set, is called once per pause-state TRANSITION (entering or lifting —
+// never once per tick, matching OnAccumulate's pattern in trade_recorder.go), so
+// services/api-gateway can push a single Telegram alert per episode instead of one every
+// riskMonitorInterval while the account stays paused. Wired at startup (see
+// services/api-gateway/server.go); nil in tests and in any build that doesn't set it.
+//
+// Called from checkRiskOnce OUTSIDE ar.riskMu (see OnAccumulate's precedent for why: this
+// may do DB/network I/O in the consumer, e.g. looking up a Telegram chat_id — holding a
+// lock across that would block every other goroutine reading ar.risk for no reason).
+// checkRiskOnce runs inside runRiskMonitorLoop → safeLoop, which already recovers panics
+// (restarting just this account's risk loop) — lower stakes than OnAccumulate's bare
+// unrecovered goroutines, but the consumer should still recover defensively rather than
+// rely on that outer safety net.
+var OnRiskEvent func(accountID string, entering bool, mmRatePct, pausePct float64)
+
 // accountRiskState is AccountRunner's cached view of account-wide risk, refreshed by
 // runRiskMonitorLoop and read synchronously by placeMatrixLevel on every new entry order.
 // mmRatePct mirrors Bybit's own accountMMRate (0-100) — the same signal the exchange uses
@@ -23,6 +38,16 @@ type accountRiskState struct {
 	pausePct    float64
 	notionalPct float64
 	paused      bool
+	// guardDisabled mirrors exchange_accounts.risk_guard_enabled inverted (zero-value
+	// false = guard active, matching every existing accountRiskState literal that doesn't
+	// set this field — no accidental bypass from an unset field). The account-level master
+	// switch for the whole risk guard: when true, riskGate skips BOTH the margin-ratio
+	// pause check and the per-symbol notional cap; the threshold values above stay loaded
+	// (so the UI keeps showing them, and re-enabling takes effect immediately) but are not
+	// enforced. Thresholds are still polled/computed normally while disabled — only
+	// enforcement in riskGate is skipped — so mmRate/pause bookkeeping stays accurate for
+	// display and resumes cleanly the moment the guard is re-enabled.
+	guardDisabled bool
 }
 
 // runRiskMonitorLoop polls account equity + margin rate and the account's configurable
@@ -45,10 +70,11 @@ func (ar *AccountRunner) runRiskMonitorLoop(ctx context.Context) {
 
 func (ar *AccountRunner) checkRiskOnce(ctx context.Context) {
 	var warnPct, pausePct, notionalPct float64
+	var enabled bool
 	if err := ar.pool.QueryRow(ctx,
-		`SELECT margin_warn_pct, margin_pause_pct, max_symbol_notional_pct FROM exchange_accounts WHERE id=$1`,
+		`SELECT margin_warn_pct, margin_pause_pct, max_symbol_notional_pct, risk_guard_enabled FROM exchange_accounts WHERE id=$1`,
 		ar.accountID,
-	).Scan(&warnPct, &pausePct, &notionalPct); err != nil {
+	).Scan(&warnPct, &pausePct, &notionalPct, &enabled); err != nil {
 		log.Printf("strategy: riskMonitor account=%s: load thresholds: %v", ar.accountID, err)
 		return
 	}
@@ -63,20 +89,27 @@ func (ar *AccountRunner) checkRiskOnce(ctx context.Context) {
 	wasPaused := ar.risk.paused
 	nowPaused := nextPausedState(wasPaused, mmRatePct, warnPct, pausePct)
 	ar.risk = accountRiskState{
-		equity:      equity,
-		mmRatePct:   mmRatePct,
-		updatedAt:   time.Now(),
-		warnPct:     warnPct,
-		pausePct:    pausePct,
-		notionalPct: notionalPct,
-		paused:      nowPaused,
+		equity:        equity,
+		mmRatePct:     mmRatePct,
+		updatedAt:     time.Now(),
+		warnPct:       warnPct,
+		pausePct:      pausePct,
+		notionalPct:   notionalPct,
+		paused:        nowPaused,
+		guardDisabled: !enabled,
 	}
 	ar.riskMu.Unlock()
 
 	if nowPaused && !wasPaused {
 		log.Printf("strategy: account=%s ENTERING risk pause: mmRate=%.2f%% >= pausePct=%.2f%% (equity=%.2f) — new matrix/grid entries blocked until mmRate < warnPct=%.2f%%", ar.accountID, mmRatePct, pausePct, equity, warnPct)
+		if OnRiskEvent != nil {
+			OnRiskEvent(ar.accountID, true, mmRatePct, pausePct)
+		}
 	} else if !nowPaused && wasPaused {
 		log.Printf("strategy: account=%s risk pause LIFTED: mmRate=%.2f%% < warnPct=%.2f%% (equity=%.2f)", ar.accountID, mmRatePct, warnPct, equity)
+		if OnRiskEvent != nil {
+			OnRiskEvent(ar.accountID, false, mmRatePct, pausePct)
+		}
 	} else if mmRatePct >= warnPct && mmRatePct < pausePct {
 		log.Printf("strategy: account=%s risk WARNING: mmRate=%.2f%% >= warnPct=%.2f%% (equity=%.2f, pausePct=%.2f%%)", ar.accountID, mmRatePct, warnPct, equity, pausePct)
 	}
@@ -125,6 +158,11 @@ func (ar *AccountRunner) riskGate(symbol string, positionIdx int, addNotional fl
 	if st.updatedAt.IsZero() {
 		// Risk monitor hasn't completed its first tick yet (e.g. just after startup) —
 		// fail open rather than blocking every entry for the first ~20s of runtime.
+		return true, ""
+	}
+	if st.guardDisabled {
+		// Account-level master switch (risk_guard_enabled) — bypasses BOTH the margin-pause
+		// check and the notional cap below. Thresholds stay loaded/displayed either way.
 		return true, ""
 	}
 	if st.paused {

@@ -106,6 +106,10 @@ export function Layout({ children }: { children: ReactNode }) {
                 name: selectedAccount.label,
                 exchange: selectedAccount.exchange,
                 status: selectedAccount.is_active ? 'подключено' : 'отключено',
+                riskPaused: !!selectedAccount.risk_paused,
+                riskWarning: !selectedAccount.risk_paused
+                  && selectedAccount.current_mm_rate_pct != null
+                  && selectedAccount.current_mm_rate_pct >= selectedAccount.margin_warn_pct,
               }
             : { exchangeBadge: '?', name: 'Нет аккаунта', exchange: 'Bybit', status: 'отключено' }
           }

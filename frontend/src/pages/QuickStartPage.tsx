@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { listAccounts, getAccountPositions, getAccountBalance } from '../api/accounts'
 import { listBotPresets } from '../api/botPresets'
+import { useSelectedAccount } from '../contexts/AccountContext'
 import type { BalanceResult } from '../api/accounts'
 import type { BotPreset } from '../api/botPresets'
 import type { ExchangeAccount, Position } from '../types'
@@ -209,6 +210,7 @@ function PresetResultCard({ preset, equity, depositPct, onDeploy }: {
 
 export function QuickStartPage() {
   const navigate = useNavigate()
+  const { selectedAccountId } = useSelectedAccount()
 
   // Step 1
   const [step, setStep]       = useState<StepState>({ apiKey: 'loading', recommendations: 'pending' })
@@ -228,47 +230,53 @@ export function QuickStartPage() {
   const [presetsStatus, setPresetsStatus] = useState<StepStatus>('pending')
   const [wizardDone, setWizardDone]     = useState(false)
 
-  // Load API key + accounts
+  // Load API key + accounts (account-independent — this is "do you have any accounts").
   useEffect(() => {
     listAccounts()
       .then(accs => {
         setAccounts(accs)
-        if (accs.length === 0) {
-          setStep({ apiKey: 'warn', recommendations: 'pending' })
-        } else {
-          setStep(s => ({ ...s, apiKey: 'ok' }))
-          setBalStatus('loading')
-          setPosStatus('loading')
-          const active = accs.find(a => a.is_active) ?? accs[0]
-          Promise.allSettled([
-            getAccountBalance(active.id),
-            getAccountPositions(active.id),
-          ]).then(([balRes, posRes]) => {
-            if (balRes.status === 'fulfilled') {
-              setBalance(balRes.value)
-              setBalStatus(balRes.value.ok ? 'ok' : 'error')
-              if (!balRes.value.ok) setBalError(balRes.value.message ?? 'Ошибка получения баланса')
-            } else {
-              setBalStatus('error')
-              setBalError('Ошибка получения баланса')
-            }
-            if (posRes.status === 'fulfilled') {
-              if (!posRes.value.ok) {
-                setPosError(posRes.value.message ?? 'Ошибка получения позиций')
-                setPosStatus('error')
-              } else {
-                setPositions(posRes.value.positions ?? [])
-                setPosStatus('ok')
-              }
-            } else {
-              setPosStatus('error')
-              setPosError('Ошибка получения позиций')
-            }
-          })
-        }
+        setStep(s => ({ ...s, apiKey: accs.length === 0 ? 'warn' : 'ok' }))
       })
       .catch(() => setStep({ apiKey: 'error', recommendations: 'pending' }))
   }, [])
+
+  // Load balance + positions for the sidebar-selected account — re-runs whenever the user
+  // switches accounts. Falls back to the first active account (mirroring Layout.tsx's own
+  // default-selection logic) for the brief window before AccountContext catches up, or if
+  // the persisted selectedAccountId doesn't match any of this user's current accounts.
+  useEffect(() => {
+    if (accounts.length === 0) return
+    const targetId = accounts.find(a => a.id === selectedAccountId)
+      ? selectedAccountId
+      : (accounts.find(a => a.is_active) ?? accounts[0]).id
+    setBalStatus('loading')
+    setPosStatus('loading')
+    Promise.allSettled([
+      getAccountBalance(targetId),
+      getAccountPositions(targetId),
+    ]).then(([balRes, posRes]) => {
+      if (balRes.status === 'fulfilled') {
+        setBalance(balRes.value)
+        setBalStatus(balRes.value.ok ? 'ok' : 'error')
+        if (!balRes.value.ok) setBalError(balRes.value.message ?? 'Ошибка получения баланса')
+      } else {
+        setBalStatus('error')
+        setBalError('Ошибка получения баланса')
+      }
+      if (posRes.status === 'fulfilled') {
+        if (!posRes.value.ok) {
+          setPosError(posRes.value.message ?? 'Ошибка получения позиций')
+          setPosStatus('error')
+        } else {
+          setPositions(posRes.value.positions ?? [])
+          setPosStatus('ok')
+        }
+      } else {
+        setPosStatus('error')
+        setPosError('Ошибка получения позиций')
+      }
+    })
+  }, [accounts, selectedAccountId])
 
   // Load presets when all 3 filtering answers are filled
   useEffect(() => {

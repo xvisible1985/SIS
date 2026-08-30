@@ -82,6 +82,24 @@ type StrategyRunner struct {
 	// a concurrent Notify cannot submit a loadOrStart and restart the strategy.
 	pendingDelete bool
 
+	// riskBlockReason mirrors tradingHaltReason's transition-logging pattern, but for
+	// placeMatrixLevel's risk gate (risk.go): non-empty while the last attempted entry was
+	// blocked (account risk-pause or per-symbol notional cap), so the warn/info events log
+	// once per transition instead of once per tick — placeMatrixLevel can be retried every
+	// few seconds while a pause/cap condition persists, and without this a single blocked
+	// stretch would otherwise spam strategy_events (and, via tg_notifier.go, Telegram).
+	riskBlockReason string
+
+	// confirmedLeverage is the leverage this runner last successfully applied on the
+	// exchange for its symbol (already clamped to whatever Bybit accepted at the time —
+	// see startCycle's SetLeverage call). 0 = never set yet (no cycle started). Used by
+	// reconcile.go's leverage-drift guard to detect when the exchange-side leverage has
+	// been reduced by something OUTSIDE this system (e.g. a manual change via the Bybit
+	// app) and restore it — found live (2026-08-20): TSMUSDT's leverage silently dropped
+	// from the confirmed 50x to 10x with no corresponding log entry from this codebase,
+	// which more than quintupled the margin reserved for its resting DCA limit orders.
+	confirmedLeverage int
+
 	// currentOp tags the active operation for log attribution (used by info/warn/errlog).
 	// Safe to access without a lock because all tasks run on the single worker goroutine.
 	currentOp string
@@ -1574,6 +1592,61 @@ func (sr *StrategyRunner) ensurePositionMode(ctx context.Context) bool {
 	return true
 }
 
+// applyConfiguredLeverage sets exchange leverage to sr.strategy.Leverage, capping it to the
+// instrument's max and retrying if the exchange rejects the raw value (error 110043,
+// "leverage not modified", is treated as success). Records what was actually confirmed
+// into sr.confirmedLeverage so reconcile.go's leverage-drift guard has a baseline to
+// compare live WS leverage against — see confirmedLeverage's doc comment for the live
+// incident (TSMUSDT, 2026-08-20) this exists to catch.
+// Shared by startCycle/startMatrixCycle (fresh cycle) and restartGridCycle/
+// restartMatrixCycle (settings changed or resumed with an open position) — leverage must
+// be (re)applied in all four cases, not just on a brand-new cycle, otherwise an edited
+// leverage setting or an exchange-side drift on an already-running strategy is silently
+// never corrected.
+// Returns the requested value, the capped value (if any), and whether a clamp actually
+// happened — callers use this to decide whether to log a "biржа ограничила" notice.
+// Must NOT be called with sr.mu held (makes REST calls).
+func (sr *StrategyRunner) applyConfiguredLeverage(ctx context.Context) (lev, cappedLev int, wasCapped bool) {
+	lev = sr.strategy.Leverage
+	if lev <= 0 {
+		lev = 1
+	}
+	levStr := strconv.Itoa(lev)
+	if lerr := trader.SetLeverage(ctx, sr.runner.creds, trader.LeverageRequest{
+		Symbol:       sr.strategy.Symbol,
+		Category:     sr.strategy.Category,
+		BuyLeverage:  levStr,
+		SellLeverage: levStr,
+	}); lerr != nil && !strings.Contains(lerr.Error(), "110043") {
+		log.Printf("strategy %s: set leverage %d: %v — querying exchange max", sr.strategy.ID, lev, lerr)
+		if info, ierr := trader.GetPublicInstrumentInfo(ctx, sr.strategy.Category, sr.strategy.Symbol); ierr == nil && info.MaxLeverage > 0 {
+			capped := int(info.MaxLeverage)
+			if capped < lev {
+				cappedStr := strconv.Itoa(capped)
+				if lerr2 := trader.SetLeverage(ctx, sr.runner.creds, trader.LeverageRequest{
+					Symbol:       sr.strategy.Symbol,
+					Category:     sr.strategy.Category,
+					BuyLeverage:  cappedStr,
+					SellLeverage: cappedStr,
+				}); lerr2 != nil && !strings.Contains(lerr2.Error(), "110043") {
+					log.Printf("strategy %s: set leverage capped to %d: %v", sr.strategy.ID, capped, lerr2)
+				} else {
+					// No lock needed — leverage is only ever applied from this runner's
+					// single worker goroutine, same guarantee as repriceGen/currentOp.
+					sr.confirmedLeverage = capped
+					return lev, capped, true
+				}
+			}
+			// capped >= lev: SetLeverage(lev) failed for a reason OTHER than exceeding the
+			// exchange max, so the exchange-side leverage after this is unknown — leave
+			// confirmedLeverage untouched rather than guessing.
+		}
+		return lev, 0, false
+	}
+	sr.confirmedLeverage = lev
+	return lev, 0, false
+}
+
 // startCycle creates a new cycle: fetches price, calculates grid, inserts into DB, places initial window.
 // Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) startCycle(ctx context.Context) error {
@@ -1616,36 +1689,8 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 		 WHERE strategy_id=$1 AND ended_at IS NULL`, sr.strategy.ID)
 
 	// Apply configured leverage on the exchange before opening a new cycle.
-	// Error 110043 means "leverage not modified" (already correct) and is treated as success.
-	// If the requested leverage exceeds the instrument's maximum, cap it and retry.
-	lev := sr.strategy.Leverage
-	if lev <= 0 {
-		lev = 1
-	}
-	levStr := strconv.Itoa(lev)
-	if lerr := trader.SetLeverage(ctx, sr.runner.creds, trader.LeverageRequest{
-		Symbol:       sr.strategy.Symbol,
-		Category:     sr.strategy.Category,
-		BuyLeverage:  levStr,
-		SellLeverage: levStr,
-	}); lerr != nil && !strings.Contains(lerr.Error(), "110043") {
-		log.Printf("strategy %s: set leverage %d: %v — querying exchange max", sr.strategy.ID, lev, lerr)
-		if info, ierr := trader.GetPublicInstrumentInfo(ctx, sr.strategy.Category, sr.strategy.Symbol); ierr == nil && info.MaxLeverage > 0 {
-			cappedLev := int(info.MaxLeverage)
-			if cappedLev < lev {
-				cappedStr := strconv.Itoa(cappedLev)
-				if lerr2 := trader.SetLeverage(ctx, sr.runner.creds, trader.LeverageRequest{
-					Symbol:       sr.strategy.Symbol,
-					Category:     sr.strategy.Category,
-					BuyLeverage:  cappedStr,
-					SellLeverage: cappedStr,
-				}); lerr2 != nil && !strings.Contains(lerr2.Error(), "110043") {
-					log.Printf("strategy %s: set leverage capped to %d: %v", sr.strategy.ID, cappedLev, lerr2)
-				} else {
-					sr.info(ctx, fmt.Sprintf("Плечо ограничено биржей: запрошено %dx, установлено %dx", lev, cappedLev))
-				}
-			}
-		}
+	if lev, cappedLev, wasCapped := sr.applyConfiguredLeverage(ctx); wasCapped {
+		sr.info(ctx, fmt.Sprintf("Плечо ограничено биржей: запрошено %dx, установлено %dx", lev, cappedLev))
 	}
 
 	// Ensure position mode BEFORE taking the lock — this makes a REST call and must
@@ -3993,6 +4038,13 @@ func (sr *StrategyRunner) restartMatrixCycle(ctx context.Context) {
 		}
 		sr.repriceGen++ // fresh linkIds so Bybit never sees duplicates (avoids 110072)
 		sr.mu.Unlock()
+		// Re-apply leverage even though a position is already open: covers both a live
+		// settings edit (leverage field changed) and resuming an already-running cycle
+		// after restart, neither of which otherwise ever re-touches leverage once the
+		// cycle's very first fill happened — see applyConfiguredLeverage's doc comment.
+		if lev, cappedLev, wasCapped := sr.applyConfiguredLeverage(ctx); wasCapped {
+			sr.info(ctx, fmt.Sprintf("Матрикс: плечо ограничено биржей: запрошено %dx, установлено %dx", lev, cappedLev))
+		}
 		price, ferr := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
 		sr.mu.Lock()
 		if ferr == nil {
@@ -4087,6 +4139,16 @@ func (sr *StrategyRunner) restartGridCycle(ctx context.Context) {
 	}
 
 	if hasFills && sr.cycle != nil {
+		// Re-apply leverage even though a position is already open: covers both a live
+		// settings edit (leverage field changed) and resuming an already-running cycle
+		// after restart, neither of which otherwise ever re-touches leverage once the
+		// cycle's very first fill happened — see applyConfiguredLeverage's doc comment.
+		sr.mu.Unlock()
+		if lev, cappedLev, wasCapped := sr.applyConfiguredLeverage(ctx); wasCapped {
+			sr.info(ctx, fmt.Sprintf("Плечо ограничено биржей: запрошено %dx, установлено %dx", lev, cappedLev))
+		}
+		sr.mu.Lock()
+
 		// Position is open — cancel pending orders and reprice from the last fill.
 		sr.info(ctx, "Настройки изменены, позиция открыта — пересчёт отложенных уровней")
 		sr.cancelPlacedLevels(ctx)

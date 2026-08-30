@@ -51,6 +51,24 @@ func newComputeUnit(hash, symbol, interval string, configs []Config) (*computeUn
 	}, nil
 }
 
+// computeSignalState evaluates one signal against candles, dispatching to
+// ComputeWithSymbol when sig implements SymbolComputer (whaleSignal, leverageFilterSignal —
+// signals whose real logic lives outside the candle data and would otherwise always read as
+// Neutral via the bare Compute(candles) fallback, which symbol-unaware callers can't help).
+// The single source of truth for this dispatch — every caller that evaluates a Signal
+// (computeUnit's own continuous loop, ComputeStateForce's cold-cache fallback,
+// ComputeMultiTFState's one-shot scan) must go through this, not reimplement the check,
+// or a symbol-based signal silently reads as permanently Neutral there. Found live
+// (2026-08-19): ComputeMultiTFState — the "Проверка в моменте" bot-form preview — never
+// checked SymbolComputer at all, so Leverage Filter (and, it turns out, Whale Tracker all
+// along) always showed zero matches in that preview regardless of real data.
+func computeSignalState(sig Signal, symbol string, candles []Candle) State {
+	if sc, ok := sig.(SymbolComputer); ok {
+		return sc.ComputeWithSymbol(symbol, candles)
+	}
+	return sig.Compute(candles)
+}
+
 // compute evaluates all signals (AND logic) and fires callbacks on state change.
 func (u *computeUnit) compute(candles []Candle, m *Metrics) {
 	start := time.Now()
@@ -58,18 +76,12 @@ func (u *computeUnit) compute(candles []Candle, m *Metrics) {
 	if len(u.signals) == 0 {
 		return
 	}
-	computeSig := func(sig Signal) State {
-		if sc, ok := sig.(SymbolComputer); ok {
-			return sc.ComputeWithSymbol(u.symbol, candles)
-		}
-		return sig.Compute(candles)
-	}
-	combined := computeSig(u.signals[0])
+	combined := computeSignalState(u.signals[0], u.symbol, candles)
 	for _, sig := range u.signals[1:] {
 		if combined == Neutral {
 			break
 		}
-		s := computeSig(sig)
+		s := computeSignalState(sig, u.symbol, candles)
 		if s != combined {
 			combined = Neutral
 		}
@@ -292,7 +304,7 @@ func (e *Engine) ComputeMultiTFState(symbol string, configs []Config) State {
 		if err != nil {
 			return Neutral
 		}
-		st := sig.Compute(snap)
+		st := computeSignalState(sig, symbol, snap)
 		if st == Neutral {
 			return Neutral
 		}
@@ -338,7 +350,7 @@ func (e *Engine) ComputeStateForce(symbol, interval string, configs []Config) St
 	if err != nil {
 		return Neutral
 	}
-	combined := first.Compute(snap)
+	combined := computeSignalState(first, symbol, snap)
 	for _, cfg := range configs[1:] {
 		if combined == Neutral {
 			break
@@ -347,7 +359,7 @@ func (e *Engine) ComputeStateForce(symbol, interval string, configs []Config) St
 		if err != nil {
 			break
 		}
-		if sig.Compute(snap) != combined {
+		if computeSignalState(sig, symbol, snap) != combined {
 			combined = Neutral
 		}
 	}

@@ -109,6 +109,20 @@ func (s *Server) GetTradeHistory(w http.ResponseWriter, r *http.Request) {
 		toTime = &t
 	}
 
+	// "Очистить статистику" — same non-destructive per-account marker used by
+	// GetDashboard: hides trades before exchange_accounts.stats_cleared_at
+	// without deleting anything from trade_history.
+	if accountID != "" {
+		var clearedAt *time.Time
+		s.pool.QueryRow(r.Context(), //nolint:errcheck
+			`SELECT stats_cleared_at FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
+			accountID, userID,
+		).Scan(&clearedAt)
+		if clearedAt != nil && (fromTime == nil || clearedAt.After(*fromTime)) {
+			fromTime = clearedAt
+		}
+	}
+
 	// Build WHERE clause.
 	where := "WHERE th.owner_id = $1"
 	args := []any{userID}
@@ -232,13 +246,22 @@ func (s *Server) GetTradeHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetTradeHistorySymbols returns distinct symbols that have trade history for the user.
-// GET /trade-history/symbols
+// GetTradeHistorySymbols returns distinct symbols that have trade history for the user,
+// optionally scoped to one account.
+// GET /trade-history/symbols?account_id=
 func (s *Server) GetTradeHistorySymbols(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
-	rows, err := s.pool.Query(r.Context(),
-		`SELECT DISTINCT symbol FROM trade_history WHERE owner_id = $1 ORDER BY symbol`,
-		userID)
+	accountID := r.URL.Query().Get("account_id")
+
+	sql := `SELECT DISTINCT symbol FROM trade_history WHERE owner_id = $1`
+	args := []any{userID}
+	if accountID != "" {
+		sql += ` AND account_id = $2`
+		args = append(args, accountID)
+	}
+	sql += ` ORDER BY symbol`
+
+	rows, err := s.pool.Query(r.Context(), sql, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return

@@ -140,8 +140,24 @@ export function Sidebar({
                   {account.name}
                 </div>
                 <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-slate-400">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#41d28b]" />
+                  <span className={
+                    account.riskPaused
+                      ? 'h-1.5 w-1.5 rounded-full bg-rose-400 shadow-[0_0_6px_#fb7185]'
+                      : account.riskWarning
+                      ? 'h-1.5 w-1.5 rounded-full bg-amber-400 shadow-[0_0_6px_#f7a600]'
+                      : 'h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#41d28b]'
+                  } />
                   {account.exchange} · {account.status}
+                  {account.riskPaused && (
+                    <span className="text-rose-400" title="Новые входы (DCA/уровни) остановлены — margin ratio достиг порога паузы">
+                      · риск-пауза
+                    </span>
+                  )}
+                  {!account.riskPaused && account.riskWarning && (
+                    <span className="text-amber-400" title="Margin ratio приближается к порогу паузы">
+                      · риск ↑
+                    </span>
+                  )}
                 </div>
               </div>
             </div>

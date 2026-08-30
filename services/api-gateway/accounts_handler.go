@@ -23,6 +23,10 @@ type accountRow struct {
 	MarginWarnPct        float64 `json:"margin_warn_pct"`
 	MarginPausePct       float64 `json:"margin_pause_pct"`
 	MaxSymbolNotionalPct float64 `json:"max_symbol_notional_pct"`
+	// RiskGuardEnabled is the account-level master switch for the whole risk guard above —
+	// when false, riskGate (pkg/strategy/risk.go) skips both the margin-pause check and the
+	// notional cap; the three threshold values stay stored but unenforced.
+	RiskGuardEnabled bool `json:"risk_guard_enabled"`
 
 	// Live risk snapshot from the running AccountRunner, if one exists for this account
 	// right now (nil fields when the engine hasn't loaded this account, e.g. inactive).
@@ -30,6 +34,10 @@ type accountRow struct {
 	CurrentEquity    *float64   `json:"current_equity,omitempty"`
 	RiskPaused       *bool      `json:"risk_paused,omitempty"`
 	RiskUpdatedAt    *time.Time `json:"risk_updated_at,omitempty"`
+
+	// StatsClearedAt, if set, is the Dashboard "Очистить статистику" marker — GetDashboard
+	// hides trade_history rows closed before it for this account. Non-destructive.
+	StatsClearedAt *time.Time `json:"stats_cleared_at,omitempty"`
 }
 
 // ListAccounts returns exchange accounts for the authenticated user (no keys).
@@ -38,7 +46,7 @@ func (s *Server) ListAccounts(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	rows, err := s.pool.Query(r.Context(),
 		`SELECT id, exchange, label, is_active, created_at, expires_at,
-		        margin_warn_pct, margin_pause_pct, max_symbol_notional_pct
+		        margin_warn_pct, margin_pause_pct, max_symbol_notional_pct, risk_guard_enabled, stats_cleared_at
 		 FROM exchange_accounts WHERE owner_id=$1 ORDER BY created_at DESC`, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
@@ -49,7 +57,7 @@ func (s *Server) ListAccounts(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var a accountRow
 		if err := rows.Scan(&a.ID, &a.Exchange, &a.Label, &a.IsActive, &a.CreatedAt, &a.ExpiresAt,
-			&a.MarginWarnPct, &a.MarginPausePct, &a.MaxSymbolNotionalPct); err != nil {
+			&a.MarginWarnPct, &a.MarginPausePct, &a.MaxSymbolNotionalPct, &a.RiskGuardEnabled, &a.StatsClearedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan error")
 			return
 		}
@@ -76,6 +84,7 @@ func (s *Server) PatchAccountRiskSettings(w http.ResponseWriter, r *http.Request
 		MarginWarnPct        float64 `json:"margin_warn_pct"`
 		MarginPausePct       float64 `json:"margin_pause_pct"`
 		MaxSymbolNotionalPct float64 `json:"max_symbol_notional_pct"`
+		RiskGuardEnabled     bool    `json:"risk_guard_enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -93,9 +102,30 @@ func (s *Server) PatchAccountRiskSettings(w http.ResponseWriter, r *http.Request
 	}
 	tag, err := s.pool.Exec(r.Context(),
 		`UPDATE exchange_accounts
-		 SET margin_warn_pct=$1, margin_pause_pct=$2, max_symbol_notional_pct=$3
-		 WHERE id=$4 AND owner_id=$5`,
-		req.MarginWarnPct, req.MarginPausePct, req.MaxSymbolNotionalPct, id, userID)
+		 SET margin_warn_pct=$1, margin_pause_pct=$2, max_symbol_notional_pct=$3, risk_guard_enabled=$4
+		 WHERE id=$5 AND owner_id=$6`,
+		req.MarginWarnPct, req.MarginPausePct, req.MaxSymbolNotionalPct, req.RiskGuardEnabled, id, userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ClearAccountStats sets stats_cleared_at=NOW() for an account — the Dashboard's "Очистить
+// статистику" button. Non-destructive: trade_history rows are never touched, GetDashboard
+// just stops showing anything closed before this timestamp for this account.
+// PATCH /accounts/{id}/clear-stats
+func (s *Server) ClearAccountStats(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	id := chi.URLParam(r, "id")
+	tag, err := s.pool.Exec(r.Context(),
+		`UPDATE exchange_accounts SET stats_cleared_at=NOW() WHERE id=$1 AND owner_id=$2`,
+		id, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return

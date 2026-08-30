@@ -817,6 +817,7 @@ type AccountRunner struct {
 	posMu               sync.RWMutex
 	positions           map[string]float64
 	posAvgEntry         map[string]float64
+	posLeverage         map[string]float64
 	discrepancyLoggedAt map[string]time.Time
 
 	// authDead guards stopAllOnPermanentAuthFailure against re-entry: the private WS
@@ -846,6 +847,7 @@ func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trade
 		cancel:              cancel,
 		positions:           make(map[string]float64),
 		posAvgEntry:         make(map[string]float64),
+		posLeverage:         make(map[string]float64),
 		discrepancyLoggedAt: make(map[string]time.Time),
 	}
 }
@@ -866,6 +868,19 @@ func (ar *AccountRunner) GetPositionAvgEntry(symbol string, positionIdx int) flo
 	key := symbol + ":" + strconv.Itoa(positionIdx)
 	ar.posMu.RLock()
 	v := ar.posAvgEntry[key]
+	ar.posMu.RUnlock()
+	return v
+}
+
+// GetPositionLeverage returns the cached exchange-side leverage for a given symbol and
+// positionIdx, as last reported by a WS position event. Returns 0 if not yet received —
+// callers must treat 0 as "unknown", not "zero leverage". Used by reconcile.go's
+// leverage-drift guard to detect when the exchange has silently reduced leverage below
+// what this runner last confirmed setting.
+func (ar *AccountRunner) GetPositionLeverage(symbol string, positionIdx int) float64 {
+	key := symbol + ":" + strconv.Itoa(positionIdx)
+	ar.posMu.RLock()
+	v := ar.posLeverage[key]
 	ar.posMu.RUnlock()
 	return v
 }
@@ -1087,8 +1102,9 @@ func (ar *AccountRunner) UnregisterOrder(exchangeOrderID string) {
 func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
 	size, _ := strconv.ParseFloat(ev.Size, 64)
 	avgPrice, _ := strconv.ParseFloat(ev.AvgPrice, 64)
+	leverage, _ := strconv.ParseFloat(ev.Leverage, 64)
 
-	// Update position size and avg entry caches.
+	// Update position size, avg entry and leverage caches.
 	// Also detect when avgPrice changes — that means a fill changed the position,
 	// so we need to re-place TP with the correct exchange entry price.
 	key := ev.Symbol + ":" + strconv.Itoa(ev.PositionIdx)
@@ -1099,6 +1115,9 @@ func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
 		ar.posAvgEntry[key] = avgPrice
 	} else if size == 0 {
 		ar.posAvgEntry[key] = 0
+	}
+	if leverage > 0 {
+		ar.posLeverage[key] = leverage
 	}
 	ar.posMu.Unlock()
 
@@ -1330,7 +1349,57 @@ func (ar *AccountRunner) OnConnected() {
 	ar.mu.Lock()
 	ar.authDead = false
 	ar.mu.Unlock()
+	go ar.seedPositionCache(context.Background())
 	go ar.tryReconcile(context.Background())
+}
+
+// seedPositionCache populates ar.positions/ar.posAvgEntry/ar.posLeverage from a fresh
+// FetchPositions snapshot. These maps are otherwise filled ONLY reactively, one symbol+
+// positionIdx at a time, as OnPositionEvent WS pushes arrive — so a leg whose position
+// hasn't changed since this process last (re)connected sits at its zero-value until its
+// next fill/close, even though the exchange position is very much alive. riskGate's
+// net-exposure netting (risk.go) then misreads that zero as "nothing to hedge against"
+// and can wrongly block a hedge-reducing entry as if it were pure new exposure.
+// Found live (2026-08-25): after a restart, 1000NEIROCTOUSDT's short hedge leg couldn't
+// re-enter after a TP because the cache had never seen the long leg's untouched-since-
+// yesterday position, so its notional read as 0 instead of ~32 USDT.
+// Runs on every WS connect AND reconnect (see private_stream.go's handler.OnConnected()
+// call) — the exact moments this cache would otherwise start cold. Only writes symbols
+// Bybit reports with a non-zero size; never clears an existing entry, so a transient
+// FetchPositions error or an empty response can't wipe cache state that live WS events
+// already populated correctly.
+func (ar *AccountRunner) seedPositionCache(ctx context.Context) {
+	positions, err := trader.FetchPositions(ctx, ar.creds)
+	if err != nil {
+		log.Printf("strategy: seedPositionCache account=%s: %v", ar.accountID, err)
+		return
+	}
+	ar.applyPositionSnapshot(positions)
+}
+
+// applyPositionSnapshot merges a FetchPositions result into ar.positions/posAvgEntry/
+// posLeverage. Split out from seedPositionCache so the merge logic is testable without a
+// real Bybit call. Only writes symbols/legs Bybit reports with a non-zero size — a
+// zero-size row or a symbol simply absent from the response never clears an existing
+// entry, so a stale/incomplete snapshot can't wipe cache state live WS events already
+// populated correctly.
+func (ar *AccountRunner) applyPositionSnapshot(positions []trader.Position) {
+	ar.posMu.Lock()
+	defer ar.posMu.Unlock()
+	for _, p := range positions {
+		size, _ := strconv.ParseFloat(p.Size, 64)
+		if size == 0 {
+			continue
+		}
+		key := p.Symbol + ":" + strconv.Itoa(p.PositionIdx)
+		ar.positions[key] = size
+		if avg, _ := strconv.ParseFloat(p.EntryPrice, 64); avg > 0 {
+			ar.posAvgEntry[key] = avg
+		}
+		if lev, _ := strconv.ParseFloat(p.Leverage, 64); lev > 0 {
+			ar.posLeverage[key] = lev
+		}
+	}
 }
 
 // OnDisconnected implements trader.PrivateStreamHandler.

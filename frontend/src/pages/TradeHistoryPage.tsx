@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { getTradeHistory, getTradeHistorySymbols, type TradeHistoryRow, type TradeHistoryStats, type TradeHistoryParams } from '../api/tradeHistory'
 import { listStrategies } from '../api/strategies'
+import { listAccounts, clearAccountStats } from '../api/accounts'
 import { apiClient } from '../api/client'
+import { useSelectedAccount } from '../contexts/AccountContext'
 import type { Bot } from '../features/bots/types'
-
-interface AccountOption { id: string; label: string }
+import type { ExchangeAccount } from '../types'
 
 const LIMIT = 50
 const POLL_MS = 30_000
@@ -499,8 +500,9 @@ function TradeRow({ t, isPaired }: { t: TradeHistoryRow; isPaired?: boolean }) {
 type FilterItem = { id: string; label: string; kind: 'bot' | 'strategy' }
 
 export function TradeHistoryPage() {
-  const [accounts, setAccounts]         = useState<AccountOption[]>([])
-  const [filterAccount, setFilterAccount] = useState('')
+  const { selectedAccountId } = useSelectedAccount()
+  const [accounts, setAccounts]         = useState<ExchangeAccount[]>([])
+  const [clearingStats, setClearingStats] = useState(false)
   const [filterItems, setFilterItems]   = useState<FilterItem[]>([])
   const [symbolOptions, setSymbolOptions] = useState<string[]>([])
   const [filterSymbol, setFilterSymbol] = useState('')
@@ -520,16 +522,16 @@ export function TradeHistoryPage() {
   const [sortCol, setSortCol] = useState<SortCol>('closed_at')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 
-  // ── Fetch accounts once (for account filter dropdown) ──
+  // ── Fetch accounts (for the "Очистить статистику" button + cleared-on hint) ──
   useEffect(() => {
-    apiClient.get<AccountOption[]>('/accounts')
-      .then(r => setAccounts(r.data ?? []))
+    listAccounts()
+      .then(a => setAccounts(a.filter(x => x.is_active)))
       .catch(() => {})
   }, [])
 
   useEffect(() => {
-    getTradeHistorySymbols().then(setSymbolOptions).catch(() => {})
-  }, [])
+    getTradeHistorySymbols(selectedAccountId || undefined).then(setSymbolOptions).catch(() => {})
+  }, [selectedAccountId])
 
   useEffect(() => {
     Promise.all([
@@ -579,7 +581,7 @@ export function TradeHistoryPage() {
   const loadDB = useCallback(async (off: number, silent = false) => {
     if (!silent) setLoading(true)
     const params: TradeHistoryParams = { limit: LIMIT, offset: off, sort_by: sortCol, sort_dir: sortDir }
-    if (filterAccount) params.account_id = filterAccount
+    if (selectedAccountId) params.account_id = selectedAccountId
     if (filterItem.startsWith('bot:'))      params.bot_id      = filterItem.slice(4)
     if (filterItem.startsWith('strategy:')) params.strategy_id = filterItem.slice(9)
     if (filterItem.startsWith('bot-symbol:')) {
@@ -606,7 +608,7 @@ export function TradeHistoryPage() {
     } finally {
       if (!silent) setLoading(false)
     }
-  }, [filterAccount, filterItem, filterSymbol, filterSource, filterResult, dateFrom, dateTo, sortCol, sortDir])
+  }, [selectedAccountId, filterItem, filterSymbol, filterSource, filterResult, dateFrom, dateTo, sortCol, sortDir])
 
   const load = useCallback((off: number, silent = false) => {
     loadDB(off, silent)
@@ -627,7 +629,23 @@ export function TradeHistoryPage() {
     // offset reset happens via useEffect on load deps change
   }
 
-  const hasFilter = !!(filterAccount || filterItem || filterSymbol || filterSource || filterResult || dateFrom || dateTo)
+  const hasFilter = !!(filterItem || filterSymbol || filterSource || filterResult || dateFrom || dateTo)
+
+  const selectedAcc = accounts.find(a => a.id === selectedAccountId)
+
+  async function handleClearStats() {
+    if (!selectedAccountId) return
+    if (!window.confirm('Скрыть всю статистику ДО текущего момента для этого аккаунта? Сами сделки в истории не удаляются — только перестают отображаться.')) return
+    setClearingStats(true)
+    try {
+      await clearAccountStats(selectedAccountId)
+      const accs = await listAccounts()
+      setAccounts(accs.filter(x => x.is_active))
+      await loadDB(0)
+    } finally {
+      setClearingStats(false)
+    }
+  }
 
   const COLS: [SortCol, string, string][] = [
     ['symbol',     'Символ',          'left'],
@@ -647,25 +665,30 @@ export function TradeHistoryPage() {
     <div className="max-w-7xl mx-auto px-4 py-6">
       <div className="flex items-center justify-between mb-5">
         <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">История сделок</h1>
-        <span className="text-sm text-gray-500">{total} сделок</span>
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-gray-500">{total} сделок</span>
+          {selectedAcc?.stats_cleared_at && (
+            <span className="text-xs text-gray-500" title={new Date(selectedAcc.stats_cleared_at).toLocaleString('ru-RU')}>
+              · статистика очищена {new Date(selectedAcc.stats_cleared_at).toLocaleDateString('ru-RU')}
+            </span>
+          )}
+          <button
+            onClick={handleClearStats}
+            disabled={clearingStats || !selectedAccountId}
+            title="Скрыть статистику до текущего момента для этого аккаунта (сделки в истории не удаляются)"
+            className="inline-flex items-center gap-1.5 h-[34px] px-3 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-semibold text-gray-500 dark:text-gray-400 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50 dark:hover:bg-gray-800"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+            </svg>
+            {clearingStats ? 'Очищаем…' : 'Очистить статистику'}
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
       <div className="flex flex-wrap gap-3 mb-5">
-
-        {/* Account filter */}
-        {accounts.length > 1 && (
-          <select
-            value={filterAccount}
-            onChange={e => setFilterAccount(e.target.value)}
-            className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-medium"
-          >
-            <option value="">Все аккаунты</option>
-            {accounts.map(a => (
-              <option key={a.id} value={a.id}>{a.label}</option>
-            ))}
-          </select>
-        )}
 
         {/* Strategy / bot filter */}
         <select
@@ -737,7 +760,6 @@ export function TradeHistoryPage() {
         {hasFilter && (
           <button
             onClick={() => {
-              setFilterAccount('')
               setFilterItem('')
               setFilterSymbol('')
               setFilterSource('')

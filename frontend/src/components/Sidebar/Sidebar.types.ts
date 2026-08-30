@@ -3,6 +3,11 @@ export type Account = {
   name: string;
   exchange: 'Bybit' | 'Binance' | 'OKX' | (string & {});
   status: 'подключено' | 'отключено' | 'ошибка' | (string & {});
+  // Risk-monitor state (see AccountsPage's risk-settings section for the underlying
+  // margin_warn_pct/margin_pause_pct thresholds) — surfaced here so it's visible from
+  // every page, not just when the account card happens to be expanded.
+  riskPaused?: boolean;
+  riskWarning?: boolean;
 };
 
 export type Pnl = {

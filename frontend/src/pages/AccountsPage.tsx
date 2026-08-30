@@ -270,7 +270,7 @@ function InfoTip({ text }: { text: string }) {
   )
 }
 
-function RiskField({ label, tip, value, onChange }: { label: string; tip: string; value: number; onChange: (v: number) => void }) {
+function RiskField({ label, tip, value, onChange, disabled }: { label: string; tip: string; value: number; onChange: (v: number) => void; disabled?: boolean }) {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 4 }}>
@@ -281,10 +281,12 @@ function RiskField({ label, tip, value, onChange }: { label: string; tip: string
         type="number" min={0} max={100} step={1}
         value={value}
         onChange={e => onChange(Number(e.target.value))}
+        disabled={disabled}
         style={{
           width: '100%', background: '#0e1320', color: T.text,
           border: `1px solid ${T.border}`, borderRadius: 8, padding: '7px 10px',
           fontSize: 12, fontFamily: 'inherit', outline: 'none', colorScheme: 'dark',
+          opacity: disabled ? 0.45 : 1, cursor: disabled ? 'not-allowed' : 'text',
         }}
       />
     </div>
@@ -295,22 +297,27 @@ function RiskSettingsSection({ acc, onSave }: { acc: ExchangeAccount; onSave: (v
   const [warnPct, setWarnPct]         = useState(acc.margin_warn_pct)
   const [pausePct, setPausePct]       = useState(acc.margin_pause_pct)
   const [notionalPct, setNotionalPct] = useState(acc.max_symbol_notional_pct)
+  const [enabled, setEnabled]         = useState(acc.risk_guard_enabled)
   const [saving, setSaving]           = useState(false)
 
   useEffect(() => {
     setWarnPct(acc.margin_warn_pct)
     setPausePct(acc.margin_pause_pct)
     setNotionalPct(acc.max_symbol_notional_pct)
-  }, [acc.margin_warn_pct, acc.margin_pause_pct, acc.max_symbol_notional_pct])
+    setEnabled(acc.risk_guard_enabled)
+  }, [acc.margin_warn_pct, acc.margin_pause_pct, acc.max_symbol_notional_pct, acc.risk_guard_enabled])
 
-  const dirty = warnPct !== acc.margin_warn_pct || pausePct !== acc.margin_pause_pct || notionalPct !== acc.max_symbol_notional_pct
-  const invalid = pausePct < warnPct || notionalPct <= 0
+  const dirty = warnPct !== acc.margin_warn_pct || pausePct !== acc.margin_pause_pct ||
+    notionalPct !== acc.max_symbol_notional_pct || enabled !== acc.risk_guard_enabled
+  // Thresholds only need to be valid when the guard is actually enabled — while disabled
+  // they're not enforced, so a stale/invalid combination shouldn't block turning it off.
+  const invalid = enabled && (pausePct < warnPct || notionalPct <= 0)
 
   async function handleSave() {
     if (invalid) return
     setSaving(true)
     try {
-      await onSave({ margin_warn_pct: warnPct, margin_pause_pct: pausePct, max_symbol_notional_pct: notionalPct })
+      await onSave({ margin_warn_pct: warnPct, margin_pause_pct: pausePct, max_symbol_notional_pct: notionalPct, risk_guard_enabled: enabled })
     } finally {
       setSaving(false)
     }
@@ -330,6 +337,17 @@ function RiskSettingsSection({ acc, onSave }: { acc: ExchangeAccount; onSave: (v
         <span style={{ fontSize: 10, color: T.dim, textTransform: 'uppercase', letterSpacing: 1.2, fontWeight: 600 }}>
           Риск-настройки
         </span>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', userSelect: 'none' }}>
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={e => setEnabled(e.target.checked)}
+            style={{ width: 14, height: 14, cursor: 'pointer', accentColor: '#4a7dff' }}
+          />
+          <span style={{ fontSize: 11, fontWeight: 600, color: enabled ? T.dim : T.orange }}>
+            {enabled ? 'Включено' : 'Выключено'}
+          </span>
+        </label>
         {mmRate != null && (
           <span style={{
             marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6,
@@ -341,21 +359,31 @@ function RiskSettingsSection({ acc, onSave }: { acc: ExchangeAccount; onSave: (v
           </span>
         )}
       </div>
+      {!enabled && (
+        <div style={{
+          marginBottom: 10, padding: '6px 10px', borderRadius: 8,
+          background: 'rgba(255,166,0,.08)', border: `1px solid ${T.orange}40`,
+          fontSize: 11, color: T.orange, display: 'flex', alignItems: 'center', gap: 6,
+        }}>
+          <IcAlert s={12} c={T.orange} w={2} />
+          Риск-контроль выключен — ни пауза по margin ratio, ни лимит на монету сейчас не действуют. Значения ниже сохранены, но не применяются.
+        </div>
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
         <RiskField
           label="Предупреждение, % margin ratio"
           tip="Порог margin ratio биржи (accountMMRate), при достижении которого в лог пишется предупреждение. Ничего не блокирует — это ранний сигнал, что счёт приближается к риску ликвидации. Также порог, ниже которого должна опуститься margin ratio, чтобы автоматически снять паузу входов (см. «Пауза входов»)."
-          value={warnPct} onChange={setWarnPct}
+          value={warnPct} onChange={setWarnPct} disabled={!enabled}
         />
         <RiskField
           label="Пауза входов, % margin ratio"
           tip="Порог margin ratio, при достижении которого движок перестаёт открывать НОВЫЕ уровни (DCA-входы) по всем стратегиям на этом аккаунте — до тех пор, пока margin ratio не опустится ниже порога «Предупреждение». Уже открытые позиции, а также их TP/SL не трогает и не закрывает."
-          value={pausePct} onChange={setPausePct}
+          value={pausePct} onChange={setPausePct} disabled={!enabled}
         />
         <RiskField
           label="Лимит на монету, % от equity"
           tip="Максимальный суммарный объём (notional) позиции по одной монете — сложенный по ВСЕМ стратегиям на этот символ на аккаунте — относительно текущего equity. При превышении новые входы по этой монете блокируются, пока объём не сократится. Не влияет на закрытие/TP/SL."
-          value={notionalPct} onChange={setNotionalPct}
+          value={notionalPct} onChange={setNotionalPct} disabled={!enabled}
         />
       </div>
       {invalid && (

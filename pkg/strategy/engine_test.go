@@ -4,6 +4,9 @@ import (
 	"context"
 	"math"
 	"testing"
+	"time"
+
+	"sis/pkg/trader"
 )
 
 func TestCalculateMatrixPrices(t *testing.T) {
@@ -334,6 +337,57 @@ func TestMatrixMostFavorableFill_IgnoresUnfilledAndEmpty(t *testing.T) {
 	}
 }
 
+// TestMatrixMostFavorableFill_PrefersRealDCALevelOverZero is the regression for the bug
+// found live 2026-08-21: L(0)'s fill price is always the most extreme "in favor" price
+// once a long-that-DCA'd-down (or short-that-DCA'd-up) has any favorable-side comparison
+// made against it, because L(0) filled at the best price of the whole set by construction.
+// Since matrix_entry_level carries no tp_pct/stop_pct by design, L(0) winning this
+// comparison meant TP silently never got placed for MatrixNova strategies with several
+// levels filled — matrixUpdateTP: "tp_pct не настроен для слота L(0)" logged every
+// reconcile tick for hours despite L(-1)/L(-2) having valid tp_pct configs. A real DCA
+// level must always win over L(0) when one exists, regardless of price.
+func TestMatrixMostFavorableFill_PrefersRealDCALevelOverZero(t *testing.T) {
+	zero, negOne := 0, -1
+	sr := &StrategyRunner{
+		strategy: Strategy{Direction: DirectionLong},
+		levels: []GridLevel{
+			// L(0) filled at the HIGHEST price of the set — by the old (buggy) comparison
+			// this alone would win "most favorable for a long", even though L(-1) is the
+			// only level with a real tp_pct config in matrix_entry_level's null-tp_pct setup.
+			{Slot: &zero, Status: LevelFilled, FilledPrice: 105.0},
+			{Slot: &negOne, Status: LevelFilled, FilledPrice: 98.0},
+		},
+	}
+	got, ok := sr.matrixMostFavorableFill()
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got.Slot == nil || *got.Slot != -1 {
+		t.Fatalf("favorable fill slot = %v, want -1 — a real DCA level must govern over L(0) whenever one has filled", got.Slot)
+	}
+}
+
+// TestMatrixMostFavorableFill_FallsBackToZeroWhenItIsTheOnlyFill pins the other half of
+// the same fix: when L(0) genuinely is the only fill (fresh cycle, no DCA yet), it must
+// still be returned — matrixUpdateTP's "tp_pct не настроен" branch handles that case as
+// expected/normal (see its doc comment), it just must not be preferred over a real level.
+func TestMatrixMostFavorableFill_FallsBackToZeroWhenItIsTheOnlyFill(t *testing.T) {
+	zero := 0
+	sr := &StrategyRunner{
+		strategy: Strategy{Direction: DirectionLong},
+		levels: []GridLevel{
+			{Slot: &zero, Status: LevelFilled, FilledPrice: 100.0},
+		},
+	}
+	got, ok := sr.matrixMostFavorableFill()
+	if !ok {
+		t.Fatal("expected ok=true — L(0) is a valid fill, just a low-priority one")
+	}
+	if got.Slot == nil || *got.Slot != 0 {
+		t.Fatalf("favorable fill slot = %v, want 0 (only fill available)", got.Slot)
+	}
+}
+
 func TestMatrixPlacePerLevelSLSkipsNegativeSlots(t *testing.T) {
 	// matrixPlacePerLevelSL must return immediately for negative slots.
 	// We verify by checking the function returns without panicking on nil runner
@@ -406,4 +460,47 @@ func TestMatrixApplyStopCondSLsSkipsBelowThreshold(t *testing.T) {
 	}
 	// price 101.0 < threshold 101.5 → condMet=false → no SL → no panic
 	sr.matrixApplyStopCondSLs(context.Background(), 101.0)
+}
+
+// TestOnPositionEvent_CachesLeverage pins that a WS position event's leverage field is
+// cached and retrievable via GetPositionLeverage — the read side of the leverage-drift
+// guard (reconcile.go block 10), which compares this cache against confirmedLeverage to
+// detect when the exchange has silently reduced leverage outside this system.
+func TestOnPositionEvent_CachesLeverage(t *testing.T) {
+	ar := &AccountRunner{
+		positions:           make(map[string]float64),
+		posAvgEntry:         make(map[string]float64),
+		posLeverage:         make(map[string]float64),
+		discrepancyLoggedAt: make(map[string]time.Time),
+		strategies:          make(map[string]*StrategyRunner),
+		orderIndex:          make(map[string]orderRef),
+	}
+
+	if got := ar.GetPositionLeverage("BTCUSDT", 1); got != 0 {
+		t.Fatalf("GetPositionLeverage before any event = %v, want 0 (unknown)", got)
+	}
+
+	ar.OnPositionEvent(trader.PositionEvent{
+		Symbol: "BTCUSDT", PositionIdx: 1, Size: "10", AvgPrice: "100", Leverage: "25",
+	})
+	if got := ar.GetPositionLeverage("BTCUSDT", 1); got != 25 {
+		t.Errorf("GetPositionLeverage after event = %v, want 25", got)
+	}
+	// Different positionIdx/symbol must stay unaffected — keyed independently.
+	if got := ar.GetPositionLeverage("BTCUSDT", 2); got != 0 {
+		t.Errorf("GetPositionLeverage for untouched positionIdx = %v, want 0", got)
+	}
+	if got := ar.GetPositionLeverage("ETHUSDT", 1); got != 0 {
+		t.Errorf("GetPositionLeverage for untouched symbol = %v, want 0", got)
+	}
+
+	// A later event with leverage="0" (or missing) must NOT clobber the cached value —
+	// Bybit's WS occasionally omits fields on partial updates; 0 means "not reported here",
+	// not "leverage is now zero".
+	ar.OnPositionEvent(trader.PositionEvent{
+		Symbol: "BTCUSDT", PositionIdx: 1, Size: "10", AvgPrice: "100",
+	})
+	if got := ar.GetPositionLeverage("BTCUSDT", 1); got != 25 {
+		t.Errorf("GetPositionLeverage after event without leverage field = %v, want unchanged 25", got)
+	}
 }

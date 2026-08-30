@@ -487,18 +487,18 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read current grid fields so we can detect whether the grid actually changed.
-	var oldGridLevels, oldGridActive int
+	var oldGridLevels, oldGridActive, oldLeverage int
 	var oldGridStepPct, oldGridSizeUSDT float64
 	var oldDirection, oldEntryOrderType string
 	var oldStepsJSON, oldMatrixLevelsJSON, oldMatrixEntryJSON *string
 	_ = s.pool.QueryRow(r.Context(),
 		`SELECT grid_levels, grid_active, grid_step_pct, grid_size_usdt,
 		        direction, entry_order_type, steps::text,
-		        matrix_levels::text, matrix_entry_level::text
+		        matrix_levels::text, matrix_entry_level::text, leverage
 		 FROM strategies WHERE id=$1 AND owner_id=$2`, id, userID,
 	).Scan(&oldGridLevels, &oldGridActive, &oldGridStepPct, &oldGridSizeUSDT,
 		&oldDirection, &oldEntryOrderType, &oldStepsJSON,
-		&oldMatrixLevelsJSON, &oldMatrixEntryJSON)
+		&oldMatrixLevelsJSON, &oldMatrixEntryJSON, &oldLeverage)
 
 	tag, err := s.pool.Exec(r.Context(), `
 		UPDATE strategies SET
@@ -550,7 +550,12 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		oldEntryOrderType != req.EntryOrderType ||
 		!stepsEqual(oldStepsJSON, newStepsJSON) ||
 		!stepsEqual(oldMatrixLevelsJSON, newMatrixLevelsJSON) ||
-		!stepsEqual(oldMatrixEntryJSON, newMatrixEntryJSON)
+		!stepsEqual(oldMatrixEntryJSON, newMatrixEntryJSON) ||
+		// Leverage must go through RestartCycle (not just UpdateTPSL) too — that's the
+		// only path that re-applies SetLeverage even with an open position (see
+		// applyConfiguredLeverage in pkg/strategy). Without this, editing leverage while a
+		// position was open silently never reached the exchange at all.
+		oldLeverage != req.Leverage
 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 
@@ -562,8 +567,8 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 	)
 	if gridChanged {
 		logMsg = fmt.Sprintf(
-			"Настройки обновлены (сетка): symbol=%s dir=%s step=%.2f%% size=%.2f USDT active=%d entryType=%s tp=%.2f%% sl=%.2f%%",
-			req.Symbol, req.Direction, req.GridStepPct, req.GridSizeUSDT, req.GridActive, req.EntryOrderType, req.TPPct, req.SLPct,
+			"Настройки обновлены (сетка): symbol=%s dir=%s step=%.2f%% size=%.2f USDT active=%d entryType=%s leverage=%dx tp=%.2f%% sl=%.2f%%",
+			req.Symbol, req.Direction, req.GridStepPct, req.GridSizeUSDT, req.GridActive, req.EntryOrderType, req.Leverage, req.TPPct, req.SLPct,
 		)
 	}
 	go func() {

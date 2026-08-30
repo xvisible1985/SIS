@@ -31,7 +31,7 @@ export function IndicatorCard<P extends BaseParams>({ indicator, candles, value,
 
   return (
     <div ref={rootRef} className={
-      'flex flex-col overflow-hidden rounded-[12px] border transition-colors ' +
+      'flex h-full flex-col overflow-hidden rounded-[12px] border transition-colors ' +
       (sigOn
         ? 'border-[#5b8cff]/30 bg-[linear-gradient(180deg,rgba(91,140,255,.07)_0%,rgba(123,91,255,.04)_100%)] shadow-[0_10px_28px_-18px_rgba(91,140,255,.4)]'
         : 'border-white/[.06] bg-white/[.08]')

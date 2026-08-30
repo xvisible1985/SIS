@@ -1009,3 +1009,34 @@ func (s *whaleSignal) Compute(_ []Candle) State { return Neutral }
 func (s *whaleSignal) ComputeWithSymbol(symbol string, _ []Candle) State {
 	return GetWhaleState(symbol)
 }
+
+// ── Leverage Filter Signal ────────────────────────────────────────────────
+// Non-directional symbol gate, not a price indicator: passes (Buy) when the exchange's own
+// max allowed leverage for the symbol is >= minLeverage — a coin the exchange itself caps
+// to a lower leverage tier is usually one it considers lower-liquidity/higher-risk. Used
+// like any other activation signal (AND-logic with others; matrix/hedge bots only check
+// state != Neutral, ignoring which direction fired — same convention priceChangeSignal and
+// whaleSignal already established for direction-agnostic external-data signals).
+//
+// Category is fixed to "linear": SymbolComputer's interface only carries a symbol, and
+// every bot type in this codebase already defaults to category "linear" in practice.
+type leverageFilterSignal struct{ minLeverage float64 }
+
+// Compute satisfies Signal interface (symbol unknown here — returns Neutral, same as whale).
+func (s *leverageFilterSignal) Compute(_ []Candle) State { return Neutral }
+
+// ComputeWithSymbol satisfies SymbolComputer — reads from the leverage cache populated by
+// services/api-gateway's leverage refresher / getSymbolMaxLeverage.
+func (s *leverageFilterSignal) ComputeWithSymbol(symbol string, _ []Candle) State {
+	if s.minLeverage <= 0 {
+		return Buy // filter disabled — always passes
+	}
+	maxLev := GetLeverageState(symbol, "linear")
+	if maxLev <= 0 {
+		return Neutral // unknown (not cached yet) — fail closed, not "no limit"
+	}
+	if maxLev >= s.minLeverage {
+		return Buy
+	}
+	return Neutral
+}

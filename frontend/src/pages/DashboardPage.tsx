@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getDashboard, type DashboardData, type DailyPnL } from '../api/dashboard'
-import { getAccountBalance, getAccountPositions, listAccounts } from '../api/accounts'
+import { getAccountBalance, getAccountPositions, listAccounts, clearAccountStats } from '../api/accounts'
 import { useSelectedAccount } from '../contexts/AccountContext'
 import type { Position, ExchangeAccount } from '../types'
 
@@ -1054,6 +1054,43 @@ function BotsCard({ data, period }: { data: DashboardData; period: Period }) {
   )
 }
 
+// ─── RiskBanner ───────────────────────────────────────────────────────────────
+// Surfaces per-account margin-ratio risk (configurable in AccountsPage's risk-settings
+// section) proactively, without requiring the user to open and expand an account card.
+function RiskBanner({ accounts }: { accounts: ExchangeAccount[] }) {
+  const navigate = useNavigate()
+
+  const paused = accounts.filter(a => a.risk_paused)
+  const warning = accounts.filter(a =>
+    !a.risk_paused && a.current_mm_rate_pct != null && a.current_mm_rate_pct >= a.margin_warn_pct
+  )
+  if (paused.length === 0 && warning.length === 0) return null
+
+  const danger = paused.length > 0
+  const list = danger ? paused : warning
+  const names = list.map(a => a.label).join(', ')
+
+  return (
+    <div
+      onClick={() => navigate('/accounts')}
+      style={{
+        marginBottom: 12, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10,
+        background: danger ? T.redSoft : 'rgba(247,166,0,.10)',
+        border: `1px solid ${danger ? T.redBd : 'rgba(247,166,0,.30)'}`,
+        borderRadius: 10, color: danger ? T.red : T.orange, fontSize: 13, cursor: 'pointer',
+      }}
+    >
+      <span style={{ fontSize: 15, flexShrink: 0 }}>{danger ? '🔴' : '⚠️'}</span>
+      <span style={{ flex: 1 }}>
+        {danger
+          ? <>Риск-пауза по счёту{list.length > 1 ? 'ам' : 'у'} <b>{names}</b> — новые входы (DCA/уровни) остановлены, margin ratio достиг порога паузы.</>
+          : <>Margin ratio по счёту{list.length > 1 ? 'ам' : 'у'} <b>{names}</b> приближается к порогу паузы.</>}
+      </span>
+      <span style={{ fontSize: 11, fontWeight: 600, flexShrink: 0, textDecoration: 'underline' }}>Открыть аккаунты →</span>
+    </div>
+  )
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 export function DashboardPage() {
   const navigate = useNavigate()
@@ -1072,7 +1109,7 @@ export function DashboardPage() {
 
   const loadDash = useCallback(async (p: Period) => {
     try {
-      const d = await getDashboard(p)
+      const d = await getDashboard(p, selectedAccountId || undefined)
       // Guard: if the server returned HTML or an unexpected shape, don't crash
       if (!d || typeof d !== 'object' || !d.stats || !Array.isArray(d.daily_pnl)) {
         setError('Бэкенд вернул неожиданный ответ — убедитесь что api-gateway пересобран')
@@ -1084,7 +1121,7 @@ export function DashboardPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка загрузки')
     }
-  }, [])
+  }, [selectedAccountId])
 
   const loadAccount = useCallback(async (id: string) => {
     if (!id) return
@@ -1125,6 +1162,23 @@ export function DashboardPage() {
     setRefreshing(false)
   }
 
+  const [clearingStats, setClearingStats] = useState(false)
+  const handleClearStats = async () => {
+    if (!selectedAccountId) return
+    if (!window.confirm('Скрыть всю статистику ДО текущего момента для этого аккаунта? Сами сделки в истории не удаляются — только перестают учитываться в дашборде.')) return
+    setClearingStats(true)
+    try {
+      await clearAccountStats(selectedAccountId)
+      const accs = await listAccounts()
+      setAccounts(accs.filter(x => x.is_active))
+      await loadDash(period)
+    } catch {
+      setError('Не удалось очистить статистику')
+    } finally {
+      setClearingStats(false)
+    }
+  }
+
   const selectedAcc = accounts.find(a => a.id === selectedAccountId)
   const accLabel = selectedAcc ? selectedAcc.label : 'Аккаунт не выбран'
 
@@ -1137,10 +1191,33 @@ export function DashboardPage() {
           <div style={{ fontSize: 11, color: T.dim, marginTop: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: T.green, boxShadow: `0 0 8px ${T.green}`, display: 'inline-block' }} />
             {accLabel}
+            {selectedAcc?.stats_cleared_at && (
+              <span title={new Date(selectedAcc.stats_cleared_at).toLocaleString('ru-RU')}>
+                · статистика очищена {new Date(selectedAcc.stats_cleared_at).toLocaleDateString('ru-RU')}
+              </span>
+            )}
           </div>
         </div>
         <div style={{ flex: 1 }} />
         <PeriodTabs value={period} onChange={setPeriod} isMobile={isMobile} />
+        <button
+          onClick={handleClearStats}
+          disabled={clearingStats || !selectedAccountId}
+          title="Скрыть статистику до текущего момента для этого аккаунта (сделки в истории не удаляются)"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            height: 34, padding: '0 12px',
+            background: T.panel, border: `1px solid ${T.border}`,
+            borderRadius: 10, color: T.dim, cursor: clearingStats || !selectedAccountId ? 'not-allowed' : 'pointer',
+            opacity: clearingStats || !selectedAccountId ? 0.5 : 1,
+            fontSize: 12, fontWeight: 600, flexShrink: 0, fontFamily: 'inherit',
+          }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+          </svg>
+          {clearingStats ? 'Очищаем…' : 'Очистить статистику'}
+        </button>
         <button onClick={handleRefresh} disabled={refreshing} style={{
           width: 34, height: 34, background: T.panel, border: `1px solid ${T.border}`,
           borderRadius: 10, color: T.body, cursor: 'pointer', display: 'flex',
@@ -1158,6 +1235,8 @@ export function DashboardPage() {
           {error}
         </div>
       )}
+
+      <RiskBanner accounts={accounts} />
 
       {loading ? (
         <div style={{ textAlign: 'center', padding: '60px 0', color: T.dim }}>

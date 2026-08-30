@@ -48,7 +48,19 @@ export interface DashboardData {
   granularity: 'day' | 'hour'
 }
 
-export async function getDashboard(period: '1d' | '7d' | '30d' | '90d' | '1y' | 'all' = '30d'): Promise<DashboardData> {
-  const res = await apiClient.get<DashboardData>('/dashboard', { params: { period } })
+export async function getDashboard(
+  period: '1d' | '7d' | '30d' | '90d' | '1y' | 'all' = '30d',
+  accountId?: string,
+): Promise<DashboardData> {
+  // account_id is optional server-side (falls back to aggregating across every account the
+  // user owns) — but the dashboard should always show the currently selected account's own
+  // stats, not a blend with other accounts' history. Omitting it here is what caused a
+  // freshly connected account to display the previous account's stats (2026-08-19): the
+  // backend was never told which account to scope to, so it silently aggregated all of them,
+  // which — with the new account having no trade history yet — looked identical to the old
+  // account's numbers.
+  const params: Record<string, string> = { period }
+  if (accountId) params.account_id = accountId
+  const res = await apiClient.get<DashboardData>('/dashboard', { params })
   return res.data
 }

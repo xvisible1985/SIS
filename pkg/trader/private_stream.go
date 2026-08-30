@@ -39,6 +39,7 @@ type PositionEvent struct {
 	AvgPrice    string `json:"avgPrice"` // exchange position avg entry price
 	Category    string `json:"category"`
 	PositionIdx int    `json:"positionIdx"`
+	Leverage    string `json:"leverage"` // exchange-side leverage currently applied to this position
 }
 
 // PrivateStreamHandler receives events from Bybit private WS.

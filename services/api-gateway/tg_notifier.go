@@ -4,9 +4,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // TgNotifyMsg is the message format published to Redis channel "tg:notify".
@@ -31,6 +34,51 @@ func (s *Server) publishTgNotify(ctx context.Context, msg TgNotifyMsg) {
 	if err := s.rdb.Publish(ctx, tgNotifyChannel, string(data)).Err(); err != nil {
 		log.Printf("tg_notifier: publish error: %v", err)
 	}
+}
+
+// onRiskEvent is registered as strategy.OnRiskEvent at startup (see server.go) — fires
+// once per pause-state TRANSITION (checkRiskOnce already collapses per-tick repeats before
+// calling this, so no extra de-duplication is needed here).
+//
+// Wrapped in its own recover(): called from pkg/strategy's risk-monitor loop, which runs
+// inside safeLoop's panic recovery — lower stakes than onAccumulateChange's bare
+// unrecovered goroutines, but still shouldn't rely solely on that outer safety net.
+func (s *Server) onRiskEvent(accountID string, entering bool, mmRatePct, pausePct float64) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("onRiskEvent: recovered panic for account %s: %v", accountID, r)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var label string
+	var chatID int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT ea.label, tc.chat_id
+		FROM exchange_accounts ea
+		JOIN telegram_connections tc ON tc.user_id = ea.owner_id
+		LEFT JOIN telegram_notification_settings tns ON tns.user_id = ea.owner_id
+		WHERE ea.id = $1
+		  AND (tc.mute_until IS NULL OR tc.mute_until < NOW())
+		  AND COALESCE(tns.on_trade, true) = true`,
+		accountID,
+	).Scan(&label, &chatID)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			log.Printf("onRiskEvent: lookup account=%s: %v", accountID, err)
+		}
+		return
+	}
+
+	var text string
+	if entering {
+		text = fmt.Sprintf("🔴 *%s* — риск-пауза по счёту: margin ratio %.1f%% ≥ порога паузы %.1f%%. Новые входы (DCA/уровни) остановлены до снижения margin ratio ниже порога предупреждения.", label, mmRatePct, pausePct)
+	} else {
+		text = fmt.Sprintf("✅ *%s* — риск-пауза снята: margin ratio %.1f%%. Новые входы возобновлены.", label, mmRatePct)
+	}
+	s.publishTgNotify(ctx, TgNotifyMsg{ChatID: chatID, Text: text})
 }
 
 // startTgNotifier polls strategy_events for un-notified error/warn entries and

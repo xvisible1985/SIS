@@ -63,8 +63,9 @@ export interface TradeHistoryParams {
   sort_dir?: 'asc' | 'desc'
 }
 
-export async function getTradeHistorySymbols(): Promise<string[]> {
-  const res = await apiClient.get<string[]>('/trade-history/symbols')
+export async function getTradeHistorySymbols(accountId?: string): Promise<string[]> {
+  const q = accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''
+  const res = await apiClient.get<string[]>(`/trade-history/symbols${q}`)
   return res.data ?? []
 }
 

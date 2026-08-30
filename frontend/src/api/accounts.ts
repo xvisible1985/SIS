@@ -64,8 +64,15 @@ export interface RiskSettingsInput {
   margin_warn_pct: number
   margin_pause_pct: number
   max_symbol_notional_pct: number
+  risk_guard_enabled: boolean
 }
 
 export async function patchAccountRiskSettings(id: string, data: RiskSettingsInput): Promise<void> {
   await apiClient.patch(`/accounts/${id}/risk-settings`, data)
+}
+
+// Non-destructive: sets a "hide everything before now" marker for the Dashboard
+// (exchange_accounts.stats_cleared_at). trade_history rows themselves are never touched.
+export async function clearAccountStats(id: string): Promise<void> {
+  await apiClient.patch(`/accounts/${id}/clear-stats`)
 }

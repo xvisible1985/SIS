@@ -93,6 +93,22 @@ func (s *Server) GetDashboard(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
+	// "Очистить статистику" — a non-destructive per-account marker (exchange_accounts.
+	// stats_cleared_at), not a DELETE: trade_history rows before it stay intact for every
+	// other consumer (accounting, hedge_sessions accumulation, ...), only this dashboard
+	// query hides them. Only meaningful when a specific account is selected — an aggregate
+	// "all accounts" view has no single cleared_at to apply.
+	if accountID != "" {
+		var clearedAt *time.Time
+		s.pool.QueryRow(ctx, //nolint:errcheck
+			`SELECT stats_cleared_at FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
+			accountID, userID,
+		).Scan(&clearedAt)
+		if clearedAt != nil && (since == nil || clearedAt.After(*since)) {
+			since = clearedAt
+		}
+	}
+
 	// Build reusable base filter.
 	baseWhere := "WHERE th.owner_id = $1"
 	baseArgs := []any{userID}

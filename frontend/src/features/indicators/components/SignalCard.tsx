@@ -14,6 +14,10 @@ type Props<P extends Record<string, unknown>> = {
   onSettingsClick?: (rect: DOMRect) => void;
   hideBadge?: boolean;
   onChartClick?: () => void;
+  /** Extra content rendered inside the card body, below the formula box — e.g. RSI Test's
+   * manual override slider (AdminPage.tsx). Keeps signal-specific controls visually inside
+   * the card's own border instead of floating as a separate block below it. */
+  extra?: React.ReactNode;
 };
 
 function cardBg(state?: 'buy' | 'sell' | 'neutral') {
@@ -24,7 +28,7 @@ function cardBg(state?: 'buy' | 'sell' | 'neutral') {
   return 'border-white/[.06] bg-white/[.08]';
 }
 
-export function SignalCard<P extends Record<string, unknown>>({ signal, candles, value, onChange, defaultExpanded, onSettingsClick, hideBadge, onChartClick }: Props<P>) {
+export function SignalCard<P extends Record<string, unknown>>({ signal, candles, value, onChange, defaultExpanded, onSettingsClick, hideBadge, onChartClick, extra }: Props<P>) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(defaultExpanded ?? false);
   const [innerParams, setInner] = useParams<P>(signal.defaults);
@@ -39,7 +43,7 @@ export function SignalCard<P extends Record<string, unknown>>({ signal, candles,
     : signal.state;
 
   return (
-    <div ref={rootRef} className={`flex flex-col overflow-hidden rounded-[12px] border ${cardBg(liveState)}`}>
+    <div ref={rootRef} className={`flex h-full flex-col overflow-hidden rounded-[12px] border ${cardBg(liveState)}`}>
       <div className="flex items-start gap-2.5 p-3 pb-2.5">
 <div className="min-w-0 flex-1">
           <div className="truncate text-[14px] font-bold leading-tight tracking-tight text-slate-50">{signal.name}</div>
@@ -65,6 +69,8 @@ export function SignalCard<P extends Record<string, unknown>>({ signal, candles,
           {signal.formula(params)}
         </div>
       </div>
+
+      {extra && <div className="px-3 pb-2.5">{extra}</div>}
 
       {expanded && (
         <div className="flex flex-col gap-2.5 border-t border-white/[.06] px-3 pt-2.5 pb-3">

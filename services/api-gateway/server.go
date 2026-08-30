@@ -213,6 +213,7 @@ func NewServer(ctx context.Context, pool *pgxpool.Pool, rdb *redis.Client, jwtSe
 	s.pairedCloseSemPer = make(map[string]chan struct{})
 	s.pairedCloseLastRecompute = make(map[string]time.Time)
 	strategy.OnAccumulate = s.onAccumulateChange
+	strategy.OnRiskEvent = s.onRiskEvent
 	go s.refreshDelistCache(ctx)
 	return s
 }

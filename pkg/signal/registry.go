@@ -243,6 +243,12 @@ func init() {
 		return &whaleSignal{}
 	})
 
+	// Non-directional symbol gate: passes only if the exchange's own max leverage for the
+	// symbol is >= min_leverage. See leverageFilterSignal's doc comment in signals.go.
+	Register("leverage", func(cfg Config) Signal {
+		return &leverageFilterSignal{minLeverage: cfg.Float("min_leverage", 0)}
+	})
+
 	// Fires when the coin moved by >= thresholdPct over the last periodHours
 	// (rolling wall-clock window, not candle count). mode "trend" signals with
 	// the move (rise→Buy, fall→Sell); "counter" signals against it.

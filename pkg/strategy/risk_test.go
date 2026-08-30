@@ -3,6 +3,8 @@ package strategy
 import (
 	"testing"
 	"time"
+
+	"sis/pkg/trader"
 )
 
 func TestNextPausedState(t *testing.T) {
@@ -142,5 +144,99 @@ func TestRiskGate_UnrestrictedWhenNotionalCapDisabled(t *testing.T) {
 	ar.risk = accountRiskState{equity: 100, notionalPct: 0, paused: false, updatedAt: time.Now()}
 	if allowed, reason := ar.riskGate("BTCUSDT", 1, 1_000_000); !allowed {
 		t.Errorf("notionalPct=0 must mean the cap is disabled (not zero-allowance), got blocked: %s", reason)
+	}
+}
+
+// TestRiskGate_MasterSwitchOff_BypassesBothPauseAndNotionalCap is the regression for the
+// account-level risk_guard_enabled toggle (AccountsPage): with the guard off, riskGate must
+// let everything through — both the margin-ratio pause AND the notional cap — even when
+// both would otherwise clearly block. Also pins that an accountRiskState literal that
+// doesn't set guardDisabled (every pre-existing test in this file) defaults to the guard
+// being ACTIVE, not bypassed — a bool defaulting the wrong way here would have silently
+// disabled every other test's risk checks.
+func TestRiskGate_MasterSwitchOff_BypassesBothPauseAndNotionalCap(t *testing.T) {
+	ar := &AccountRunner{
+		positions:   map[string]float64{"BTCUSDT:1": 1_000_000},
+		posAvgEntry: map[string]float64{"BTCUSDT:1": 1},
+	}
+	ar.risk = accountRiskState{
+		equity: 100, notionalPct: 25, paused: true, updatedAt: time.Now(),
+		guardDisabled: true,
+	}
+	allowed, reason := ar.riskGate("BTCUSDT", 1, 1_000_000)
+	if !allowed {
+		t.Errorf("guardDisabled=true must bypass both the pause and the notional cap, got blocked: %s", reason)
+	}
+}
+
+// TestRiskGate_ZeroValueAccountRiskState_GuardIsActive pins that the zero value of
+// accountRiskState (as produced by a literal that omits guardDisabled, like every test
+// above it in this file) leaves the guard ACTIVE — a struct-tag or field-order slip that
+// flipped this default would silently turn off risk enforcement everywhere.
+func TestRiskGate_ZeroValueAccountRiskState_GuardIsActive(t *testing.T) {
+	ar := &AccountRunner{
+		positions:   map[string]float64{"BTCUSDT:1": 20},
+		posAvgEntry: map[string]float64{"BTCUSDT:1": 1},
+	}
+	ar.risk = accountRiskState{equity: 100, notionalPct: 25, paused: false, updatedAt: time.Now()}
+	if allowed, _ := ar.riskGate("BTCUSDT", 1, 10); allowed {
+		t.Error("accountRiskState{} without an explicit guardDisabled must still enforce the notional cap")
+	}
+}
+
+// TestApplyPositionSnapshot_UnblocksHedgeAfterColdCacheRestart is the regression for a bug
+// found live (2026-08-25): ar.positions/posAvgEntry are otherwise populated ONLY reactively
+// from WS position events, one leg at a time. After a process restart, a leg whose position
+// hadn't changed recently (here: MAIN's long, untouched since the previous day) sat at its
+// zero-value until its next fill — so when HEDGE's short leg tried to re-enter after a TP,
+// riskGate saw "nothing to hedge against" and blocked it as pure new exposure instead of
+// recognizing it as reducing net exposure. applyPositionSnapshot (called from OnConnected via
+// seedPositionCache on every WS connect/reconnect) fixes this by seeding the cache from a
+// fresh exchange snapshot before the gate is next consulted.
+func TestApplyPositionSnapshot_UnblocksHedgeAfterColdCacheRestart(t *testing.T) {
+	ar := &AccountRunner{
+		positions:   map[string]float64{},
+		posAvgEntry: map[string]float64{},
+		posLeverage: map[string]float64{},
+	}
+	ar.risk = accountRiskState{equity: 5, notionalPct: 99, paused: false, updatedAt: time.Now()} // cap ≈ 4.95
+
+	// Cold cache (as after a restart): MAIN's real ~32-notional long leg is invisible to
+	// riskGate, so HEDGE's small reducing short entry looks like pure new exposure and gets
+	// blocked — reproducing the live incident.
+	if allowed, reason := ar.riskGate("BTCUSDT", 2, 10); allowed {
+		t.Fatalf("setup: expected cold cache to reproduce the bug (blocked), got allowed (reason=%q) — test no longer models the incident", reason)
+	}
+
+	// A fresh exchange snapshot repopulates the long leg — this is what seedPositionCache
+	// does on every WS connect/reconnect.
+	ar.applyPositionSnapshot([]trader.Position{
+		{Symbol: "BTCUSDT", PositionIdx: 1, Size: "32", EntryPrice: "1"},
+	})
+
+	// Same hedge entry must now be recognized as reducing net exposure (32 → 22) and allowed,
+	// regardless of the cap.
+	allowed, reason := ar.riskGate("BTCUSDT", 2, 10)
+	if !allowed {
+		t.Errorf("riskGate must allow the hedge entry once the cache is seeded from a real snapshot, got blocked: %s", reason)
+	}
+}
+
+// TestApplyPositionSnapshot_NeverClearsExistingEntries pins that a snapshot missing a
+// symbol/leg (e.g. a transient partial FetchPositions response) can't wipe cache state
+// already populated correctly by live WS events — applyPositionSnapshot only writes legs the
+// snapshot actually reports with a non-zero size.
+func TestApplyPositionSnapshot_NeverClearsExistingEntries(t *testing.T) {
+	ar := &AccountRunner{
+		positions:   map[string]float64{"ETHUSDT:1": 5},
+		posAvgEntry: map[string]float64{"ETHUSDT:1": 100},
+		posLeverage: map[string]float64{},
+	}
+	// Snapshot reports an unrelated symbol only.
+	ar.applyPositionSnapshot([]trader.Position{
+		{Symbol: "BTCUSDT", PositionIdx: 1, Size: "1", EntryPrice: "50000"},
+	})
+	if got := ar.positions["ETHUSDT:1"]; got != 5 {
+		t.Errorf("ETHUSDT:1 position was cleared by an unrelated snapshot: got %v, want 5", got)
 	}
 }

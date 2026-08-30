@@ -7,7 +7,6 @@ import (
 	"math"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"sis/pkg/trader"
@@ -158,12 +157,28 @@ func (sr *StrategyRunner) matrixLatestActiveFill() (*GridLevel, bool) {
 // waiting. The favorable-side level's % is placed as a stop instead (see matrixUpdateTP),
 // which is direction-safe regardless of how far price has already run.
 //
+// L(0), the seed entry, is deliberately excluded from this comparison whenever a real DCA
+// level has also filled: matrix_entry_level carries no tp_pct/stop_pct by design (that's
+// expected — see matrixUpdateTP's tp_pct-missing branch), but for a position that DCA'd
+// AGAINST itself (long buying dips, short selling rallies) L(0)'s fill price is always the
+// most extreme "in favor" price of the whole set — it would win this comparison on every
+// single call once price recovers even slightly, permanently starving the real DCA levels'
+// tp_pct from ever governing the exit. Found live (2026-08-21): MatrixNova strategies with
+// 3-5 levels filled sat with zero TP for hours because L(0) kept "winning" here. L(0) is
+// only returned as a last resort, when it is literally the only fill there is — matching
+// matrixUpdateTP's "position has ONE fill (L0), OK to be briefly unprotected" scenario.
+//
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixMostFavorableFill() (*GridLevel, bool) {
 	var best *GridLevel
+	var zeroFill *GridLevel
 	for i := range sr.levels {
 		l := &sr.levels[i]
 		if l.Status != LevelFilled || l.FilledPrice <= 0 {
+			continue
+		}
+		if l.Slot != nil && *l.Slot == 0 {
+			zeroFill = l
 			continue
 		}
 		if best == nil {
@@ -180,7 +195,10 @@ func (sr *StrategyRunner) matrixMostFavorableFill() (*GridLevel, bool) {
 			}
 		}
 	}
-	return best, best != nil
+	if best != nil {
+		return best, true
+	}
+	return zeroFill, zeroFill != nil
 }
 
 // matrixLevelSide returns "Buy" for long direction, "Sell" for short.
@@ -276,34 +294,8 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 
 	// Apply configured leverage. If the exchange rejects the value (max exceeded),
 	// query the instrument's max and retry with the capped value.
-	lev := sr.strategy.Leverage
-	if lev <= 0 {
-		lev = 1
-	}
-	levStr := strconv.Itoa(lev)
-	if lerr := trader.SetLeverage(ctx, sr.runner.creds, trader.LeverageRequest{
-		Symbol:       sr.strategy.Symbol,
-		Category:     sr.strategy.Category,
-		BuyLeverage:  levStr,
-		SellLeverage: levStr,
-	}); lerr != nil && !strings.Contains(lerr.Error(), "110043") {
-		log.Printf("strategy %s: matrix: set leverage %d: %v — querying exchange max", sr.strategy.ID, lev, lerr)
-		if info, ierr := trader.GetPublicInstrumentInfo(ctx, sr.strategy.Category, sr.strategy.Symbol); ierr == nil && info.MaxLeverage > 0 {
-			cappedLev := int(info.MaxLeverage)
-			if cappedLev < lev {
-				cappedStr := strconv.Itoa(cappedLev)
-				if lerr2 := trader.SetLeverage(ctx, sr.runner.creds, trader.LeverageRequest{
-					Symbol:       sr.strategy.Symbol,
-					Category:     sr.strategy.Category,
-					BuyLeverage:  cappedStr,
-					SellLeverage: cappedStr,
-				}); lerr2 != nil && !strings.Contains(lerr2.Error(), "110043") {
-					log.Printf("strategy %s: matrix: set leverage capped to %d: %v", sr.strategy.ID, cappedLev, lerr2)
-				} else {
-					sr.info(ctx, fmt.Sprintf("Матрикс: плечо ограничено биржей: запрошено %dx, установлено %dx", lev, cappedLev))
-				}
-			}
-		}
+	if lev, cappedLev, wasCapped := sr.applyConfiguredLeverage(ctx); wasCapped {
+		sr.info(ctx, fmt.Sprintf("Матрикс: плечо ограничено биржей: запрошено %dx, установлено %dx", lev, cappedLev))
 	}
 
 	// Ensure position mode BEFORE taking the lock.
@@ -550,8 +542,14 @@ func (sr *StrategyRunner) placeMatrixLevel(ctx context.Context, l *GridLevel, cu
 		fmt.Sscanf(l.Qty, "%f", &qtyFloat)
 		gatePositionIdx := positionIdxForOpen(sr.strategy.HedgeMode, l.Side)
 		if allowed, reason := sr.runner.riskGate(sr.strategy.Symbol, gatePositionIdx, qtyFloat*priceForNotional); !allowed {
-			sr.warn(ctx, fmt.Sprintf("Matrix %s: вход заблокирован (%s)", slotLabel(l.Slot), reason))
+			if sr.riskBlockReason != reason {
+				sr.warn(ctx, fmt.Sprintf("Matrix %s: вход заблокирован (%s)", slotLabel(l.Slot), reason))
+			}
+			sr.riskBlockReason = reason
 			return nil
+		} else if sr.riskBlockReason != "" {
+			sr.info(ctx, fmt.Sprintf("Matrix %s: блокировка входа снята (%s)", slotLabel(l.Slot), sr.riskBlockReason))
+			sr.riskBlockReason = ""
 		}
 	}
 
@@ -1483,6 +1481,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	}
 	// TP suppressed by active hedge — do not place/re-place TP.
 	if sr.strategy.HedgeTpSuppressed {
+		sr.info(ctx, "matrixUpdateTP: TP подавлен хеджем (HedgeTpSuppressed=true) — не выставляю")
 		return
 	}
 	// TP/SL считается от средневзвешенной цены входа (ТВХ), чтобы гарантировать
@@ -1491,6 +1490,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	// чтобы корректно учесть проскальзывание маркет-ордеров.
 	avgEntryPrice, _ := sr.avgEntry()
 	if avgEntryPrice == 0 {
+		sr.warn(ctx, "matrixUpdateTP: расчётная ТВХ = 0 (нет заполненных уровней с FilledPrice) — TP не выставлен, повтор при следующем событии")
 		return
 	}
 	// Anchor to the exchange's real average entry (source of truth). Prefers the WS
@@ -1536,6 +1536,8 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 			})
 			sr.runner.pool.Exec(ctx, //nolint:errcheck
 				`UPDATE strategy_cycles SET tp_order_id=NULL WHERE id=$1`, sr.cycle.ID)
+		} else {
+			sr.warn(ctx, fmt.Sprintf("matrixUpdateTP: нет активного заполненного уровня (adverse=%v) — TP не выставлен, повтор при следующем событии", adverse))
 		}
 		return
 	}
@@ -1559,6 +1561,8 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 			}
 			sr.runner.pool.Exec(ctx, //nolint:errcheck
 				`UPDATE strategy_cycles SET tp_order_id=NULL WHERE id=$1`, sr.cycle.ID)
+		} else {
+			sr.warn(ctx, fmt.Sprintf("matrixUpdateTP: tp_pct не настроен для слота %s — TP не выставлен", slotLabel(governing.Slot)))
 		}
 		return
 	}
@@ -1575,6 +1579,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 
 	activeQty := sr.matrixActiveQty()
 	if activeQty == 0 {
+		sr.warn(ctx, "matrixUpdateTP: активный объём (matrixActiveQty) = 0 — TP не выставлен, повтор при следующем событии")
 		return
 	}
 	// Clamp to actual exchange position size — prevents a too-large TP qty from
@@ -1591,6 +1596,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	}
 	tpQty := trader.FormatQty(activeQty, sr.instr.QtyStep, sr.instr.MinQty)
 	if tpQty == "0" || tpQty == "" {
+		sr.warn(ctx, fmt.Sprintf("matrixUpdateTP: округлённый объём TP = %q (activeQty=%.6f, QtyStep=%v, MinQty=%v) — TP не выставлен", tpQty, activeQty, sr.instr.QtyStep, sr.instr.MinQty))
 		return
 	}
 

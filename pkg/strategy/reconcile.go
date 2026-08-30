@@ -755,4 +755,50 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 			log.Printf("strategy reconcile: orphan cancel %s: %v", o.OrderId, err)
 		}
 	}
+
+	// --- 10. Leverage drift guard ---
+	// Detects when the exchange-side leverage for a symbol has dropped below what this
+	// runner last confirmed setting (startCycle/matrix's SetLeverage — see confirmedLeverage's
+	// doc comment in cycle.go) and restores it. Nothing in this codebase ever lowers leverage
+	// after a cycle starts, so any drop can only come from outside this system (e.g. a manual
+	// change via the Bybit app). Found live (2026-08-20): TSMUSDT's confirmed 50x was running
+	// at 10x on the exchange with no corresponding log entry anywhere in this codebase, which
+	// more than quintupled the margin reserved for its resting DCA limit orders.
+	for stratID, sr := range strategyRefs {
+		sr.mu.Lock()
+		expected := sr.confirmedLeverage
+		status := sr.strategy.Status
+		symbol := sr.strategy.Symbol
+		category := sr.strategy.Category
+		wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
+		sr.mu.Unlock()
+		if expected <= 0 || status != StatusActive {
+			continue
+		}
+		current := ar.GetPositionLeverage(symbol, wantIdx)
+		if current <= 0 || int(current) >= expected {
+			continue
+		}
+		stratIDcopy := stratID
+		currentCopy := current
+		sr.submit(func(ctx context.Context) {
+			sr.mu.Lock()
+			exp := sr.confirmedLeverage
+			sr.mu.Unlock()
+			if exp <= 0 || int(currentCopy) >= exp {
+				return
+			}
+			levStr := strconv.Itoa(exp)
+			if err := trader.SetLeverage(ctx, sr.runner.creds, trader.LeverageRequest{
+				Symbol:       symbol,
+				Category:     category,
+				BuyLeverage:  levStr,
+				SellLeverage: levStr,
+			}); err != nil && !strings.Contains(err.Error(), "110043") {
+				log.Printf("strategy reconcile: leverage restore %s: requested %dx (exchange showed %dx): %v", stratIDcopy[:8], exp, int(currentCopy), err)
+			} else {
+				sr.warn(ctx, fmt.Sprintf("Плечо на бирже оказалось снижено извне (%dx→%dx) — восстановлено до %dx", exp, int(currentCopy), exp))
+			}
+		})
+	}
 }

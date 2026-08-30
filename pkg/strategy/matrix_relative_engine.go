@@ -65,9 +65,23 @@ func (sr *StrategyRunner) matrixNextLevelIdx() int {
 // matrixTriggerRelativeVirtualLevel so both size new slots identically.
 func (sr *StrategyRunner) matrixRelativeSlotSizing(cfg MatrixLevel, target, currentPrice float64) (sizeUSDT float64, qty string) {
 	sizeUSDT = cfg.SizePct / 100 * sr.effectiveDeposit(currentPrice)
-	priceForQty := target
+	// Price the qty (and the minimum-notional bump below) off currentPrice, not target.
+	// matrixRelativeExpand only calls this after matrixSlotReached has already confirmed
+	// price reached/passed target, so target is stale by the time execution actually
+	// happens: a virtual slot fires as an immediate Market order at currentPrice, and a
+	// non-virtual slot is forced to Market too whenever price has gapped past target (see
+	// the target==currentPrice shortcut comment on matrixPlaceRelativeSlot's placeMatrixLevel
+	// call) — in both cases the real fill price is currentPrice, not target.
+	// Sizing off a stale target left qty computed for the price AT INSERTION TIME: correct
+	// notional back then, but far short of the exchange minimum once price had run far past
+	// target — the slot would fail isMinOrderValue, get cancelled, and immediately retry
+	// with the exact same undersized qty forever, since nothing ever recomputed it against
+	// the price that mattered. Found live (2026-08-18): BEATUSDT L(-4), target=1.8486 vs.
+	// currentPrice=0.24 after an 8-day ~90% decline — 61 cancel/retry cycles, the slot never
+	// actually opened.
+	priceForQty := currentPrice
 	if priceForQty == 0 {
-		priceForQty = currentPrice
+		priceForQty = target
 	}
 	rawQty := trader.FormatQty(sizeUSDT/priceForQty, sr.instr.QtyStep, sr.instr.MinQty)
 	// Bump up if needed so qty*price meets exchange minimum notional value (mirrors
@@ -183,6 +197,30 @@ func (sr *StrategyRunner) matrixTriggerRelativeVirtualLevel(ctx context.Context,
 // same order-placement logic as the original attempt, not a parallel copy of it.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixPlaceRelativeVirtualOrder(ctx context.Context, l *GridLevel, currentPrice float64) {
+	// Risk gate — same account-wide margin pause / per-symbol notional cap as
+	// placeMatrixLevel (see risk.go). Virtual/relative-slot orders bypass placeMatrixLevel
+	// entirely (it no-ops for virtual levels — "handled by the price monitor" — see its
+	// matrixIsVirtual early return), so without this check here a relative-slots strategy
+	// could keep pyramiding via market orders past the configured notional cap while its
+	// sibling absolute-mode levels stayed correctly blocked. Found live (2026-08-20):
+	// BIOUSDT's hedge leg ran three full cycles entirely through this path on an account
+	// at ~$11 equity / $2.75 cap, while its $10 non-virtual L(0) sibling stayed blocked.
+	{
+		var qtyFloat float64
+		fmt.Sscanf(l.Qty, "%f", &qtyFloat)
+		gatePositionIdx := positionIdxForOpen(sr.strategy.HedgeMode, l.Side)
+		if allowed, reason := sr.runner.riskGate(sr.strategy.Symbol, gatePositionIdx, qtyFloat*currentPrice); !allowed {
+			if sr.riskBlockReason != reason {
+				sr.warn(ctx, fmt.Sprintf("Matrix relative %s: вход заблокирован (%s)", slotLabel(l.Slot), reason))
+			}
+			sr.riskBlockReason = reason
+			return
+		} else if sr.riskBlockReason != "" {
+			sr.info(ctx, fmt.Sprintf("Matrix relative %s: блокировка входа снята (%s)", slotLabel(l.Slot), sr.riskBlockReason))
+			sr.riskBlockReason = ""
+		}
+	}
+
 	linkID := fmt.Sprintf("SIS_STR-%s-%d-%d-v%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, sr.repriceGen)
 	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
 	sr.runner.RegisterOrder(linkID, ref)

@@ -3,7 +3,11 @@ package strategy
 import (
 	"context"
 	"math"
+	"strconv"
 	"testing"
+	"time"
+
+	"sis/pkg/trader"
 )
 
 func lvl(slot int, price float64, status LevelStatus) GridLevel {
@@ -353,6 +357,38 @@ func TestMatrixRetryStuckRelativeSlot_SkipsAlreadyPlaced(t *testing.T) {
 	}
 }
 
+// TestMatrixRelativeSlotSizing_PricesQtyAtCurrentPriceNotStaleTarget is the regression for
+// the infinite cancel/retry loop found live 2026-08-18 (BEATUSDT L(-4)): a relative slot's
+// qty must clear the exchange's minimum notional value at the price it will ACTUALLY fill
+// at (currentPrice — matrixRelativeExpand only calls this once matrixSlotReached confirms
+// price already reached/passed target, so a virtual slot fires as an immediate Market
+// order at currentPrice, not at the stale target). Sizing off target instead — as the code
+// used to — computed a qty that only cleared the minimum back when target was still near
+// currentPrice; once price ran far past target, the same qty fell far short of the minimum
+// at the real fill price, causing an unrecoverable cancel/reinsert loop that never adapts.
+func TestMatrixRelativeSlotSizing_PricesQtyAtCurrentPriceNotStaleTarget(t *testing.T) {
+	sr := &StrategyRunner{
+		strategy: Strategy{Direction: DirectionLong, GridSizeUSDT: 20},
+		instr:    trader.InstrumentInfo{QtyStep: 1, MinQty: 1, MinNotionalValue: 5},
+	}
+	cfg := MatrixLevel{SizePct: 50} // 50% of $20 deposit = $10 nominal budget
+
+	// target=1.8486 is where the slot was originally priced (stale); currentPrice=0.24 is
+	// where it will actually fill, after price ran far past target (BEATUSDT's ~90% crash).
+	_, qty := sr.matrixRelativeSlotSizing(cfg, 1.8486, 0.24)
+
+	qf, err := strconv.ParseFloat(qty, 64)
+	if err != nil {
+		t.Fatalf("qty %q not a valid float: %v", qty, err)
+	}
+	notionalAtFill := qf * 0.24
+	if notionalAtFill < sr.instr.MinNotionalValue {
+		t.Errorf("qty=%s → notional at currentPrice(0.24) = %.4f, want >= MinNotionalValue=%.2f — "+
+			"a real fill at this qty would be rejected by the exchange exactly like the production bug",
+			qty, notionalAtFill, sr.instr.MinNotionalValue)
+	}
+}
+
 func TestMatrixRelativeExpand_RetriesBeforeCreatingNewSlot(t *testing.T) {
 	sr := shortStrategyWithLevels(lvl(0, 100.0, LevelFilled))
 	negOne := -1
@@ -365,4 +401,76 @@ func TestMatrixRelativeExpand_RetriesBeforeCreatingNewSlot(t *testing.T) {
 		}
 	}()
 	sr.matrixRelativeExpand(context.Background(), "below", 103.0)
+}
+
+// TestMatrixPlaceRelativeVirtualOrder_BlockedByRiskGate_DoesNotReachExchange is the
+// regression for the bypass found live 2026-08-20: virtual/relative-slot orders went
+// straight to tradeStream.PlaceOrder without ever consulting riskGate, unlike
+// placeMatrixLevel's absolute-mode entries — a relative-slots strategy could keep
+// pyramiding past the configured per-symbol notional cap while its non-virtual sibling
+// levels stayed correctly blocked (observed live: BIOUSDT hedge leg ran three full cycles
+// entirely through this path on an account at ~$11 equity / $2.75 cap). Proves the gate
+// now runs BEFORE any exchange call by asserting the level never advances past Pending —
+// if the gate were skipped, this would panic on the nil sr.runner.tradeStream instead.
+func TestMatrixPlaceRelativeVirtualOrder_BlockedByRiskGate_DoesNotReachExchange(t *testing.T) {
+	sr := shortStrategyWithLevels(lvl(0, 100.0, LevelFilled))
+	sr.strategy.Symbol = "BTCUSDT"
+	sr.runner = &AccountRunner{
+		positions:   map[string]float64{},
+		posAvgEntry: map[string]float64{},
+	}
+	sr.runner.risk = accountRiskState{equity: 100, notionalPct: 25, paused: false, updatedAt: time.Now()} // cap = 25
+
+	negOne := -1
+	sr.levels = append(sr.levels, GridLevel{
+		ID: "virt-1", Slot: &negOne, Status: LevelPending, TargetPrice: 102.0, Qty: "1.0", Side: "Sell",
+	})
+	placed := &sr.levels[len(sr.levels)-1]
+
+	// Pre-seed riskBlockReason to the exact reason the gate will report, so the dedup
+	// check (`if sr.riskBlockReason != reason`) skips the sr.warn(...) call — which would
+	// otherwise hit a nil pool.Exec in this pure unit-test setup. sr.runner.pool
+	// intentionally stays nil: the point of this test is proving the gate returns BEFORE
+	// any PlaceOrder/logging work happens, not exercising the logging plumbing itself.
+	sr.riskBlockReason = "лимит notional на символ"
+
+	// qty=1 @ currentPrice=1000 → $1000 notional, far past cap=25 with zero existing
+	// exposure → must be blocked.
+	sr.matrixPlaceRelativeVirtualOrder(context.Background(), placed, 1000.0)
+
+	if placed.Status != LevelPending {
+		t.Errorf("level status = %v, want still Pending — a risk-blocked entry must not advance to Placed", placed.Status)
+	}
+	if placed.ExchangeOrderID != "" {
+		t.Error("ExchangeOrderID must stay empty — riskGate must prevent ever reaching PlaceOrder")
+	}
+}
+
+// TestMatrixPlaceRelativeVirtualOrder_AllowedByRiskGate_ReachesExchange is the inverse of
+// the above: within the cap, the order must proceed to PlaceOrder as before — pins that
+// the new gate doesn't accidentally block legitimate entries. Reaching the nil
+// sr.runner.tradeStream panics, proving the gate let it through.
+func TestMatrixPlaceRelativeVirtualOrder_AllowedByRiskGate_ReachesExchange(t *testing.T) {
+	sr := shortStrategyWithLevels(lvl(0, 100.0, LevelFilled))
+	sr.strategy.Symbol = "BTCUSDT"
+	sr.runner = &AccountRunner{
+		positions:   map[string]float64{},
+		posAvgEntry: map[string]float64{},
+	}
+	sr.runner.risk = accountRiskState{equity: 100, notionalPct: 25, paused: false, updatedAt: time.Now()} // cap = 25
+
+	negOne := -1
+	sr.levels = append(sr.levels, GridLevel{
+		ID: "virt-1", Slot: &negOne, Status: LevelPending, TargetPrice: 102.0, Qty: "0.01", Side: "Sell",
+	})
+	placed := &sr.levels[len(sr.levels)-1]
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic reaching PlaceOrder — an within-cap entry was blocked instead")
+		}
+	}()
+	// qty=0.01 @ currentPrice=1000 → $10 notional, within cap=25 → gate must allow it
+	// through to PlaceOrder.
+	sr.matrixPlaceRelativeVirtualOrder(context.Background(), placed, 1000.0)
 }

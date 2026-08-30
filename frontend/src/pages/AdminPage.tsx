@@ -748,7 +748,7 @@ function RsiTestOverride() {
 
   return (
     <div
-      className="mt-2 rounded-[9px] px-3 py-2.5 flex flex-col gap-2"
+      className="rounded-[9px] px-3 py-2.5 flex flex-col gap-2"
       style={{ background: 'rgba(0,0,0,.25)', border: '1px solid rgba(255,255,255,.07)' }}
     >
       <div className="flex items-center justify-between gap-2">
@@ -930,10 +930,10 @@ function SignalTypesTab() {
     const status = item.adminItem?.status ?? 'enabled'
     const onToggle = () => item.itemType === 'indicator' ? indicators.toggle(item.def.id) : signals.toggle(item.def.id)
     return (
-      <div key={item.def.id} className="relative cursor-grab active:cursor-grabbing" draggable
+      <div key={item.def.id} className="relative h-full cursor-grab active:cursor-grabbing" draggable
         onDragStart={e => startDrag(e, item.itemType, item.def.id)}>
         <EnableToggle status={status} onToggle={onToggle} />
-        <div className={`transition-opacity ${status !== 'disabled' ? 'opacity-100' : 'opacity-40'}`}>
+        <div className={`h-full transition-opacity ${status !== 'disabled' ? 'opacity-100' : 'opacity-40'}`}>
           {item.itemType === 'indicator' ? (
             <IndicatorCard
               indicator={item.def}
@@ -944,18 +944,16 @@ function SignalTypesTab() {
               hideBadge
             />
           ) : (
-            <>
-              <SignalCard
-                signal={item.def}
-                candles={candles}
-                value={getP(item.def.id, item.def.defaults)}
-                onChange={p => setP(item.def.id, p)}
-                onSettingsClick={rect => setFlyingCard({ item: { type: 'signal', def: item.def }, sourceRect: rect })}
-                hideBadge
-                onChartClick={() => openSignalChart(item.def as SignalDef<Record<string,unknown>>, getP(item.def.id, item.def.defaults))}
-              />
-              {item.def.id === 'rsi-test' && <RsiTestOverride />}
-            </>
+            <SignalCard
+              signal={item.def}
+              candles={candles}
+              value={getP(item.def.id, item.def.defaults)}
+              onChange={p => setP(item.def.id, p)}
+              onSettingsClick={rect => setFlyingCard({ item: { type: 'signal', def: item.def }, sourceRect: rect })}
+              hideBadge
+              onChartClick={() => openSignalChart(item.def as SignalDef<Record<string,unknown>>, getP(item.def.id, item.def.defaults))}
+              extra={item.def.id === 'rsi-test' ? <RsiTestOverride /> : undefined}
+            />
           )}
         </div>
       </div>
