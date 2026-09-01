@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { apiClient } from '../../api/client';
+import { useSelectedAccount } from '../../contexts/AccountContext';
 import type { Bot, BotAction, Trigger, StrategyConfig } from './types';
 
 type RawBot = Record<string, unknown>;
@@ -43,10 +44,12 @@ function parseBot(raw: RawBot): Bot {
     tradesWin:             (raw.tradesWin as number) ?? 0,
     netPnlTotal:           (raw.netPnlTotal as number) ?? 0,
     sourceAuthor:          (raw.sourceAuthor as string) || '',
+    pairedBotId:           (raw.pairedBotId as string | null) ?? null,
   };
 }
 
 export function useBots() {
+  const { selectedAccountId } = useSelectedAccount();
   const [catalog, setCatalog]       = useState<Bot[]>([]);
   const [mine, setMine]             = useState<Bot[]>([]);
   const [loading, setLoading]       = useState(true);
@@ -55,7 +58,9 @@ export function useBots() {
   const load = useCallback(async () => {
     if (!initializedRef.current) setLoading(true);
     try {
-      const res = await apiClient.get<{ catalog: RawBot[]; mine: RawBot[] }>('/bots');
+      const res = await apiClient.get<{ catalog: RawBot[]; mine: RawBot[] }>('/bots', {
+        params: { accountId: selectedAccountId },
+      });
       setCatalog(res.data.catalog.map(parseBot));
       setMine(res.data.mine.map(parseBot));
     } finally {
@@ -64,7 +69,7 @@ export function useBots() {
         setLoading(false);
       }
     }
-  }, []);
+  }, [selectedAccountId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -86,6 +91,7 @@ export function useBots() {
         case 'start':   await apiClient.post(`/bots/${a.botId}/start`); break;
         case 'stop':    await apiClient.post(`/bots/${a.botId}/stop`); break;
         case 'deploy':  await apiClient.post(`/bots/${a.botId}/deploy`, {
+          accountId: selectedAccountId,
           symbolWhitelist: a.symbolWhitelist,
           symbolBlacklist: a.symbolBlacklist,
         }); break;
@@ -98,7 +104,7 @@ export function useBots() {
     } finally {
       await load();
     }
-  }, [load]);
+  }, [load, selectedAccountId]);
 
   return { catalog, mine, loading, action, refresh: load };
 }

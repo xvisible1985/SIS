@@ -535,7 +535,8 @@ export function TradeHistoryPage() {
 
   useEffect(() => {
     Promise.all([
-      apiClient.get<{ catalog: Bot[]; mine: Bot[] }>('/bots').then(r => r.data.mine ?? []).catch(() => [] as Bot[]),
+      apiClient.get<{ catalog: Bot[]; mine: Bot[] }>('/bots', { params: { accountId: selectedAccountId } })
+        .then(r => r.data.mine ?? []).catch(() => [] as Bot[]),
       listStrategies().catch(() => []),
     ]).then(([bots, allStrategies]) => {
       // Hide stopped strategies with no open position, no realized PnL — they have no trade history worth showing.
@@ -575,7 +576,7 @@ export function TradeHistoryPage() {
 
       setFilterItems(items)
     })
-  }, [])
+  }, [selectedAccountId])
 
   // ── Load trade history from DB ────────────────────────────────────────────
   const loadDB = useCallback(async (off: number, silent = false) => {

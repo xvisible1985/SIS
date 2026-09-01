@@ -121,10 +121,11 @@ func TestPatchBot_LinkedSubscriptionBlocked(t *testing.T) {
 
 	srcID := createTestBot(t, s, authorID, "Public Bot", true)
 	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1", srcID)
+	subAcctID := createTestAccountLabeled(t, s, subID, "sub-acct")
 
 	// Deploy
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/bots/"+srcID+"/deploy", nil)
+	req := httptest.NewRequest(http.MethodPost, "/bots/"+srcID+"/deploy", bytes.NewBufferString(`{"accountId":"`+subAcctID+`"}`))
 	req = withUserID(req, subID)
 	req = addChiParams(req, map[string]string{"id": srcID})
 	s.DeployBot(rec, req)
@@ -157,9 +158,10 @@ func TestDeployBot(t *testing.T) {
 
 	srcID := createTestBot(t, s, authorID, "Deploy Source", true)
 	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1", srcID)
+	deployerAcctID := createTestAccountLabeled(t, s, deployerID, "deployer-acct")
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/bots/"+srcID+"/deploy", nil)
+	req := httptest.NewRequest(http.MethodPost, "/bots/"+srcID+"/deploy", bytes.NewBufferString(`{"accountId":"`+deployerAcctID+`"}`))
 	req = withUserID(req, deployerID)
 	req = addChiParams(req, map[string]string{"id": srcID})
 	s.DeployBot(rec, req)
@@ -174,6 +176,9 @@ func TestDeployBot(t *testing.T) {
 	}
 	if bot["isFork"] != false {
 		t.Error("expected isFork=false")
+	}
+	if bot["accountId"] != deployerAcctID {
+		t.Errorf("accountId mismatch: got %v, want %v", bot["accountId"], deployerAcctID)
 	}
 	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1", bot["id"])
 
@@ -194,10 +199,11 @@ func TestForkBot(t *testing.T) {
 
 	srcID := createTestBot(t, s, authorID, "Fork Source", true)
 	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1", srcID)
+	forkerAcctID := createTestAccountLabeled(t, s, forkerID, "forker-acct")
 
 	// Deploy first
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/bots/"+srcID+"/deploy", nil)
+	req := httptest.NewRequest(http.MethodPost, "/bots/"+srcID+"/deploy", bytes.NewBufferString(`{"accountId":"`+forkerAcctID+`"}`))
 	req = withUserID(req, forkerID)
 	req = addChiParams(req, map[string]string{"id": srcID})
 	s.DeployBot(rec, req)
@@ -257,6 +263,270 @@ func TestStartStopBot(t *testing.T) {
 	s.pool.QueryRow(context.Background(), "SELECT status FROM bots WHERE id=$1", botID).Scan(&status)
 	if status != "stopped" {
 		t.Errorf("expected stopped, got %s", status)
+	}
+}
+
+// TestListBots_FiltersMineByAccountID pins the fix for bots leaking across a user's own
+// accounts: /bots?accountId=X must only return the caller's bots bound to that account in
+// "mine", never bots bound to their other accounts — and omitting accountId must still
+// return everything (used by callers like TradeHistoryPage that intentionally show bots
+// across all of a user's accounts).
+func TestListBots_FiltersMineByAccountID(t *testing.T) {
+	s := newTestServer(t)
+	userID := createAdminTestUser(t, s, "bots_acctfilter@example.com", "pass1234", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", userID)
+
+	acctA := createTestAccountLabeled(t, s, userID, "acct-a")
+	acctB := createTestAccountLabeled(t, s, userID, "acct-b")
+
+	botA := createTestBot(t, s, userID, "Bot On A", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1", botA)
+	botB := createTestBot(t, s, userID, "Bot On B", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1", botB)
+
+	if _, err := s.pool.Exec(context.Background(), "UPDATE bots SET account_id=$1 WHERE id=$2", acctA, botA); err != nil {
+		t.Fatalf("bind botA: %v", err)
+	}
+	if _, err := s.pool.Exec(context.Background(), "UPDATE bots SET account_id=$1 WHERE id=$2", acctB, botB); err != nil {
+		t.Fatalf("bind botB: %v", err)
+	}
+
+	listMine := func(accountID string) []string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/bots?accountId="+accountID, nil)
+		req = withUserID(req, userID)
+		rec := httptest.NewRecorder()
+		s.ListBots(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("ListBots: got %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp listBotsResp
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		names := make([]string, len(resp.Mine))
+		for i, b := range resp.Mine {
+			names[i] = b.Name
+		}
+		return names
+	}
+
+	namesOnA := listMine(acctA)
+	if !containsStr(namesOnA, "Bot On A") || containsStr(namesOnA, "Bot On B") {
+		t.Errorf("accountId=A: got %v, want only Bot On A", namesOnA)
+	}
+
+	namesOnB := listMine(acctB)
+	if !containsStr(namesOnB, "Bot On B") || containsStr(namesOnB, "Bot On A") {
+		t.Errorf("accountId=B: got %v, want only Bot On B", namesOnB)
+	}
+
+	namesUnfiltered := listMine("")
+	if !containsStr(namesUnfiltered, "Bot On A") || !containsStr(namesUnfiltered, "Bot On B") {
+		t.Errorf("accountId omitted: got %v, want both bots", namesUnfiltered)
+	}
+}
+
+func containsStr(list []string, target string) bool {
+	for _, s := range list {
+		if s == target {
+			return true
+		}
+	}
+	return false
+}
+
+// TestCreateMultiBot_CreatesPairedSignalAndHedgeLegs pins the core Мультибот invariant:
+// POST /bots/multi must create two ordinary bots rows (one signal, one hedge), link them
+// bidirectionally via paired_bot_id, and lock the hedge leg's hedge_bot_whitelist to the
+// signal leg's own id — this is what makes the hedge leg only ever react to its own twin's
+// strategies instead of needing the coin/bot filter pickers a standalone hedge bot has.
+func TestCreateMultiBot_CreatesPairedSignalAndHedgeLegs(t *testing.T) {
+	s := newTestServer(t)
+	userID := createAdminTestUser(t, s, "bots_multi@example.com", "pass1234", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", userID)
+	acctID := createTestAccountLabeled(t, s, userID, "multi-acct")
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name":                "My Multi",
+		"description":         "desc",
+		"accountId":           acctID,
+		"strategyConfig":      map[string]interface{}{"symbol": "BTCUSDT", "direction": "long"},
+		"hedgeStrategyConfig": map[string]interface{}{"direction": "both", "hedge_act_type": 1},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bots/multi", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withUserID(req, userID)
+	s.CreateMultiBot(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var signalBot map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&signalBot)
+	signalID := signalBot["id"].(string)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1 OR paired_bot_id=$1", signalID)
+
+	pairedID, _ := signalBot["pairedBotId"].(string)
+	if pairedID == "" {
+		t.Fatalf("expected pairedBotId set on signal leg, got %v", signalBot["pairedBotId"])
+	}
+
+	var hedgeCfgRaw []byte
+	var hedgeOwner, hedgeAccountID, hedgePairedID string
+	if err := s.pool.QueryRow(context.Background(),
+		`SELECT strategy_config, owner_id, account_id::text, paired_bot_id::text FROM bots WHERE id=$1`, pairedID,
+	).Scan(&hedgeCfgRaw, &hedgeOwner, &hedgeAccountID, &hedgePairedID); err != nil {
+		t.Fatalf("fetch hedge leg: %v", err)
+	}
+	if hedgeOwner != userID {
+		t.Errorf("hedge leg owner = %s, want %s", hedgeOwner, userID)
+	}
+	if hedgeAccountID != acctID {
+		t.Errorf("hedge leg account_id = %s, want %s", hedgeAccountID, acctID)
+	}
+	if hedgePairedID != signalID {
+		t.Errorf("hedge leg paired_bot_id = %s, want %s", hedgePairedID, signalID)
+	}
+	var hedgeCfg struct {
+		BotKind           string   `json:"bot_kind"`
+		HedgeBotWhitelist []string `json:"hedge_bot_whitelist"`
+	}
+	if err := json.Unmarshal(hedgeCfgRaw, &hedgeCfg); err != nil {
+		t.Fatalf("unmarshal hedge cfg: %v", err)
+	}
+	if hedgeCfg.BotKind != "hedge" {
+		t.Errorf("hedge leg bot_kind = %q, want hedge", hedgeCfg.BotKind)
+	}
+	if len(hedgeCfg.HedgeBotWhitelist) != 1 || hedgeCfg.HedgeBotWhitelist[0] != signalID {
+		t.Errorf("hedge leg hedge_bot_whitelist = %v, want [%s]", hedgeCfg.HedgeBotWhitelist, signalID)
+	}
+
+	var signalCfgRaw []byte
+	s.pool.QueryRow(context.Background(), `SELECT strategy_config FROM bots WHERE id=$1`, signalID).Scan(&signalCfgRaw)
+	var signalCfg struct {
+		BotKind string `json:"bot_kind"`
+	}
+	json.Unmarshal(signalCfgRaw, &signalCfg)
+	if signalCfg.BotKind != "signal" {
+		t.Errorf("signal leg bot_kind = %q, want signal", signalCfg.BotKind)
+	}
+}
+
+// TestCreateMultiBot_RejectsForeignAccount: accountId must belong to the caller, same
+// ownership check as every other bot/account-scoped endpoint in this file.
+func TestCreateMultiBot_RejectsForeignAccount(t *testing.T) {
+	s := newTestServer(t)
+	ownerA := createAdminTestUser(t, s, "bots_multi_a@example.com", "pass1234", false)
+	ownerB := createAdminTestUser(t, s, "bots_multi_b@example.com", "pass1234", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", ownerA)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", ownerB)
+	acctA := createTestAccountLabeled(t, s, ownerA, "acct-a-multi")
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "Sneaky", "accountId": acctA,
+		"strategyConfig": map[string]interface{}{}, "hedgeStrategyConfig": map[string]interface{}{},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bots/multi", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withUserID(req, ownerB) // B tries to create a multibot on A's account
+	s.CreateMultiBot(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestStopBot_CascadesToPairedLeg / TestDeleteBot_CascadesToPairedLeg pin that Start/Stop/
+// Delete issued against either leg's id act on the whole pair — a lone hedge leg left
+// running (or existing at all) after its signal twin stops/deletes would be pointless: its
+// hedge_bot_whitelist points at exactly that one bot's strategies.
+func TestStopBot_CascadesToPairedLeg(t *testing.T) {
+	s := newTestServer(t)
+	userID := createAdminTestUser(t, s, "bots_multi_stop@example.com", "pass1234", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", userID)
+	acctID := createTestAccountLabeled(t, s, userID, "multi-stop-acct")
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "Stop Pair", "accountId": acctID,
+		"strategyConfig": map[string]interface{}{}, "hedgeStrategyConfig": map[string]interface{}{},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bots/multi", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withUserID(req, userID)
+	s.CreateMultiBot(rec, req)
+	var signalBot map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&signalBot)
+	signalID := signalBot["id"].(string)
+	hedgeID := signalBot["pairedBotId"].(string)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1 OR id=$2", signalID, hedgeID)
+
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/bots/"+signalID+"/start", nil)
+	req2 = withUserID(req2, userID)
+	req2 = addChiParams(req2, map[string]string{"id": signalID})
+	s.StartBot(rec2, req2)
+	if rec2.Code != http.StatusNoContent {
+		t.Fatalf("start: got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	var signalStatus, hedgeStatus string
+	s.pool.QueryRow(context.Background(), "SELECT status FROM bots WHERE id=$1", signalID).Scan(&signalStatus)
+	s.pool.QueryRow(context.Background(), "SELECT status FROM bots WHERE id=$1", hedgeID).Scan(&hedgeStatus)
+	if signalStatus != "active" || hedgeStatus != "active" {
+		t.Fatalf("after start: signal=%s hedge=%s, want both active", signalStatus, hedgeStatus)
+	}
+
+	rec3 := httptest.NewRecorder()
+	req3 := httptest.NewRequest(http.MethodPost, "/bots/"+signalID+"/stop", nil)
+	req3 = withUserID(req3, userID)
+	req3 = addChiParams(req3, map[string]string{"id": signalID})
+	s.StopBot(rec3, req3)
+	if rec3.Code != http.StatusNoContent {
+		t.Fatalf("stop: got %d: %s", rec3.Code, rec3.Body.String())
+	}
+
+	s.pool.QueryRow(context.Background(), "SELECT status FROM bots WHERE id=$1", signalID).Scan(&signalStatus)
+	s.pool.QueryRow(context.Background(), "SELECT status FROM bots WHERE id=$1", hedgeID).Scan(&hedgeStatus)
+	if signalStatus != "stopped" || hedgeStatus != "stopped" {
+		t.Errorf("after stop: signal=%s hedge=%s, want both stopped", signalStatus, hedgeStatus)
+	}
+}
+
+func TestDeleteBot_CascadesToPairedLeg(t *testing.T) {
+	s := newTestServer(t)
+	userID := createAdminTestUser(t, s, "bots_multi_del@example.com", "pass1234", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", userID)
+	acctID := createTestAccountLabeled(t, s, userID, "multi-del-acct")
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "Delete Pair", "accountId": acctID,
+		"strategyConfig": map[string]interface{}{}, "hedgeStrategyConfig": map[string]interface{}{},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bots/multi", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withUserID(req, userID)
+	s.CreateMultiBot(rec, req)
+	var signalBot map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&signalBot)
+	signalID := signalBot["id"].(string)
+	hedgeID := signalBot["pairedBotId"].(string)
+
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodDelete, "/bots/"+signalID, nil)
+	req2 = withUserID(req2, userID)
+	req2 = addChiParams(req2, map[string]string{"id": signalID})
+	s.DeleteBot(rec2, req2)
+	if rec2.Code != http.StatusNoContent {
+		t.Fatalf("delete: got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	var count int
+	s.pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM bots WHERE id IN ($1,$2)", signalID, hedgeID).Scan(&count)
+	if count != 0 {
+		t.Errorf("expected both legs deleted, %d rows remain", count)
 	}
 }
 

@@ -17,7 +17,7 @@ export type TriggerPnl = {
 
 export type Trigger = TriggerSignal | TriggerPnl;
 
-export type BotKind = 'signal' | 'parser' | 'hedge' | 'matrix';
+export type BotKind = 'signal' | 'parser' | 'hedge' | 'matrix' | 'multi';
 
 export type StrategyConfig = {
   bot_kind?: BotKind;
@@ -142,6 +142,9 @@ export type Bot = {
   netPnlTotal?: number;
   sourceAuthor?: string;
   custom?: boolean;
+  // Set on both rows of a Мультибот's signal+hedge pair (see migration 092). Null for
+  // every standalone bot.
+  pairedBotId?: string | null;
 };
 
 export type CreateBotInput = {

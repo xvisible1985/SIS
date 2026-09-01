@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { getStrategyDefaults } from '../../admin-defaults/api';
 import { X, Bot, ToggleLeft, ToggleRight, Camera, Trash2, Search, Loader2, Smile } from 'lucide-react';
 import { BotIconPicker } from './BotIconPicker';
@@ -22,7 +22,17 @@ type Props = {
   onSubmit: (data: CreateBotInput) => Promise<{ warnings?: string[] } | void> | void;
   onClose: () => void;
   mode?: 'user' | 'admin';
+  // Мультибот embeds this form as one tab of its own modal instead of BotForm's own
+  // backdrop/header/footer — see BotFormHandle.trySubmit, which MultiBotForm calls
+  // directly instead of relying on this form's internal Save button.
+  embedded?: boolean;
 };
+
+/** Imperative handle exposed when embedded — lets a parent (MultiBotForm) drive this
+ * form's own validation/confirm-dialog flow and collect its payload on its own schedule,
+ * instead of this form calling onSubmit/onClose itself. Returns null if validation failed
+ * or the user cancelled a confirm dialog. */
+export type BotFormHandle = { trySubmit: () => Promise<CreateBotInput | null> };
 
 type OuterTab = 'basic' | 'activation' | 'strategy';
 type StrategySubTab = 'entry' | 'grid' | 'exit' | 'matrix' | 'params';
@@ -113,8 +123,10 @@ function compressImage(file: File, maxPx = 300, quality = 0.82): Promise<string>
 
 // ─── BotForm ─────────────────────────────────────────────────────────────────
 
-export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: Props) {
-  const [outerTab, setOuterTab]   = useState<OuterTab>('basic');
+export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
+  { bot, initialKind, onSubmit, onClose, mode = 'user', embedded = false }, ref
+) {
+  const [outerTab, setOuterTab]   = useState<OuterTab>(embedded ? 'activation' : 'basic');
   const [stratTab, setStratTab]   = useState<StrategySubTab>('entry');
 
   const strategyLocked = false // strategy_config can be edited at any time; server enforces type-change restriction
@@ -370,6 +382,47 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
     }
   };
 
+  // When embedded, MultiBotForm calls trySubmit() (below) instead of this form driving its
+  // own onSubmit/onClose — pendingResolveRef is how doSubmit hands the built payload (or
+  // null, on validation failure / user cancel) back across that async confirm-dialog gap.
+  const pendingResolveRef = useRef<((v: CreateBotInput | null) => void) | null>(null);
+  function resolveEmbedded(v: CreateBotInput | null) {
+    pendingResolveRef.current?.(v);
+    pendingResolveRef.current = null;
+  }
+
+  function buildPayload(): CreateBotInput {
+    const steps = config.steps ?? [];
+    const isMatrix = config.strategy_type === 'matrix';
+    const totalMatrixLevels = aboveLevels.length + 1 + belowLevels.length;
+    return {
+      name: name.trim(),
+      description: description.trim(),
+      fullDescription: fullDescription.trim() || undefined,
+      isPublic,
+      avatarUrl: avatarUrl || undefined,
+      symbolWhitelist: whitelist,
+      symbolBlacklist: blacklist,
+      strategyConfig: {
+        ...config,
+        grid_levels: isMatrix ? totalMatrixLevels : (steps.length || 1),
+        grid_step_pct: isMatrix
+          ? (belowLevels[0]?.price_step_pct ?? aboveLevels[0]?.price_step_pct ?? 0)
+          : (steps[0]?.price_move_pct ?? 1.0),
+        signal_filter: (config.signal_configs?.length ?? 0) > 0,
+        size_as_main: isMatrix ? sizeAsMain : false,
+      },
+      maxStrategies,
+      maxLongStrategies,
+      maxShortStrategies,
+      maxMarginUsdt,
+      maxSymConsecutiveRuns,
+      accountId: selectedAccountId || null,
+      autoMode,
+      ignoreCoinFilter: false,
+    };
+  }
+
   // Core submit — runs after all confirmations are resolved.
   const doSubmit = async () => {
     // For signal bots: if the symbol is flagged and the user hasn't opted out,
@@ -380,7 +433,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
       const { flagged } = checkCoinFlagged(symbol, Infinity, coinFilterSettings);
       if (flagged && !bypassCoinFilterRef.current) {
         setShowCoinFilterConfirm(true);
-        return;
+        return; // waits for the confirm dialog; pendingResolveRef (if embedded) stays set
       }
       bypassCoinFilterRef.current = false;
     }
@@ -388,36 +441,14 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
 
     setSubmitting(true);
     setSubmitError(null);
-    const steps = config.steps ?? [];
-    const isMatrix = config.strategy_type === 'matrix';
-    const totalMatrixLevels = aboveLevels.length + 1 + belowLevels.length;
+    const payload = buildPayload();
+    if (embedded) {
+      resolveEmbedded(payload);
+      setSubmitting(false);
+      return;
+    }
     try {
-      await onSubmit({
-        name: name.trim(),
-        description: description.trim(),
-        fullDescription: fullDescription.trim() || undefined,
-        isPublic,
-        avatarUrl: avatarUrl || undefined,
-        symbolWhitelist: whitelist,
-        symbolBlacklist: blacklist,
-        strategyConfig: {
-          ...config,
-          grid_levels: isMatrix ? totalMatrixLevels : (steps.length || 1),
-          grid_step_pct: isMatrix
-            ? (belowLevels[0]?.price_step_pct ?? aboveLevels[0]?.price_step_pct ?? 0)
-            : (steps[0]?.price_move_pct ?? 1.0),
-          signal_filter: (config.signal_configs?.length ?? 0) > 0,
-          size_as_main: isMatrix ? sizeAsMain : false,
-        },
-        maxStrategies,
-        maxLongStrategies,
-        maxShortStrategies,
-        maxMarginUsdt,
-        maxSymConsecutiveRuns,
-        accountId: selectedAccountId || null,
-        autoMode,
-        ignoreCoinFilter: false,
-      });
+      await onSubmit(payload);
       onClose();
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : 'Неизвестная ошибка');
@@ -428,10 +459,16 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
 
   const handleSubmit = async () => {
     if (showCoinFilterConfirm) return;
-    if (!name.trim()) return;
-    if (!description.trim()) {
-      setSubmitError('Добавьте описание бота — оно отображается в карточке');
-      return;
+    // Мультибот owns name/description itself (Основное tab is hidden when embedded — see
+    // outerTabs above) and overwrites them in the merged payload, so this form's own copies
+    // never get edited and would otherwise block submission by staying empty forever.
+    if (!embedded) {
+      if (!name.trim()) { resolveEmbedded(null); return; }
+      if (!description.trim()) {
+        setSubmitError('Добавьте описание бота — оно отображается в карточке');
+        resolveEmbedded(null);
+        return;
+      }
     }
 
     // Warn about stats reset when editing a bot that already has trade history.
@@ -442,8 +479,17 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
     await doSubmit();
   };
 
+  useImperativeHandle(ref, () => ({
+    trySubmit: () => new Promise<CreateBotInput | null>(resolve => {
+      pendingResolveRef.current = resolve;
+      void handleSubmit();
+    }),
+  }));
+
   const outerTabs: { id: OuterTab; label: string }[] = [
-    { id: 'basic',      label: 'Основное' },
+    // Мультибот owns name/avatar/limits itself (one shared identity for both legs) — this
+    // form's own Основное tab would just be a second, dead set of the same controls.
+    ...(embedded ? [] : [{ id: 'basic' as const, label: 'Основное' }]),
     { id: 'activation', label: 'Активация' },
     { id: 'strategy',   label: 'Стратегия' },
   ];
@@ -461,9 +507,10 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
       ];
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-auto bg-[rgba(8,11,18,.78)] p-6 backdrop-blur">
-      <div className="flex max-h-[calc(100vh-48px)] w-full max-w-[680px] flex-col overflow-hidden rounded-[18px] border border-white/[.08] bg-[#0c1018] shadow-[0_32px_80px_-16px_rgba(0,0,0,.7)]">
+    <div className={embedded ? 'flex h-full flex-col overflow-hidden' : 'fixed inset-0 z-[100] flex items-center justify-center overflow-auto bg-[rgba(8,11,18,.78)] p-6 backdrop-blur'}>
+      <div className={embedded ? 'flex flex-1 flex-col overflow-hidden' : 'flex max-h-[calc(100vh-48px)] w-full max-w-[680px] flex-col overflow-hidden rounded-[18px] border border-white/[.08] bg-[#0c1018] shadow-[0_32px_80px_-16px_rgba(0,0,0,.7)]'}>
         {/* header */}
+        {!embedded && (
         <div className="flex items-center gap-3 border-b border-white/[.06] px-5 py-4">
           <div className="h-9 w-9 shrink-0 overflow-hidden rounded-[9px] border border-[#5b8cff]/30">
             {avatarUrl
@@ -486,6 +533,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
             <X size={14} />
           </button>
         </div>
+        )}
 
         {/* outer tabs */}
         <div className="flex border-b border-white/[.06] px-5">
@@ -1669,6 +1717,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
         </div>
 
         {/* footer */}
+        {!embedded && (
         <div className="border-t border-white/[.06] px-5 py-3.5">
           {submitError && (
             <div className="mb-2.5 rounded-lg border border-rose-500/30 bg-rose-500/[.1] px-3 py-2 text-[12px] text-rose-300">
@@ -1694,6 +1743,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
             </button>
           </div>
         </div>
+        )}
       </div>
 
       {/* Stats reset confirmation modal */}
@@ -1703,7 +1753,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
           netPnlTotal={bot.netPnlTotal ?? 0}
           tradesWin={bot.tradesWin ?? 0}
           onConfirm={() => { setShowResetStatsConfirm(false); void doSubmit(); }}
-          onCancel={() => setShowResetStatsConfirm(false)}
+          onCancel={() => { setShowResetStatsConfirm(false); resolveEmbedded(null); }}
         />
       )}
 
@@ -1733,7 +1783,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
               </button>
               <button
                 type="button"
-                onClick={() => setShowCoinFilterConfirm(false)}
+                onClick={() => { setShowCoinFilterConfirm(false); resolveEmbedded(null); }}
                 className="flex-1 rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-300 hover:bg-slate-700"
               >
                 Отмена
@@ -1744,7 +1794,7 @@ export function BotForm({ bot, initialKind, onSubmit, onClose, mode = 'user' }: 
       )}
     </div>
   );
-}
+});
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

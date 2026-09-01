@@ -13,7 +13,7 @@ export interface BotKindMeta {
   disabled?:  boolean
 }
 
-export const BOT_KINDS: BotKind[] = ['signal', 'parser', 'hedge', 'matrix']
+export const BOT_KINDS: BotKind[] = ['signal', 'parser', 'hedge', 'matrix', 'multi']
 
 export const BOT_KIND_META: Record<BotKind, BotKindMeta> = {
   signal: {
@@ -60,6 +60,17 @@ export const BOT_KIND_META: Record<BotKind, BotKindMeta> = {
     bg:       'rgba(124,58,237,0.12)',
     bgHeader: 'linear-gradient(135deg,rgba(124,58,237,0.22) 0%,rgba(91,33,182,0.06) 100%)',
     iconBg:   'rgba(124,58,237,0.20)',
+  },
+  multi: {
+    id:       'multi',
+    label:    'МультиБот',
+    tagline:  'Сигнал + Хедж в одной сущности',
+    desc:     'Комбинация SignalBot и HedgeBot: сигнальная нога открывает входы по индикаторам, хедж-нога хеджирует именно её собственные стратегии. Управляются и отображаются как один бот.',
+    color:    '#e879f9',
+    border:   'rgba(217,70,239,0.40)',
+    bg:       'rgba(217,70,239,0.12)',
+    bgHeader: 'linear-gradient(135deg,rgba(217,70,239,0.22) 0%,rgba(162,28,175,0.06) 100%)',
+    iconBg:   'rgba(217,70,239,0.20)',
   },
 }
 

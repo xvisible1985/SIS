@@ -61,6 +61,7 @@ type botResp struct {
 	TradesWin             int             `json:"tradesWin"`
 	NetPnlTotal           float64         `json:"netPnlTotal"`
 	SourceAuthor          string          `json:"sourceAuthor"`
+	PairedBotID           *string         `json:"pairedBotId"`
 }
 
 type patchBotWithWarningsResp struct {
@@ -74,13 +75,13 @@ type listBotsResp struct {
 }
 
 type scanHit struct {
-	Symbol         string  `json:"symbol"`
-	SignalState    string  `json:"signal_state"`
-	Direction      string  `json:"direction"`
-	AlreadyOpen    bool    `json:"already_open"`
-	DirBlocked     bool    `json:"dir_blocked"`
-	SignalValue    float64 `json:"signal_value"`     // raw indicator value (e.g. RSI=14.2)
-	Strength       float64 `json:"strength"`         // sort key: higher = stronger signal
+	Symbol          string  `json:"symbol"`
+	SignalState     string  `json:"signal_state"`
+	Direction       string  `json:"direction"`
+	AlreadyOpen     bool    `json:"already_open"`
+	DirBlocked      bool    `json:"dir_blocked"`
+	SignalValue     float64 `json:"signal_value"`      // raw indicator value (e.g. RSI=14.2)
+	Strength        float64 `json:"strength"`          // sort key: higher = stronger signal
 	TTLRemainingSec float64 `json:"ttl_remaining_sec"` // -1 = no TTL; ≥0 = seconds left
 }
 
@@ -98,7 +99,7 @@ const botCols = `b.id, b.name, b.description, b.full_description, b.avatar_url, 
 	b.account_id, b.auto_mode, b.max_long_strategies, b.max_short_strategies, b.max_sym_consecutive_runs,
 	b.ignore_coin_filter,
 	b.active_seconds_acc, b.active_since, b.approval_status,
-	b.price_usd_month,
+	b.price_usd_month, b.paired_bot_id,
 	ARRAY[]::float8[] AS spark,
 	(SELECT COUNT(DISTINCT b2.owner_id)
 	 FROM bots b2
@@ -148,7 +149,8 @@ func collectBots(rows pgx.Rows, callerID string) ([]botResp, error) {
 			&b.AccountID, &b.AutoMode, &b.MaxLongStrategies, &b.MaxShortStrategies, &b.MaxSymConsecutiveRuns,
 			&b.IgnoreCoinFilter,
 			&b.ActiveSecondsAcc, &b.ActiveSince, &b.ApprovalStatus,
-			&b.Price, &b.Spark, &b.ActiveUsersCount,
+			&b.Price, &b.PairedBotID,
+			&b.Spark, &b.ActiveUsersCount,
 			&b.TradesTotal, &b.TradesWin, &b.NetPnlTotal, &b.SourceAuthor,
 		); err != nil {
 			return nil, err
@@ -188,6 +190,7 @@ func (s *Server) ListBots(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query().Get("q")
 	direction := r.URL.Query().Get("direction")
+	accountID := r.URL.Query().Get("accountId")
 
 	orderBy := "b.created_at DESC"
 	if r.URL.Query().Get("sort") == "popular" {
@@ -218,8 +221,8 @@ func (s *Server) ListBots(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mineRows, err := s.pool.Query(ctx,
-		`SELECT `+botCols+mineStatsCols+botFrom+`WHERE b.owner_id = $1 ORDER BY b.created_at DESC`,
-		callerID)
+		`SELECT `+botCols+mineStatsCols+botFrom+`WHERE b.owner_id = $1 AND ($2 = '' OR b.account_id::text = $2) ORDER BY b.created_at DESC`,
+		callerID, accountID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -242,22 +245,22 @@ func (s *Server) CreateBot(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var req struct {
-		Name               string          `json:"name"`
-		Description        string          `json:"description"`
-		FullDescription    string          `json:"fullDescription"`
-		AvatarURL          string          `json:"avatarUrl"`
-		IsPublic           bool            `json:"isPublic"`
-		AccountID          *string         `json:"accountId"`
-		SymbolWhitelist    []string        `json:"symbolWhitelist"`
-		SymbolBlacklist    []string        `json:"symbolBlacklist"`
-		Triggers           json.RawMessage `json:"triggers"`
-		StrategyConfig     json.RawMessage `json:"strategyConfig"`
-		MaxStrategies        int             `json:"maxStrategies"`
-		MaxLongStrategies    int             `json:"maxLongStrategies"`
-		MaxShortStrategies   int             `json:"maxShortStrategies"`
-		MaxMarginUsdt        float64         `json:"maxMarginUsdt"`
+		Name                  string          `json:"name"`
+		Description           string          `json:"description"`
+		FullDescription       string          `json:"fullDescription"`
+		AvatarURL             string          `json:"avatarUrl"`
+		IsPublic              bool            `json:"isPublic"`
+		AccountID             *string         `json:"accountId"`
+		SymbolWhitelist       []string        `json:"symbolWhitelist"`
+		SymbolBlacklist       []string        `json:"symbolBlacklist"`
+		Triggers              json.RawMessage `json:"triggers"`
+		StrategyConfig        json.RawMessage `json:"strategyConfig"`
+		MaxStrategies         int             `json:"maxStrategies"`
+		MaxLongStrategies     int             `json:"maxLongStrategies"`
+		MaxShortStrategies    int             `json:"maxShortStrategies"`
+		MaxMarginUsdt         float64         `json:"maxMarginUsdt"`
 		MaxSymConsecutiveRuns int             `json:"maxSymConsecutiveRuns"`
-		AutoMode             bool            `json:"autoMode"`
+		AutoMode              bool            `json:"autoMode"`
 		IgnoreCoinFilter      bool            `json:"ignoreCoinFilter"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -299,6 +302,153 @@ func (s *Server) CreateBot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bot, ok := fetchBot(s, r, id, callerID)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeJSON(w, http.StatusCreated, bot)
+}
+
+// setJSONField overwrites (or adds) a single key in a JSON object, tolerating an empty/nil
+// input (treated as `{}`). Used to inject fields the client shouldn't be trusted to set
+// itself (bot_kind, hedge_bot_whitelist) into an otherwise client-authored strategy_config blob.
+func setJSONField(raw json.RawMessage, key string, val interface{}) json.RawMessage {
+	m := map[string]interface{}{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &m) //nolint:errcheck
+	}
+	m[key] = val
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// POST /bots/multi вЂ" creates a "МультиБот": a signal leg and a hedge leg created and
+// managed together as one entity in the UI. Internally these are two ordinary bots rows —
+// the hedge leg is a normal hedge bot whose hedge_bot_whitelist is locked to the signal
+// leg's id (so it only ever reacts to that leg's own strategies), linked back to it via
+// paired_bot_id. No change to pkg/strategy or hedge_engine.go: both legs run through the
+// exact same code paths as any standalone signal/hedge bot pair already does today.
+func (s *Server) CreateMultiBot(w http.ResponseWriter, r *http.Request) {
+	callerID := UserIDFromCtx(r.Context())
+	ctx := r.Context()
+
+	var req struct {
+		Name                string          `json:"name"`
+		Description         string          `json:"description"`
+		FullDescription     string          `json:"fullDescription"`
+		AvatarURL           string          `json:"avatarUrl"`
+		AccountID           string          `json:"accountId"`
+		SymbolWhitelist     []string        `json:"symbolWhitelist"`
+		SymbolBlacklist     []string        `json:"symbolBlacklist"`
+		Triggers            json.RawMessage `json:"triggers"`
+		StrategyConfig      json.RawMessage `json:"strategyConfig"`      // signal leg
+		HedgeStrategyConfig json.RawMessage `json:"hedgeStrategyConfig"` // hedge leg
+
+		MaxStrategies         int     `json:"maxStrategies"`
+		MaxLongStrategies     int     `json:"maxLongStrategies"`
+		MaxShortStrategies    int     `json:"maxShortStrategies"`
+		MaxMarginUsdt         float64 `json:"maxMarginUsdt"`
+		MaxSymConsecutiveRuns int     `json:"maxSymConsecutiveRuns"`
+		AutoMode              bool    `json:"autoMode"`
+		IgnoreCoinFilter      bool    `json:"ignoreCoinFilter"`
+
+		HedgeMaxStrategies         int     `json:"hedgeMaxStrategies"`
+		HedgeMaxLongStrategies     int     `json:"hedgeMaxLongStrategies"`
+		HedgeMaxShortStrategies    int     `json:"hedgeMaxShortStrategies"`
+		HedgeMaxMarginUsdt         float64 `json:"hedgeMaxMarginUsdt"`
+		HedgeMaxSymConsecutiveRuns int     `json:"hedgeMaxSymConsecutiveRuns"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name required")
+		return
+	}
+	if req.AccountID == "" {
+		writeError(w, http.StatusBadRequest, "accountId required")
+		return
+	}
+	var acctOwner string
+	if err := s.pool.QueryRow(ctx, `SELECT owner_id FROM exchange_accounts WHERE id = $1`, req.AccountID).Scan(&acctOwner); err != nil {
+		writeError(w, http.StatusBadRequest, "account not found")
+		return
+	}
+	if acctOwner != callerID {
+		writeError(w, http.StatusForbidden, "account does not belong to caller")
+		return
+	}
+	if len(req.Triggers) == 0 {
+		req.Triggers = json.RawMessage("[]")
+	}
+	if req.SymbolWhitelist == nil {
+		req.SymbolWhitelist = []string{}
+	}
+	if req.SymbolBlacklist == nil {
+		req.SymbolBlacklist = []string{}
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "tx error")
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	signalCfg := setJSONField(req.StrategyConfig, "bot_kind", "signal")
+
+	var signalID string
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO bots (owner_id, name, description, full_description, avatar_url, is_public,
+		                  account_id, symbol_whitelist, symbol_blacklist, triggers, strategy_config,
+		                  max_strategies, max_long_strategies, max_short_strategies, max_margin_usdt, max_sym_consecutive_runs, auto_mode, ignore_coin_filter)
+		VALUES ($1, $2, $3, $4, $5, false, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+		RETURNING id`,
+		callerID, req.Name, req.Description, req.FullDescription, req.AvatarURL,
+		req.AccountID, req.SymbolWhitelist, req.SymbolBlacklist,
+		[]byte(req.Triggers), []byte(signalCfg),
+		req.MaxStrategies, req.MaxLongStrategies, req.MaxShortStrategies, req.MaxMarginUsdt, req.MaxSymConsecutiveRuns, req.AutoMode, req.IgnoreCoinFilter,
+	).Scan(&signalID); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	hedgeCfg := setJSONField(req.HedgeStrategyConfig, "bot_kind", "hedge")
+	hedgeCfg = setJSONField(hedgeCfg, "hedge_bot_whitelist", []string{signalID})
+
+	var hedgeID string
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO bots (owner_id, name, description, full_description, avatar_url, is_public,
+		                  account_id, symbol_whitelist, symbol_blacklist, triggers, strategy_config,
+		                  max_strategies, max_long_strategies, max_short_strategies, max_margin_usdt, max_sym_consecutive_runs, auto_mode, ignore_coin_filter,
+		                  paired_bot_id)
+		VALUES ($1, $2, $3, $4, $5, false, $6, '{}', '{}', $7, $8, $9, $10, $11, $12, $13, false, false, $14)
+		RETURNING id`,
+		callerID, req.Name, req.Description, req.FullDescription, req.AvatarURL,
+		req.AccountID,
+		[]byte(req.Triggers), []byte(hedgeCfg),
+		req.HedgeMaxStrategies, req.HedgeMaxLongStrategies, req.HedgeMaxShortStrategies, req.HedgeMaxMarginUsdt, req.HedgeMaxSymConsecutiveRuns,
+		signalID,
+	).Scan(&hedgeID); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	if _, err := tx.Exec(ctx, `UPDATE bots SET paired_bot_id = $1 WHERE id = $2`, hedgeID, signalID); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "tx commit error")
+		return
+	}
+
+	bot, ok := fetchBot(s, r, signalID, callerID)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -742,8 +892,12 @@ func (s *Server) DeleteBot(w http.ResponseWriter, r *http.Request) {
 	callerID := UserIDFromCtx(r.Context())
 	botID := chi.URLParam(r, "id")
 
+	// A Мультибот's two legs are deleted together — a lone hedge leg left behind would
+	// have nothing to hedge (its whitelist points at the signal leg being deleted), and a
+	// lone signal leg would silently stop being hedged with no way to tell from the UI.
 	tag, err := s.pool.Exec(r.Context(),
-		`DELETE FROM bots WHERE id = $1 AND owner_id = $2`, botID, callerID)
+		`DELETE FROM bots WHERE owner_id = $2 AND (id = $1 OR id = (SELECT paired_bot_id FROM bots WHERE id = $1))`,
+		botID, callerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -760,6 +914,24 @@ func (s *Server) DeployBot(w http.ResponseWriter, r *http.Request) {
 	callerID := UserIDFromCtx(r.Context())
 	sourceID := chi.URLParam(r, "id")
 	ctx := r.Context()
+
+	var req struct {
+		AccountID string `json:"accountId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req) // optional body — absent/malformed is fine, accountId just stays ""
+	if req.AccountID == "" {
+		writeError(w, http.StatusBadRequest, "accountId required")
+		return
+	}
+	var acctOwner string
+	if err := s.pool.QueryRow(ctx, `SELECT owner_id FROM exchange_accounts WHERE id = $1`, req.AccountID).Scan(&acctOwner); err != nil {
+		writeError(w, http.StatusBadRequest, "account not found")
+		return
+	}
+	if acctOwner != callerID {
+		writeError(w, http.StatusForbidden, "account does not belong to caller")
+		return
+	}
 
 	var name, desc, fullDesc string
 	var triggers, stratCfg []byte
@@ -796,10 +968,10 @@ func (s *Server) DeployBot(w http.ResponseWriter, r *http.Request) {
 
 	var newID string
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO bots (owner_id, source_bot_id, is_fork, name, description, full_description, triggers, strategy_config)
-		VALUES ($1, $2, true, $3, $4, $5, $6, $7)
+		INSERT INTO bots (owner_id, source_bot_id, is_fork, name, description, full_description, triggers, strategy_config, account_id)
+		VALUES ($1, $2, true, $3, $4, $5, $6, $7, $8)
 		RETURNING id`,
-		callerID, sourceID, name, desc, fullDesc, triggers, stratCfg,
+		callerID, sourceID, name, desc, fullDesc, triggers, stratCfg, req.AccountID,
 	).Scan(&newID); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -903,12 +1075,14 @@ func (s *Server) StartBot(w http.ResponseWriter, r *http.Request) {
 
 	// Atomically start the timer and set status = active.
 	// COALESCE keeps the existing active_since if the bot was already running (double-click idempotency).
+	// A Мультибот's two legs (signal + hedge, linked via paired_bot_id) start together —
+	// the hedge leg has nothing to watch until its signal twin is running.
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE bots
 		 SET active_since   = COALESCE(active_since, NOW()),
 		     status         = 'active',
 		     updated_at     = NOW()
-		 WHERE id = $1 AND owner_id = $2`,
+		 WHERE owner_id = $2 AND (id = $1 OR id = (SELECT paired_bot_id FROM bots WHERE id = $1))`,
 		botID, callerID,
 	)
 	if err != nil {
@@ -930,6 +1104,8 @@ func (s *Server) StopBot(w http.ResponseWriter, r *http.Request) {
 
 	// Atomically accumulate active seconds and set status = stopped.
 	// CASE guard ensures we only add elapsed time when the timer was actually running.
+	// Stops the Мультибот's paired leg too (see StartBot) — each side ticks its own
+	// active_seconds_acc independently, so this stays correct for either leg.
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE bots
 		 SET active_seconds_acc = active_seconds_acc
@@ -940,7 +1116,7 @@ func (s *Server) StopBot(w http.ResponseWriter, r *http.Request) {
 		     active_since  = NULL,
 		     status        = 'stopped',
 		     updated_at    = NOW()
-		 WHERE id = $1 AND owner_id = $2`,
+		 WHERE owner_id = $2 AND (id = $1 OR id = (SELECT paired_bot_id FROM bots WHERE id = $1))`,
 		botID, callerID,
 	)
 	if err != nil {
@@ -1648,10 +1824,10 @@ func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"results":           hits,
-		"scanned":           len(symbols),
+		"results":            hits,
+		"scanned":            len(symbols),
 		"activation_signals": sigNames,
-		"preview":           cfg,
+		"preview":            cfg,
 	})
 }
 

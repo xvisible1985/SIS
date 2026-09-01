@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Shield, ToggleLeft, ToggleRight, Camera, Trash2, Smile } from 'lucide-react';
 import { BotIconPicker } from './BotIconPicker';
@@ -21,7 +21,16 @@ type Props = {
   onClose: () => void;
   mode?: 'user' | 'admin';
   takenSymbols?: Map<string, string>;
+  // Мультибот embeds this form as one tab of its own modal — see BotForm.tsx's `embedded`
+  // for the same pattern and HedgeBotFormHandle.trySubmit for how the parent drives it.
+  embedded?: boolean;
+  // Мультибот's hedge leg only ever watches its own paired signal leg's strategies
+  // (hedge_bot_whitelist is locked server-side to that one bot) — the coin/bot filter
+  // pickers below would be dead controls in that context, so the parent hides them.
+  hideFilters?: boolean;
 };
+
+export type HedgeBotFormHandle = { trySubmit: () => Promise<CreateBotInput | null> };
 
 type OuterTab = 'basic' | 'activation' | 'completion' | 'strategy';
 type StratTab = 'entry' | 'matrix' | 'params';
@@ -148,8 +157,10 @@ function compressImage(file: File, maxPx = 300, quality = 0.82): Promise<string>
 
 // ─── HedgeBotForm ──────────────────────────────────────────────────────────────
 
-export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbols }: Props) {
-  const [outerTab, setOuterTab] = useState<OuterTab>('basic');
+export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function HedgeBotForm(
+  { bot, onSubmit, onClose, mode = 'user', takenSymbols, embedded = false, hideFilters = false }, ref
+) {
+  const [outerTab, setOuterTab] = useState<OuterTab>(embedded ? 'activation' : 'basic');
   const [stratTab, setStratTab] = useState<StratTab>('entry');
 
   // Basic fields
@@ -376,59 +387,75 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
     stop_pct: matrixEntryLevel.stop_pct !== null && matrixEntryLevel.stop_pct >= 0 ? 'Стоп отрицательным' : null,
   };
 
+  // When embedded, MultiBotForm calls trySubmit() instead of this form driving its own
+  // onSubmit/onClose — see BotForm.tsx's pendingResolveRef for the identical pattern.
+  const pendingResolveRef = useRef<((v: CreateBotInput | null) => void) | null>(null);
+  function resolveEmbedded(v: CreateBotInput | null) {
+    pendingResolveRef.current?.(v);
+    pendingResolveRef.current = null;
+  }
+
+  function buildPayload(): CreateBotInput {
+    const totalMatrixLevels = aboveLevels.length + 1 + belowLevels.length;
+    return {
+      name: name.trim(),
+      description: description.trim(),
+      fullDescription: fullDescription.trim() || undefined,
+      isPublic,
+      avatarUrl: avatarUrl || undefined,
+      symbolWhitelist: whitelist,
+      symbolBlacklist: blacklist,
+      strategyConfig: {
+        ...config,
+        bot_kind:      'hedge',
+        strategy_type: 'matrix',
+        grid_levels:   totalMatrixLevels,
+        grid_step_pct: belowLevels[0]?.price_step_pct ?? aboveLevels[0]?.price_step_pct ?? 0,
+        signal_filter: false,
+        hedge_act_type:          ha.act_type,
+        hedge_act_value:         ha.act_value,
+        hedge_force_activation:  ha.force_activation,
+        hedge_close_type:        ha.close_type,
+        hedge_close_value:       ha.close_value,
+        hedge_deact_close_type:  ha.deact_close_type,
+        hedge_deact_close_value: ha.deact_close_value,
+        hedge_breakeven_profit:  ha.breakeven_profit,
+        hedge_profit_lazy:       ha.profit_lazy,
+        hedge_profit_lazy_pct:   ha.profit_lazy_pct,
+        hedge_deact_type:        ha.deact_type,
+        hedge_deact_value:       ha.deact_value,
+        hedge_bot_whitelist:     botWhitelist,
+        hedge_bot_blacklist:     botBlacklist,
+        size_as_main:            sizeAsMain,
+        rescue_partial_close_enabled:       rescueEnabled,
+        rescue_trigger_price_move_pct:       rescueEnabled && rescuePriceMovePct !== null ? rescuePriceMovePct : undefined,
+        rescue_trigger_hedge_price_move_pct: rescueEnabled && rescueHedgePriceMovePct !== null ? rescueHedgePriceMovePct : undefined,
+        rescue_trigger_price_level:         rescueEnabled && rescuePriceLevel !== null ? rescuePriceLevel : undefined,
+        rescue_trigger_accumulated_min_usdt: rescueEnabled && rescueAccumMin !== null ? rescueAccumMin : undefined,
+        rescue_trigger_signal:              rescueEnabled && rescueSignalConfigs.length > 0 ? rescueSignalConfigs : undefined,
+        rescue_min_interval_sec:            rescueIntervalSec,
+      },
+      maxStrategies,
+      maxLongStrategies,
+      maxShortStrategies,
+      maxMarginUsdt,
+      maxSymConsecutiveRuns,
+      accountId: selectedAccountId || null,
+      autoMode,
+    };
+  }
+
   // Core submit — runs after all confirmations are resolved.
   const doSubmit = async () => {
+    if (embedded) {
+      resolveEmbedded(buildPayload());
+      return;
+    }
     setSubmitting(true);
     setSubmitError(null);
     setSubmitWarnings([]);
-    const totalMatrixLevels = aboveLevels.length + 1 + belowLevels.length;
     try {
-      const result = await onSubmit({
-        name: name.trim(),
-        description: description.trim(),
-        fullDescription: fullDescription.trim() || undefined,
-        isPublic,
-        avatarUrl: avatarUrl || undefined,
-        symbolWhitelist: whitelist,
-        symbolBlacklist: blacklist,
-        strategyConfig: {
-          ...config,
-          bot_kind:      'hedge',
-          strategy_type: 'matrix',
-          grid_levels:   totalMatrixLevels,
-          grid_step_pct: belowLevels[0]?.price_step_pct ?? aboveLevels[0]?.price_step_pct ?? 0,
-          signal_filter: false,
-          hedge_act_type:          ha.act_type,
-          hedge_act_value:         ha.act_value,
-          hedge_force_activation:  ha.force_activation,
-          hedge_close_type:        ha.close_type,
-          hedge_close_value:       ha.close_value,
-          hedge_deact_close_type:  ha.deact_close_type,
-          hedge_deact_close_value: ha.deact_close_value,
-          hedge_breakeven_profit:  ha.breakeven_profit,
-          hedge_profit_lazy:       ha.profit_lazy,
-          hedge_profit_lazy_pct:   ha.profit_lazy_pct,
-          hedge_deact_type:        ha.deact_type,
-          hedge_deact_value:       ha.deact_value,
-          hedge_bot_whitelist:     botWhitelist,
-          hedge_bot_blacklist:     botBlacklist,
-          size_as_main:            sizeAsMain,
-          rescue_partial_close_enabled:       rescueEnabled,
-          rescue_trigger_price_move_pct:       rescueEnabled && rescuePriceMovePct !== null ? rescuePriceMovePct : undefined,
-          rescue_trigger_hedge_price_move_pct: rescueEnabled && rescueHedgePriceMovePct !== null ? rescueHedgePriceMovePct : undefined,
-          rescue_trigger_price_level:         rescueEnabled && rescuePriceLevel !== null ? rescuePriceLevel : undefined,
-          rescue_trigger_accumulated_min_usdt: rescueEnabled && rescueAccumMin !== null ? rescueAccumMin : undefined,
-          rescue_trigger_signal:              rescueEnabled && rescueSignalConfigs.length > 0 ? rescueSignalConfigs : undefined,
-          rescue_min_interval_sec:            rescueIntervalSec,
-        },
-        maxStrategies,
-        maxLongStrategies,
-        maxShortStrategies,
-        maxMarginUsdt,
-        maxSymConsecutiveRuns,
-        accountId: selectedAccountId || null,
-        autoMode,
-      });
+      const result = await onSubmit(buildPayload());
       const warnings = (result as { warnings?: string[] })?.warnings ?? [];
       if (warnings.length > 0) {
         setSubmitWarnings(warnings);
@@ -443,7 +470,9 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
   };
 
   const handleSubmit = async () => {
-    if (!name.trim()) return;
+    // Мультибот owns name itself (Основное tab hidden when embedded, see outerTabs below)
+    // and overwrites it in the merged payload — this form's own copy never gets edited.
+    if (!embedded && !name.trim()) { resolveEmbedded(null); return; }
 
     // Warn about stats reset when editing a bot that already has trade history.
     if (bot && (bot.tradesTotal ?? 0) > 0) {
@@ -453,8 +482,15 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
     await doSubmit();
   };
 
+  useImperativeHandle(ref, () => ({
+    trySubmit: () => new Promise<CreateBotInput | null>(resolve => {
+      pendingResolveRef.current = resolve;
+      void handleSubmit();
+    }),
+  }));
+
   const outerTabs: { id: OuterTab; label: string }[] = [
-    { id: 'basic',      label: 'Основное'   },
+    ...(embedded ? [] : [{ id: 'basic' as const, label: 'Основное' }]),
     { id: 'activation', label: 'Активация'  },
     { id: 'completion', label: 'Завершение' },
     { id: 'strategy',   label: 'Стратегия'  },
@@ -466,10 +502,11 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
   ];
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-auto bg-[rgba(8,11,18,.78)] p-6 backdrop-blur">
-      <div className="flex max-h-[calc(100vh-48px)] w-full max-w-[680px] flex-col overflow-hidden rounded-[18px] border border-white/[.08] bg-[#0c1018] shadow-[0_32px_80px_-16px_rgba(0,0,0,.7)]">
+    <div className={embedded ? 'flex h-full flex-col overflow-hidden' : 'fixed inset-0 z-[100] flex items-center justify-center overflow-auto bg-[rgba(8,11,18,.78)] p-6 backdrop-blur'}>
+      <div className={embedded ? 'flex flex-1 flex-col overflow-hidden' : 'flex max-h-[calc(100vh-48px)] w-full max-w-[680px] flex-col overflow-hidden rounded-[18px] border border-white/[.08] bg-[#0c1018] shadow-[0_32px_80px_-16px_rgba(0,0,0,.7)]'}>
 
         {/* ── header ── */}
+        {!embedded && (
         <div className="flex items-center gap-3 border-b border-white/[.06] px-5 py-4">
           <div className="h-9 w-9 shrink-0 overflow-hidden rounded-[9px] border border-amber-500/30">
             {avatarUrl
@@ -491,6 +528,7 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
             <X size={14} />
           </button>
         </div>
+        )}
 
         {/* ── outer tabs ── */}
         <div className="flex border-b border-white/[.06] px-5">
@@ -722,6 +760,8 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
           {outerTab === 'activation' && (
             <div className="flex flex-col gap-5">
 
+              {!hideFilters && (
+              <>
               {/* Фильтр по монетам */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -783,6 +823,8 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
                   />
                 </div>
               </div>
+              </>
+              )}
 
               {/* ── Направление хеджа ── */}
               <div>
@@ -1884,6 +1926,7 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
         </div>
 
         {/* ── footer ── */}
+        {!embedded && (
         <div className="border-t border-white/[.06] px-5 py-3.5">
           {submitError && (
             <div className="mb-2.5 rounded-lg border border-rose-500/30 bg-rose-500/[.1] px-3 py-2 text-[12px] text-rose-300">
@@ -1924,6 +1967,7 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
             </button>
           </div>
         </div>
+        )}
       </div>
 
       {/* Stats reset confirmation modal */}
@@ -1933,12 +1977,12 @@ export function HedgeBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymbo
           netPnlTotal={bot.netPnlTotal ?? 0}
           tradesWin={bot.tradesWin ?? 0}
           onConfirm={() => { setShowResetStatsConfirm(false); void doSubmit(); }}
-          onCancel={() => setShowResetStatsConfirm(false)}
+          onCancel={() => { setShowResetStatsConfirm(false); resolveEmbedded(null); }}
         />
       )}
     </div>
   );
-}
+});
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Check, Flame, X, Copy, Share2, SlidersHorizontal, TrendingUp, Search, Shield, Layers, CheckCircle2 } from 'lucide-react';
+import { Check, Flame, X, Copy, Share2, SlidersHorizontal, TrendingUp, Search, Shield, Layers, GitMerge, CheckCircle2 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { FeaturedBot } from '../ui-types';
 import type { BotKind } from '../types';
@@ -15,6 +15,7 @@ const KIND_ICONS: Record<BotKind, LucideIcon> = {
   parser: Search,
   hedge:  Shield,
   matrix: Layers,
+  multi:  GitMerge,
 };
 
 type Props = {

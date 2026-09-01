@@ -1,4 +1,4 @@
-import { TrendingUp, Search, Shield, Layers, Settings, Trash2, Eye, EyeOff, Bot, Library } from 'lucide-react';
+import { TrendingUp, Search, Shield, Layers, GitMerge, Settings, Trash2, Eye, EyeOff, Bot, Library } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Bot as BotType, BotKind } from '../bots/types';
 import { getBotKindMeta } from '../bots/botKindMeta';
@@ -8,6 +8,7 @@ const KIND_ICONS: Record<BotKind, LucideIcon> = {
   parser: Search,
   hedge:  Shield,
   matrix: Layers,
+  multi:  GitMerge,
 };
 
 type Props = {

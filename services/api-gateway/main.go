@@ -310,6 +310,7 @@ func main() {
 		// Bots
 		r.Get("/bots", s.ListBots)
 		r.Post("/bots", s.CreateBot)
+		r.Post("/bots/multi", s.CreateMultiBot)
 		r.Get("/bots/{id}", s.GetBot)
 		r.Patch("/bots/{id}", s.PatchBot)
 		r.Delete("/bots/{id}", s.DeleteBot)

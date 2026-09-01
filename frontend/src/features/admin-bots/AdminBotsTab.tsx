@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, TrendingUp, Search, Shield, Layers, CheckCircle2, Archive, Clock } from 'lucide-react';
+import { Plus, TrendingUp, Search, Shield, Layers, GitMerge, CheckCircle2, Archive, Clock } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useAdminBots } from './api';
 import { BotForm } from '../bots/components/BotForm';
@@ -13,6 +13,7 @@ const KIND_ICONS: Record<BotKind, LucideIcon> = {
   parser: Search,
   hedge:  Shield,
   matrix: Layers,
+  multi:  GitMerge,
 };
 
 const KIND_GROUPS: { kind: BotKind; label: string }[] = [

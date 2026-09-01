@@ -3,6 +3,7 @@ import { BotsPage as BotsPageUI } from '../features/bots/BotsPage';
 import { BotForm } from '../features/bots/components/BotForm';
 import { HedgeBotForm } from '../features/bots/components/HedgeBotForm';
 import { MatrixBotForm } from '../features/bots/components/MatrixBotForm';
+import { MultiBotForm } from '../features/bots/components/MultiBotForm';
 import { BotTypePickerModal } from '../features/bots/components/BotTypePickerModal';
 import { useBots } from '../features/bots/api';
 import { useBotSignalCounts } from '../hooks/useBotSignalCounts';
@@ -10,7 +11,9 @@ import type { BotSignalCount } from '../hooks/useBotSignalCounts';
 import type { Bot, BotKind, CreateBotInput } from '../features/bots/types';
 import type { MyBot, FeaturedBot, BotStrategy, RiskLevel, TradeMode } from '../features/bots/ui-types';
 
-function toMyBot(b: Bot, sc: BotSignalCount | undefined): MyBot {
+// pairedBot is the Мультибот's hedge leg (see migration 092) — its own trade stats get
+// folded into the one visible card since the hedge row itself is never shown separately.
+function toMyBot(b: Bot, sc: BotSignalCount | undefined, pairedBot?: Bot): MyBot {
   const wl = b.symbolWhitelist ?? [];
   const symbolsTotal = sc
     ? String(sc.totalCount)
@@ -32,7 +35,7 @@ function toMyBot(b: Bot, sc: BotSignalCount | undefined): MyBot {
     exchange:         'bybit',
     capital:          b.strategyConfig.grid_size_usdt ?? 0,
     started:          new Date(b.createdAt),
-    botKind:           b.strategyConfig.bot_kind,
+    botKind:           b.pairedBotId ? 'multi' : b.strategyConfig.bot_kind,
     lev:              1,
     mode:             'futures' as TradeMode,
     symbolsTotal,
@@ -43,9 +46,9 @@ function toMyBot(b: Bot, sc: BotSignalCount | undefined): MyBot {
     approvalStatus:    b.approvalStatus,
     activeSecondsAcc:  b.activeSecondsAcc,
     activeSince:       b.activeSince,
-    tradesTotal:       b.tradesTotal ?? 0,
-    tradesWin:         b.tradesWin ?? 0,
-    netPnlTotal:       b.netPnlTotal ?? 0,
+    tradesTotal:       (b.tradesTotal ?? 0) + (pairedBot?.tradesTotal ?? 0),
+    tradesWin:         (b.tradesWin ?? 0) + (pairedBot?.tradesWin ?? 0),
+    netPnlTotal:       (b.netPnlTotal ?? 0) + (pairedBot?.netPnlTotal ?? 0),
     // шаблонный → автор шаблона; кастомный → ник владельца
     sourceAuthor:      b.sourceBotId ? (b.sourceAuthor || b.ownerName) : b.ownerName,
     config:            b.strategyConfig as Record<string, unknown>,
@@ -85,11 +88,19 @@ function toFeaturedBot(b: Bot): FeaturedBot {
 }
 
 export function BotsPage() {
-  const { catalog, mine, loading, action } = useBots();
+  const { catalog, mine, loading, action, refresh } = useBots();
   const signalCounts = useBotSignalCounts(!loading);
 
   const [formMode, setFormMode] = useState<'create' | 'edit' | null>(null);
   const [editBot, setEditBot] = useState<Bot | null>(null);
+  const [editHedgeBot, setEditHedgeBot] = useState<Bot | null>(null);
+
+  // A Мультибот's hedge leg is an ordinary bots row (bot_kind='hedge') that only exists to
+  // be driven by its paired signal leg's whitelist — it must never render as its own card.
+  const visibleMine = useMemo(
+    () => mine.filter(b => !(b.strategyConfig?.bot_kind === 'hedge' && b.pairedBotId)),
+    [mine],
+  );
 
   const takenSymbols = useMemo((): Map<string, string> => {
     const map = new Map<string, string>()
@@ -117,6 +128,7 @@ export function BotsPage() {
 
   const handleCreate = () => {
     setEditBot(null);
+    setEditHedgeBot(null);
     setKindPickerOpen(true);
   };
 
@@ -129,13 +141,20 @@ export function BotsPage() {
   const handleEditBot = (id: string) => {
     const bot = mine.find((b) => b.id === id) ?? null;
     setEditBot(bot);
-    setSelectedKind((bot?.strategyConfig?.bot_kind as BotKind) ?? 'signal');
+    if (bot?.pairedBotId) {
+      setEditHedgeBot(mine.find((b) => b.id === bot.pairedBotId) ?? null);
+      setSelectedKind('multi');
+    } else {
+      setEditHedgeBot(null);
+      setSelectedKind((bot?.strategyConfig?.bot_kind as BotKind) ?? 'signal');
+    }
     setFormMode('edit');
   };
 
   const handleFormClose = () => {
     setFormMode(null);
     setEditBot(null);
+    setEditHedgeBot(null);
     setSelectedKind('signal');
   };
 
@@ -151,7 +170,11 @@ export function BotsPage() {
   return (
     <>
       <BotsPageUI
-        myBots={mine.map(b => toMyBot(b, signalCounts.get(b.id)))}
+        myBots={visibleMine.map(b => toMyBot(
+          b,
+          signalCounts.get(b.id),
+          b.pairedBotId ? mine.find((p) => p.id === b.pairedBotId) : undefined,
+        ))}
         featured={catalog.map(toFeaturedBot)}
         onCreateBot={handleCreate}
         onExportBots={() => {}}
@@ -174,6 +197,15 @@ export function BotsPage() {
         />
       )}
 
+      {formMode !== null && selectedKind === 'multi' && (
+        <MultiBotForm
+          signalBot={editBot ?? undefined}
+          hedgeBot={editHedgeBot ?? undefined}
+          onClose={handleFormClose}
+          onSaved={refresh}
+        />
+      )}
+
       {formMode !== null && selectedKind === 'hedge' && (
         <HedgeBotForm
           bot={editBot ?? undefined}
@@ -192,7 +224,7 @@ export function BotsPage() {
         />
       )}
 
-      {formMode !== null && selectedKind !== 'hedge' && selectedKind !== 'matrix' && (
+      {formMode !== null && selectedKind !== 'hedge' && selectedKind !== 'matrix' && selectedKind !== 'multi' && (
         <BotForm
           bot={editBot ?? undefined}
           initialKind={selectedKind}

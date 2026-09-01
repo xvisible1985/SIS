@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Play, Pause, Settings, Trash2, TrendingUp, Search, Shield, Layers, Send, Clock } from 'lucide-react';
+import { Play, Pause, Settings, Trash2, TrendingUp, Search, Shield, Layers, GitMerge, Send, Clock } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { MyBot } from '../ui-types';
 import type { BotKind } from '../types';
@@ -11,6 +11,7 @@ const KIND_ICONS: Record<BotKind, LucideIcon> = {
   parser: Search,
   hedge:  Shield,
   matrix: Layers,
+  multi:  GitMerge,
 }
 
 type Props = {

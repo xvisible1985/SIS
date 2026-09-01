@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { TrendingUp, Search, Shield, Layers } from 'lucide-react'
+import { TrendingUp, Search, Shield, Layers, GitMerge } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { BOT_KINDS, BOT_KIND_META } from '../botKindMeta'
 import type { BotKind } from '../types'
@@ -8,6 +8,7 @@ const KIND_ICONS: Record<BotKind, LucideIcon> = {
   parser: Search,
   hedge:  Shield,
   matrix: Layers,
+  multi:  GitMerge,
 }
 
 type Props = {

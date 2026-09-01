@@ -33,9 +33,10 @@ import { useBotEventsWs, type BotEventCategory } from '../hooks/useBotEventsWs'
 import { BotForm } from '../features/bots/components/BotForm'
 import { HedgeBotForm } from '../features/bots/components/HedgeBotForm'
 import { MatrixBotForm } from '../features/bots/components/MatrixBotForm'
+import { MultiBotForm } from '../features/bots/components/MultiBotForm'
 import { BotScanModal } from '../features/bots/components/BotScanModal'
 import { getBotKindMeta } from '../features/bots/botKindMeta'
-import { TrendingUp, Search, Shield, Layers } from 'lucide-react'
+import { TrendingUp, Search, Shield, Layers, GitMerge } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { Bot, BotKind, BotAction } from '../features/bots/types'
 import type { Strategy, ExchangeAccount, ActiveOrder, Position, ChartExecution, StrategyLevel, MatrixRelativePreview, WsMsg } from '../types'
@@ -47,6 +48,7 @@ const KIND_ICONS: Record<BotKind, LucideIcon> = {
   parser: Search,
   hedge:  Shield,
   matrix: Layers,
+  multi:  GitMerge,
 }
 
 let _cachedSymbol = localStorage.getItem('t_symbol') ?? 'BTCUSDT'
@@ -275,8 +277,9 @@ function BotTerminalCard({ bot, sc, onSymbolChange, onStop, onStart, onEdit, onA
   const [logOpen, setLogOpen] = useState(false)
   const running = bot.status === 'active'
 
-  const km   = getBotKindMeta(bot.strategyConfig.bot_kind)
-  const Icon = KIND_ICONS[bot.strategyConfig.bot_kind ?? 'signal']
+  const displayKind = bot.pairedBotId ? 'multi' : bot.strategyConfig.bot_kind
+  const km   = getBotKindMeta(displayKind)
+  const Icon = KIND_ICONS[displayKind ?? 'signal']
 
   const sym = bot.strategyConfig.symbol
     ?? (bot.symbolWhitelist.length === 1 && !bot.symbolWhitelist[0].includes('*')
@@ -484,11 +487,12 @@ function saveHidden(s: Set<string>) {
   localStorage.setItem(TERMINAL_HIDDEN_KEY, JSON.stringify([...s]))
 }
 
-function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
+function TerminalBotsTab({ onSymbolChange, mine, loading, action, onRefresh }: {
   onSymbolChange: (sym: string) => void
   mine: Bot[]
   loading: boolean
   action: (a: BotAction) => Promise<Record<string, unknown> | void>
+  onRefresh: () => void
 }) {
   const { selectedAccountId } = useSelectedAccount()
   const signalCounts = useBotSignalCounts(true)
@@ -521,7 +525,10 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
   }, [mine, selectedAccountId])
 
   const unassignedBots = mine.filter(b => !b.accountId)
-  const allVisibleBots = mine
+  // A Мультибот's hedge leg is an ordinary bots row that only exists to be driven by its
+  // paired signal leg's whitelist — it must never render as its own card (see BotsPage.tsx
+  // for the identical filter on the /bots page).
+  const allVisibleBots = mine.filter(b => !(b.strategyConfig?.bot_kind === 'hedge' && b.pairedBotId))
   const visibleBots    = allVisibleBots.filter(b => !hidden.has(b.id))
   const hiddenBots     = allVisibleBots.filter(b => hidden.has(b.id))
   const runningCount   = visibleBots.filter(b => b.status === 'active').length
@@ -666,7 +673,15 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
         )}
       </div>
 
-      {editBot && editBot.strategyConfig.bot_kind === 'hedge' && (
+      {editBot && editBot.pairedBotId && (
+        <MultiBotForm
+          signalBot={editBot}
+          hedgeBot={mine.find(b => b.id === editBot.pairedBotId) ?? undefined}
+          onClose={() => setEditBotId(null)}
+          onSaved={onRefresh}
+        />
+      )}
+      {editBot && !editBot.pairedBotId && editBot.strategyConfig.bot_kind === 'hedge' && (
         <HedgeBotForm
           bot={editBot}
           takenSymbols={takenSymbols}
@@ -674,7 +689,7 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
           onClose={() => setEditBotId(null)}
         />
       )}
-      {editBot && editBot.strategyConfig.bot_kind === 'matrix' && (
+      {editBot && !editBot.pairedBotId && editBot.strategyConfig.bot_kind === 'matrix' && (
         <MatrixBotForm
           bot={editBot}
           takenSymbols={takenSymbols}
@@ -682,7 +697,7 @@ function TerminalBotsTab({ onSymbolChange, mine, loading, action }: {
           onClose={() => setEditBotId(null)}
         />
       )}
-      {editBot && editBot.strategyConfig.bot_kind !== 'hedge' && editBot.strategyConfig.bot_kind !== 'matrix' && (
+      {editBot && !editBot.pairedBotId && editBot.strategyConfig.bot_kind !== 'hedge' && editBot.strategyConfig.bot_kind !== 'matrix' && (
         <BotForm
           bot={editBot}
           onSubmit={async (data) => { await action({ type: 'update', botId: editBot.id, data }); setEditBotId(null) }}
@@ -1301,7 +1316,7 @@ export function TerminalPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
   // Bots state lifted here so it can feed both the bots tab and the hedge overlay.
-  const { mine: myBots, loading: botsLoading, action: botAction } = useBots()
+  const { mine: myBots, loading: botsLoading, action: botAction, refresh: refreshBots } = useBots()
 
   // Strategies state lifted here so it can feed the hedge overlay and the positions table
   // regardless of which tab is active. Polled every 15s so a bot-created strategy (no
@@ -1657,7 +1672,7 @@ export function TerminalPage() {
             {mobileTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} tickerPrices={tickerPrices} strategies={strategies} />}
             {mobileTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} onRemoveOrder={removeOrder} strategyLevels={strategyLevels} />}
             {mobileTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} asAccountId={undefined} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} isMobile pairedClose={pairedClose} />}
-            {mobileTab === 'bots' && <TerminalBotsTab onSymbolChange={setSymbol} mine={myBots} loading={botsLoading} action={botAction} />}
+            {mobileTab === 'bots' && <TerminalBotsTab onSymbolChange={setSymbol} mine={myBots} loading={botsLoading} action={botAction} onRefresh={refreshBots} />}
             {mobileTab === 'trade' && (
               <div className="flex flex-col gap-2 p-2 overflow-y-auto">
                 {accountId ? (
@@ -1836,7 +1851,7 @@ export function TerminalPage() {
             </>
           )}
           {rightTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} asAccountId={undefined} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} pairedClose={pairedClose} />}
-          {rightTab === 'bots' && <TerminalBotsTab onSymbolChange={setSymbol} mine={myBots} loading={botsLoading} action={botAction} />}
+          {rightTab === 'bots' && <TerminalBotsTab onSymbolChange={setSymbol} mine={myBots} loading={botsLoading} action={botAction} onRefresh={refreshBots} />}
         </div>
 
       </div>{/* /Right panel */}
