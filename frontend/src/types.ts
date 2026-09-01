@@ -288,6 +288,10 @@ export type WsMsg =
 export interface SignalConfig {
   name: string
   params: Record<string, unknown>
+  // Set when this leg references a saved combo (custom_signals.id) instead of a bare
+  // catalog signal — see pkg/strategy.SignalConfig. When set, name/params are unused;
+  // the combo's own component legs (each with their own params) apply at evaluation time.
+  custom_signal_id?: string
 }
 
 export interface GridStep {

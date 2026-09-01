@@ -613,10 +613,7 @@ func (e *Engine) PushSignalOverride(signalName string) {
 					}
 				}
 			}
-			sigCfgs := make([]signal.Config, len(configs))
-			for i, c := range configs {
-				sigCfgs[i] = signal.Config{Name: c.Name, Params: c.Params}
-			}
+			sigCfgs := runner.resolveSignalConfigs(configs)
 			// ComputeStateForce works even with empty candle snapshot,
 			// so override-aware signals (rsi-test) always return the right state.
 			state := runner.signalEngine.ComputeStateForce(symbol, tf, sigCfgs)
@@ -655,10 +652,7 @@ func (e *Engine) GetSignalValues(strategyID string) map[string]float64 {
 				}
 			}
 		}
-		sigCfgs := make([]signal.Config, len(configs))
-		for i, c := range configs {
-			sigCfgs[i] = signal.Config{Name: c.Name, Params: c.Params}
-		}
+		sigCfgs := runner.resolveSignalConfigs(configs)
 		return runner.signalEngine.QueryValues(symbol, tf, sigCfgs)
 	}
 	return nil

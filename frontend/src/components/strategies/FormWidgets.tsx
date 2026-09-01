@@ -2,8 +2,19 @@ import React, { useState, useEffect, useRef } from 'react'
 import ReactDOM from 'react-dom'
 import { SIGNALS } from '../../features/indicators/signals'
 import { INDICATORS } from '../../features/indicators/indicators'
-import type { SignalConfig } from '../../types'
+import type { SignalConfig, CustomSignal } from '../../types'
 import { apiClient } from '../../api/client'
+import { listCustomSignals } from '../../api/customSignals'
+
+// ─── useCustomSignals ───────────────────────────────────────────────────────
+// The user's own saved combo signals (migrations/091_custom_signals.sql) — offered
+// alongside the static catalog in SignalPickerField/SignalGateField below, so a strategy's
+// entry/TP/SL filter can reference one the same way it references a bare catalog signal.
+export function useCustomSignals(): CustomSignal[] {
+  const [list, setList] = useState<CustomSignal[]>([])
+  useEffect(() => { listCustomSignals().then(setList).catch(() => setList([])) }, [])
+  return list
+}
 
 // ─── useAllowedSignalIds ────────────────────────────────────────────────────
 
@@ -139,6 +150,7 @@ interface LiveSignalState {
 
 /** Unique priority key for a signal config: "name" or "name:tf" */
 export function sigPriorityKey(sc: SignalConfig): string {
+  if (sc.custom_signal_id) return `custom:${sc.custom_signal_id}`
   const tf = sc.params?.tf as string | undefined
   return tf ? `${sc.name}:${tf}` : sc.name
 }
@@ -202,7 +214,13 @@ export function SignalPickerField({ configs, onChange, onAutoSave, direction, li
     setStep('config')
   }
 
+  function selectCustomSignal(cs: CustomSignal) {
+    onChange([...configs, { name: cs.name, custom_signal_id: cs.id, params: {} }])
+    setOpen(false); setStep('list'); setPicked(null); setEditingIdx(null)
+  }
+
   function openEdit(sc: SignalConfig, idx: number) {
+    if (sc.custom_signal_id) return // combo legs have nothing to configure at this level
     const allPickable = [...SIGNALS, ...(INDICATORS as unknown as typeof SIGNALS)]
     const sig = allPickable.find(s => s.id === sc.name)
     if (!sig) return
@@ -233,6 +251,7 @@ export function SignalPickerField({ configs, onChange, onAutoSave, direction, li
   }
 
   const { ids: allowedIds, loading: allowedLoading } = useAllowedSignalIds()
+  const customSignals = useCustomSignals()
   const allPickable = [...SIGNALS, ...(INDICATORS as unknown as typeof SIGNALS)]
   const available = allowedLoading
     ? []
@@ -243,7 +262,7 @@ export function SignalPickerField({ configs, onChange, onAutoSave, direction, li
   return (
     <div className="flex flex-col gap-1.5">
       {configs.map((sc, idx) => {
-        const sig = SIGNALS.find(s => s.id === sc.name) ?? (INDICATORS as any[]).find(i => i.id === sc.name)
+        const sig = sc.custom_signal_id ? undefined : SIGNALS.find(s => s.id === sc.name) ?? (INDICATORS as any[]).find(i => i.id === sc.name)
         const tf = sc.params?.tf as string | undefined
         const statusKey = inferSignalDir(sc)
         const CARD_STYLE = {
@@ -276,6 +295,11 @@ export function SignalPickerField({ configs, onChange, onAutoSave, direction, li
               <span className="shrink-0 text-[15px] font-semibold" style={{ color: cs.name }}>
                 {sig?.name ?? sc.name}
               </span>
+              {sc.custom_signal_id && (
+                <span className="shrink-0 rounded-full bg-[#a78bfa]/[.15] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[#c4b1fb]">
+                  Комбо
+                </span>
+              )}
               {sig?.desc
                 ? <span className="flex-1 min-w-0 text-[12px] text-[#8b9ab8] truncate">{sig.desc}</span>
                 : <span className="flex-1" />
@@ -322,16 +346,18 @@ export function SignalPickerField({ configs, onChange, onAutoSave, direction, li
                   </button>
                 )
               })()}
-              <button
-                onClick={() => openEdit(sc, idx)}
-                className="shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-[6px] text-slate-500 hover:text-[#8babff] hover:bg-black/20 transition-colors"
-                title="Редактировать"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                </svg>
-              </button>
+              {!sc.custom_signal_id && (
+                <button
+                  onClick={() => openEdit(sc, idx)}
+                  className="shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-[6px] text-slate-500 hover:text-[#8babff] hover:bg-black/20 transition-colors"
+                  title="Редактировать"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                  </svg>
+                </button>
+              )}
             </div>
             <button
               onClick={() => remove(idx)}
@@ -363,20 +389,42 @@ export function SignalPickerField({ configs, onChange, onAutoSave, direction, li
               <div className="max-h-64 overflow-y-auto p-1">
                 {allowedLoading ? (
                   <div className="py-5 text-center text-[11px] text-slate-500">Загрузка...</div>
-                ) : available.length === 0 ? (
+                ) : available.length === 0 && customSignals.length === 0 ? (
                   <div className="py-5 text-center text-[11px] text-slate-500">Нет доступных сигналов</div>
-                ) : available.map(sig => (
-                  <button key={sig.id} onClick={() => selectSignal(sig)}
-                    className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-white/[.05] flex items-start gap-2.5 transition-colors">
-                    <span className="shrink-0 mt-px w-8 h-6 rounded-[4px] bg-[#1a2545] border border-[rgba(91,140,255,.3)] text-[#8babff] font-bold text-[9px] flex items-center justify-center tracking-[.3px]">
-                      {sig.abbr}
-                    </span>
-                    <div className="min-w-0">
-                      <div className="text-[12px] font-semibold text-[#e6ebf5] leading-none mb-0.5">{sig.name}</div>
-                      <div className="text-[10px] text-slate-500 leading-snug">{sig.desc}</div>
-                    </div>
-                  </button>
-                ))}
+                ) : (
+                  <>
+                    {customSignals.length > 0 && (
+                      <>
+                        <div className="px-2.5 py-1 text-[9px] font-bold uppercase tracking-wide text-slate-600">Мои сигналы</div>
+                        {customSignals.map(cs => (
+                          <button key={cs.id} onClick={() => selectCustomSignal(cs)}
+                            className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-white/[.05] flex items-start gap-2.5 transition-colors">
+                            <span className="shrink-0 mt-px rounded-[4px] bg-[#a78bfa]/[.15] px-1.5 py-1 text-[9px] font-bold uppercase tracking-wide text-[#c4b1fb]">
+                              Комбо
+                            </span>
+                            <div className="min-w-0">
+                              <div className="text-[12px] font-semibold text-[#e6ebf5] leading-none mb-0.5">{cs.name}</div>
+                              <div className="text-[10px] text-slate-500 leading-snug truncate">{cs.components.map(c => c.signal_name).join(' + ')}</div>
+                            </div>
+                          </button>
+                        ))}
+                        <div className="my-1 h-px bg-white/[.06]" />
+                      </>
+                    )}
+                    {available.map(sig => (
+                      <button key={sig.id} onClick={() => selectSignal(sig)}
+                        className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-white/[.05] flex items-start gap-2.5 transition-colors">
+                        <span className="shrink-0 mt-px w-8 h-6 rounded-[4px] bg-[#1a2545] border border-[rgba(91,140,255,.3)] text-[#8babff] font-bold text-[9px] flex items-center justify-center tracking-[.3px]">
+                          {sig.abbr}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="text-[12px] font-semibold text-[#e6ebf5] leading-none mb-0.5">{sig.name}</div>
+                          <div className="text-[10px] text-slate-500 leading-snug">{sig.desc}</div>
+                        </div>
+                      </button>
+                    ))}
+                  </>
+                )}
               </div>
             ) : (step === 'config' || step === 'edit') && picked ? (
               <div className="p-3 space-y-3">
@@ -489,6 +537,7 @@ export function SignalGateField({
   const dropRef = useRef<HTMLDivElement>(null)
 
   const { ids: allowedIds, loading: allowedLoading } = useAllowedSignalIds()
+  const customSignals = useCustomSignals()
   const allPickable = [...SIGNALS, ...(INDICATORS as unknown as typeof SIGNALS)]
   const available = allowedLoading
     ? []
@@ -528,7 +577,13 @@ export function SignalGateField({
     setStep('config')
   }
 
+  function selectCustomSignal(cs: CustomSignal) {
+    onChange([...configs, { name: cs.name, custom_signal_id: cs.id, params: {} }], dir)
+    setOpen(false); setStep('list'); setPicked(null); setEditingIdx(null)
+  }
+
   function openEdit(sc: SignalConfig, idx: number) {
+    if (sc.custom_signal_id) return // combo legs have nothing to configure at this level
     const sig = allPickable.find(s => s.id === sc.name)
     if (!sig) return
     setPicked(sig)
@@ -599,7 +654,7 @@ export function SignalGateField({
 
       {/* Signal cards */}
       {configs.map((sc, idx) => {
-        const sig = SIGNALS.find(s => s.id === sc.name) ?? (INDICATORS as any[]).find(s => s.id === sc.name)
+        const sig = sc.custom_signal_id ? undefined : SIGNALS.find(s => s.id === sc.name) ?? (INDICATORS as any[]).find(s => s.id === sc.name)
         const tf = sc.params?.tf as string | undefined
         return (
           <div key={idx} className="flex items-center gap-2 min-w-0">
@@ -612,6 +667,11 @@ export function SignalGateField({
                   {sig.abbr}
                 </span>
               )}
+              {sc.custom_signal_id && (
+                <span className="shrink-0 rounded-full bg-[#a78bfa]/[.15] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[#c4b1fb]">
+                  Комбо
+                </span>
+              )}
               <span className="text-[12px] font-semibold text-[#c4d2ff] min-w-0 truncate flex-1">
                 {sig?.name ?? sc.name}
               </span>
@@ -621,17 +681,19 @@ export function SignalGateField({
                   <span className="text-[#8babff] font-semibold">{tf}</span>
                 </span>
               )}
-              <button
-                type="button"
-                onClick={() => openEdit(sc, idx)}
-                className="shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-[6px] text-slate-500 hover:text-[#8babff] hover:bg-black/20 transition-colors"
-                title="Редактировать параметры"
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                </svg>
-              </button>
+              {!sc.custom_signal_id && (
+                <button
+                  type="button"
+                  onClick={() => openEdit(sc, idx)}
+                  className="shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-[6px] text-slate-500 hover:text-[#8babff] hover:bg-black/20 transition-colors"
+                  title="Редактировать параметры"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                  </svg>
+                </button>
+              )}
             </div>
             <button
               type="button"
@@ -667,20 +729,42 @@ export function SignalGateField({
               <div className="max-h-64 overflow-y-auto p-1">
                 {allowedLoading ? (
                   <div className="py-5 text-center text-[11px] text-slate-500">Загрузка...</div>
-                ) : available.length === 0 ? (
+                ) : available.length === 0 && customSignals.length === 0 ? (
                   <div className="py-5 text-center text-[11px] text-slate-500">Нет доступных сигналов</div>
-                ) : available.map(sig => (
-                  <button key={sig.id} type="button" onClick={() => selectSignal(sig)}
-                    className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-white/[.05] flex items-start gap-2.5 transition-colors">
-                    <span className="shrink-0 mt-px w-8 h-6 rounded-[4px] bg-[#1a2545] border border-[rgba(91,140,255,.3)] text-[#8babff] font-bold text-[9px] flex items-center justify-center tracking-[.3px]">
-                      {sig.abbr}
-                    </span>
-                    <div className="min-w-0">
-                      <div className="text-[12px] font-semibold text-[#e6ebf5] leading-none mb-0.5">{sig.name}</div>
-                      <div className="text-[10px] text-slate-500 leading-snug">{sig.desc}</div>
-                    </div>
-                  </button>
-                ))}
+                ) : (
+                  <>
+                    {customSignals.length > 0 && (
+                      <>
+                        <div className="px-2.5 py-1 text-[9px] font-bold uppercase tracking-wide text-slate-600">Мои сигналы</div>
+                        {customSignals.map(cs => (
+                          <button key={cs.id} type="button" onClick={() => selectCustomSignal(cs)}
+                            className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-white/[.05] flex items-start gap-2.5 transition-colors">
+                            <span className="shrink-0 mt-px rounded-[4px] bg-[#a78bfa]/[.15] px-1.5 py-1 text-[9px] font-bold uppercase tracking-wide text-[#c4b1fb]">
+                              Комбо
+                            </span>
+                            <div className="min-w-0">
+                              <div className="text-[12px] font-semibold text-[#e6ebf5] leading-none mb-0.5">{cs.name}</div>
+                              <div className="text-[10px] text-slate-500 leading-snug truncate">{cs.components.map(c => c.signal_name).join(' + ')}</div>
+                            </div>
+                          </button>
+                        ))}
+                        <div className="my-1 h-px bg-white/[.06]" />
+                      </>
+                    )}
+                    {available.map(sig => (
+                      <button key={sig.id} type="button" onClick={() => selectSignal(sig)}
+                        className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-white/[.05] flex items-start gap-2.5 transition-colors">
+                        <span className="shrink-0 mt-px w-8 h-6 rounded-[4px] bg-[#1a2545] border border-[rgba(91,140,255,.3)] text-[#8babff] font-bold text-[9px] flex items-center justify-center tracking-[.3px]">
+                          {sig.abbr}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="text-[12px] font-semibold text-[#e6ebf5] leading-none mb-0.5">{sig.name}</div>
+                          <div className="text-[10px] text-slate-500 leading-snug">{sig.desc}</div>
+                        </div>
+                      </button>
+                    ))}
+                  </>
+                )}
               </div>
             ) : (step === 'config' || step === 'edit') && picked ? (
               <div className="p-3 space-y-3">

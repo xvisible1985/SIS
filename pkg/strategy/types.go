@@ -43,9 +43,17 @@ const (
 	LevelSLClosed  LevelStatus = "sl_closed"
 )
 
+// SignalConfig identifies one leg of a strategy's signal filter/TP-signal/SL-signal.
+// Exactly one of Name or CustomSignalID is meaningful: a bare catalog reference (Name set,
+// e.g. "rsi-os") evaluates directly via the pkg/signal registry; a saved combo reference
+// (CustomSignalID set — see migrations/091_custom_signals.sql) expands into that combo's
+// own component legs at evaluation time (resolveSignalConfigs in custom_signal.go), so
+// editing the combo later changes every strategy that references it. Params only applies
+// to the Name case — a combo's legs each carry their own saved params.
 type SignalConfig struct {
-	Name   string                 `json:"name"`
-	Params map[string]interface{} `json:"params"`
+	Name           string                 `json:"name"`
+	Params         map[string]interface{} `json:"params"`
+	CustomSignalID string                 `json:"custom_signal_id,omitempty"`
 }
 
 type GridStep struct {

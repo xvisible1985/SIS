@@ -487,10 +487,7 @@ func (sr *StrategyRunner) resumeGridCycle(ctx context.Context) {
 				}
 			}
 		}
-		goCfgs := make([]signal.Config, len(sigConfigs))
-		for i, sc := range sigConfigs {
-			goCfgs[i] = signal.Config{Name: sc.Name, Params: sc.Params}
-		}
+		goCfgs := sr.runner.resolveSignalConfigs(sigConfigs)
 		sr.mu.Lock()
 		dir := sr.strategy.Direction
 		sr.mu.Unlock()
@@ -3180,10 +3177,7 @@ func (sr *StrategyRunner) awaitSignal(ctx context.Context) {
 		return
 	}
 
-	sigConfigs := make([]signal.Config, len(configs))
-	for i, sc := range configs {
-		sigConfigs[i] = signal.Config{Name: sc.Name, Params: sc.Params}
-	}
+	sigConfigs := sr.runner.resolveSignalConfigs(configs)
 
 	tf := "1h"
 	if len(configs) > 0 {
@@ -3377,10 +3371,7 @@ func (sr *StrategyRunner) handleSignalConfigUpdate(ctx context.Context) {
 			tf = s
 		}
 	}
-	sigConfigs := make([]signal.Config, len(configs))
-	for i, sc := range configs {
-		sigConfigs[i] = signal.Config{Name: sc.Name, Params: sc.Params}
-	}
+	sigConfigs := sr.runner.resolveSignalConfigs(configs)
 
 	state, known := signalEngine.QueryState(symbol, tf, sigConfigs)
 
@@ -3466,10 +3457,7 @@ func (sr *StrategyRunner) awaitSignalResumeCycle(ctx context.Context) {
 			tf = s
 		}
 	}
-	sigConfigs := make([]signal.Config, len(configs))
-	for i, sc := range configs {
-		sigConfigs[i] = signal.Config{Name: sc.Name, Params: sc.Params}
-	}
+	sigConfigs := sr.runner.resolveSignalConfigs(configs)
 
 	subID := stratID + ":signal"
 	sr.mu.Lock()
@@ -3562,11 +3550,10 @@ func (sr *StrategyRunner) launchSignalMonitor(ctx context.Context) {
 			tf = s
 		}
 	}
-	sigConfigs := make([]signal.Config, len(configs))
+	sigConfigs := sr.runner.resolveSignalConfigs(configs)
 	sigParts := make([]string, len(configs))
 	for i, sc := range configs {
-		sigConfigs[i] = signal.Config{Name: sc.Name, Params: sc.Params}
-		sigParts[i] = sc.Name
+		sigParts[i] = signalConfigLabel(sc)
 	}
 	sigLabel := strings.Join(sigParts, "+")
 
@@ -3690,11 +3677,10 @@ func (sr *StrategyRunner) launchExitSignalMonitor(ctx context.Context, isTP bool
 			tf = s
 		}
 	}
-	sigConfigs := make([]signal.Config, len(configs))
+	sigConfigs := sr.runner.resolveSignalConfigs(configs)
 	sigParts := make([]string, len(configs))
 	for i, sc := range configs {
-		sigConfigs[i] = signal.Config{Name: sc.Name, Params: sc.Params}
-		sigParts[i] = sc.Name
+		sigParts[i] = signalConfigLabel(sc)
 	}
 
 	prefix := "tp"
