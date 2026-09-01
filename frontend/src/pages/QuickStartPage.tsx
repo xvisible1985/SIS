@@ -97,9 +97,16 @@ function OptionBtn({
   )
 }
 
-function PosCard({ pos }: { pos: Position }) {
-  const pnl    = parseFloat(pos.unrealisedPnl)
-  const pnlPct = parseFloat(pos.unrealisedPnlPct)
+export function PosCard({ pos }: { pos: Position }) {
+  const pnl  = parseFloat(pos.unrealisedPnl)
+  const size = parseFloat(pos.size)
+  const mark = parseFloat(pos.markPrice)
+  // GET /accounts/:id/positions returns the raw exchange position — it never populates
+  // unrealisedPnlPct (nor entryPrice; that key comes through as avgPrice), unlike the
+  // WS-fed terminal path (usePositionsWs.ts's mapPosition), which computes it client-side.
+  // Same fallback here: % of position notional (size × mark), not ROI on margin.
+  const notional = size * mark
+  const pnlPct = notional > 0 ? (pnl / notional) * 100 : 0
   const positive = pnl >= 0
   const isLong   = pos.side === 'Buy'
   return (
