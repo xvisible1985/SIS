@@ -81,7 +81,7 @@ export function PnlTable({ accountId }: Props) {
             <table className="w-full text-xs">
               <thead className="sticky top-0 z-10 bg-white dark:bg-gray-900">
                 <tr className="text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
-                  {['Время', 'Инструмент', 'Направление', 'Объём', 'Цена входа', 'Цена выхода'].map(h => (
+                  {['Время', 'Инструмент', 'Направление', 'Объём', 'Объём, USDT', 'Цена входа', 'Цена выхода'].map(h => (
                     <th key={h} className={`px-3 py-2 font-medium ${h === 'Время' || h === 'Инструмент' || h === 'Направление' ? 'text-left' : 'text-right'}`}>{h}</th>
                   ))}
                   <th className="px-3 py-2 font-medium text-right cursor-help" title="Торговые комиссии + фандинг за период удержания (= валовый P&L − чистый closedPnl)">Комиссии</th>
@@ -104,6 +104,7 @@ export function PnlTable({ accountId }: Props) {
                         </span>
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-gray-900 dark:text-white">{item.qty}</td>
+                      <td className="px-3 py-2 text-right font-mono text-gray-900 dark:text-white">{parseFloat(item.cumEntryValue).toFixed(2)}</td>
                       <td className="px-3 py-2 text-right font-mono text-gray-900 dark:text-white">{parseFloat(item.avgEntryPrice).toFixed(4)}</td>
                       <td className="px-3 py-2 text-right font-mono text-gray-900 dark:text-white">{parseFloat(item.avgExitPrice).toFixed(4)}</td>
                       <td className="px-3 py-2 text-right font-mono text-white">−{Math.abs(fee).toFixed(4)}</td>
