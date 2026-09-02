@@ -128,6 +128,7 @@ export interface CustomSignalComponent {
 export interface CustomSignal {
   id: string
   name: string
+  badge: string
   created_at: string
   components: CustomSignalComponent[]
 }

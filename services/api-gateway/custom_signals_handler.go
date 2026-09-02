@@ -153,6 +153,7 @@ type customSignalComponentRow struct {
 type customSignalRow struct {
 	ID         string                      `json:"id"`
 	Name       string                      `json:"name"`
+	Badge      string                      `json:"badge"`
 	CreatedAt  string                      `json:"created_at"`
 	Components []customSignalComponentRow  `json:"components"`
 }
@@ -164,7 +165,7 @@ type customSignalRow struct {
 func (s *Server) ListCustomSignals(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	rows, err := s.pool.Query(r.Context(),
-		`SELECT cs.id::text, cs.name, cs.created_at::text, csc.component_signal_id, COALESCE(st.name, csc.component_signal_id), csc.params
+		`SELECT cs.id::text, cs.name, cs.badge, cs.created_at::text, csc.component_signal_id, COALESCE(st.name, csc.component_signal_id), csc.params
 		 FROM custom_signals cs
 		 JOIN custom_signal_components csc ON csc.custom_signal_id = cs.id
 		 LEFT JOIN signal_types st ON st.id = csc.component_signal_id
@@ -181,15 +182,15 @@ func (s *Server) ListCustomSignals(w http.ResponseWriter, r *http.Request) {
 	order := make([]string, 0)
 	byID := make(map[string]*customSignalRow)
 	for rows.Next() {
-		var id, name, createdAt, compID, compName string
+		var id, name, badge, createdAt, compID, compName string
 		var rawParams []byte
-		if err := rows.Scan(&id, &name, &createdAt, &compID, &compName, &rawParams); err != nil {
+		if err := rows.Scan(&id, &name, &badge, &createdAt, &compID, &compName, &rawParams); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan error")
 			return
 		}
 		cs, ok := byID[id]
 		if !ok {
-			cs = &customSignalRow{ID: id, Name: name, CreatedAt: createdAt}
+			cs = &customSignalRow{ID: id, Name: name, Badge: badge, CreatedAt: createdAt}
 			byID[id] = cs
 			order = append(order, id)
 		}
@@ -213,6 +214,7 @@ func (s *Server) CreateCustomSignal(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	var req struct {
 		Name       string                  `json:"name"`
+		Badge      string                  `json:"badge"`
 		Components []comboPreviewComponent `json:"components"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -222,6 +224,11 @@ func (s *Server) CreateCustomSignal(w http.ResponseWriter, r *http.Request) {
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	req.Badge = strings.ToUpper(strings.TrimSpace(req.Badge))
+	if req.Badge == "" || len([]rune(req.Badge)) > 4 {
+		writeError(w, http.StatusBadRequest, "badge is required and must be at most 4 characters")
 		return
 	}
 	if len(req.Components) < 2 {
@@ -249,8 +256,8 @@ func (s *Server) CreateCustomSignal(w http.ResponseWriter, r *http.Request) {
 
 	var id string
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO custom_signals (owner_id, name) VALUES ($1, $2) RETURNING id`,
-		userID, req.Name,
+		`INSERT INTO custom_signals (owner_id, name, badge) VALUES ($1, $2, $3) RETURNING id`,
+		userID, req.Name, req.Badge,
 	).Scan(&id); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return

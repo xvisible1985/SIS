@@ -271,6 +271,7 @@ export function SignalPickerField({ configs, onChange, onAutoSave, direction, li
           neutral: { bg: 'rgba(91,140,255,.06)',  border: 'rgba(91,140,255,.13)',  name: '#c4d2ff' },
         }
         const cs = CARD_STYLE[statusKey]
+        const matchedCustom = sc.custom_signal_id ? customSignals.find(c => c.id === sc.custom_signal_id) : undefined
         const rawParamBadge = (sc.params?.dir ?? sc.params?.kind) as string | undefined
         const paramBadge = rawParamBadge ? mapParamDir(rawParamBadge) : undefined
 
@@ -295,9 +296,12 @@ export function SignalPickerField({ configs, onChange, onAutoSave, direction, li
               <span className="shrink-0 text-[15px] font-semibold" style={{ color: cs.name }}>
                 {sig?.name ?? sc.name}
               </span>
-              {sc.custom_signal_id && (
-                <span className="shrink-0 rounded-full bg-[#a78bfa]/[.15] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[#c4b1fb]">
-                  Комбо
+              {matchedCustom && (
+                <span
+                  className="shrink-0 rounded-full bg-[#e879f9]/[.15] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[#f0abfc]"
+                  title="Комбинированный сигнал"
+                >
+                  {matchedCustom.badge}
                 </span>
               )}
               {sig?.desc
@@ -399,8 +403,8 @@ export function SignalPickerField({ configs, onChange, onAutoSave, direction, li
                         {customSignals.map(cs => (
                           <button key={cs.id} onClick={() => selectCustomSignal(cs)}
                             className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-white/[.05] flex items-start gap-2.5 transition-colors">
-                            <span className="shrink-0 mt-px rounded-[4px] bg-[#a78bfa]/[.15] px-1.5 py-1 text-[9px] font-bold uppercase tracking-wide text-[#c4b1fb]">
-                              Комбо
+                            <span className="shrink-0 mt-px rounded-[4px] bg-[#e879f9]/[.15] px-1.5 py-1 text-[9px] font-bold uppercase tracking-wide text-[#f0abfc]" title="Комбинированный сигнал">
+                              {cs.badge}
                             </span>
                             <div className="min-w-0">
                               <div className="text-[12px] font-semibold text-[#e6ebf5] leading-none mb-0.5">{cs.name}</div>
@@ -656,6 +660,7 @@ export function SignalGateField({
       {configs.map((sc, idx) => {
         const sig = sc.custom_signal_id ? undefined : SIGNALS.find(s => s.id === sc.name) ?? (INDICATORS as any[]).find(s => s.id === sc.name)
         const tf = sc.params?.tf as string | undefined
+        const matchedCustom = sc.custom_signal_id ? customSignals.find(c => c.id === sc.custom_signal_id) : undefined
         return (
           <div key={idx} className="flex items-center gap-2 min-w-0">
             <div
@@ -667,9 +672,12 @@ export function SignalGateField({
                   {sig.abbr}
                 </span>
               )}
-              {sc.custom_signal_id && (
-                <span className="shrink-0 rounded-full bg-[#a78bfa]/[.15] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[#c4b1fb]">
-                  Комбо
+              {matchedCustom && (
+                <span
+                  className="shrink-0 rounded-full bg-[#e879f9]/[.15] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[#f0abfc]"
+                  title="Комбинированный сигнал"
+                >
+                  {matchedCustom.badge}
                 </span>
               )}
               <span className="text-[12px] font-semibold text-[#c4d2ff] min-w-0 truncate flex-1">
@@ -739,8 +747,8 @@ export function SignalGateField({
                         {customSignals.map(cs => (
                           <button key={cs.id} type="button" onClick={() => selectCustomSignal(cs)}
                             className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-white/[.05] flex items-start gap-2.5 transition-colors">
-                            <span className="shrink-0 mt-px rounded-[4px] bg-[#a78bfa]/[.15] px-1.5 py-1 text-[9px] font-bold uppercase tracking-wide text-[#c4b1fb]">
-                              Комбо
+                            <span className="shrink-0 mt-px rounded-[4px] bg-[#e879f9]/[.15] px-1.5 py-1 text-[9px] font-bold uppercase tracking-wide text-[#f0abfc]" title="Комбинированный сигнал">
+                              {cs.badge}
                             </span>
                             <div className="min-w-0">
                               <div className="text-[12px] font-semibold text-[#e6ebf5] leading-none mb-0.5">{cs.name}</div>

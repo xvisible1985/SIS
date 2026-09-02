@@ -11,8 +11,8 @@ export async function listCustomSignals(): Promise<CustomSignal[]> {
   return res.data
 }
 
-export async function createCustomSignal(name: string, components: ComboComponentInput[]): Promise<{ id: string }> {
-  const res = await apiClient.post<{ id: string }>('/custom-signals', { name, components })
+export async function createCustomSignal(name: string, badge: string, components: ComboComponentInput[]): Promise<{ id: string }> {
+  const res = await apiClient.post<{ id: string }>('/custom-signals', { name, badge, components })
   return res.data
 }
 

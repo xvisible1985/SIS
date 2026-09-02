@@ -146,10 +146,11 @@ test('combo mode: saving a combo calls createCustomSignal with both legs and cle
 
   await waitFor(() => screen.getByPlaceholderText('Название сигнала…'))
   fireEvent.change(screen.getByPlaceholderText('Название сигнала…'), { target: { value: 'My combo' } })
+  fireEvent.change(screen.getByPlaceholderText('Шилдик'), { target: { value: 'RM' } })
   fireEvent.click(screen.getByText('Сохранить как сигнал'))
 
   await waitFor(() =>
-    expect(customSignalsApi.createCustomSignal).toHaveBeenCalledWith('My combo', [
+    expect(customSignalsApi.createCustomSignal).toHaveBeenCalledWith('My combo', 'RM', [
       { signal_id: 'rsi-os', params: expect.any(Object) },
       { signal_id: 'macd-x', params: expect.any(Object) },
     ])
@@ -163,6 +164,7 @@ test('a saved custom signal appears under "Мои сигналы" and can be sel
   vi.mocked(customSignalsApi.listCustomSignals).mockResolvedValue([{
     id: 'cs1',
     name: 'RSI + MACD combo',
+    badge: 'RM',
     created_at: '2026-01-01T00:00:00Z',
     components: [
       { signal_id: 'rsi-os', signal_name: 'RSI Oversold', params: {} },
@@ -198,10 +200,11 @@ test('combo mode: editing a leg\'s params via the ⚙ button carries through to 
   fireEvent.click(screen.getByText('enter'))
 
   fireEvent.change(screen.getByPlaceholderText('Название сигнала…'), { target: { value: 'Edited combo' } })
+  fireEvent.change(screen.getByPlaceholderText('Шилдик'), { target: { value: 'EC' } })
   fireEvent.click(screen.getByText('Сохранить как сигнал'))
 
   await waitFor(() =>
-    expect(customSignalsApi.createCustomSignal).toHaveBeenCalledWith('Edited combo', [
+    expect(customSignalsApi.createCustomSignal).toHaveBeenCalledWith('Edited combo', 'EC', [
       { signal_id: 'rsi-os', params: expect.objectContaining({ kind: 'enter' }) },
       { signal_id: 'macd-x', params: expect.any(Object) },
     ])
@@ -213,6 +216,7 @@ test('deleting a custom signal calls deleteCustomSignal', async () => {
   vi.mocked(customSignalsApi.listCustomSignals).mockResolvedValue([{
     id: 'cs1',
     name: 'RSI + MACD combo',
+    badge: 'RM',
     created_at: '2026-01-01T00:00:00Z',
     components: [
       { signal_id: 'rsi-os', signal_name: 'RSI Oversold', params: {} },

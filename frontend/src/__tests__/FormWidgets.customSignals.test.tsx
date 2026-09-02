@@ -11,6 +11,7 @@ vi.mock('../api/customSignals')
 const fakeCombo: CustomSignal = {
   id: 'cs1',
   name: 'RSI + MACD combo',
+  badge: 'RSMA',
   created_at: '2026-01-01T00:00:00Z',
   components: [
     { signal_id: 'rsi-os', signal_name: 'RSI Oversold', params: {} },
@@ -49,11 +50,11 @@ test('picking a combo appends a custom_signal_id entry, not a params-editable ca
   ])
 })
 
-test('a combo already in configs renders with a "Комбо" badge and no edit button', async () => {
+test('a combo already in configs renders with its own short badge and no edit button', async () => {
   const configs: SignalConfig[] = [{ name: 'RSI + MACD combo', custom_signal_id: 'cs1', params: {} }]
   render(<SignalPickerField configs={configs} onChange={() => {}} />)
 
   await waitFor(() => screen.getByText('RSI + MACD combo'))
-  expect(screen.getByText('Комбо')).toBeInTheDocument()
+  expect(screen.getByText('RSMA')).toBeInTheDocument()
   expect(screen.queryByTitle('Редактировать')).not.toBeInTheDocument()
 })

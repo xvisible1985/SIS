@@ -111,7 +111,12 @@ function CustomSignalCard({ cs, selected, onClick, onDelete }: {
       <div className="flex items-start gap-2">
         <button type="button" onClick={onClick} className="min-w-0 flex-1 text-left">
           <div className="mb-1 flex items-center gap-1.5">
-            <span className="rounded-full bg-[#a78bfa]/[.15] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[#c4b1fb]">Комбо</span>
+            <span
+              className="rounded-full bg-[#e879f9]/[.15] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[#f0abfc]"
+              title="Комбинированный сигнал"
+            >
+              {cs.badge}
+            </span>
           </div>
           <div className="truncate text-[12px] font-semibold text-slate-100">{cs.name}</div>
         </button>
@@ -155,6 +160,7 @@ export function WebhooksPage() {
   const [comboMode, setComboMode] = useState(false)
   const [comboLegs, setComboLegs] = useState<ComboLeg[]>([])
   const [comboName, setComboName] = useState('')
+  const [comboBadge, setComboBadge] = useState('')
   const [comboSaving, setComboSaving] = useState(false)
   const [comboSaveError, setComboSaveError] = useState('')
   const [editingLegId, setEditingLegId] = useState<string | null>(null)
@@ -213,7 +219,7 @@ export function WebhooksPage() {
 
   function toggleComboMode() {
     setComboMode(v => {
-      if (v) { setComboLegs([]); setComboName(''); setComboSaveError(''); setEditingLegId(null) }
+      if (v) { setComboLegs([]); setComboName(''); setComboBadge(''); setComboSaveError(''); setEditingLegId(null) }
       return !v
     })
   }
@@ -221,16 +227,18 @@ export function WebhooksPage() {
   async function handleSaveCombo() {
     if (comboLegs.length < 2) return
     if (!comboName.trim()) { setComboSaveError('Введите название'); return }
+    if (!comboBadge.trim()) { setComboSaveError('Задайте шилдик (до 4 символов)'); return }
     setComboSaveError('')
     setComboSaving(true)
     try {
       const components: ComboComponentInput[] = comboLegs.map(l => ({ signal_id: l.def.id, params: l.params }))
-      const { id } = await createCustomSignal(comboName.trim(), components)
+      const { id } = await createCustomSignal(comboName.trim(), comboBadge.trim(), components)
       const saved = await listCustomSignals()
       setCustomSignals(saved)
       const created = saved.find(cs => cs.id === id)
       setComboLegs([])
       setComboName('')
+      setComboBadge('')
       setComboMode(false)
       setEditingLegId(null)
       if (created) selectCustomSignal(created)
@@ -441,6 +449,14 @@ export function WebhooksPage() {
                         onChange={e => setComboName(e.target.value)}
                         placeholder="Название сигнала…"
                         className="w-44 rounded-lg border border-white/[.08] bg-black/25 px-2.5 py-1 text-[12px] text-slate-200 outline-none placeholder:text-slate-600 focus:border-[#a78bfa]/50"
+                      />
+                      <input
+                        value={comboBadge}
+                        onChange={e => setComboBadge(e.target.value.slice(0, 4).toUpperCase())}
+                        placeholder="Шилдик"
+                        title="Короткая метка на бейдже, до 4 символов"
+                        maxLength={4}
+                        className="w-16 rounded-lg border border-white/[.08] bg-black/25 px-2 py-1 text-center text-[12px] font-bold uppercase tracking-wide text-slate-200 outline-none placeholder:text-slate-600 placeholder:normal-case placeholder:font-normal placeholder:tracking-normal focus:border-[#a78bfa]/50"
                       />
                       <button
                         type="button"
