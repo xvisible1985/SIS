@@ -388,6 +388,82 @@ func TestMatrixMostFavorableFill_FallsBackToZeroWhenItIsTheOnlyFill(t *testing.T
 	}
 }
 
+// TestMatrixLatestActiveFill_ExcludesZeroWhenOnlyFavorableLevelsFilled is the regression
+// for the bug found live 2026-08-31 (1000NEIROCTOUSDT): a short whose "below" (favorable/
+// pyramid) levels filled at progressively BETTER prices than L(0) has no fill actually
+// worse than the entry. matrixLatestActiveFill's job is to find the level furthest AGAINST
+// the position — before this fix it had no L(0) exclusion at all (unlike
+// matrixMostFavorableFill), so L(0) won by construction: its price is the worst of the set
+// purely because every other fill was in the position's favor. Since matrix_entry_level
+// carries no tp_pct, matrixUpdateTP's adverse branch (which calls this function) then sat
+// with zero TP for over a day. A real DCA/pyramid level with a configured tp_pct must win
+// over L(0) whenever one exists, exactly like matrixMostFavorableFill already guarantees.
+func TestMatrixLatestActiveFill_ExcludesZeroWhenOnlyFavorableLevelsFilled(t *testing.T) {
+	zero, one, two := 0, 1, 2
+	sr := &StrategyRunner{
+		strategy: Strategy{Direction: DirectionShort},
+		levels: []GridLevel{
+			// L(0): worst (highest) price of the set purely because slots 1/2 both filled
+			// favorably (lower, for a short) — none of them is a genuine adverse DCA fill.
+			{Slot: &zero, Status: LevelFilled, FilledPrice: 0.08594},
+			{Slot: &one, Status: LevelFilled, FilledPrice: 0.08337},
+			{Slot: &two, Status: LevelFilled, FilledPrice: 0.08079},
+		},
+	}
+	got, ok := sr.matrixLatestActiveFill()
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got.Slot == nil || *got.Slot != 1 {
+		t.Fatalf("governing slot = %v, want 1 — the worst-priced REAL level must govern over L(0)", got.Slot)
+	}
+}
+
+// TestMatrixLatestActiveFill_FallsBackToZeroWhenItIsTheOnlyFill mirrors
+// TestMatrixMostFavorableFill_FallsBackToZeroWhenItIsTheOnlyFill: a fresh cycle with only
+// L(0) filled must still return it — matrixUpdateTP's "tp_pct не настроен" branch handles
+// that as the expected "briefly unprotected" state, it just must never be preferred over a
+// real level once one fills.
+func TestMatrixLatestActiveFill_FallsBackToZeroWhenItIsTheOnlyFill(t *testing.T) {
+	zero := 0
+	sr := &StrategyRunner{
+		strategy: Strategy{Direction: DirectionShort},
+		levels: []GridLevel{
+			{Slot: &zero, Status: LevelFilled, FilledPrice: 100.0},
+		},
+	}
+	got, ok := sr.matrixLatestActiveFill()
+	if !ok {
+		t.Fatal("expected ok=true — L(0) is a valid fill, just a low-priority one")
+	}
+	if got.Slot == nil || *got.Slot != 0 {
+		t.Fatalf("governing slot = %v, want 0 (only fill available)", got.Slot)
+	}
+}
+
+// TestMatrixLatestActiveFill_GenuineAdverseDCAStillWorksUnchanged confirms the exclusion
+// doesn't affect the case matrixLatestActiveFill exists for in the first place: a real DCA
+// level that filled genuinely worse than L(0) (price kept moving against the position) must
+// still be selected — same outcome as before this fix, since that level would have won the
+// price comparison over L(0) either way.
+func TestMatrixLatestActiveFill_GenuineAdverseDCAStillWorksUnchanged(t *testing.T) {
+	zero, negOne := 0, -1
+	sr := &StrategyRunner{
+		strategy: Strategy{Direction: DirectionLong},
+		levels: []GridLevel{
+			{Slot: &zero, Status: LevelFilled, FilledPrice: 100.0},
+			{Slot: &negOne, Status: LevelFilled, FilledPrice: 95.0}, // genuinely worse for a long
+		},
+	}
+	got, ok := sr.matrixLatestActiveFill()
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got.Slot == nil || *got.Slot != -1 {
+		t.Fatalf("governing slot = %v, want -1 — the genuinely worse-priced DCA level must govern", got.Slot)
+	}
+}
+
 func TestMatrixPlacePerLevelSLSkipsNegativeSlots(t *testing.T) {
 	// matrixPlacePerLevelSL must return immediately for negative slots.
 	// We verify by checking the function returns without panicking on nil runner

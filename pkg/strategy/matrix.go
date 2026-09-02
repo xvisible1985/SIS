@@ -121,12 +121,28 @@ func (sr *StrategyRunner) matrixActiveQty() float64 {
 //   filled at a more extreme price and has the TP% configured.  If the re-inserted slot
 //   has no TP% the old code silently cancels the standing TP.
 //
+// L(0) is excluded from this comparison whenever a real DCA level has also filled — same
+// rule, same reason as matrixMostFavorableFill below. A position whose DCA levels only
+// ever filled in ITS OWN favor (pyramiding, not genuine adverse averaging) has no fill
+// priced worse than L(0): L(0) then wins "most extreme against" by construction even
+// though every real level is a below-entry pyramid add. Since matrix_entry_level carries
+// no tp_pct by design, this starved the position of any TP for as long as price sat on
+// the adverse side of ТВХ — found live (2026-08-31, 1000NEIROCTOUSDT): "tp_pct не
+// настроен для слота L(0)" logged every ~20s for over a day despite two below-entry
+// levels being filled with valid tp_pct configs. L(0) is only returned as a last resort,
+// when it is literally the only fill there is.
+//
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixLatestActiveFill() (*GridLevel, bool) {
 	var best *GridLevel
+	var zeroFill *GridLevel
 	for i := range sr.levels {
 		l := &sr.levels[i]
 		if l.Status != LevelFilled || l.FilledPrice <= 0 {
+			continue
+		}
+		if l.Slot != nil && *l.Slot == 0 {
+			zeroFill = l
 			continue
 		}
 		if best == nil {
@@ -143,7 +159,10 @@ func (sr *StrategyRunner) matrixLatestActiveFill() (*GridLevel, bool) {
 			}
 		}
 	}
-	return best, best != nil
+	if best != nil {
+		return best, true
+	}
+	return zeroFill, zeroFill != nil
 }
 
 // matrixMostFavorableFill is the mirror of matrixLatestActiveFill: it returns the filled
