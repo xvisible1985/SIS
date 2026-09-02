@@ -3,6 +3,6 @@ import App from '../App'
 
 test('renders without crashing', () => {
   render(<App />)
-  // Unauthenticated users are redirected to /login which shows the SIS heading
-  expect(screen.getByRole('heading', { name: 'SIS' })).toBeInTheDocument()
+  // Unauthenticated users are redirected to /login (AuthPage, defaultTab="login")
+  expect(screen.getByRole('heading', { name: 'Войти в аккаунт' })).toBeInTheDocument()
 })

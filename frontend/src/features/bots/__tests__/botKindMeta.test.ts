@@ -3,8 +3,8 @@ import { BOT_KINDS, BOT_KIND_META, getBotKindMeta } from '../botKindMeta'
 import type { BotKind } from '../types'
 
 describe('botKindMeta', () => {
-  it('BOT_KINDS содержит signal, parser, hedge', () => {
-    expect(BOT_KINDS).toEqual(['signal', 'parser', 'hedge'])
+  it('BOT_KINDS содержит signal, parser, hedge, matrix, multi', () => {
+    expect(BOT_KINDS).toEqual(['signal', 'parser', 'hedge', 'matrix', 'multi'])
   })
 
   it('signal имеет label SignalBot и не disabled', () => {
@@ -12,9 +12,9 @@ describe('botKindMeta', () => {
     expect(BOT_KIND_META['signal'].disabled).toBeFalsy()
   })
 
-  it('parser и hedge имеют disabled: true', () => {
+  it('parser имеет disabled: true, hedge — доступен', () => {
     expect(BOT_KIND_META['parser'].disabled).toBe(true)
-    expect(BOT_KIND_META['hedge'].disabled).toBe(true)
+    expect(BOT_KIND_META['hedge'].disabled).toBeFalsy()
   })
 
   it('getBotKindMeta возвращает signal для неизвестного kind', () => {
