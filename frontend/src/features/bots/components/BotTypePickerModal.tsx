@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { TrendingUp, Search, Shield, Layers, GitMerge } from 'lucide-react'
+import { TrendingUp, Search, Shield, Layers, GitMerge, Lightbulb } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { BOT_KINDS, BOT_KIND_META } from '../botKindMeta'
 import type { BotKind } from '../types'
@@ -10,6 +10,10 @@ const KIND_ICONS: Record<BotKind, LucideIcon> = {
   matrix: Layers,
   multi:  GitMerge,
 }
+
+// ParserBot is still "В разработке" (see botKindMeta) — not worth a card slot in the
+// picker until it's actually selectable.
+const PICKER_KINDS = BOT_KINDS.filter((k) => k !== 'parser')
 
 type Props = {
   onSelect: (kind: BotKind) => void
@@ -31,7 +35,7 @@ export function BotTypePickerModal({ onSelect, onClose }: Props) {
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
       <div
-        className="relative w-full max-w-[760px] rounded-2xl border p-6"
+        className="relative w-full max-w-[980px] rounded-2xl border p-6"
         style={{
           background:   'linear-gradient(180deg,#10141f 0%,#0c1018 100%)',
           borderColor:  'rgba(255,255,255,0.08)',
@@ -48,8 +52,8 @@ export function BotTypePickerModal({ onSelect, onClose }: Props) {
         </div>
 
         {/* карточки */}
-        <div className="grid grid-cols-3 gap-3.5">
-          {BOT_KINDS.map((kind) => {
+        <div className="grid grid-cols-4 gap-3.5">
+          {PICKER_KINDS.map((kind) => {
             const m        = BOT_KIND_META[kind]
             const Icon     = KIND_ICONS[kind]
             const disabled = m.disabled === true
@@ -141,12 +145,12 @@ export function BotTypePickerModal({ onSelect, onClose }: Props) {
                   </div>
                 </div>
 
-                <div className="px-4 py-3">
+                <div className="flex-1 px-4 py-3">
                   <p className="text-[12px] leading-relaxed text-slate-400">{m.desc}</p>
                 </div>
 
                 <div
-                  className="mx-4 mb-4 flex items-center justify-center rounded-lg border py-1.5 text-[11px] font-semibold transition-colors"
+                  className="mx-4 mb-4 mt-auto flex items-center justify-center rounded-lg border py-1.5 text-[11px] font-semibold transition-colors"
                   style={{ borderColor: m.border, color: m.color, background: m.iconBg }}
                 >
                   Выбрать {m.label} →
@@ -154,6 +158,21 @@ export function BotTypePickerModal({ onSelect, onClose }: Props) {
               </button>
             )
           })}
+        </div>
+
+        {/* подсказка трейдеру */}
+        <div
+          className="mt-4 flex gap-2.5 rounded-[12px] border px-4 py-3"
+          style={{ borderColor: 'rgba(255,255,255,0.07)', background: 'rgba(255,255,255,0.02)' }}
+        >
+          <Lightbulb size={15} className="mt-0.5 shrink-0 text-amber-400" strokeWidth={2} />
+          <div className="flex flex-col gap-1.5 text-[12px] leading-relaxed text-slate-400">
+            <p className="font-semibold text-slate-300">Не уверены с выбором?</p>
+            <p><span className="font-semibold text-slate-300">SignalBot</span> открывает позиции сам, по сигналам, — с него проще всего начать.</p>
+            <p><span className="font-semibold text-slate-300">HedgeBot</span> своих позиций не открывает — он существует, чтобы защищать позиции другого бота.</p>
+            <p><span className="font-semibold text-slate-300">MatrixBot</span> ведёт симметричную пару лонг/шорт на одной монете, независимо от других ботов.</p>
+            <p><span className="font-semibold text-slate-300">МультиБот</span> — готовая связка Signal + Hedge: берите его, если хотите, чтобы вход и защита управлялись как одна сущность, без ручной сборки пары.</p>
+          </div>
         </div>
 
         {/* закрыть */}
