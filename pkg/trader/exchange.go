@@ -87,3 +87,11 @@ func (e *BybitExchange) FetchPositions(ctx context.Context) ([]Position, error) 
 func (e *BybitExchange) FetchOpenOrdersForSymbolAll(ctx context.Context, category, symbol string) ([]Order, error) {
 	return FetchOpenOrdersForSymbolAll(ctx, e.creds, category, symbol)
 }
+
+func (e *BybitExchange) FetchClosedPnlForSymbol(ctx context.Context, category, symbol string, limit int) ([]ClosedPnl, error) {
+	return FetchClosedPnlForSymbol(ctx, e.creds, category, symbol, limit)
+}
+
+func (e *BybitExchange) FetchRecentClosedPnl(ctx context.Context, category string, since time.Time) ([]ClosedPnl, error) {
+	return FetchRecentClosedPnl(ctx, e.creds, category, since)
+}

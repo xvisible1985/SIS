@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // fakeWSOrderClient is a hand-written stand-in for *TradeStream, so the WS-backed
@@ -171,5 +172,49 @@ func TestBybitExchange_FetchOpenOrdersForSymbolAll_DelegatesToREST(t *testing.T)
 	}
 	if !seen["ord-Order"] || !seen["ord-StopOrder"] {
 		t.Errorf("FetchOpenOrdersForSymbolAll order IDs = %v, want ord-Order and ord-StopOrder", seen)
+	}
+}
+
+func TestBybitExchange_FetchClosedPnlForSymbol_DelegatesToREST(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/v5/position/closed-pnl" {
+			// e.g. /v5/market/time — doSignedGET's timestamp sync. Not load-bearing here.
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.URL.Query().Get("symbol") != "BTCUSDT" {
+			t.Errorf("request symbol = %q, want BTCUSDT", r.URL.Query().Get("symbol"))
+		}
+		_, _ = w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{"list":[{"symbol":"BTCUSDT","orderId":"ord-1","closedPnl":"5.5"}]}}`))
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	ex := NewBybitExchange(Credentials{APIKey: "k", SecretKey: "s"}, &fakeWSOrderClient{})
+	got, err := ex.FetchClosedPnlForSymbol(context.Background(), "linear", "BTCUSDT", 10)
+	if err != nil {
+		t.Fatalf("FetchClosedPnlForSymbol: %v", err)
+	}
+	if len(got) != 1 || got[0].OrderId != "ord-1" || got[0].ClosedPnl != "5.5" {
+		t.Errorf("FetchClosedPnlForSymbol = %+v, want one ord-1 row with closedPnl=5.5", got)
+	}
+}
+
+func TestBybitExchange_FetchRecentClosedPnl_DelegatesToREST(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{"list":[{"symbol":"ETHUSDT","orderId":"ord-2","closedPnl":"1.1"}],"nextPageCursor":""}}`))
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	ex := NewBybitExchange(Credentials{APIKey: "k", SecretKey: "s"}, &fakeWSOrderClient{})
+	got, err := ex.FetchRecentClosedPnl(context.Background(), "linear", time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("FetchRecentClosedPnl: %v", err)
+	}
+	if len(got) != 1 || got[0].OrderId != "ord-2" {
+		t.Errorf("FetchRecentClosedPnl = %+v, want one ord-2 row", got)
 	}
 }
