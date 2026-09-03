@@ -2,6 +2,7 @@ package binance
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -91,8 +92,7 @@ func TestDoSignedPOST_SendsFormEncodedBodyNotJSON(t *testing.T) {
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotContentType = r.Header.Get("Content-Type")
-		buf := make([]byte, r.ContentLength)
-		_, _ = r.Body.Read(buf)
+		buf, _ := io.ReadAll(r.Body)
 		gotBody = string(buf)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
@@ -142,7 +142,7 @@ func TestDoPublicGET_NoAuthHeaderNoSignature(t *testing.T) {
 	defer srv.Close()
 	withMockBinanceBase(t, srv)
 
-	_, err := doPublicGET(context.Background(), "/fapi/v1/premiumIndex", url.Values{"symbol": {"BTCUSDT"}})
+	_, err := doPublicGET(context.Background(), testCreds(), "/fapi/v1/premiumIndex", url.Values{"symbol": {"BTCUSDT"}})
 	if err != nil {
 		t.Fatalf("doPublicGET: %v", err)
 	}
@@ -154,5 +154,37 @@ func TestDoPublicGET_NoAuthHeaderNoSignature(t *testing.T) {
 	}
 	if gotQuery.Get("symbol") != "BTCUSDT" {
 		t.Errorf("query symbol = %q, want BTCUSDT", gotQuery.Get("symbol"))
+	}
+}
+
+func TestDoSignedDELETE_SendsAPIKeyHeaderAndValidSignature(t *testing.T) {
+	var gotMethod string
+	var gotAPIKeyHeader string
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotAPIKeyHeader = r.Header.Get("X-MBX-APIKEY")
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	_, err := doSignedDELETE(context.Background(), testCreds(), "/fapi/v1/order", url.Values{"symbol": {"BTCUSDT"}, "orderId": {"5"}})
+	if err != nil {
+		t.Fatalf("doSignedDELETE: %v", err)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Errorf("method = %q, want DELETE", gotMethod)
+	}
+	if gotAPIKeyHeader != "test-key" {
+		t.Errorf("X-MBX-APIKEY header = %q, want %q", gotAPIKeyHeader, "test-key")
+	}
+	if gotQuery.Get("symbol") != "BTCUSDT" {
+		t.Errorf("query symbol = %q, want BTCUSDT", gotQuery.Get("symbol"))
+	}
+	if gotQuery.Get("signature") == "" {
+		t.Error("query missing signature")
 	}
 }

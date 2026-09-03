@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"sis/pkg/proxy"
 	"sis/pkg/trader"
 )
 
@@ -36,6 +37,11 @@ func sign(secret, payload string) string {
 // resulting encoded query string, and returns params with "signature" added — the
 // exact string url.Values.Encode() produces (params sorted alphabetically by key) is
 // both what gets signed and what gets sent, so the two can never drift apart.
+//
+// Note: this mutates and returns the same params map passed in (params.Set calls
+// below) rather than copying it — fine for every current call site, which always
+// passes a freshly built url.Values literal, but worth knowing if a caller ever
+// starts reusing/sharing a url.Values across calls.
 func signParams(creds trader.Credentials, params url.Values) url.Values {
 	if params == nil {
 		params = url.Values{}
@@ -65,7 +71,14 @@ func checkBinanceError(data []byte) error {
 	return nil
 }
 
-func doRequest(ctx context.Context, method, path string, values url.Values, apiKey string, body bool) ([]byte, error) {
+// doRequest issues the actual HTTP call. creds is used for two independent things:
+// apiKey (usually creds.APIKey for signed calls, "" for public calls with no header)
+// controls the X-MBX-APIKEY header, while creds.WhitelistedIPs always picks the
+// account's proxy via proxy.HTTPClientFor — even for public/unauthenticated endpoints,
+// so every account's traffic (signed or not) consistently routes through its own
+// proxy/IP, matching pkg/trader/bybit.go's doSignedGET/doSignedPOST pattern.
+// proxy.HTTPClientFor also guarantees a request timeout, unlike http.DefaultClient.
+func doRequest(ctx context.Context, method, path string, values url.Values, creds trader.Credentials, apiKey string, body bool) ([]byte, error) {
 	var req *http.Request
 	var err error
 	if body {
@@ -91,7 +104,7 @@ func doRequest(ctx context.Context, method, path string, values url.Values, apiK
 	if apiKey != "" {
 		req.Header.Set("X-MBX-APIKEY", apiKey)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := proxy.HTTPClientFor(creds.WhitelistedIPs).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -108,22 +121,24 @@ func doRequest(ctx context.Context, method, path string, values url.Values, apiK
 
 // doSignedGET issues a signed GET — params go in the query string.
 func doSignedGET(ctx context.Context, creds trader.Credentials, path string, params url.Values) ([]byte, error) {
-	return doRequest(ctx, http.MethodGet, path, signParams(creds, params), creds.APIKey, false)
+	return doRequest(ctx, http.MethodGet, path, signParams(creds, params), creds, creds.APIKey, false)
 }
 
 // doSignedPOST issues a signed POST — params go in the form-urlencoded body, not JSON
 // (a real difference from Bybit, which sends a JSON body — see general-info docs).
 func doSignedPOST(ctx context.Context, creds trader.Credentials, path string, params url.Values) ([]byte, error) {
-	return doRequest(ctx, http.MethodPost, path, signParams(creds, params), creds.APIKey, true)
+	return doRequest(ctx, http.MethodPost, path, signParams(creds, params), creds, creds.APIKey, true)
 }
 
 // doSignedDELETE issues a signed DELETE — params go in the query string, same as GET.
 func doSignedDELETE(ctx context.Context, creds trader.Credentials, path string, params url.Values) ([]byte, error) {
-	return doRequest(ctx, http.MethodDelete, path, signParams(creds, params), creds.APIKey, false)
+	return doRequest(ctx, http.MethodDelete, path, signParams(creds, params), creds, creds.APIKey, false)
 }
 
-// doPublicGET issues an unauthenticated GET — no API key header, no signature. Used
-// only for genuinely public endpoints (e.g. mark price).
-func doPublicGET(ctx context.Context, path string, params url.Values) ([]byte, error) {
-	return doRequest(ctx, http.MethodGet, path, params, "", false)
+// doPublicGET issues an unauthenticated GET — no API key header, no signature — but
+// still routes through creds' proxy/whitelisted-IP, same as every signed call, so a
+// given account's public traffic (e.g. mark price) originates from the same IP as its
+// signed traffic. Used only for genuinely public endpoints.
+func doPublicGET(ctx context.Context, creds trader.Credentials, path string, params url.Values) ([]byte, error) {
+	return doRequest(ctx, http.MethodGet, path, params, creds, "", false)
 }
