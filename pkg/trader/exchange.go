@@ -123,3 +123,7 @@ func (e *BybitExchange) CancelOrderREST(ctx context.Context, req CancelRequest) 
 func (e *BybitExchange) CancelAllOrders(ctx context.Context, req CancelAllRequest) error {
 	return CancelAllOrders(ctx, e.creds, req)
 }
+
+// var _ Exchange = (*BybitExchange)(nil) fails to compile if BybitExchange ever stops
+// satisfying Exchange — the cheapest possible regression guard for this file.
+var _ Exchange = (*BybitExchange)(nil)
