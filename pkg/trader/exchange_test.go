@@ -11,16 +11,16 @@ import (
 // existing test harness — building one is out of scope for this plan, which only
 // reorganizes existing, already-working code behind an interface).
 type fakeWSOrderClient struct {
-	placeOrderReq   OrderRequest
-	placeOrderResp  OrderResult
-	placeOrderErr   error
-	placeBatchReq   BatchPlaceRequest
-	placeBatchResp  []BatchPlaceResult
-	placeBatchErr   error
-	cancelOrderReq  CancelRequest
-	cancelOrderErr  error
-	cancelBatchReq  BatchCancelRequest
-	cancelBatchErr  error
+	placeOrderReq  OrderRequest
+	placeOrderResp OrderResult
+	placeOrderErr  error
+	placeBatchReq  BatchPlaceRequest
+	placeBatchResp []BatchPlaceResult
+	placeBatchErr  error
+	cancelOrderReq CancelRequest
+	cancelOrderErr error
+	cancelBatchReq BatchCancelRequest
+	cancelBatchErr error
 }
 
 func (f *fakeWSOrderClient) PlaceOrder(ctx context.Context, req OrderRequest) (OrderResult, error) {
