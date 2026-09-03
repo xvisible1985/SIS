@@ -79,3 +79,11 @@ func (e *BybitExchange) CancelOrder(ctx context.Context, req CancelRequest) erro
 func (e *BybitExchange) CancelOrderBatch(ctx context.Context, req BatchCancelRequest) error {
 	return e.ws.CancelOrderBatch(ctx, req)
 }
+
+func (e *BybitExchange) FetchPositions(ctx context.Context) ([]Position, error) {
+	return FetchPositions(ctx, e.creds)
+}
+
+func (e *BybitExchange) FetchOpenOrdersForSymbolAll(ctx context.Context, category, symbol string) ([]Order, error) {
+	return FetchOpenOrdersForSymbolAll(ctx, e.creds, category, symbol)
+}

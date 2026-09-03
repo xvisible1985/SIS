@@ -3,6 +3,8 @@ package trader
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -111,5 +113,63 @@ func TestBybitExchange_CancelOrderBatch_DelegatesToWSClient(t *testing.T) {
 	}
 	if fake.cancelBatchReq.Category != "linear" {
 		t.Errorf("fake received req.Category = %q, want %q", fake.cancelBatchReq.Category, "linear")
+	}
+}
+
+func TestBybitExchange_FetchPositions_DelegatesToREST(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("category") {
+		case "linear":
+			_, _ = w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{"list":[{"symbol":"BTCUSDT","side":"Buy","size":"0.5"}]}}`))
+		default:
+			_, _ = w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{"list":[]}}`))
+		}
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	ex := NewBybitExchange(Credentials{APIKey: "k", SecretKey: "s"}, &fakeWSOrderClient{})
+	got, err := ex.FetchPositions(context.Background())
+	if err != nil {
+		t.Fatalf("FetchPositions: %v", err)
+	}
+	found := false
+	for _, p := range got {
+		if p.Symbol == "BTCUSDT" && p.Category == "linear" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("FetchPositions = %+v, want a BTCUSDT/linear position", got)
+	}
+}
+
+func TestBybitExchange_FetchOpenOrdersForSymbolAll_DelegatesToREST(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		filter := r.URL.Query().Get("orderFilter")
+		_, _ = w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{"list":[{"orderId":"ord-` + filter + `","symbol":"BTCUSDT"}],"nextPageCursor":""}}`))
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	ex := NewBybitExchange(Credentials{APIKey: "k", SecretKey: "s"}, &fakeWSOrderClient{})
+	got, err := ex.FetchOpenOrdersForSymbolAll(context.Background(), "linear", "BTCUSDT")
+	if err != nil {
+		t.Fatalf("FetchOpenOrdersForSymbolAll: %v", err)
+	}
+	// bybit.go's FetchOpenOrdersForSymbolAll queries both "Order" and "StopOrder"
+	// filters — the mock server echoes the filter into orderId, so two distinct IDs
+	// prove both filters were actually requested through this delegation.
+	if len(got) != 2 {
+		t.Fatalf("FetchOpenOrdersForSymbolAll returned %d orders, want 2 (Order + StopOrder)", len(got))
+	}
+	seen := map[string]bool{}
+	for _, o := range got {
+		seen[o.OrderId] = true
+	}
+	if !seen["ord-Order"] || !seen["ord-StopOrder"] {
+		t.Errorf("FetchOpenOrdersForSymbolAll order IDs = %v, want ord-Order and ord-StopOrder", seen)
 	}
 }
