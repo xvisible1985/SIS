@@ -41,6 +41,11 @@ func NewTradeStream(creds Credentials) *TradeStream {
 	}
 }
 
+// var _ wsOrderClient = (*TradeStream)(nil) fails to compile if TradeStream ever stops
+// satisfying wsOrderClient (see pkg/trader/exchange.go) — the structural fit BybitExchange
+// depends on was previously only asserted by comment; this makes it a compile-time check.
+var _ wsOrderClient = (*TradeStream)(nil)
+
 // Run connects and maintains the trade WS. Blocks until ctx is cancelled.
 func (ts *TradeStream) Run(ctx context.Context) {
 	for {
