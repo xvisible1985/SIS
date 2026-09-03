@@ -1,8 +1,10 @@
 package trader
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -216,5 +218,57 @@ func TestBybitExchange_FetchRecentClosedPnl_DelegatesToREST(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].OrderId != "ord-2" {
 		t.Errorf("FetchRecentClosedPnl = %+v, want one ord-2 row", got)
+	}
+}
+
+func TestBybitExchange_GetWalletBalance_DelegatesToREST(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{"list":[{"totalEquity":"1000.5","totalAvailableBalance":"800.25"}]}}`))
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	ex := NewBybitExchange(Credentials{APIKey: "k", SecretKey: "s"}, &fakeWSOrderClient{})
+	equity, available, err := ex.GetWalletBalance(context.Background())
+	if err != nil {
+		t.Fatalf("GetWalletBalance: %v", err)
+	}
+	if equity != 1000.5 || available != 800.25 {
+		t.Errorf("GetWalletBalance = (%v, %v), want (1000.5, 800.25)", equity, available)
+	}
+}
+
+func TestBybitExchange_SetLeverage_DelegatesToREST(t *testing.T) {
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{}}`))
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	ex := NewBybitExchange(Credentials{APIKey: "k", SecretKey: "s"}, &fakeWSOrderClient{})
+	req := LeverageRequest{Symbol: "BTCUSDT", Category: "linear", BuyLeverage: "10", SellLeverage: "10"}
+	if err := ex.SetLeverage(context.Background(), req); err != nil {
+		t.Fatalf("SetLeverage: %v", err)
+	}
+	if !bytes.Contains(gotBody, []byte(`"buyLeverage":"10"`)) {
+		t.Errorf("SetLeverage request body = %s, want buyLeverage=10", gotBody)
+	}
+}
+
+func TestBybitExchange_SwitchPositionMode_DelegatesToREST(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"retCode":0,"retMsg":"OK"}`))
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	ex := NewBybitExchange(Credentials{APIKey: "k", SecretKey: "s"}, &fakeWSOrderClient{})
+	if err := ex.SwitchPositionMode(context.Background(), "linear", "BTCUSDT", 3); err != nil {
+		t.Fatalf("SwitchPositionMode: %v", err)
 	}
 }

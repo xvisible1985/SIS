@@ -95,3 +95,15 @@ func (e *BybitExchange) FetchClosedPnlForSymbol(ctx context.Context, category, s
 func (e *BybitExchange) FetchRecentClosedPnl(ctx context.Context, category string, since time.Time) ([]ClosedPnl, error) {
 	return FetchRecentClosedPnl(ctx, e.creds, category, since)
 }
+
+func (e *BybitExchange) GetWalletBalance(ctx context.Context) (equity, available float64, err error) {
+	return GetWalletBalance(ctx, e.creds)
+}
+
+func (e *BybitExchange) SetLeverage(ctx context.Context, req LeverageRequest) error {
+	return SetLeverage(ctx, e.creds, req)
+}
+
+func (e *BybitExchange) SwitchPositionMode(ctx context.Context, category, symbol string, mode int) error {
+	return SwitchPositionMode(ctx, e.creds, category, symbol, mode)
+}
