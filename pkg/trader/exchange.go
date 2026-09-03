@@ -107,3 +107,19 @@ func (e *BybitExchange) SetLeverage(ctx context.Context, req LeverageRequest) er
 func (e *BybitExchange) SwitchPositionMode(ctx context.Context, category, symbol string, mode int) error {
 	return SwitchPositionMode(ctx, e.creds, category, symbol, mode)
 }
+
+func (e *BybitExchange) GetMarkPrice(ctx context.Context, category, symbol string) (float64, error) {
+	return FetchMarkPrice(ctx, e.creds, category, symbol)
+}
+
+func (e *BybitExchange) PlaceOrderREST(ctx context.Context, req OrderRequest) (OrderResult, error) {
+	return PlaceOrder(ctx, e.creds, req)
+}
+
+func (e *BybitExchange) CancelOrderREST(ctx context.Context, req CancelRequest) error {
+	return CancelOrder(ctx, e.creds, req)
+}
+
+func (e *BybitExchange) CancelAllOrders(ctx context.Context, req CancelAllRequest) error {
+	return CancelAllOrders(ctx, e.creds, req)
+}

@@ -272,3 +272,67 @@ func TestBybitExchange_SwitchPositionMode_DelegatesToREST(t *testing.T) {
 		t.Fatalf("SwitchPositionMode: %v", err)
 	}
 }
+
+func TestBybitExchange_GetMarkPrice_DelegatesToREST(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{"list":[{"markPrice":"67890.5"}]}}`))
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	ex := NewBybitExchange(Credentials{APIKey: "k", SecretKey: "s"}, &fakeWSOrderClient{})
+	got, err := ex.GetMarkPrice(context.Background(), "linear", "BTCUSDT")
+	if err != nil {
+		t.Fatalf("GetMarkPrice: %v", err)
+	}
+	if got != 67890.5 {
+		t.Errorf("GetMarkPrice = %v, want 67890.5", got)
+	}
+}
+
+func TestBybitExchange_PlaceOrderREST_DelegatesToREST(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{"orderId":"rest-ord-1","orderLinkId":"rest-link-1"}}`))
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	ex := NewBybitExchange(Credentials{APIKey: "k", SecretKey: "s"}, &fakeWSOrderClient{})
+	got, err := ex.PlaceOrderREST(context.Background(), OrderRequest{Symbol: "BTCUSDT", Category: "linear", Side: "Buy", OrderType: "Market", Qty: "1"})
+	if err != nil {
+		t.Fatalf("PlaceOrderREST: %v", err)
+	}
+	if got.OrderId != "rest-ord-1" {
+		t.Errorf("PlaceOrderREST result = %+v, want orderId=rest-ord-1", got)
+	}
+}
+
+func TestBybitExchange_CancelOrderREST_DelegatesToREST(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{}}`))
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	ex := NewBybitExchange(Credentials{APIKey: "k", SecretKey: "s"}, &fakeWSOrderClient{})
+	if err := ex.CancelOrderREST(context.Background(), CancelRequest{Symbol: "BTCUSDT", Category: "linear", OrderId: "ord-1"}); err != nil {
+		t.Fatalf("CancelOrderREST: %v", err)
+	}
+}
+
+func TestBybitExchange_CancelAllOrders_DelegatesToREST(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{}}`))
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	ex := NewBybitExchange(Credentials{APIKey: "k", SecretKey: "s"}, &fakeWSOrderClient{})
+	if err := ex.CancelAllOrders(context.Background(), CancelAllRequest{Category: "linear", Symbol: "BTCUSDT"}); err != nil {
+		t.Fatalf("CancelAllOrders: %v", err)
+	}
+}
