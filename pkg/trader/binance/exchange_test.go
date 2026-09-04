@@ -434,3 +434,85 @@ func TestBinanceExchange_CancelOrderBatch_SendsOrderIdListParam(t *testing.T) {
 		t.Errorf("orderIdList = %q, want unquoted integers [20,21], not quoted strings", got)
 	}
 }
+
+func TestBinanceExchange_FetchOpenOrdersForSymbolAll_TranslatesOpenOrders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"orderId":30,"clientOrderId":"link-1","symbol":"BTCUSDT","side":"BUY","type":"LIMIT","price":"50000","origQty":"1","executedQty":"0","status":"NEW"}]`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	got, err := ex.FetchOpenOrdersForSymbolAll(context.Background(), "linear", "BTCUSDT")
+	if err != nil {
+		t.Fatalf("FetchOpenOrdersForSymbolAll: %v", err)
+	}
+	if len(got) != 1 || got[0].OrderId != "30" || got[0].OrderLinkId != "link-1" {
+		t.Errorf("FetchOpenOrdersForSymbolAll = %+v, want one order id=30 linkId=link-1", got)
+	}
+}
+
+func TestBinanceExchange_SetLeverage_SendsSymbolAndLeverage(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		gotBody = string(buf)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"leverage":10,"maxNotionalValue":"1000000","symbol":"BTCUSDT"}`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	req := trader.LeverageRequest{Symbol: "BTCUSDT", BuyLeverage: "10", SellLeverage: "10"}
+	if err := ex.SetLeverage(context.Background(), req); err != nil {
+		t.Fatalf("SetLeverage: %v", err)
+	}
+	if !strings.Contains(gotBody, "leverage=10") {
+		t.Errorf("body = %q, want leverage=10 (Binance has one leverage per symbol, not separate buy/sell — BuyLeverage is used as the single value)", gotBody)
+	}
+}
+
+func TestBinanceExchange_SwitchPositionMode_SendsDualSidePositionString(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		gotBody = string(buf)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	if err := ex.SwitchPositionMode(context.Background(), "linear", "BTCUSDT", 3); err != nil {
+		t.Fatalf("SwitchPositionMode: %v", err)
+	}
+	if !strings.Contains(gotBody, "dualSidePosition=true") {
+		t.Errorf("body = %q, want dualSidePosition=true for mode=3 (hedge)", gotBody)
+	}
+}
+
+func TestBinanceExchange_SwitchPositionMode_OneWayForModeZero(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		gotBody = string(buf)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	if err := ex.SwitchPositionMode(context.Background(), "linear", "BTCUSDT", 0); err != nil {
+		t.Fatalf("SwitchPositionMode: %v", err)
+	}
+	if !strings.Contains(gotBody, "dualSidePosition=false") {
+		t.Errorf("body = %q, want dualSidePosition=false for mode=0 (one-way)", gotBody)
+	}
+}

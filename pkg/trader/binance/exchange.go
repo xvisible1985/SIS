@@ -345,3 +345,63 @@ func (e *BinanceExchange) CancelOrderBatch(ctx context.Context, req trader.Batch
 	})
 	return err
 }
+
+func (e *BinanceExchange) FetchOpenOrdersForSymbolAll(ctx context.Context, category, symbol string) ([]trader.Order, error) {
+	data, err := doSignedGET(ctx, e.creds, "/fapi/v1/openOrders", url.Values{"symbol": {symbol}})
+	if err != nil {
+		return nil, err
+	}
+	var rows []struct {
+		OrderId       int64  `json:"orderId"`
+		ClientOrderId string `json:"clientOrderId"`
+		Symbol        string `json:"symbol"`
+		Side          string `json:"side"`
+		Type          string `json:"type"`
+		Price         string `json:"price"`
+		OrigQty       string `json:"origQty"`
+		ExecutedQty   string `json:"executedQty"`
+		Status        string `json:"status"`
+		StopPrice     string `json:"stopPrice"`
+	}
+	if err := json.Unmarshal(data, &rows); err != nil {
+		return nil, err
+	}
+	out := make([]trader.Order, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, trader.Order{
+			OrderId: strconv.FormatInt(r.OrderId, 10), OrderLinkId: r.ClientOrderId,
+			Symbol: r.Symbol, Side: r.Side, OrderType: r.Type, Price: r.Price,
+			Qty: r.OrigQty, CumExecQty: r.ExecutedQty, OrderStatus: r.Status,
+			TriggerPrice: r.StopPrice, Category: "linear",
+		})
+	}
+	return out, nil
+}
+
+// SetLeverage sets one symbol's leverage. Binance has a single leverage value per
+// symbol (not separate long/short values like Bybit's hedge-mode BuyLeverage/
+// SellLeverage) — BuyLeverage is used as that single value; callers in pkg/strategy
+// already always set both fields identically for grid/matrix, so this is a no-op
+// simplification in practice, not a behavior loss.
+func (e *BinanceExchange) SetLeverage(ctx context.Context, req trader.LeverageRequest) error {
+	_, err := doSignedPOST(ctx, e.creds, "/fapi/v1/leverage", url.Values{
+		"symbol":   {req.Symbol},
+		"leverage": {req.BuyLeverage},
+	})
+	return err
+}
+
+// SwitchPositionMode sets Hedge Mode (dualSidePosition=true) or One-way Mode (false)
+// for the WHOLE ACCOUNT — Binance has no per-symbol position mode, unlike Bybit. The
+// category/symbol params are accepted only for Exchange interface compatibility and
+// are unused. Binance also errors if any position/order is currently open when this
+// is called — same class of constraint as Bybit's own "can't switch with an open
+// position" error; that error surfaces to the caller unchanged via doSignedPOST.
+func (e *BinanceExchange) SwitchPositionMode(ctx context.Context, category, symbol string, mode int) error {
+	dual := "false"
+	if mode != 0 {
+		dual = "true"
+	}
+	_, err := doSignedPOST(ctx, e.creds, "/fapi/v1/positionSide/dual", url.Values{"dualSidePosition": {dual}})
+	return err
+}
