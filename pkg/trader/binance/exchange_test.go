@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"sis/pkg/trader"
 )
@@ -554,5 +555,78 @@ func TestBinanceExchange_SwitchPositionMode_OneWayForModeZero(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, "dualSidePosition=false") {
 		t.Errorf("body = %q, want dualSidePosition=false for mode=0 (one-way)", gotBody)
+	}
+}
+
+func TestBinanceExchange_FetchClosedPnlForSymbol_GroupsClosingFillsByOrder(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/fapi/v1/userTrades"):
+			_, _ = w.Write([]byte(`[
+				{"id":1,"orderId":100,"symbol":"BTCUSDT","side":"SELL","price":"61000","qty":"0.3","realizedPnl":"0","time":1000},
+				{"id":2,"orderId":200,"symbol":"BTCUSDT","side":"SELL","price":"61000","qty":"0.3","realizedPnl":"180.0","time":2000},
+				{"id":3,"orderId":200,"symbol":"BTCUSDT","side":"SELL","price":"61050","qty":"0.2","realizedPnl":"130.0","time":2100}
+			]`))
+		case strings.Contains(r.URL.Path, "/fapi/v1/order"):
+			_, _ = w.Write([]byte(`{"orderId":200,"clientOrderId":"SIS_STR-a1b2c3d4-tp-3-1"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	got, err := ex.FetchClosedPnlForSymbol(context.Background(), "linear", "BTCUSDT", 10)
+	if err != nil {
+		t.Fatalf("FetchClosedPnlForSymbol: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchClosedPnlForSymbol returned %d rows, want 1 (order 100's zero-pnl opening fill must be excluded; order 200's two fills must merge into one row)", len(got))
+	}
+	row := got[0]
+	if row.OrderId != "200" {
+		t.Errorf("OrderId = %q, want 200", row.OrderId)
+	}
+	if row.OrderLinkId != "SIS_STR-a1b2c3d4-tp-3-1" {
+		t.Errorf("OrderLinkId = %q, want the looked-up clientOrderId", row.OrderLinkId)
+	}
+	if row.ClosedPnl != "310" && row.ClosedPnl != "310.0" {
+		t.Errorf("ClosedPnl = %q, want 310 (180.0 + 130.0 summed across both fills)", row.ClosedPnl)
+	}
+	if row.Qty != "0.5" {
+		t.Errorf("Qty = %q, want 0.5 (0.3 + 0.2 summed)", row.Qty)
+	}
+}
+
+func TestBinanceExchange_FetchRecentClosedPnl_WindowsRequestsAt7Days(t *testing.T) {
+	var gotStartTimes, gotEndTimes []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/fapi/v3/positionRisk"):
+			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","positionSide":"BOTH","positionAmt":"0.5","entryPrice":"60000","markPrice":"61000","unRealizedProfit":"500","liquidationPrice":"40000","leverage":"10"}]`))
+		case strings.Contains(r.URL.Path, "/fapi/v1/userTrades"):
+			gotStartTimes = append(gotStartTimes, r.URL.Query().Get("startTime"))
+			gotEndTimes = append(gotEndTimes, r.URL.Query().Get("endTime"))
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	since := time.Now().Add(-16 * 24 * time.Hour)
+	if _, err := ex.FetchRecentClosedPnl(context.Background(), "linear", since); err != nil {
+		t.Fatalf("FetchRecentClosedPnl: %v", err)
+	}
+	if len(gotStartTimes) < 3 {
+		t.Errorf("FetchRecentClosedPnl issued %d userTrades calls for a 16-day window, want at least 3 (7-day cap per call)", len(gotStartTimes))
+	}
+	if len(gotEndTimes) != len(gotStartTimes) {
+		t.Errorf("got %d endTime params but %d startTime params, want equal counts", len(gotEndTimes), len(gotStartTimes))
 	}
 }

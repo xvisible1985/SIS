@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"sis/pkg/trader"
 )
@@ -450,4 +451,152 @@ func (e *BinanceExchange) SwitchPositionMode(ctx context.Context, category, symb
 	}
 	_, err := doSignedPOST(ctx, e.creds, "/fapi/v1/positionSide/dual", url.Values{"dualSidePosition": {dual}})
 	return err
+}
+
+type binanceUserTrade struct {
+	Id          int64  `json:"id"`
+	OrderId     int64  `json:"orderId"`
+	Symbol      string `json:"symbol"`
+	Side        string `json:"side"`
+	Price       string `json:"price"`
+	Qty         string `json:"qty"`
+	RealizedPnl string `json:"realizedPnl"`
+	Time        int64  `json:"time"`
+}
+
+// closingFillsToClosedPnl groups trades whose realizedPnl != 0 (the actual signal that
+// a fill closed/reduced a position, as opposed to opening/adding to one) by orderId,
+// summing PnL and quantity and taking the latest fill's price/time as the row's
+// exit/close time — the same one-row-per-closing-order shape Bybit's own
+// /v5/position/closed-pnl already returns natively.
+func closingFillsToClosedPnl(ctx context.Context, creds trader.Credentials, symbol string, trades []binanceUserTrade) ([]trader.ClosedPnl, error) {
+	type agg struct {
+		side       string
+		qty        float64
+		pnl        float64
+		lastPrice  string
+		lastTimeMs int64
+	}
+	byOrder := make(map[int64]*agg)
+	var order []int64
+	for _, t := range trades {
+		pnl, _ := strconv.ParseFloat(t.RealizedPnl, 64)
+		if pnl == 0 {
+			continue
+		}
+		a, ok := byOrder[t.OrderId]
+		if !ok {
+			a = &agg{side: binanceSide(t.Side)}
+			byOrder[t.OrderId] = a
+			order = append(order, t.OrderId)
+		}
+		qty, _ := strconv.ParseFloat(t.Qty, 64)
+		a.qty += qty
+		a.pnl += pnl
+		if t.Time >= a.lastTimeMs {
+			a.lastTimeMs = t.Time
+			a.lastPrice = t.Price
+		}
+	}
+
+	out := make([]trader.ClosedPnl, 0, len(order))
+	for _, orderId := range order {
+		a := byOrder[orderId]
+		linkId, err := lookupClientOrderId(ctx, creds, symbol, orderId)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, trader.ClosedPnl{
+			Symbol: symbol, OrderId: strconv.FormatInt(orderId, 10), OrderLinkId: linkId,
+			Side: a.side, Qty: strconv.FormatFloat(a.qty, 'f', -1, 64),
+			AvgExitPrice: a.lastPrice, ClosedPnl: strconv.FormatFloat(a.pnl, 'f', -1, 64),
+			CreatedTime: strconv.FormatInt(a.lastTimeMs, 10), Category: "linear",
+		})
+	}
+	return out, nil
+}
+
+// lookupClientOrderId fetches one order's clientOrderId by orderId — userTrades doesn't
+// carry it, but pkg/strategy's attribution (ParseStrategyLinkID) needs it. One call per
+// distinct closing order in the queried window, not per fill.
+func lookupClientOrderId(ctx context.Context, creds trader.Credentials, symbol string, orderId int64) (string, error) {
+	data, err := doSignedGET(ctx, creds, "/fapi/v1/order", url.Values{
+		"symbol": {symbol}, "orderId": {strconv.FormatInt(orderId, 10)},
+	})
+	if err != nil {
+		return "", err
+	}
+	var r struct {
+		ClientOrderId string `json:"clientOrderId"`
+	}
+	if err := json.Unmarshal(data, &r); err != nil {
+		return "", err
+	}
+	return r.ClientOrderId, nil
+}
+
+func (e *BinanceExchange) FetchClosedPnlForSymbol(ctx context.Context, category, symbol string, limit int) ([]trader.ClosedPnl, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 50
+	}
+	data, err := doSignedGET(ctx, e.creds, "/fapi/v1/userTrades", url.Values{
+		"symbol": {symbol}, "limit": {strconv.Itoa(limit)},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var trades []binanceUserTrade
+	if err := json.Unmarshal(data, &trades); err != nil {
+		return nil, err
+	}
+	return closingFillsToClosedPnl(ctx, e.creds, symbol, trades)
+}
+
+// FetchRecentClosedPnl fans out across ≤7-day windows from since to now — Binance caps
+// userTrades' startTime..endTime span at 7 days per call, unlike Bybit's single
+// cursor-paginated call across an arbitrarily old `since`. category is accepted for
+// interface compatibility. Binance has no account-wide equivalent to userTrades (it's
+// always per-symbol), so this walks every symbol currently holding an open position.
+//
+// KNOWN LIMITATION: this only walks symbols with a currently-open position, so a
+// symbol that fully closed to flat within the queried window is missed. Acceptable
+// for now — this feeds services/api-gateway's closed_pnl_syncer reconciliation sweep,
+// which already treats missed rows as retryable via its own gap-backfill watchdog
+// rather than requiring single-pass completeness.
+func (e *BinanceExchange) FetchRecentClosedPnl(ctx context.Context, category string, since time.Time) ([]trader.ClosedPnl, error) {
+	positions, err := e.FetchPositions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var all []trader.ClosedPnl
+	now := time.Now()
+	for _, p := range positions {
+		windowStart := since
+		for windowStart.Before(now) {
+			windowEnd := windowStart.Add(7 * 24 * time.Hour)
+			if windowEnd.After(now) {
+				windowEnd = now
+			}
+			data, err := doSignedGET(ctx, e.creds, "/fapi/v1/userTrades", url.Values{
+				"symbol":    {p.Symbol},
+				"startTime": {strconv.FormatInt(windowStart.UnixMilli(), 10)},
+				"endTime":   {strconv.FormatInt(windowEnd.UnixMilli(), 10)},
+				"limit":     {"1000"},
+			})
+			if err != nil {
+				return nil, err
+			}
+			var trades []binanceUserTrade
+			if err := json.Unmarshal(data, &trades); err != nil {
+				return nil, err
+			}
+			rows, err := closingFillsToClosedPnl(ctx, e.creds, p.Symbol, trades)
+			if err != nil {
+				return nil, err
+			}
+			all = append(all, rows...)
+			windowStart = windowEnd
+		}
+	}
+	return all, nil
 }
