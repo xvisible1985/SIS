@@ -451,6 +451,46 @@ func TestBinanceExchange_FetchOpenOrdersForSymbolAll_TranslatesOpenOrders(t *tes
 	if len(got) != 1 || got[0].OrderId != "30" || got[0].OrderLinkId != "link-1" {
 		t.Errorf("FetchOpenOrdersForSymbolAll = %+v, want one order id=30 linkId=link-1", got)
 	}
+	if got[0].Side != "Buy" {
+		t.Errorf("Side = %q, want Buy", got[0].Side)
+	}
+	if got[0].OrderStatus != "New" {
+		t.Errorf("OrderStatus = %q, want New", got[0].OrderStatus)
+	}
+	if got[0].OrderFilter != "Order" {
+		t.Errorf("OrderFilter = %q, want Order (plain LIMIT order)", got[0].OrderFilter)
+	}
+}
+
+func TestBinanceExchange_FetchOpenOrdersForSymbolAll_NormalizesConditionalStopOrder(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"orderId":31,"clientOrderId":"link-2","symbol":"BTCUSDT","side":"SELL","type":"STOP_MARKET","price":"0","stopPrice":"58000","origQty":"1","executedQty":"0","status":"NEW"}]`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	got, err := ex.FetchOpenOrdersForSymbolAll(context.Background(), "linear", "BTCUSDT")
+	if err != nil {
+		t.Fatalf("FetchOpenOrdersForSymbolAll: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchOpenOrdersForSymbolAll returned %d orders, want 1", len(got))
+	}
+	o := got[0]
+	if o.Side != "Sell" {
+		t.Errorf("Side = %q, want Sell (normalized from SELL)", o.Side)
+	}
+	if o.OrderStatus != "New" {
+		t.Errorf("OrderStatus = %q, want New (normalized from NEW)", o.OrderStatus)
+	}
+	if o.OrderFilter != "StopOrder" {
+		t.Errorf("OrderFilter = %q, want StopOrder (conditional order type)", o.OrderFilter)
+	}
+	if o.TriggerPrice != "58000" {
+		t.Errorf("TriggerPrice = %q, want 58000", o.TriggerPrice)
+	}
 }
 
 func TestBinanceExchange_SetLeverage_SendsSymbolAndLeverage(t *testing.T) {

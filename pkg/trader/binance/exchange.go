@@ -158,6 +158,52 @@ func binancePositionSide(positionIdx int) string {
 	}
 }
 
+// binanceSide maps Binance's "BUY"/"SELL" to Bybit's "Buy"/"Sell" convention, matching
+// FetchPositions' own translation — pkg/strategy hardcodes the Bybit-style values
+// (confirmed via grep of pkg/strategy/cycle.go: side comparisons/assignments use
+// exactly "Buy"/"Sell").
+func binanceSide(side string) string {
+	if side == "SELL" {
+		return "Sell"
+	}
+	return "Buy"
+}
+
+// binanceOrderStatus maps Binance's order status enum to Bybit's convention — confirmed
+// via grep of pkg/strategy/{cycle,engine,reconcile}.go, which compares OrderStatus
+// against exactly "Filled" and "Cancelled" (double L, Bybit's own spelling).
+func binanceOrderStatus(status string) string {
+	switch status {
+	case "NEW":
+		return "New"
+	case "PARTIALLY_FILLED":
+		return "PartiallyFilled"
+	case "FILLED":
+		return "Filled"
+	case "CANCELED":
+		return "Cancelled"
+	case "REJECTED":
+		return "Rejected"
+	case "EXPIRED":
+		return "Expired"
+	default:
+		return status
+	}
+}
+
+// binanceOrderFilter tags a resting order "StopOrder" if it's a conditional
+// (trigger-based) order type, "Order" otherwise — matching Bybit's OrderFilter
+// convention (see pkg/trader/bybit.go) that pkg/strategy reads to decide cancel
+// semantics (e.g. whether a cancel needs OrderFilter:"StopOrder").
+func binanceOrderFilter(orderType string) string {
+	switch orderType {
+	case "STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET", "TRAILING_STOP_MARKET":
+		return "StopOrder"
+	default:
+		return "Order"
+	}
+}
+
 func (e *BinanceExchange) placeOrder(ctx context.Context, req trader.OrderRequest) (trader.OrderResult, error) {
 	orderType := binanceOrderType(req)
 	params := url.Values{
@@ -370,9 +416,9 @@ func (e *BinanceExchange) FetchOpenOrdersForSymbolAll(ctx context.Context, categ
 	for _, r := range rows {
 		out = append(out, trader.Order{
 			OrderId: strconv.FormatInt(r.OrderId, 10), OrderLinkId: r.ClientOrderId,
-			Symbol: r.Symbol, Side: r.Side, OrderType: r.Type, Price: r.Price,
-			Qty: r.OrigQty, CumExecQty: r.ExecutedQty, OrderStatus: r.Status,
-			TriggerPrice: r.StopPrice, Category: "linear",
+			Symbol: r.Symbol, Side: binanceSide(r.Side), OrderType: r.Type, Price: r.Price,
+			Qty: r.OrigQty, CumExecQty: r.ExecutedQty, OrderStatus: binanceOrderStatus(r.Status),
+			TriggerPrice: r.StopPrice, Category: "linear", OrderFilter: binanceOrderFilter(r.Type),
 		})
 	}
 	return out, nil
