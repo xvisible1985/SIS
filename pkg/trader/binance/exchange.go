@@ -129,7 +129,7 @@ func (e *BinanceExchange) GetWalletBalance(ctx context.Context) (equity, availab
 
 // binanceOrderType maps our OrderType/OrderFilter/TriggerPrice combination onto
 // Binance's dedicated conditional-order types. Bybit expresses "this is a conditional
-// stop" via OrderFilter="StopOrder" + a nonempty TriggerPrice; Binance has no such
+// stop" via OrderFilter="StopOrder" or a nonempty TriggerPrice; Binance has no such
 // generic flag — it's baked into the order `type` itself.
 func binanceOrderType(req trader.OrderRequest) string {
 	if req.OrderFilter == "StopOrder" || req.TriggerPrice != "" {
@@ -158,10 +158,11 @@ func binancePositionSide(positionIdx int) string {
 }
 
 func (e *BinanceExchange) placeOrder(ctx context.Context, req trader.OrderRequest) (trader.OrderResult, error) {
+	orderType := binanceOrderType(req)
 	params := url.Values{
 		"symbol":       {req.Symbol},
 		"side":         {strings.ToUpper(req.Side)},
-		"type":         {binanceOrderType(req)},
+		"type":         {orderType},
 		"positionSide": {binancePositionSide(req.PositionIdx)},
 	}
 	if req.Qty != "" {
@@ -173,10 +174,16 @@ func (e *BinanceExchange) placeOrder(ctx context.Context, req trader.OrderReques
 	if req.TriggerPrice != "" {
 		params.Set("stopPrice", req.TriggerPrice)
 	}
+	// workingType picks which price feed (mark vs last) triggers a conditional order.
+	// Binance's default (CONTRACT_PRICE, i.e. last price) already matches our
+	// TriggerBy=="LastPrice"/"" default, so only MarkPrice needs an explicit param.
+	if req.TriggerPrice != "" && req.TriggerBy == "MarkPrice" {
+		params.Set("workingType", "MARK_PRICE")
+	}
 	if req.ReduceOnly {
 		params.Set("reduceOnly", "true")
 	}
-	if req.TimeInForce != "" && binanceOrderType(req) == "LIMIT" {
+	if req.TimeInForce != "" && orderType == "LIMIT" {
 		params.Set("timeInForce", req.TimeInForce)
 	}
 	if req.OrderLinkId != "" {
