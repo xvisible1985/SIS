@@ -201,9 +201,12 @@ func TestBinanceExchange_PlaceOrder_TranslatesConditionalStopOrder(t *testing.T)
 	withMockBinanceBase(t, srv)
 
 	ex := NewBinanceExchange(testCreds())
+	// PositionIdx: 0 (one-way mode) here — reduceOnly is only valid alongside
+	// positionSide=BOTH; see TestBinanceExchange_PlaceOrder_OmitsReduceOnlyInHedgeMode
+	// for the PositionIdx 1/2 (hedge mode) case, which must NOT send reduceOnly.
 	req := trader.OrderRequest{
 		Symbol: "BTCUSDT", Side: "Sell", OrderType: "Market", TriggerPrice: "58000",
-		OrderFilter: "StopOrder", ReduceOnly: true, PositionIdx: 1,
+		OrderFilter: "StopOrder", ReduceOnly: true, PositionIdx: 0,
 	}
 	if _, err := ex.PlaceOrder(context.Background(), req); err != nil {
 		t.Fatalf("PlaceOrder: %v", err)
@@ -692,5 +695,73 @@ func TestBinanceExchange_FetchClosedPnlForSymbol_IncludesBreakevenHedgeModeClose
 	}
 	if got[0].OrderId != "300" || got[0].ClosedPnl != "0" {
 		t.Errorf("got = %+v, want OrderId=300 ClosedPnl=0", got[0])
+	}
+}
+
+func TestBinanceExchange_PlaceOrder_OmitsReduceOnlyInHedgeMode(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		gotBody = string(buf)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"orderId":9,"clientOrderId":"z"}`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	req := trader.OrderRequest{Symbol: "BTCUSDT", Side: "Sell", OrderType: "Market", Qty: "1", ReduceOnly: true, PositionIdx: 1}
+	if _, err := ex.PlaceOrder(context.Background(), req); err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+	if strings.Contains(gotBody, "reduceOnly=") {
+		t.Errorf("body = %q, must NOT send reduceOnly in hedge mode (PositionIdx=1) — Binance rejects it with -1106", gotBody)
+	}
+}
+
+func TestBinanceExchange_PlaceOrder_SendsReduceOnlyInOneWayMode(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		gotBody = string(buf)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"orderId":10,"clientOrderId":"z2"}`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	req := trader.OrderRequest{Symbol: "BTCUSDT", Side: "Sell", OrderType: "Market", Qty: "1", ReduceOnly: true, PositionIdx: 0}
+	if _, err := ex.PlaceOrder(context.Background(), req); err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+	if !strings.Contains(gotBody, "reduceOnly=true") {
+		t.Errorf("body = %q, want reduceOnly=true in one-way mode (PositionIdx=0)", gotBody)
+	}
+}
+
+func TestBinanceExchange_PlaceOrderBatch_OmitsReduceOnlyInHedgeMode(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		gotBody = string(buf)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"orderId":20,"clientOrderId":"c"}]`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	req := trader.BatchPlaceRequest{Request: []trader.BatchOrderItem{
+		{Symbol: "BTCUSDT", Side: "Sell", OrderType: "Market", Qty: "1", ReduceOnly: true, PositionIdx: 1},
+	}}
+	if _, err := ex.PlaceOrderBatch(context.Background(), req); err != nil {
+		t.Fatalf("PlaceOrderBatch: %v", err)
+	}
+	if strings.Contains(gotBody, "reduceOnly") {
+		t.Errorf("body = %q, must NOT include reduceOnly in a hedge-mode (PositionIdx=1) batch item — Binance rejects it with -1106", gotBody)
 	}
 }

@@ -228,7 +228,11 @@ func (e *BinanceExchange) placeOrder(ctx context.Context, req trader.OrderReques
 	if req.TriggerPrice != "" && req.TriggerBy == "MarkPrice" {
 		params.Set("workingType", "MARK_PRICE")
 	}
-	if req.ReduceOnly {
+	// reduceOnly is invalid in Binance hedge mode (PositionIdx 1/2, positionSide LONG/
+	// SHORT) — Binance rejects it with -1106. side+positionSide alone already
+	// unambiguously reduce the correct leg in hedge mode, so the flag is only needed
+	// (and only valid) in one-way mode.
+	if req.ReduceOnly && req.PositionIdx == 0 {
 		params.Set("reduceOnly", "true")
 	}
 	if req.TimeInForce != "" && orderType == "LIMIT" {
@@ -326,7 +330,9 @@ func (e *BinanceExchange) PlaceOrderBatch(ctx context.Context, req trader.BatchP
 		if it.TriggerPrice != "" {
 			bi.StopPrice = it.TriggerPrice
 		}
-		if it.ReduceOnly {
+		// Same hedge-mode restriction as placeOrder above: reduceOnly is invalid
+		// (Binance -1106) when positionSide is LONG/SHORT (PositionIdx 1/2).
+		if it.ReduceOnly && it.PositionIdx == 0 {
 			bi.ReduceOnly = "true"
 		}
 		if it.OrderLinkId != "" {
