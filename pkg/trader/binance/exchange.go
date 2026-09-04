@@ -454,21 +454,47 @@ func (e *BinanceExchange) SwitchPositionMode(ctx context.Context, category, symb
 }
 
 type binanceUserTrade struct {
-	Id          int64  `json:"id"`
-	OrderId     int64  `json:"orderId"`
-	Symbol      string `json:"symbol"`
-	Side        string `json:"side"`
-	Price       string `json:"price"`
-	Qty         string `json:"qty"`
-	RealizedPnl string `json:"realizedPnl"`
-	Time        int64  `json:"time"`
+	Id           int64  `json:"id"`
+	OrderId      int64  `json:"orderId"`
+	Symbol       string `json:"symbol"`
+	Side         string `json:"side"`
+	PositionSide string `json:"positionSide"`
+	Price        string `json:"price"`
+	Qty          string `json:"qty"`
+	RealizedPnl  string `json:"realizedPnl"`
+	Time         int64  `json:"time"`
 }
 
-// closingFillsToClosedPnl groups trades whose realizedPnl != 0 (the actual signal that
-// a fill closed/reduced a position, as opposed to opening/adding to one) by orderId,
-// summing PnL and quantity and taking the latest fill's price/time as the row's
-// exit/close time — the same one-row-per-closing-order shape Bybit's own
-// /v5/position/closed-pnl already returns natively.
+// isClosingFill reports whether a fill reduces a position, using side+positionSide —
+// independent of realizedPnl, so a genuine breakeven close (realizedPnl=="0" despite
+// being a real close, since Binance's realizedPnl excludes commission) isn't confused
+// with an opening/adding fill. In hedge mode (positionSide LONG/SHORT) this is
+// unambiguous: a LONG position is reduced by a SELL, a SHORT position by a BUY. In
+// one-way mode (positionSide=="BOTH") side alone can't distinguish "opening" from
+// "reducing" without tracking a running position — that case still falls back to the
+// realizedPnl!=0 heuristic in closingFillsToClosedPnl (a known, narrower limitation
+// than before, only affecting one-way-mode breakeven closes).
+func isClosingFill(side, positionSide string) bool {
+	switch positionSide {
+	case "LONG":
+		return side == "SELL"
+	case "SHORT":
+		return side == "BUY"
+	default:
+		return false
+	}
+}
+
+// closingFillsToClosedPnl groups closing/reducing fills (see isClosingFill; fills with
+// nonzero realizedPnl are also included as a one-way-mode fallback) by orderId, summing
+// PnL and quantity and taking the latest fill's price/time as the row's exit/close
+// time — the same one-row-per-closing-order shape Bybit's own /v5/position/closed-pnl
+// already returns natively.
+//
+// A lookupClientOrderId failure for one orderId (e.g. Binance's order history retention
+// limit has purged it) does NOT abort the whole batch — that row is skipped and the
+// first error encountered is returned alongside every row that DID succeed, so a caller
+// keeps partial progress instead of losing already-aggregated rows for unrelated orders.
 func closingFillsToClosedPnl(ctx context.Context, creds trader.Credentials, symbol string, trades []binanceUserTrade) ([]trader.ClosedPnl, error) {
 	type agg struct {
 		side       string
@@ -481,7 +507,7 @@ func closingFillsToClosedPnl(ctx context.Context, creds trader.Credentials, symb
 	var order []int64
 	for _, t := range trades {
 		pnl, _ := strconv.ParseFloat(t.RealizedPnl, 64)
-		if pnl == 0 {
+		if !isClosingFill(t.Side, t.PositionSide) && pnl == 0 {
 			continue
 		}
 		a, ok := byOrder[t.OrderId]
@@ -500,12 +526,22 @@ func closingFillsToClosedPnl(ctx context.Context, creds trader.Credentials, symb
 	}
 
 	out := make([]trader.ClosedPnl, 0, len(order))
+	var firstErr error
 	for _, orderId := range order {
 		a := byOrder[orderId]
 		linkId, err := lookupClientOrderId(ctx, creds, symbol, orderId)
 		if err != nil {
-			return nil, err
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue // skip this row, keep processing the rest
 		}
+		// AvgEntryPrice, CumEntryValue, CumExitValue, Leverage, and UpdatedTime are
+		// intentionally left unpopulated (zero-value strings) — Binance's userTrades/
+		// order responses don't cheaply provide them. services/api-gateway's
+		// closed_pnl_syncer.go entry-volume-in-USDT computation reads AvgEntryPrice, so
+		// it will show $0 for Binance-sourced rows until this is addressed — a known
+		// gap, not silently forgotten.
 		out = append(out, trader.ClosedPnl{
 			Symbol: symbol, OrderId: strconv.FormatInt(orderId, 10), OrderLinkId: linkId,
 			Side: a.side, Qty: strconv.FormatFloat(a.qty, 'f', -1, 64),
@@ -513,7 +549,7 @@ func closingFillsToClosedPnl(ctx context.Context, creds trader.Credentials, symb
 			CreatedTime: strconv.FormatInt(a.lastTimeMs, 10), Category: "linear",
 		})
 	}
-	return out, nil
+	return out, firstErr
 }
 
 // lookupClientOrderId fetches one order's clientOrderId by orderId — userTrades doesn't
@@ -535,6 +571,10 @@ func lookupClientOrderId(ctx context.Context, creds trader.Credentials, symbol s
 	return r.ClientOrderId, nil
 }
 
+// limit bounds the number of raw fills fetched from userTrades, not the number of
+// closing-pnl rows returned — unlike Bybit's native endpoint, since multiple fills can
+// merge into one row or be filtered out as opening fills. A caller asking for
+// limit=50 can get fewer (or zero) real closing rows back.
 func (e *BinanceExchange) FetchClosedPnlForSymbol(ctx context.Context, category, symbol string, limit int) ([]trader.ClosedPnl, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 50
@@ -563,12 +603,18 @@ func (e *BinanceExchange) FetchClosedPnlForSymbol(ctx context.Context, category,
 // for now — this feeds services/api-gateway's closed_pnl_syncer reconciliation sweep,
 // which already treats missed rows as retryable via its own gap-backfill watchdog
 // rather than requiring single-pass completeness.
+//
+// A single window or lookup failure (for one symbol, or one order within one window)
+// does NOT abort the whole multi-symbol/multi-window sweep — every row that DID
+// succeed is still returned, alongside the first error encountered, so a caller keeps
+// partial progress rather than losing every already-fetched row to one bad window.
 func (e *BinanceExchange) FetchRecentClosedPnl(ctx context.Context, category string, since time.Time) ([]trader.ClosedPnl, error) {
 	positions, err := e.FetchPositions(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var all []trader.ClosedPnl
+	var firstErr error
 	now := time.Now()
 	for _, p := range positions {
 		windowStart := since
@@ -584,19 +630,27 @@ func (e *BinanceExchange) FetchRecentClosedPnl(ctx context.Context, category str
 				"limit":     {"1000"},
 			})
 			if err != nil {
-				return nil, err
+				if firstErr == nil {
+					firstErr = err
+				}
+				windowStart = windowEnd
+				continue
 			}
 			var trades []binanceUserTrade
 			if err := json.Unmarshal(data, &trades); err != nil {
-				return nil, err
+				if firstErr == nil {
+					firstErr = err
+				}
+				windowStart = windowEnd
+				continue
 			}
 			rows, err := closingFillsToClosedPnl(ctx, e.creds, p.Symbol, trades)
-			if err != nil {
-				return nil, err
+			if err != nil && firstErr == nil {
+				firstErr = err
 			}
 			all = append(all, rows...)
 			windowStart = windowEnd
 		}
 	}
-	return all, nil
+	return all, firstErr
 }

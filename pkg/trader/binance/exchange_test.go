@@ -563,10 +563,15 @@ func TestBinanceExchange_FetchClosedPnlForSymbol_GroupsClosingFillsByOrder(t *te
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.Contains(r.URL.Path, "/fapi/v1/userTrades"):
+			// Order 100 is a SELL that opens/adds to a SHORT position (positionSide
+			// SHORT), not a close — isClosingFill requires a BUY to reduce a SHORT, so
+			// combined with its zero realizedPnl it stays excluded. Order 200's fills
+			// are SELLs reducing a LONG position (positionSide LONG), so they're
+			// classified as closing fills directly via isClosingFill.
 			_, _ = w.Write([]byte(`[
-				{"id":1,"orderId":100,"symbol":"BTCUSDT","side":"SELL","price":"61000","qty":"0.3","realizedPnl":"0","time":1000},
-				{"id":2,"orderId":200,"symbol":"BTCUSDT","side":"SELL","price":"61000","qty":"0.3","realizedPnl":"180.0","time":2000},
-				{"id":3,"orderId":200,"symbol":"BTCUSDT","side":"SELL","price":"61050","qty":"0.2","realizedPnl":"130.0","time":2100}
+				{"id":1,"orderId":100,"symbol":"BTCUSDT","side":"SELL","positionSide":"SHORT","price":"61000","qty":"0.3","realizedPnl":"0","time":1000},
+				{"id":2,"orderId":200,"symbol":"BTCUSDT","side":"SELL","positionSide":"LONG","price":"61000","qty":"0.3","realizedPnl":"180.0","time":2000},
+				{"id":3,"orderId":200,"symbol":"BTCUSDT","side":"SELL","positionSide":"LONG","price":"61050","qty":"0.2","realizedPnl":"130.0","time":2100}
 			]`))
 		case strings.Contains(r.URL.Path, "/fapi/v1/order"):
 			_, _ = w.Write([]byte(`{"orderId":200,"clientOrderId":"SIS_STR-a1b2c3d4-tp-3-1"}`))
@@ -628,5 +633,64 @@ func TestBinanceExchange_FetchRecentClosedPnl_WindowsRequestsAt7Days(t *testing.
 	}
 	if len(gotEndTimes) != len(gotStartTimes) {
 		t.Errorf("got %d endTime params but %d startTime params, want equal counts", len(gotEndTimes), len(gotStartTimes))
+	}
+}
+
+func TestBinanceExchange_FetchClosedPnlForSymbol_ReturnsPartialResultsOnLookupFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/fapi/v1/userTrades"):
+			_, _ = w.Write([]byte(`[
+				{"id":1,"orderId":100,"symbol":"BTCUSDT","side":"SELL","positionSide":"LONG","price":"61000","qty":"0.3","realizedPnl":"50.0","time":1000},
+				{"id":2,"orderId":200,"symbol":"BTCUSDT","side":"SELL","positionSide":"LONG","price":"61000","qty":"0.3","realizedPnl":"80.0","time":2000}
+			]`))
+		case strings.Contains(r.URL.Path, "/fapi/v1/order") && r.URL.Query().Get("orderId") == "100":
+			_, _ = w.Write([]byte(`{"orderId":100,"clientOrderId":"SIS_STR-a1b2c3d4-tp-1-1"}`))
+		case strings.Contains(r.URL.Path, "/fapi/v1/order") && r.URL.Query().Get("orderId") == "200":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":-2013,"msg":"Order does not exist."}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	got, err := ex.FetchClosedPnlForSymbol(context.Background(), "linear", "BTCUSDT", 10)
+	if err == nil {
+		t.Fatal("expected a non-nil error since order 200's lookup fails")
+	}
+	if len(got) != 1 || got[0].OrderId != "100" {
+		t.Errorf("FetchClosedPnlForSymbol = %+v, want the successful order 100's row to still be returned despite order 200's lookup failure", got)
+	}
+}
+
+func TestBinanceExchange_FetchClosedPnlForSymbol_IncludesBreakevenHedgeModeClose(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/fapi/v1/userTrades"):
+			_, _ = w.Write([]byte(`[{"id":1,"orderId":300,"symbol":"BTCUSDT","side":"SELL","positionSide":"LONG","price":"60000","qty":"0.4","realizedPnl":"0","time":1000}]`))
+		case strings.Contains(r.URL.Path, "/fapi/v1/order"):
+			_, _ = w.Write([]byte(`{"orderId":300,"clientOrderId":"SIS_STR-a1b2c3d4-sl-1-1"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	got, err := ex.FetchClosedPnlForSymbol(context.Background(), "linear", "BTCUSDT", 10)
+	if err != nil {
+		t.Fatalf("FetchClosedPnlForSymbol: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchClosedPnlForSymbol returned %d rows, want 1 (a real breakeven close in hedge mode must not be dropped)", len(got))
+	}
+	if got[0].OrderId != "300" || got[0].ClosedPnl != "0" {
+		t.Errorf("got = %+v, want OrderId=300 ClosedPnl=0", got[0])
 	}
 }
