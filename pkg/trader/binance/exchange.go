@@ -126,3 +126,111 @@ func (e *BinanceExchange) GetWalletBalance(ctx context.Context) (equity, availab
 	}
 	return equity, available, nil
 }
+
+// binanceOrderType maps our OrderType/OrderFilter/TriggerPrice combination onto
+// Binance's dedicated conditional-order types. Bybit expresses "this is a conditional
+// stop" via OrderFilter="StopOrder" + a nonempty TriggerPrice; Binance has no such
+// generic flag — it's baked into the order `type` itself.
+func binanceOrderType(req trader.OrderRequest) string {
+	if req.OrderFilter == "StopOrder" || req.TriggerPrice != "" {
+		return "STOP_MARKET"
+	}
+	switch req.OrderType {
+	case "Limit":
+		return "LIMIT"
+	default:
+		return "MARKET"
+	}
+}
+
+// binancePositionSide maps our PositionIdx (0=one-way, 1=long hedge slot, 2=short
+// hedge slot — Bybit's convention, reused as our internal canonical one) onto
+// Binance's positionSide enum.
+func binancePositionSide(positionIdx int) string {
+	switch positionIdx {
+	case 1:
+		return "LONG"
+	case 2:
+		return "SHORT"
+	default:
+		return "BOTH"
+	}
+}
+
+func (e *BinanceExchange) placeOrder(ctx context.Context, req trader.OrderRequest) (trader.OrderResult, error) {
+	params := url.Values{
+		"symbol":       {req.Symbol},
+		"side":         {strings.ToUpper(req.Side)},
+		"type":         {binanceOrderType(req)},
+		"positionSide": {binancePositionSide(req.PositionIdx)},
+	}
+	if req.Qty != "" {
+		params.Set("quantity", req.Qty)
+	}
+	if req.Price != "" {
+		params.Set("price", req.Price)
+	}
+	if req.TriggerPrice != "" {
+		params.Set("stopPrice", req.TriggerPrice)
+	}
+	if req.ReduceOnly {
+		params.Set("reduceOnly", "true")
+	}
+	if req.TimeInForce != "" && binanceOrderType(req) == "LIMIT" {
+		params.Set("timeInForce", req.TimeInForce)
+	}
+	if req.OrderLinkId != "" {
+		params.Set("newClientOrderId", truncateClientOrderID(req.OrderLinkId))
+	}
+
+	data, err := doSignedPOST(ctx, e.creds, "/fapi/v1/order", params)
+	if err != nil {
+		return trader.OrderResult{}, err
+	}
+	var r struct {
+		OrderId       int64  `json:"orderId"`
+		ClientOrderId string `json:"clientOrderId"`
+	}
+	if err := json.Unmarshal(data, &r); err != nil {
+		return trader.OrderResult{}, err
+	}
+	return trader.OrderResult{
+		OrderId:     strconv.FormatInt(r.OrderId, 10),
+		OrderLinkId: r.ClientOrderId,
+	}, nil
+}
+
+// PlaceOrder and PlaceOrderREST are identical for Binance — there is no separate
+// low-latency WS order-placement channel the way Bybit's TradeStream provides, so both
+// Exchange interface methods resolve to the same REST call.
+func (e *BinanceExchange) PlaceOrder(ctx context.Context, req trader.OrderRequest) (trader.OrderResult, error) {
+	return e.placeOrder(ctx, req)
+}
+
+func (e *BinanceExchange) PlaceOrderREST(ctx context.Context, req trader.OrderRequest) (trader.OrderResult, error) {
+	return e.placeOrder(ctx, req)
+}
+
+func (e *BinanceExchange) cancelOrder(ctx context.Context, req trader.CancelRequest) error {
+	params := url.Values{"symbol": {req.Symbol}}
+	if req.OrderId != "" {
+		params.Set("orderId", req.OrderId)
+	} else if req.OrderLinkId != "" {
+		params.Set("origClientOrderId", truncateClientOrderID(req.OrderLinkId))
+	}
+	_, err := doSignedDELETE(ctx, e.creds, "/fapi/v1/order", params)
+	return err
+}
+
+func (e *BinanceExchange) CancelOrder(ctx context.Context, req trader.CancelRequest) error {
+	return e.cancelOrder(ctx, req)
+}
+
+func (e *BinanceExchange) CancelOrderREST(ctx context.Context, req trader.CancelRequest) error {
+	return e.cancelOrder(ctx, req)
+}
+
+func (e *BinanceExchange) CancelAllOrders(ctx context.Context, req trader.CancelAllRequest) error {
+	_, err := doSignedDELETE(ctx, e.creds, "/fapi/v1/allOpenOrders", url.Values{"symbol": {req.Symbol}})
+	return err
+}

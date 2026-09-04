@@ -4,7 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
+
+	"sis/pkg/trader"
 )
 
 func TestBinanceExchange_GetMarkPrice_UsesPublicEndpoint(t *testing.T) {
@@ -139,5 +143,175 @@ func TestBinanceExchange_GetWalletBalance_TranslatesAccountEndpoint(t *testing.T
 	}
 	if available != 800.25 {
 		t.Errorf("available = %v, want 800.25 (USDT asset's availableBalance, not BUSD)", available)
+	}
+}
+
+func TestBinanceExchange_PlaceOrder_TranslatesMarketOrder(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		gotBody = string(buf)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"orderId":123456789,"clientOrderId":"SIS_STR-a1b2c3d4-tp-1-1","status":"NEW"}`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	req := trader.OrderRequest{
+		Symbol: "BTCUSDT", Side: "Buy", OrderType: "Market", Qty: "0.01",
+		PositionIdx: 1, OrderLinkId: "SIS_STR-a1b2c3d4-tp-1-1",
+	}
+	got, err := ex.PlaceOrder(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+	if got.OrderId != "123456789" {
+		t.Errorf("OrderId = %q, want %q (numeric orderId stringified)", got.OrderId, "123456789")
+	}
+	if got.OrderLinkId != "SIS_STR-a1b2c3d4-tp-1-1" {
+		t.Errorf("OrderLinkId = %q, want the echoed clientOrderId", got.OrderLinkId)
+	}
+	if !strings.Contains(gotBody, "side=BUY") {
+		t.Errorf("body = %q, want side=BUY (Binance uppercase)", gotBody)
+	}
+	if !strings.Contains(gotBody, "type=MARKET") {
+		t.Errorf("body = %q, want type=MARKET", gotBody)
+	}
+	if !strings.Contains(gotBody, "positionSide=LONG") {
+		t.Errorf("body = %q, want positionSide=LONG (PositionIdx=1 → LONG)", gotBody)
+	}
+	if !strings.Contains(gotBody, "newClientOrderId=SIS_STR-a1b2c3d4-tp-1-1") {
+		t.Errorf("body = %q, want the orderLinkId passed through as newClientOrderId", gotBody)
+	}
+}
+
+func TestBinanceExchange_PlaceOrder_TranslatesConditionalStopOrder(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		gotBody = string(buf)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"orderId":2,"clientOrderId":"x"}`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	req := trader.OrderRequest{
+		Symbol: "BTCUSDT", Side: "Sell", OrderType: "Market", TriggerPrice: "58000",
+		OrderFilter: "StopOrder", ReduceOnly: true, PositionIdx: 1,
+	}
+	if _, err := ex.PlaceOrder(context.Background(), req); err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+	if !strings.Contains(gotBody, "type=STOP_MARKET") {
+		t.Errorf("body = %q, want type=STOP_MARKET for a conditional stop order", gotBody)
+	}
+	if !strings.Contains(gotBody, "stopPrice=58000") {
+		t.Errorf("body = %q, want stopPrice=58000", gotBody)
+	}
+	if !strings.Contains(gotBody, "reduceOnly=true") {
+		t.Errorf("body = %q, want reduceOnly=true", gotBody)
+	}
+}
+
+func TestBinanceExchange_PlaceOrder_TruncatesLongOrderLinkId(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		gotBody = string(buf)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"orderId":3,"clientOrderId":"whatever"}`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	longID := "SIS_STR-a1b2c3d4-999999-88888888-777-v99"
+	req := trader.OrderRequest{Symbol: "BTCUSDT", Side: "Buy", OrderType: "Market", Qty: "1", OrderLinkId: longID}
+	if _, err := ex.PlaceOrder(context.Background(), req); err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+	if strings.Contains(gotBody, "newClientOrderId="+longID) {
+		t.Errorf("body = %q, must NOT send the untruncated >36-char orderLinkId — Binance would reject it", gotBody)
+	}
+	want := truncateClientOrderID(longID)
+	if !strings.Contains(gotBody, "newClientOrderId="+want) {
+		t.Errorf("body = %q, want the truncated id %q", gotBody, want)
+	}
+}
+
+func TestBinanceExchange_PlaceOrderREST_SameBehaviorAsPlaceOrder(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"orderId":4,"clientOrderId":"y"}`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	req := trader.OrderRequest{Symbol: "BTCUSDT", Side: "Buy", OrderType: "Market", Qty: "1"}
+	got, err := ex.PlaceOrderREST(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PlaceOrderREST: %v", err)
+	}
+	if got.OrderId != "4" {
+		t.Errorf("OrderId = %q, want 4", got.OrderId)
+	}
+}
+
+func TestBinanceExchange_CancelOrder_UsesOrderIdOrLinkId(t *testing.T) {
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"orderId":5,"status":"CANCELED"}`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	if err := ex.CancelOrder(context.Background(), trader.CancelRequest{Symbol: "BTCUSDT", OrderId: "5"}); err != nil {
+		t.Fatalf("CancelOrder: %v", err)
+	}
+	if gotQuery.Get("orderId") != "5" {
+		t.Errorf("query orderId = %q, want 5", gotQuery.Get("orderId"))
+	}
+}
+
+func TestBinanceExchange_CancelOrderREST_SameBehaviorAsCancelOrder(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"orderId":6,"status":"CANCELED"}`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	if err := ex.CancelOrderREST(context.Background(), trader.CancelRequest{Symbol: "BTCUSDT", OrderId: "6"}); err != nil {
+		t.Fatalf("CancelOrderREST: %v", err)
+	}
+}
+
+func TestBinanceExchange_CancelAllOrders_DelegatesCorrectly(t *testing.T) {
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":200,"msg":"The operation of cancel all open order is done."}`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	if err := ex.CancelAllOrders(context.Background(), trader.CancelAllRequest{Symbol: "BTCUSDT"}); err != nil {
+		t.Fatalf("CancelAllOrders: %v", err)
+	}
+	if gotQuery.Get("symbol") != "BTCUSDT" {
+		t.Errorf("query symbol = %q, want BTCUSDT", gotQuery.Get("symbol"))
 	}
 }
