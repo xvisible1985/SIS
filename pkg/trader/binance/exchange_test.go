@@ -425,7 +425,12 @@ func TestBinanceExchange_CancelOrderBatch_SendsOrderIdListParam(t *testing.T) {
 	if gotQuery.Get("orderIdList") == "" {
 		t.Errorf("query = %q, want a nonempty orderIdList param", gotRawQuery)
 	}
-	if !strings.Contains(gotRawQuery, "20") || !strings.Contains(gotRawQuery, "21") {
-		t.Errorf("query = %q, want both order IDs present", gotRawQuery)
+	// Binance's orderIdList is integer[] (e.g. [20,21]), validated server-side by a
+	// strict character regex before JSON parsing even runs — a quoted-string array
+	// like ["20","21"] fails that validation with -1100 "Illegal characters found".
+	// Assert the exact unquoted wire format, not just substring presence of "20"/"21"
+	// (which can't distinguish [20,21] from ["20","21"]).
+	if got := gotQuery.Get("orderIdList"); got != "[20,21]" {
+		t.Errorf("orderIdList = %q, want unquoted integers [20,21], not quoted strings", got)
 	}
 }

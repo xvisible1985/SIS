@@ -3,6 +3,7 @@ package binance
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -326,9 +327,13 @@ func (e *BinanceExchange) CancelOrderBatch(ctx context.Context, req trader.Batch
 		return nil
 	}
 	symbol := req.Request[0].Symbol
-	ids := make([]string, 0, len(req.Request))
+	ids := make([]int64, 0, len(req.Request))
 	for _, it := range req.Request {
-		ids = append(ids, it.OrderId)
+		id, err := strconv.ParseInt(it.OrderId, 10, 64)
+		if err != nil {
+			return fmt.Errorf("binance: invalid orderId %q in batch cancel: %w", it.OrderId, err)
+		}
+		ids = append(ids, id)
 	}
 	encoded, err := json.Marshal(ids)
 	if err != nil {
