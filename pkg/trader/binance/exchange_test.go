@@ -93,6 +93,34 @@ func TestBinanceExchange_FetchPositions_ShortSideFromNegativeAmt(t *testing.T) {
 	}
 }
 
+func TestBinanceExchange_FetchPositions_OneWayModeShortGetsPositionIdxZero(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","positionSide":"BOTH","positionAmt":"-0.30000000","entryPrice":"60000.0","markPrice":"61000.0","unRealizedProfit":"-300.0","liquidationPrice":"90000.0","leverage":"10"}]`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	got, err := ex.FetchPositions(context.Background())
+	if err != nil {
+		t.Fatalf("FetchPositions: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchPositions returned %d positions, want 1", len(got))
+	}
+	p := got[0]
+	// A one-way-mode account still reports positionSide:"BOTH" even for a short
+	// (negative positionAmt) — PositionIdx must stay 0 (one-way slot), not fall
+	// through to the hedge-mode short slot 2 just because the sign is negative.
+	if p.Side != "Sell" || p.PositionIdx != 0 {
+		t.Errorf("FetchPositions[0] = %+v, want Sell with PositionIdx=0 (one-way mode uses slot 0 regardless of side)", p)
+	}
+	if p.Size != "0.30000000" {
+		t.Errorf("Size = %q, want 0.30000000", p.Size)
+	}
+}
+
 func TestBinanceExchange_GetWalletBalance_TranslatesAccountEndpoint(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

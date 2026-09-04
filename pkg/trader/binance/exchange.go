@@ -73,9 +73,15 @@ func (e *BinanceExchange) FetchPositions(ctx context.Context) ([]trader.Position
 		size := strings.TrimPrefix(r.PositionAmt, "-")
 		if amt < 0 {
 			side = "Sell"
+		}
+		// PositionSide=="BOTH" (one-way mode) always maps to slot 0, regardless of
+		// sign — a one-way-mode short still reports positionSide:"BOTH" with a
+		// negative positionAmt, so this must not be an `else if` chained after the
+		// sign check above (that would wrongly give it the hedge-mode short slot 2).
+		if r.PositionSide == "BOTH" {
+			positionIdx = 0
+		} else if amt < 0 {
 			positionIdx = 2
-		} else if r.PositionSide == "BOTH" {
-			positionIdx = 0 // one-way mode
 		}
 		out = append(out, trader.Position{
 			Symbol:        r.Symbol,
