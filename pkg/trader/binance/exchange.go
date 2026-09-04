@@ -654,3 +654,8 @@ func (e *BinanceExchange) FetchRecentClosedPnl(ctx context.Context, category str
 	}
 	return all, firstErr
 }
+
+// var _ trader.Exchange = (*BinanceExchange)(nil) fails to compile if BinanceExchange
+// ever stops satisfying trader.Exchange — mirrors pkg/trader/exchange.go's own
+// var _ Exchange = (*BybitExchange)(nil).
+var _ trader.Exchange = (*BinanceExchange)(nil)
