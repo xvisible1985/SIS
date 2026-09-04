@@ -241,3 +241,102 @@ func (e *BinanceExchange) CancelAllOrders(ctx context.Context, req trader.Cancel
 	_, err := doSignedDELETE(ctx, e.creds, "/fapi/v1/allOpenOrders", url.Values{"symbol": {req.Symbol}})
 	return err
 }
+
+// binanceBatchOrderItem is one entry of the JSON array sent as POST
+// /fapi/v1/batchOrders' "batchOrders" param (itself a JSON-encoded string, not a
+// native array — this is a real Binance quirk: the array is serialized to JSON text
+// and that text becomes the value of one form field).
+type binanceBatchOrderItem struct {
+	Symbol           string `json:"symbol"`
+	Side             string `json:"side"`
+	Type             string `json:"type"`
+	PositionSide     string `json:"positionSide"`
+	Quantity         string `json:"quantity,omitempty"`
+	Price            string `json:"price,omitempty"`
+	StopPrice        string `json:"stopPrice,omitempty"`
+	ReduceOnly       string `json:"reduceOnly,omitempty"`
+	TimeInForce      string `json:"timeInForce,omitempty"`
+	NewClientOrderId string `json:"newClientOrderId,omitempty"`
+}
+
+func (e *BinanceExchange) PlaceOrderBatch(ctx context.Context, req trader.BatchPlaceRequest) ([]trader.BatchPlaceResult, error) {
+	items := make([]binanceBatchOrderItem, 0, len(req.Request))
+	for _, it := range req.Request {
+		orderReq := trader.OrderRequest{
+			Symbol: it.Symbol, Side: it.Side, OrderType: it.OrderType,
+			TriggerPrice: it.TriggerPrice, OrderFilter: it.OrderFilter,
+			ReduceOnly: it.ReduceOnly, PositionIdx: it.PositionIdx,
+		}
+		orderType := binanceOrderType(orderReq)
+		bi := binanceBatchOrderItem{
+			Symbol: it.Symbol, Side: strings.ToUpper(it.Side), Type: orderType,
+			PositionSide: binancePositionSide(it.PositionIdx), Quantity: it.Qty, Price: it.Price,
+		}
+		if it.TimeInForce != "" && orderType == "LIMIT" {
+			bi.TimeInForce = it.TimeInForce
+		}
+		if it.TriggerPrice != "" {
+			bi.StopPrice = it.TriggerPrice
+		}
+		if it.ReduceOnly {
+			bi.ReduceOnly = "true"
+		}
+		if it.OrderLinkId != "" {
+			bi.NewClientOrderId = truncateClientOrderID(it.OrderLinkId)
+		}
+		items = append(items, bi)
+	}
+	encoded, err := json.Marshal(items)
+	if err != nil {
+		return nil, err
+	}
+	data, err := doSignedPOST(ctx, e.creds, "/fapi/v1/batchOrders", url.Values{"batchOrders": {string(encoded)}})
+	if err != nil {
+		return nil, err
+	}
+	var rows []struct {
+		OrderId       int64  `json:"orderId"`
+		ClientOrderId string `json:"clientOrderId"`
+		Code          int    `json:"code"`
+		Msg           string `json:"msg"`
+	}
+	if err := json.Unmarshal(data, &rows); err != nil {
+		return nil, err
+	}
+	out := make([]trader.BatchPlaceResult, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, trader.BatchPlaceResult{
+			OrderId: strconv.FormatInt(r.OrderId, 10), OrderLinkId: r.ClientOrderId,
+			Code: r.Code, Msg: r.Msg,
+		})
+	}
+	return out, nil
+}
+
+// CancelOrderBatch cancels a batch of orders via DELETE /fapi/v1/batchOrders, which is
+// scoped to a single symbol per call (the "symbol" param takes exactly one value) — unlike
+// Bybit's batch-cancel endpoint, Binance has no way to mix symbols in one request. This
+// implementation uses req.Request[0].Symbol for the whole call; if req.Request ever
+// contains items for more than one symbol, every orderId is sent against that first
+// symbol, which is wrong for items belonging to a different symbol. No current caller
+// builds a multi-symbol batch, so this is left as a documented limitation rather than
+// implemented as a per-symbol grouping/multiple-requests solution.
+func (e *BinanceExchange) CancelOrderBatch(ctx context.Context, req trader.BatchCancelRequest) error {
+	if len(req.Request) == 0 {
+		return nil
+	}
+	symbol := req.Request[0].Symbol
+	ids := make([]string, 0, len(req.Request))
+	for _, it := range req.Request {
+		ids = append(ids, it.OrderId)
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return err
+	}
+	_, err = doSignedDELETE(ctx, e.creds, "/fapi/v1/batchOrders", url.Values{
+		"symbol":      {symbol},
+		"orderIdList": {string(encoded)},
+	})
+	return err
+}

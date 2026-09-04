@@ -363,3 +363,69 @@ func TestBinanceExchange_CancelAllOrders_DelegatesCorrectly(t *testing.T) {
 		t.Errorf("query symbol = %q, want BTCUSDT", gotQuery.Get("symbol"))
 	}
 }
+
+func TestBinanceExchange_PlaceOrderBatch_SendsJSONArrayParam(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		gotBody = string(buf)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"orderId":10,"clientOrderId":"a"},{"orderId":11,"clientOrderId":"b"}]`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	req := trader.BatchPlaceRequest{Request: []trader.BatchOrderItem{
+		{Symbol: "BTCUSDT", Side: "Buy", OrderType: "Limit", Qty: "1", Price: "50000", PositionIdx: 1},
+		{Symbol: "ETHUSDT", Side: "Sell", OrderType: "Market", Qty: "1", PositionIdx: 2},
+	}}
+	got, err := ex.PlaceOrderBatch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("PlaceOrderBatch: %v", err)
+	}
+	if len(got) != 2 || got[0].OrderId != "10" || got[1].OrderId != "11" {
+		t.Errorf("PlaceOrderBatch = %+v, want orderIds 10 and 11", got)
+	}
+	if !strings.Contains(gotBody, "batchOrders=") {
+		t.Errorf("body = %q, want a batchOrders param", gotBody)
+	}
+	if !strings.Contains(gotBody, "BTCUSDT") || !strings.Contains(gotBody, "ETHUSDT") {
+		t.Errorf("body = %q, want both symbols present in the encoded batch", gotBody)
+	}
+}
+
+func TestBinanceExchange_CancelOrderBatch_SendsOrderIdListParam(t *testing.T) {
+	// Unlike PlaceOrderBatch (POST, body-encoded), CancelOrderBatch goes through
+	// doSignedDELETE which — like every other signed DELETE call in this package
+	// (CancelOrder, CancelAllOrders) — sends params via the query string, not the
+	// request body. So this asserts on r.URL.Query()/RawQuery, matching the
+	// TestBinanceExchange_CancelOrder_* and TestBinanceExchange_CancelAllOrders_*
+	// tests above, rather than reading an (always-empty, for a query-based DELETE) body.
+	var gotQuery url.Values
+	var gotRawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		gotRawQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"orderId":20,"status":"CANCELED"},{"orderId":21,"status":"CANCELED"}]`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	req := trader.BatchCancelRequest{Request: []trader.BatchCancelItem{
+		{Symbol: "BTCUSDT", OrderId: "20"},
+		{Symbol: "BTCUSDT", OrderId: "21"},
+	}}
+	if err := ex.CancelOrderBatch(context.Background(), req); err != nil {
+		t.Fatalf("CancelOrderBatch: %v", err)
+	}
+	if gotQuery.Get("orderIdList") == "" {
+		t.Errorf("query = %q, want a nonempty orderIdList param", gotRawQuery)
+	}
+	if !strings.Contains(gotRawQuery, "20") || !strings.Contains(gotRawQuery, "21") {
+		t.Errorf("query = %q, want both order IDs present", gotRawQuery)
+	}
+}
