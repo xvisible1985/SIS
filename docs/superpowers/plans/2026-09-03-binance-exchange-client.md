@@ -48,6 +48,7 @@ package binance
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -137,9 +138,8 @@ func TestDoSignedPOST_SendsFormEncodedBodyNotJSON(t *testing.T) {
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotContentType = r.Header.Get("Content-Type")
-		buf := make([]byte, r.ContentLength)
-		_, _ = r.Body.Read(buf)
-		gotBody = string(buf)
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
@@ -155,6 +155,35 @@ func TestDoSignedPOST_SendsFormEncodedBodyNotJSON(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, "symbol=BTCUSDT") || !strings.Contains(gotBody, "signature=") {
 		t.Errorf("POST body = %q, want form-encoded params including signature", gotBody)
+	}
+}
+
+func TestDoSignedDELETE_SendsAPIKeyHeaderAndSignature(t *testing.T) {
+	var gotMethod string
+	var gotAPIKeyHeader string
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotAPIKeyHeader = r.Header.Get("X-MBX-APIKEY")
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	_, err := doSignedDELETE(context.Background(), testCreds(), "/fapi/v1/order", url.Values{"symbol": {"BTCUSDT"}, "orderId": {"5"}})
+	if err != nil {
+		t.Fatalf("doSignedDELETE: %v", err)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Errorf("method = %q, want DELETE", gotMethod)
+	}
+	if gotAPIKeyHeader != "test-key" {
+		t.Errorf("X-MBX-APIKEY header = %q, want test-key", gotAPIKeyHeader)
+	}
+	if gotQuery.Get("signature") == "" {
+		t.Error("query missing signature")
 	}
 }
 
@@ -188,7 +217,10 @@ func TestDoPublicGET_NoAuthHeaderNoSignature(t *testing.T) {
 	defer srv.Close()
 	withMockBinanceBase(t, srv)
 
-	_, err := doPublicGET(context.Background(), "/fapi/v1/premiumIndex", url.Values{"symbol": {"BTCUSDT"}})
+	// doPublicGET still takes creds (routes through that account's proxy/IP via
+	// pkg/proxy.HTTPClientFor, same as every signed call) even though the endpoint
+	// itself needs no API key or signature — see doRequest's use of proxy.HTTPClientFor.
+	_, err := doPublicGET(context.Background(), testCreds(), "/fapi/v1/premiumIndex", url.Values{"symbol": {"BTCUSDT"}})
 	if err != nil {
 		t.Fatalf("doPublicGET: %v", err)
 	}
@@ -231,6 +263,7 @@ import (
 	"strings"
 	"time"
 
+	"sis/pkg/proxy"
 	"sis/pkg/trader"
 )
 
@@ -252,6 +285,9 @@ func sign(secret, payload string) string {
 // resulting encoded query string, and returns params with "signature" added — the
 // exact string url.Values.Encode() produces (params sorted alphabetically by key) is
 // both what gets signed and what gets sent, so the two can never drift apart.
+// Mutates params in place (Set calls) in addition to returning it — every call site
+// passes a fresh literal, so this is safe today, but don't reuse/share a url.Values
+// across calls expecting it to stay unmodified.
 func signParams(creds trader.Credentials, params url.Values) url.Values {
 	if params == nil {
 		params = url.Values{}
@@ -281,15 +317,23 @@ func checkBinanceError(data []byte) error {
 	return nil
 }
 
-func doRequest(ctx context.Context, method, path string, values url.Values, apiKey string, body bool) ([]byte, error) {
+// doRequest issues one HTTP call and routes it through proxy.HTTPClientFor(creds.
+// WhitelistedIPs) — never http.DefaultClient, which has no timeout and ignores the
+// account's IP whitelist. This matches pkg/trader/bybit.go's own doSignedGET/POST,
+// which route the exact same way; an IP-restricted API key's requests must go out
+// through the matching proxy or Binance rejects them. creds.APIKey (possibly empty,
+// for public endpoints) becomes the X-MBX-APIKEY header when non-empty; proxy routing
+// itself is applied unconditionally — even public/unsigned calls should still egress
+// through that account's own proxy/IP for consistency (mirrors bybit.go's FetchMarkPrice,
+// which threads Credentials through despite the endpoint needing no auth).
+func doRequest(ctx context.Context, method, path string, values url.Values, creds trader.Credentials, body bool) ([]byte, error) {
 	var req *http.Request
 	var err error
 	if body {
-		req, err = http.NewRequestWithContext(ctx, method, binanceBase+path, nil)
+		req, err = http.NewRequestWithContext(ctx, method, binanceBase+path, strings.NewReader(values.Encode()))
 		if err != nil {
 			return nil, err
 		}
-		req.Body = io.NopCloser(strings.NewReader(values.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	} else {
 		full := binanceBase + path
@@ -301,10 +345,10 @@ func doRequest(ctx context.Context, method, path string, values url.Values, apiK
 			return nil, err
 		}
 	}
-	if apiKey != "" {
-		req.Header.Set("X-MBX-APIKEY", apiKey)
+	if creds.APIKey != "" {
+		req.Header.Set("X-MBX-APIKEY", creds.APIKey)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := proxy.HTTPClientFor(creds.WhitelistedIPs).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -321,24 +365,24 @@ func doRequest(ctx context.Context, method, path string, values url.Values, apiK
 
 // doSignedGET issues a signed GET — params go in the query string.
 func doSignedGET(ctx context.Context, creds trader.Credentials, path string, params url.Values) ([]byte, error) {
-	return doRequest(ctx, http.MethodGet, path, signParams(creds, params), creds.APIKey, false)
+	return doRequest(ctx, http.MethodGet, path, signParams(creds, params), creds, false)
 }
 
 // doSignedPOST issues a signed POST — params go in the form-urlencoded body, not JSON
 // (a real difference from Bybit, which sends a JSON body — see general-info docs).
 func doSignedPOST(ctx context.Context, creds trader.Credentials, path string, params url.Values) ([]byte, error) {
-	return doRequest(ctx, http.MethodPost, path, signParams(creds, params), creds.APIKey, true)
+	return doRequest(ctx, http.MethodPost, path, signParams(creds, params), creds, true)
 }
 
 // doSignedDELETE issues a signed DELETE — params go in the query string, same as GET.
 func doSignedDELETE(ctx context.Context, creds trader.Credentials, path string, params url.Values) ([]byte, error) {
-	return doRequest(ctx, http.MethodDelete, path, signParams(creds, params), creds.APIKey, false)
+	return doRequest(ctx, http.MethodDelete, path, signParams(creds, params), creds, false)
 }
 
-// doPublicGET issues an unauthenticated GET — no API key header, no signature. Used
-// only for genuinely public endpoints (e.g. mark price).
-func doPublicGET(ctx context.Context, path string, params url.Values) ([]byte, error) {
-	return doRequest(ctx, http.MethodGet, path, params, "", false)
+// doPublicGET issues an unauthenticated GET — no API key header, no signature — but
+// still takes creds so it routes through that account's proxy/IP like every other call.
+func doPublicGET(ctx context.Context, creds trader.Credentials, path string, params url.Values) ([]byte, error) {
+	return doRequest(ctx, http.MethodGet, path, params, trader.Credentials{WhitelistedIPs: creds.WhitelistedIPs}, false)
 }
 ```
 
@@ -538,7 +582,7 @@ func NewBinanceExchange(creds trader.Credentials) *BinanceExchange {
 }
 
 func (e *BinanceExchange) GetMarkPrice(ctx context.Context, category, symbol string) (float64, error) {
-	data, err := doPublicGET(ctx, "/fapi/v1/premiumIndex", url.Values{"symbol": {symbol}})
+	data, err := doPublicGET(ctx, e.creds, "/fapi/v1/premiumIndex", url.Values{"symbol": {symbol}})
 	if err != nil {
 		return 0, err
 	}
