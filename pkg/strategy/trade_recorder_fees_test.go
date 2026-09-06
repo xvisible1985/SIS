@@ -49,7 +49,7 @@ func TestFeesAndFundingInRange_IgnoresUnreliablePositionIdx(t *testing.T) {
 	}
 	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM trader_executions WHERE account_id=$1", accID) })
 
-	fees, funding := feesAndFundingInRange(ctx, pool, accID, "FEESUSDT", "irrelev", from, to)
+	fees, funding := FeesAndFundingInRange(ctx, pool, accID, "FEESUSDT", "irrelev", from, to)
 
 	if fees != 1.05 {
 		t.Errorf("fees = %v, want 1.05 (0.75+0.30, excluding the out-of-range 999.0 row)", fees)
@@ -89,7 +89,7 @@ func TestFeesAndFundingInRange_DifferentSymbolExcluded(t *testing.T) {
 	}
 	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM trader_executions WHERE account_id=$1", accID) })
 
-	fees, funding := feesAndFundingInRange(ctx, pool, accID, "FEESUSDT", "irrelev", from, to)
+	fees, funding := FeesAndFundingInRange(ctx, pool, accID, "FEESUSDT", "irrelev", from, to)
 
 	if fees != 0 {
 		t.Errorf("fees = %v, want 0 (OTHERUSDT row must not leak into FEESUSDT sum)", fees)
@@ -142,12 +142,12 @@ func TestFeesAndFundingInRange_ExcludesOtherStrategysTaggedOrders(t *testing.T) 
 	}
 	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM trader_executions WHERE account_id=$1", accID) })
 
-	feesA, _ := feesAndFundingInRange(ctx, pool, accID, "PAIRUSDT", "aaaaaaaa", from, to)
+	feesA, _ := FeesAndFundingInRange(ctx, pool, accID, "PAIRUSDT", "aaaaaaaa", from, to)
 	if diff := feesA - 0.70; diff > 0.0001 || diff < -0.0001 {
 		t.Errorf("stratA fees = %v, want 0.70 (0.40+0.20 own + 0.10 manual, excluding stratB's 0.55+0.35)", feesA)
 	}
 
-	feesB, _ := feesAndFundingInRange(ctx, pool, accID, "PAIRUSDT", "bbbbbbbb", from, to)
+	feesB, _ := FeesAndFundingInRange(ctx, pool, accID, "PAIRUSDT", "bbbbbbbb", from, to)
 	if diff := feesB - 1.00; diff > 0.0001 || diff < -0.0001 {
 		t.Errorf("stratB fees = %v, want 1.00 (0.55+0.35 own + 0.10 manual, excluding stratA's 0.40+0.20)", feesB)
 	}

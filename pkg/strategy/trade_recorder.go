@@ -300,7 +300,7 @@ func accumulateMatrixLevelSLPnlNow(ctx context.Context, pool *pgxpool.Pool, in M
 	AccumulateHedgeSessionPnl(ctx, pool, in.StrategyID, netPnl)
 }
 
-// feesAndFundingInRange sums Trade/Funding execution fees for account+symbol within
+// FeesAndFundingInRange sums Trade/Funding execution fees for account+symbol within
 // [from, to]. Deliberately does NOT filter by position_idx: Bybit's execution-list REST
 // endpoint (synced into trader_executions by pkg/trader.Syncer) does not reliably report
 // it — observed in production always 0 or NULL, even for accounts genuinely holding
@@ -320,7 +320,7 @@ func accumulateMatrixLevelSLPnlNow(ctx context.Context, pool *pgxpool.Pool, in M
 // all (Bybit ties funding to the position, not an order), so this filter is a no-op for
 // them — funding keeps the old account+symbol+time-only behavior, same trade-off as
 // before, accepted as strictly better than the prior always-zero regression.
-func feesAndFundingInRange(ctx context.Context, pool *pgxpool.Pool, accountID, symbol, stratID8 string, from, to time.Time) (fees, funding float64) {
+func FeesAndFundingInRange(ctx context.Context, pool *pgxpool.Pool, accountID, symbol, stratID8 string, from, to time.Time) (fees, funding float64) {
 	notOthers := "(order_link_id LIKE $5 OR order_link_id NOT LIKE 'SIS_STR-%' OR order_link_id IS NULL)"
 	linkPrefix := "SIS_STR-" + stratID8 + "-%"
 	pool.QueryRow(ctx, //nolint:errcheck
@@ -448,7 +448,7 @@ func RecordStrategyTrade(pool *pgxpool.Pool, creds trader.Credentials, in TradeR
 
 	// ── 4/5. Fees + funding (Trade/Funding executions) by time range ───────────
 	closedAt := time.Now()
-	fees, funding := feesAndFundingInRange(ctx, pool, in.Strategy.AccountID, in.Strategy.Symbol, in.Strategy.ID[:8], in.StartedAt, closedAt)
+	fees, funding := FeesAndFundingInRange(ctx, pool, in.Strategy.AccountID, in.Strategy.Symbol, in.Strategy.ID[:8], in.StartedAt, closedAt)
 
 	// ── 6. Fix result attribution ─────────────────────────────────────────────
 	// If cycle was ghost_close but our TP order is the one that fired → "tp".
