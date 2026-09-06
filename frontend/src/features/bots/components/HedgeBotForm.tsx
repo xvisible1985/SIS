@@ -1970,15 +1970,20 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
         )}
       </div>
 
-      {/* Stats reset confirmation modal */}
-      {showResetStatsConfirm && bot && (
+      {/* Portaled to document.body: when embedded, this form is mounted inside
+          MultiBotForm's tab panel, which is display:none on inactive tabs — an in-place
+          dialog would mount but stay invisible/unreachable there, and trySubmit()'s promise
+          would never resolve, hanging MultiBotForm's "Сохранить" on whatever tab isn't
+          this form's own. */}
+      {showResetStatsConfirm && bot && createPortal(
         <ResetStatsConfirmModal
           tradesTotal={bot.tradesTotal ?? 0}
           netPnlTotal={bot.netPnlTotal ?? 0}
           tradesWin={bot.tradesWin ?? 0}
           onConfirm={() => { setShowResetStatsConfirm(false); void doSubmit(); }}
           onCancel={() => { setShowResetStatsConfirm(false); resolveEmbedded(null); }}
-        />
+        />,
+        document.body
       )}
     </div>
   );

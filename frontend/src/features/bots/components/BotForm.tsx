@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, forwardRef, useImperativeHandle } from 'react';
+import { createPortal } from 'react-dom';
 import { getStrategyDefaults } from '../../admin-defaults/api';
 import { X, Bot, ToggleLeft, ToggleRight, Camera, Trash2, Search, Loader2, Smile } from 'lucide-react';
 import { BotIconPicker } from './BotIconPicker';
@@ -1746,19 +1747,26 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
         )}
       </div>
 
+      {/* Both confirm dialogs below are portaled to document.body: when embedded (see the
+          `embedded` prop), this form is mounted inside MultiBotForm's tab panel, which is
+          display:none on inactive tabs. A dialog rendered in-place would mount but stay
+          invisible/unreachable there — trySubmit()'s promise then never resolves and
+          MultiBotForm's "Сохранить" hangs forever on whatever tab isn't this form's own. */}
+
       {/* Stats reset confirmation modal */}
-      {showResetStatsConfirm && bot && (
+      {showResetStatsConfirm && bot && createPortal(
         <ResetStatsConfirmModal
           tradesTotal={bot.tradesTotal ?? 0}
           netPnlTotal={bot.netPnlTotal ?? 0}
           tradesWin={bot.tradesWin ?? 0}
           onConfirm={() => { setShowResetStatsConfirm(false); void doSubmit(); }}
           onCancel={() => { setShowResetStatsConfirm(false); resolveEmbedded(null); }}
-        />
+        />,
+        document.body
       )}
 
       {/* Coin filter confirm dialog */}
-      {showCoinFilterConfirm && (
+      {showCoinFilterConfirm && createPortal(
         <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60">
           <div className="w-80 rounded-xl border border-amber-500/30 bg-slate-900 p-5 shadow-2xl">
             <div className="mb-3 flex items-center gap-2 text-amber-400">
@@ -1790,7 +1798,8 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

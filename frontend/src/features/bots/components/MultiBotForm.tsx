@@ -155,8 +155,8 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'basic',  label: 'Основное' },
-    { id: 'signal', label: 'Сигнал' },
-    { id: 'hedge',  label: 'Хедж' },
+    { id: 'signal', label: 'Мэйн позиция' },
+    { id: 'hedge',  label: 'Хедж позиция' },
   ];
 
   return (
@@ -193,7 +193,7 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
               type="button"
               onClick={() => setTab(t.id)}
               className={
-                'relative mr-4 py-3 text-[12px] font-semibold transition-colors ' +
+                'relative mr-4 py-3 text-[15px] font-semibold transition-colors ' +
                 (tab === t.id ? 'text-slate-50' : 'text-slate-400 hover:text-slate-200')
               }
             >
