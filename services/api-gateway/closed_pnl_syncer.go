@@ -163,6 +163,219 @@ func (s *ClosedPnlSyncer) syncAccount(ctx context.Context, a closedPnlAccount, c
 	s.mu.Lock()
 	s.lastSync[a.id] = newLast
 	s.mu.Unlock()
+
+	s.reconcileMissingTradeHistory(ctx, a, creds)
+}
+
+// tradeHistoryGap is one strategy_cycles row that ended via TP/SL long enough ago that
+// closeCycle's own RecordStrategyTrade goroutine should have finished, but has no
+// matching trade_history row.
+type tradeHistoryGap struct {
+	cycleID    string
+	strategyID string
+	cycleNum   int
+	startedAt  time.Time
+	endedAt    time.Time
+	result     string
+	symbol     string
+	category   string
+	direction  string
+	botID      *string
+	ownerID    string
+}
+
+// reconcileMissingTradeHistory is the permanent safety net for the 2026-09-02 incident:
+// a long-lived process's REST connectivity to Bybit died silently (VPN/proxy drop) while
+// its WS execution stream kept flowing — strategy_cycles kept ending correctly with
+// result='tp', but closeCycle's async RecordStrategyTrade goroutine could never reach
+// Bybit's closed-pnl endpoint (or the DB write itself timed out) to write the
+// trade_history row, and nothing surfaced that anywhere short of a manual DB query.
+//
+// This runs every syncAccount tick (~90s) and finds any such gap older than
+// gapStaleAfter, best-effort backfills it from Bybit's own closed-pnl history (symbol +
+// side + closest time — the same fallback matching RecordStrategyTrade itself falls
+// back to when it can't match by exact order ID), and logs loudly either way. A cycle
+// whose strategy has since been deleted (e.g. a bot that creates/retires one strategy
+// per symbol) can only be backfilled with bot-level attribution — strategy_id/cycle_num
+// context genuinely no longer exists to attach to.
+const gapStaleAfter = 5 * time.Minute
+const gapLookback = 48 * time.Hour
+const gapMatchWindow = 10 * time.Minute
+
+func (s *ClosedPnlSyncer) reconcileMissingTradeHistory(ctx context.Context, a closedPnlAccount, creds trader.Credentials) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT sc.id, sc.strategy_id, sc.cycle_num, sc.started_at, sc.ended_at, sc.result,
+		       s.symbol, s.category, s.direction, s.bot_id, s.owner_id
+		FROM strategy_cycles sc
+		JOIN strategies s ON s.id = sc.strategy_id
+		LEFT JOIN trade_history th ON th.strategy_id = sc.strategy_id AND th.cycle_num = sc.cycle_num
+		WHERE s.account_id = $1
+		  AND sc.result IN ('tp', 'sl')
+		  AND sc.ended_at < $2
+		  AND sc.ended_at > $3
+		  AND th.id IS NULL`,
+		a.id, time.Now().Add(-gapStaleAfter), time.Now().Add(-gapLookback),
+	)
+	if err != nil {
+		log.Printf("closed_pnl_syncer: reconcile gaps query account=%s: %v", a.id, err)
+		return
+	}
+	var gaps []tradeHistoryGap
+	for rows.Next() {
+		var g tradeHistoryGap
+		if err := rows.Scan(&g.cycleID, &g.strategyID, &g.cycleNum, &g.startedAt, &g.endedAt, &g.result,
+			&g.symbol, &g.category, &g.direction, &g.botID, &g.ownerID); err != nil {
+			continue
+		}
+		gaps = append(gaps, g)
+	}
+	rows.Close()
+	if len(gaps) == 0 {
+		return
+	}
+
+	// Group by symbol so each symbol's Bybit closed-pnl history is fetched once, and
+	// each Bybit entry is matched to at most one gap.
+	bySymbol := make(map[string][]tradeHistoryGap)
+	for _, g := range gaps {
+		bySymbol[g.symbol] = append(bySymbol[g.symbol], g)
+	}
+
+	for symbol, symGaps := range bySymbol {
+		log.Printf("closed_pnl_syncer: WARNING %d trade_history gap(s) on %s (account=%s) — no row written within %s of cycle close, backfilling from exchange",
+			len(symGaps), symbol, a.id, gapStaleAfter)
+
+		pnls, err := trader.FetchClosedPnlForSymbol(ctx, creds, symGaps[0].category, symbol, 50)
+		if err != nil {
+			log.Printf("closed_pnl_syncer: gap backfill %s: fetch closed pnl: %v — will retry next tick", symbol, err)
+			continue
+		}
+
+		var usedSlice []string
+		_ = s.pool.QueryRow(ctx,
+			`SELECT COALESCE(array_agg(bybit_close_order_id), '{}') FROM trade_history
+			 WHERE account_id = $1 AND symbol = $2 AND bybit_close_order_id IS NOT NULL`,
+			a.id, symbol,
+		).Scan(&usedSlice)
+		used := make(map[string]bool, len(usedSlice))
+		for _, id := range usedSlice {
+			used[id] = true
+		}
+
+		for _, g := range symGaps {
+			wantSide := "Sell" // closing a long = Sell on Bybit
+			if g.direction == "short" {
+				wantSide = "Buy"
+			}
+			var best *trader.ClosedPnl
+			var bestDelta time.Duration
+			for i := range pnls {
+				p := &pnls[i]
+				if p.Side != wantSide || used[p.OrderId] {
+					continue
+				}
+				ms, _ := strconv.ParseInt(p.CreatedTime, 10, 64)
+				closeTime := time.UnixMilli(ms)
+				delta := closeTime.Sub(g.endedAt)
+				if delta < 0 {
+					delta = -delta
+				}
+				if delta > gapMatchWindow {
+					continue
+				}
+				if best == nil || delta < bestDelta {
+					best = p
+					bestDelta = delta
+				}
+			}
+			if best == nil {
+				log.Printf("closed_pnl_syncer: gap backfill %s cy%d strategy=%s: NO matching exchange close found within %s of %s — cannot recover, needs manual review",
+					symbol, g.cycleNum, g.strategyID, gapMatchWindow, g.endedAt.Format(time.RFC3339))
+				continue
+			}
+			used[best.OrderId] = true
+			if err := s.writeGapTradeHistory(ctx, a, g, best); err != nil {
+				log.Printf("closed_pnl_syncer: gap backfill %s cy%d strategy=%s: write: %v",
+					symbol, g.cycleNum, g.strategyID, err)
+				continue
+			}
+			log.Printf("closed_pnl_syncer: gap backfill %s cy%d strategy=%s: recorded from exchange order=%s pnl=%s",
+				symbol, g.cycleNum, g.strategyID, best.OrderId, best.ClosedPnl)
+		}
+	}
+}
+
+// writeGapTradeHistory computes and inserts one backfilled trade_history row for a gap,
+// mirroring RecordStrategyTrade's own computation (VWAP from strategy_levels, fees/
+// funding scoped to the cycle's actual lifetime — using the cycle's real endedAt as the
+// upper bound, not time.Now(), unlike a live recording this runs long after the fact).
+func (s *ClosedPnlSyncer) writeGapTradeHistory(ctx context.Context, a closedPnlAccount, g tradeHistoryGap, p *trader.ClosedPnl) error {
+	rows, err := s.pool.Query(ctx, `
+		SELECT COALESCE(filled_price, target_price), size_usdt
+		FROM strategy_levels
+		WHERE cycle_id = $1 AND status = 'filled'
+		ORDER BY level_idx`, g.cycleID)
+	var totalValue, totalQty, totalUSDT float64
+	if err == nil {
+		for rows.Next() {
+			var price, sizeUSDT float64
+			if err := rows.Scan(&price, &sizeUSDT); err != nil || price == 0 {
+				continue
+			}
+			qty := sizeUSDT / price
+			totalValue += price * qty
+			totalQty += qty
+			totalUSDT += sizeUSDT
+		}
+		rows.Close()
+	}
+	avgEntry := 0.0
+	if totalQty > 0 {
+		avgEntry = totalValue / totalQty
+	}
+
+	grossPnl, _ := strconv.ParseFloat(p.ClosedPnl, 64)
+	exitPrice, _ := strconv.ParseFloat(p.AvgExitPrice, 64)
+	closedQty := totalQty
+	if q, err := strconv.ParseFloat(p.Qty, 64); err == nil && q > 0 {
+		closedQty = q
+	}
+
+	stratID8 := g.strategyID
+	if len(stratID8) > 8 {
+		stratID8 = stratID8[:8]
+	}
+	fees, funding := strategy.FeesAndFundingInRange(ctx, s.pool, a.id, g.symbol, stratID8, g.startedAt, g.endedAt)
+	netPnl := grossPnl - fees
+	pnlPct := 0.0
+	if totalUSDT > 0 {
+		pnlPct = grossPnl / totalUSDT * 100
+	}
+
+	oid := p.OrderId
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO trade_history (
+			strategy_id, bot_id, account_id, owner_id,
+			symbol, category, direction, cycle_num, result, source,
+			avg_entry, exit_price, qty, volume_usdt,
+			pnl, pnl_pct, opened_at, closed_at,
+			fees, funding, net_pnl, bybit_close_order_id
+		) VALUES (
+			$1, $2, $3, $4,
+			$5, $6, $7, $8, $9, 'strategy',
+			$10, $11, $12, $13,
+			$14, $15, $16, $17,
+			$18, $19, $20, $21
+		)
+		ON CONFLICT (strategy_id, cycle_num) WHERE strategy_id IS NOT NULL
+		DO NOTHING`,
+		g.strategyID, g.botID, a.id, g.ownerID,
+		g.symbol, g.category, g.direction, g.cycleNum, g.result,
+		avgEntry, exitPrice, closedQty, totalUSDT,
+		grossPnl, pnlPct, g.startedAt, g.endedAt,
+		fees, funding, netPnl, oid,
+	)
+	return err
 }
 
 func (s *ClosedPnlSyncer) processClosedPnl(ctx context.Context, a closedPnlAccount, creds trader.Credentials, p trader.ClosedPnl, closeTime time.Time) {
