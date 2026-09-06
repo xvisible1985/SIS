@@ -12,7 +12,18 @@ import (
 	"sis/pkg/proxy"
 )
 
-const bybitPrivateWS = "wss://stream.bybit.com/v5/private"
+var bybitPrivateWS = "wss://stream.bybit.com/v5/private"
+
+// bybitReadTimeout bounds how long RunPositionStream waits for ANY message (data or
+// pong) from Bybit's private WS before treating the connection as dead. Without this,
+// a silently-broken network path (packets black-holed, no TCP RST/FIN — e.g. a flaky
+// VPN/proxy) leaves bwsConn.ReadMessage() blocked forever: the stream never errors,
+// never returns, the frontend-facing conn never closes, and the browser never
+// reconnects to fetch a fresh REST snapshot. Real incident: sessions observed stuck
+// for 10-55+ hours after a Bybit connectivity blip, showing stale/phantom positions
+// in the terminal long after they were actually closed on the exchange. Set well above
+// the 20s ping interval below to tolerate one slow round trip before declaring dead.
+var bybitReadTimeout = 45 * time.Second
 
 // safeSend sends JSON to a gorilla WebSocket connection, ignoring write errors.
 func safeSend(conn *websocket.Conn, v any) {
@@ -67,6 +78,7 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 
 	bybitCh := make(chan []byte, 64)
 	bybitErrCh := make(chan error, 1)
+	bwsConn.SetReadDeadline(time.Now().Add(bybitReadTimeout)) //nolint:errcheck
 	go func() {
 		for {
 			_, data, err := bwsConn.ReadMessage()
@@ -74,6 +86,7 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 				bybitErrCh <- err
 				return
 			}
+			bwsConn.SetReadDeadline(time.Now().Add(bybitReadTimeout)) //nolint:errcheck
 			select {
 			case bybitCh <- data:
 			default:
