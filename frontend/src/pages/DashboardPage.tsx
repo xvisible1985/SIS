@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, type CSSProperties } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getDashboard, type DashboardData, type DailyPnL } from '../api/dashboard'
 import { getAccountBalance, getAccountPositions, listAccounts, clearAccountStats } from '../api/accounts'
@@ -1116,7 +1116,6 @@ export function DashboardPage() {
         return
       }
       setData(d)
-      setAnimKey(k => k + 1)
       setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка загрузки')
@@ -1153,12 +1152,28 @@ export function DashboardPage() {
     ]).finally(() => setLoading(false))
   }, [])
 
-  useEffect(() => { loadDash(period) }, [period, loadDash])
+  // loadDash already ran once above on mount — this effect exists for LATER changes
+  // (period tab switch, or selectedAccountId resolving asynchronously from Layout's
+  // account auto-select shortly after mount, which gives loadDash a new identity).
+  // Without the skip-first-run guard this fired loadDash a second time immediately on
+  // mount too, and a third time once the account resolved — each successful loadDash
+  // used to bump animKey, remounting the whole dashboard (key={animKey} below) and
+  // replaying its entrance animation, which is what caused the page to visibly
+  // flash/blink several times right after navigating to it.
+  const dashEffectMounted = useRef(false)
+  useEffect(() => {
+    if (!dashEffectMounted.current) { dashEffectMounted.current = true; return }
+    loadDash(period)
+  }, [period, loadDash])
   useEffect(() => { loadAccount(selectedAccountId) }, [selectedAccountId, loadAccount])
 
   const handleRefresh = async () => {
     setRefreshing(true)
     await Promise.all([loadDash(period), loadAccount(selectedAccountId)])
+    // Only the explicit refresh button replays the entrance animation now — automatic
+    // loads (mount, period switch, account resolving) update data in place instead, so
+    // they no longer remount/flash the whole dashboard (key={animKey} below).
+    setAnimKey(k => k + 1)
     setRefreshing(false)
   }
 
