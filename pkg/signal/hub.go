@@ -16,13 +16,14 @@ import (
 )
 
 const (
-	bybitPublicWS     = "wss://stream.bybit.com/v5/public/linear"
-	bybitKlineREST    = "https://api.bybit.com/v5/market/kline"
-	maxTopicsPerConn  = 40
-	candleBufferSize  = 200
-	wsPingInterval    = 20 * time.Second
-	wsReconnectDelay  = 3 * time.Second
+	bybitKlineREST   = "https://api.bybit.com/v5/market/kline"
+	maxTopicsPerConn = 40
+	candleBufferSize = 200
+	wsPingInterval   = 20 * time.Second
+	wsReconnectDelay = 3 * time.Second
 )
+
+var bybitPublicWS = "wss://stream.bybit.com/v5/public/linear"
 
 // tfToBybit converts frontend TF names to Bybit kline interval codes.
 var tfToBybit = map[string]string{
@@ -285,13 +286,13 @@ func (h *KlineHub) wsSend(hc *hubConn, v interface{}) {
 type wsKlineMsg struct {
 	Topic string `json:"topic"`
 	Data  []struct {
-		Start    int64  `json:"start"`
-		Open     string `json:"open"`
-		High     string `json:"high"`
-		Low      string `json:"low"`
-		Close    string `json:"close"`
-		Volume   string `json:"volume"`
-		Confirm  bool   `json:"confirm"`
+		Start   int64  `json:"start"`
+		Open    string `json:"open"`
+		High    string `json:"high"`
+		Low     string `json:"low"`
+		Close   string `json:"close"`
+		Volume  string `json:"volume"`
+		Confirm bool   `json:"confirm"`
 	} `json:"data"`
 }
 
