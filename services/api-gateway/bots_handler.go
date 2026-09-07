@@ -779,15 +779,34 @@ func botConfigStructuralFieldsChanged(oldCfg, newCfg botCfgJSON) bool {
 // jsonRawEqual compares two json.RawMessage values structurally (ignoring key order and
 // whitespace) rather than byte-for-byte — both sides may have travelled through different
 // marshal paths (raw client bytes vs. a previous DB round-trip) even when semantically equal.
+// Absent (nil/empty) and explicit JSON null are treated as equivalent — mirrors
+// strategy_handler.go's normSteps, which exists for the identical reason: a config created
+// with a NULL column and later round-tripped through a PATCH body that serializes it as
+// literal "null" must not look like a structural change.
 func jsonRawEqual(a, b json.RawMessage) bool {
-	if len(a) == 0 && len(b) == 0 {
+	normA, normB := normalizeJSONForCompare(a), normalizeJSONForCompare(b)
+	if normA == "" && normB == "" {
 		return true
+	}
+	if normA == "" || normB == "" {
+		return false
 	}
 	var x, y interface{}
 	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
-		return string(a) == string(b)
+		return normA == normB
 	}
 	return reflect.DeepEqual(x, y)
+}
+
+// normalizeJSONForCompare returns "" for both an absent/empty json.RawMessage and one
+// containing only the literal JSON null (after trimming whitespace), so callers can treat
+// "field never set" and "field explicitly set to null" as the same value.
+func normalizeJSONForCompare(a json.RawMessage) string {
+	s := strings.TrimSpace(string(a))
+	if s == "" || s == "null" {
+		return ""
+	}
+	return s
 }
 
 // syncBotStrategies reads the bot's current strategy_config and applies it to all
