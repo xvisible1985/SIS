@@ -234,7 +234,7 @@ func (e *Engine) loadStrategy(ctx context.Context, s Strategy) {
 			return
 		}
 		runCtx, cancel := context.WithCancel(context.Background())
-		runner = newAccountRunner(s.AccountID, info.accountLabel, info.ownerUsername, info.creds, e.pool, e.signalEngine, e, cancel)
+		runner = newAccountRunnerWithExchange(s.AccountID, info.accountLabel, info.ownerUsername, info.creds, e.pool, e.signalEngine, e, cancel, info.exchange)
 		e.runners[s.AccountID] = runner
 		e.mu.Unlock()
 		go runner.run(runCtx)
@@ -669,21 +669,22 @@ func (e *Engine) GetAccountRunner(accountID string) *AccountRunner {
 
 type accountInfo struct {
 	creds         trader.Credentials
+	exchange      string
 	accountLabel  string
 	ownerUsername string
 }
 
 func (e *Engine) loadAccountInfo(ctx context.Context, accountID string) (accountInfo, error) {
-	var apiKeyEnc, secretEnc, label string
+	var apiKeyEnc, secretEnc, exchangeName, label string
 	var username *string
 	var whitelistedIPs []string
 	if err := e.pool.QueryRow(ctx,
-		`SELECT ea.api_key_enc, ea.secret_enc, ea.label, ea.whitelisted_ips,
+		`SELECT ea.api_key_enc, ea.secret_enc, ea.exchange, ea.label, ea.whitelisted_ips,
 		        NULLIF(COALESCE(u.username, ''), '')
 		 FROM exchange_accounts ea
 		 JOIN users u ON u.id = ea.owner_id
 		 WHERE ea.id = $1`, accountID,
-	).Scan(&apiKeyEnc, &secretEnc, &label, &whitelistedIPs, &username); err != nil {
+	).Scan(&apiKeyEnc, &secretEnc, &exchangeName, &label, &whitelistedIPs, &username); err != nil {
 		return accountInfo{}, err
 	}
 	apiKey, err := crypto.Decrypt(apiKeyEnc, e.encKey)
@@ -700,6 +701,7 @@ func (e *Engine) loadAccountInfo(ctx context.Context, accountID string) (account
 	}
 	return accountInfo{
 		creds:         trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: accountID, WhitelistedIPs: whitelistedIPs},
+		exchange:      exchangeName,
 		accountLabel:  label,
 		ownerUsername: un,
 	}, nil
@@ -867,14 +869,6 @@ func newAccountRunnerWithExchange(accountID, accountLabel, ownerUsername string,
 		posLeverage:         make(map[string]float64),
 		discrepancyLoggedAt: make(map[string]time.Time),
 	}
-}
-
-// newAccountRunner is a thin wrapper defaulting to Bybit — kept only so this task's
-// tests can compare "old call shape" against "new call shape" in one commit. Task 2
-// removes it and switches the one real call site directly to
-// newAccountRunnerWithExchange.
-func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trader.Credentials, pool *pgxpool.Pool, signalEngine *signal.Engine, eng *Engine, cancel context.CancelFunc) *AccountRunner {
-	return newAccountRunnerWithExchange(accountID, accountLabel, ownerUsername, creds, pool, signalEngine, eng, cancel, "bybit")
 }
 
 // Exchange returns the resolved trader.Exchange for this account (Bybit or Binance).

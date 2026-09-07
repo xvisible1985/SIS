@@ -40,9 +40,9 @@ func TestResolveExchange_UnknownDefaultsToBybit(t *testing.T) {
 
 func TestNewAccountRunner_SetsExchangeFromExchangeNameParam(t *testing.T) {
 	cancel := func() {}
-	ar := newAccountRunner("acct-1", "label", "owner", testCreds(), nil, nil, nil, cancel)
-	if _, ok := ar.Exchange().(*trader.BybitExchange); !ok {
-		t.Fatalf("newAccountRunner with default exchangeName: Exchange() = %T, want *trader.BybitExchange", ar.Exchange())
+	arBybit := newAccountRunnerWithExchange("acct-1", "label", "owner", testCreds(), nil, nil, nil, cancel, "bybit")
+	if _, ok := arBybit.Exchange().(*trader.BybitExchange); !ok {
+		t.Fatalf("newAccountRunnerWithExchange(..., \"bybit\"): Exchange() = %T, want *trader.BybitExchange", arBybit.Exchange())
 	}
 
 	arBinance := newAccountRunnerWithExchange("acct-2", "label", "owner", testCreds(), nil, nil, nil, cancel, "binance")
