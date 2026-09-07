@@ -121,3 +121,41 @@ func TestUpdateStrategy_NoApplyToBot_LeavesTemplateUntouched(t *testing.T) {
 		t.Errorf("expected bot template tp_pct to stay 2.0, got %v", got)
 	}
 }
+
+// TestUpdateStrategy_ApplyToBot_ManualStrategyNoCrash: applyToBot=true on a manual
+// strategy (bot_id IS NULL) must not error or panic — there is no owning bot template
+// to merge into, so the merge is simply skipped and the request still succeeds.
+func TestUpdateStrategy_ApplyToBot_ManualStrategyNoCrash(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	userID := createWHUser(t, s, "applytobotmanual")
+	accID := createTestAccount(t, s, userID)
+
+	var stratID string
+	if err := s.pool.QueryRow(ctx,
+		`INSERT INTO strategies (owner_id, account_id, symbol, category, direction, strategy_type, status, tp_pct, tp_mode, sl_pct, sl_type)
+		 VALUES ($1,$2,'MANUALUSDT','linear','long','grid','active',2.0,'total',-5.0,'conditional') RETURNING id`,
+		userID, accID,
+	).Scan(&stratID); err != nil {
+		t.Fatalf("seed strategy: %v", err)
+	}
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM strategies WHERE id=$1", stratID) })
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"account_id": accID, "symbol": "MANUALUSDT", "category": "linear", "direction": "long",
+		"strategy_type": "grid", "grid_levels": 5, "grid_active": 3, "grid_step_pct": 1.0,
+		"grid_size_usdt": 100, "tp_mode": "total", "tp_pct": 3.5, "sl_type": "conditional",
+		"sl_pct": -5.0, "leverage": 1, "margin_type": "isolated", "entry_order_type": "limit",
+		"applyToBot": true,
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/strategies/"+stratID, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withUserID(req, userID)
+	req = addChiParams(req, map[string]string{"id": stratID})
+	s.UpdateStrategy(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+}

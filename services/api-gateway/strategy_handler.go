@@ -160,8 +160,8 @@ const applyStrategyToBotConfigSQL = `
 			'trailing_stop_enabled', s.trailing_stop_enabled,
 			'trailing_activation_pct', s.trailing_activation_pct,
 			'trailing_callback_pct', s.trailing_callback_pct,
-			'matrix_levels', s.matrix_levels,
-			'matrix_entry_level', s.matrix_entry_level,
+			'matrix_levels', COALESCE(s.matrix_levels, 'null'::jsonb),
+			'matrix_entry_level', COALESCE(s.matrix_entry_level, 'null'::jsonb),
 			'safe_zone_pct', s.safe_zone_pct,
 			'protected_build', s.protected_build,
 			'matrix_rebuild_on_sl', s.matrix_rebuild_on_sl,
@@ -582,6 +582,9 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 	if req.ApplyToBot && curBotID != nil {
 		if _, err := s.pool.Exec(r.Context(), applyStrategyToBotConfigSQL, id, *curBotID); err != nil {
 			log.Printf("strategy: applyToBot merge strategy=%s bot=%s: %v", id, *curBotID, err)
+			s.logBotEvent(r.Context(), *curBotID,
+				fmt.Sprintf("Не удалось синхронизировать настройки из стратегии %s: %v", curSymbol, err),
+				"error", "user")
 		} else {
 			s.logBotEvent(r.Context(), *curBotID,
 				fmt.Sprintf("Настройки синхронизированы из открытой стратегии %s", curSymbol),
