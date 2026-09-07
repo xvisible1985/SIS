@@ -157,6 +157,7 @@ export type CreateBotInput = {
   symbolBlacklist?: string[];
   triggers?: Trigger[];
   strategyConfig?: StrategyConfig;
+  applyToActive?: boolean;
   maxStrategies?: number;
   maxLongStrategies?: number;
   maxShortStrategies?: number;

@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -508,22 +509,27 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Block only strategy_type changes when active strategies exist (different engine, incompatible state).
-	if rawCfg, changingStrategy := body["strategyConfig"]; changingStrategy && !isOfficial {
-		var newCfg botCfgJSON
-		if json.Unmarshal(rawCfg, &newCfg) == nil && newCfg.StrategyType != "" {
+	// oldBotCfg/newBotCfg/haveBotCfgDiff are captured here (before the main UPDATE below
+	// overwrites strategy_config) so both the strategy_type guard AND the later
+	// applyToActive structural-change decision can reuse the same parsed configs instead
+	// of querying twice.
+	var oldBotCfg, newBotCfg botCfgJSON
+	var haveBotCfgDiff bool
+	if rawCfg, changingCfg := body["strategyConfig"]; changingCfg && !isOfficial {
+		if json.Unmarshal(rawCfg, &newBotCfg) == nil {
 			var oldStratCfgBytes []byte
-			var oldCfg botCfgJSON
 			if s.pool.QueryRow(ctx, `SELECT strategy_config FROM bots WHERE id = $1`, botID).Scan(&oldStratCfgBytes) == nil &&
-				json.Unmarshal(oldStratCfgBytes, &oldCfg) == nil &&
-				newCfg.StrategyType != oldCfg.StrategyType {
-				var hotCount int
-				if s.pool.QueryRow(ctx,
-					`SELECT COUNT(*) FROM strategies WHERE bot_id=$1 AND status IN ('active','finishing')`,
-					botID).Scan(&hotCount); hotCount > 0 {
-					writeError(w, http.StatusUnprocessableEntity,
-						"Нельзя менять тип стратегии при наличии активных стратегий. Дождитесь их завершения.")
-					return
+				json.Unmarshal(oldStratCfgBytes, &oldBotCfg) == nil {
+				haveBotCfgDiff = true
+				if newBotCfg.StrategyType != "" && newBotCfg.StrategyType != oldBotCfg.StrategyType {
+					var hotCount int
+					if s.pool.QueryRow(ctx,
+						`SELECT COUNT(*) FROM strategies WHERE bot_id=$1 AND status IN ('active','finishing')`,
+						botID).Scan(&hotCount); hotCount > 0 {
+						writeError(w, http.StatusUnprocessableEntity,
+							"Нельзя менять тип стратегии при наличии активных стратегий. Дождитесь их завершения.")
+						return
+					}
 				}
 			}
 		}
@@ -660,7 +666,8 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// If strategyConfig changed: reset trade stats, update in-memory snapshot, and sync active strategies.
+	// If strategyConfig changed: reset trade stats, update in-memory snapshot, and
+	// (only if the caller explicitly asked) sync active strategies.
 	if changingStrategy {
 		if _, err := s.pool.Exec(ctx,
 			`DELETE FROM trade_history WHERE bot_id = $1 AND owner_id = $2`,
@@ -671,14 +678,21 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 		// Immediately update in-memory bot snapshot so reactive signals use the new config
 		// without waiting up to 30 seconds for the next periodic tick.
 		if rawCfg, ok := body["strategyConfig"]; ok {
-			var newCfg botCfgJSON
-			if json.Unmarshal(rawCfg, &newCfg) == nil {
+			var snapCfg botCfgJSON
+			if json.Unmarshal(rawCfg, &snapCfg) == nil {
 				s.botSnapshotMu.Lock()
-				s.botSnapshotCfgs[botID] = newCfg
+				s.botSnapshotCfgs[botID] = snapCfg
 				s.botSnapshotMu.Unlock()
 			}
 		}
-		go s.syncBotStrategies(context.Background(), botID)
+		applyToActive := false
+		if v, ok := body["applyToActive"]; ok {
+			json.Unmarshal(v, &applyToActive) //nolint:errcheck
+		}
+		if applyToActive {
+			structural := haveBotCfgDiff && botConfigStructuralFieldsChanged(oldBotCfg, newBotCfg)
+			go s.syncBotStrategies(context.Background(), botID, structural)
+		}
 	}
 
 	bot, ok := fetchBot(s, r, botID, callerID)
@@ -745,9 +759,40 @@ func (s *Server) checkWhitelistConflicts(ctx context.Context, botID, ownerID str
 	return warnings
 }
 
+// botConfigStructuralFieldsChanged reports whether the fields that require a full cycle
+// restart (not just a TP/SL reprice) differ between two bot strategy_config snapshots.
+// Mirrors the equivalent gridChanged check in strategy_handler.go's UpdateStrategy, so a
+// bot-level edit and a single-strategy edit restart cycles under the same conditions.
+func botConfigStructuralFieldsChanged(oldCfg, newCfg botCfgJSON) bool {
+	return oldCfg.GridLevels != newCfg.GridLevels ||
+		oldCfg.GridActive != newCfg.GridActive ||
+		diffFloat(oldCfg.GridStepPct, newCfg.GridStepPct) ||
+		diffFloat(oldCfg.GridSizeUSDT, newCfg.GridSizeUSDT) ||
+		oldCfg.Direction != newCfg.Direction ||
+		oldCfg.EntryOrderType != newCfg.EntryOrderType ||
+		oldCfg.Leverage != newCfg.Leverage ||
+		!reflect.DeepEqual(oldCfg.Steps, newCfg.Steps) ||
+		!jsonRawEqual(oldCfg.MatrixLevels, newCfg.MatrixLevels) ||
+		!jsonRawEqual(oldCfg.MatrixEntryLevel, newCfg.MatrixEntryLevel)
+}
+
+// jsonRawEqual compares two json.RawMessage values structurally (ignoring key order and
+// whitespace) rather than byte-for-byte — both sides may have travelled through different
+// marshal paths (raw client bytes vs. a previous DB round-trip) even when semantically equal.
+func jsonRawEqual(a, b json.RawMessage) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	var x, y interface{}
+	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
+		return string(a) == string(b)
+	}
+	return reflect.DeepEqual(x, y)
+}
+
 // syncBotStrategies reads the bot's current strategy_config and applies it to all
 // active/finishing strategies created by this bot, then notifies the engine.
-func (s *Server) syncBotStrategies(ctx context.Context, botID string) {
+func (s *Server) syncBotStrategies(ctx context.Context, botID string, structural bool) {
 	var stratCfgBytes []byte
 	if err := s.pool.QueryRow(ctx,
 		`SELECT strategy_config FROM bots WHERE id = $1`, botID,
@@ -884,6 +929,11 @@ func (s *Server) syncBotStrategies(ctx context.Context, botID string) {
 
 	for _, id := range ids {
 		s.engine.Notify(ctx, id)
+		if structural {
+			s.engine.RestartCycle(ctx, id)
+		} else {
+			s.engine.UpdateTPSL(ctx, id)
+		}
 	}
 }
 
