@@ -805,9 +805,9 @@ type AccountRunner struct {
 	// Binance) — added by Plan #4a. Not yet read anywhere; existing code still calls
 	// Bybit-specific free functions and tradeStream directly. Later plans (#4b, #4c)
 	// migrate those call sites to use this instead.
-	exchange      trader.Exchange
-	cancel        context.CancelFunc
-	reconcileMu   sync.Mutex
+	exchange    trader.Exchange
+	cancel      context.CancelFunc
+	reconcileMu sync.Mutex
 
 	// positions caches the latest position size (in coins) from private WS events.
 	// posAvgEntry caches the exchange avg entry price for the same position.

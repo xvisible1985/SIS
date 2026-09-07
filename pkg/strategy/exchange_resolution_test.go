@@ -11,15 +11,13 @@ func testCreds() trader.Credentials {
 	return trader.Credentials{APIKey: "test-key", SecretKey: "test-secret"}
 }
 
-func TestResolveExchange_Bybit_ReturnsBybitExchangeWrappingTheGivenTradeStream(t *testing.T) {
+func TestResolveExchange_Bybit_ReturnsBybitExchange(t *testing.T) {
 	ts := trader.NewTradeStream(testCreds())
 	ex := resolveExchange("bybit", testCreds(), ts)
 
-	be, ok := ex.(*trader.BybitExchange)
-	if !ok {
+	if _, ok := ex.(*trader.BybitExchange); !ok {
 		t.Fatalf("resolveExchange(bybit, ...) returned %T, want *trader.BybitExchange", ex)
 	}
-	_ = be
 }
 
 func TestResolveExchange_Binance_ReturnsBinanceExchange(t *testing.T) {
