@@ -15,6 +15,7 @@ import (
 	"sis/pkg/crypto"
 	"sis/pkg/signal"
 	"sis/pkg/trader"
+	"sis/pkg/trader/binance"
 )
 
 // orderRef identifies what a placed exchange order belongs to.
@@ -800,6 +801,11 @@ type AccountRunner struct {
 	strategies    map[string]*StrategyRunner
 	orderIndex    map[string]orderRef // exchangeOrderID → ref
 	tradeStream   *trader.TradeStream
+	// exchange is the resolved Exchange implementation for this account (Bybit or
+	// Binance) — added by Plan #4a. Not yet read anywhere; existing code still calls
+	// Bybit-specific free functions and tradeStream directly. Later plans (#4b, #4c)
+	// migrate those call sites to use this instead.
+	exchange      trader.Exchange
 	cancel        context.CancelFunc
 	reconcileMu   sync.Mutex
 
@@ -826,7 +832,23 @@ type AccountRunner struct {
 	risk   accountRiskState
 }
 
-func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trader.Credentials, pool *pgxpool.Pool, signalEngine *signal.Engine, eng *Engine, cancel context.CancelFunc) *AccountRunner {
+// resolveExchange builds the trader.Exchange implementation for one account, based on
+// its exchange_accounts.exchange column value. ws backs Bybit's WS-order-placement path
+// (BybitExchange wraps it directly, zero new behavior vs. today's tradeStream field);
+// Binance has no separate order-placement WS yet (see Plan #2's design — PlaceOrder ==
+// PlaceOrderREST for Binance), so BinanceExchange only needs creds. Unrecognized/empty
+// exchangeName defaults to Bybit — defensive only, exchange_accounts.exchange is
+// NOT NULL with a CHECK constraint limiting it to "bybit"/"binance", so this branch
+// should be unreachable against real data.
+func resolveExchange(exchangeName string, creds trader.Credentials, ws *trader.TradeStream) trader.Exchange {
+	if exchangeName == "binance" {
+		return binance.NewBinanceExchange(creds)
+	}
+	return trader.NewBybitExchange(creds, ws)
+}
+
+func newAccountRunnerWithExchange(accountID, accountLabel, ownerUsername string, creds trader.Credentials, pool *pgxpool.Pool, signalEngine *signal.Engine, eng *Engine, cancel context.CancelFunc, exchangeName string) *AccountRunner {
+	tradeStream := trader.NewTradeStream(creds)
 	return &AccountRunner{
 		accountID:           accountID,
 		accountLabel:        accountLabel,
@@ -837,13 +859,27 @@ func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trade
 		engine:              eng,
 		strategies:          make(map[string]*StrategyRunner),
 		orderIndex:          make(map[string]orderRef),
-		tradeStream:         trader.NewTradeStream(creds),
+		tradeStream:         tradeStream,
+		exchange:            resolveExchange(exchangeName, creds, tradeStream),
 		cancel:              cancel,
 		positions:           make(map[string]float64),
 		posAvgEntry:         make(map[string]float64),
 		posLeverage:         make(map[string]float64),
 		discrepancyLoggedAt: make(map[string]time.Time),
 	}
+}
+
+// newAccountRunner is a thin wrapper defaulting to Bybit — kept only so this task's
+// tests can compare "old call shape" against "new call shape" in one commit. Task 2
+// removes it and switches the one real call site directly to
+// newAccountRunnerWithExchange.
+func newAccountRunner(accountID, accountLabel, ownerUsername string, creds trader.Credentials, pool *pgxpool.Pool, signalEngine *signal.Engine, eng *Engine, cancel context.CancelFunc) *AccountRunner {
+	return newAccountRunnerWithExchange(accountID, accountLabel, ownerUsername, creds, pool, signalEngine, eng, cancel, "bybit")
+}
+
+// Exchange returns the resolved trader.Exchange for this account (Bybit or Binance).
+func (ar *AccountRunner) Exchange() trader.Exchange {
+	return ar.exchange
 }
 
 // GetPositionSizeCoins returns the cached position size (in coins) for a given symbol
