@@ -356,10 +356,23 @@ func (h *TickerHub) handleBybitMessage(data []byte) {
 // binanceMarkPriceMsg is one markPriceUpdate event from Binance's /ws endpoint — the
 // raw event object, not wrapped in {"stream":...,"data":...} (that wrapping only
 // applies to the /stream combined endpoint, which this package does not use).
+//
+// Binance always sends this event with sibling keys "E" (event time) and "P"
+// (estimated settle price) alongside "e" and "p". encoding/json has no case-sensitive-
+// only struct tag mode: when a JSON object key has no exact-tagged field, the decoder
+// falls back to a case-insensitive match against any field whose tag differs only in
+// case — so without EventTime/EstimatedSettlePrice declared here, "E" silently folds
+// onto the "e"-tagged Event field (producing a decode error, since the value is a
+// number) and "P" folds onto the "p"-tagged Price field (silently overwriting the real
+// mark price with the estimated settle price). Declaring these two fields with their
+// exact-case tags gives "E" and "P" their own exact match, so they no longer collide
+// with "e"/"p". Their values are otherwise unused.
 type binanceMarkPriceMsg struct {
-	Event  string `json:"e"`
-	Symbol string `json:"s"`
-	Price  string `json:"p"`
+	Event                string `json:"e"`
+	EventTime            int64  `json:"E"`
+	Symbol               string `json:"s"`
+	Price                string `json:"p"`
+	EstimatedSettlePrice string `json:"P"`
 }
 
 func (h *TickerHub) handleBinanceMessage(data []byte) {

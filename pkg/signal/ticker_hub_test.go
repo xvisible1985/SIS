@@ -129,3 +129,83 @@ func TestTickerHub_ReadDeadline_ReturnsWhenConnectionGoesSilent(t *testing.T) {
 		}
 	}
 }
+
+func TestTickerHub_HandleBinanceMessage_ParsesMarkPriceUpdate(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	h := NewTickerHub(ctx)
+	h.Subscribe("binance", "BTCUSDT", nil)
+
+	data, _ := json.Marshal(map[string]any{
+		"e":  "markPriceUpdate",
+		"E":  1562305380000,
+		"s":  "BTCUSDT",
+		"p":  "63000.25000000",
+		"ap": "63000.10000000",
+		"i":  "62999.00000000",
+		"r":  "0.00038167",
+		"T":  1562306400000,
+	})
+	h.handleMessage("binance", data)
+
+	if got := h.LatestPrice("binance", "BTCUSDT"); got != 63000.25 {
+		t.Errorf("LatestPrice after Binance message = %v, want 63000.25", got)
+	}
+}
+
+func TestTickerHub_HandleBinanceMessage_IgnoresNonMarkPriceEvents(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	h := NewTickerHub(ctx)
+	h.Subscribe("binance", "BTCUSDT", nil)
+
+	// Some other Binance event type must not be misparsed into a price update.
+	data, _ := json.Marshal(map[string]any{"e": "aggTrade", "s": "BTCUSDT", "p": "1.0"})
+	h.handleMessage("binance", data)
+
+	if got := h.LatestPrice("binance", "BTCUSDT"); got != 0 {
+		t.Errorf("LatestPrice after a non-markPriceUpdate event = %v, want 0 (must be ignored)", got)
+	}
+}
+
+func TestTickerHub_HandleBinanceMessage_DoesNotLeakIntoBybitKey(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	h := NewTickerHub(ctx)
+	h.Subscribe("bybit", "BTCUSDT", nil)
+	h.Subscribe("binance", "BTCUSDT", nil)
+
+	data, _ := json.Marshal(map[string]any{"e": "markPriceUpdate", "s": "BTCUSDT", "p": "70000"})
+	h.handleMessage("binance", data)
+
+	if got := h.LatestPrice("bybit", "BTCUSDT"); got != 0 {
+		t.Errorf("LatestPrice(bybit, BTCUSDT) after a Binance message = %v, want 0 (must stay isolated)", got)
+	}
+	if got := h.LatestPrice("binance", "BTCUSDT"); got != 70000 {
+		t.Errorf("LatestPrice(binance, BTCUSDT) = %v, want 70000", got)
+	}
+}
+
+func TestTopicFor_LowercasesSymbolForBinanceOnly(t *testing.T) {
+	if got := topicFor("binance", "BTCUSDT"); got != "btcusdt@markPrice@1s" {
+		t.Errorf("topicFor(binance, BTCUSDT) = %q, want btcusdt@markPrice@1s", got)
+	}
+	if got := topicFor("bybit", "BTCUSDT"); got != "tickers.BTCUSDT" {
+		t.Errorf("topicFor(bybit, BTCUSDT) = %q, want tickers.BTCUSDT (unchanged, uppercase)", got)
+	}
+}
+
+func TestSubscribeMsg_UsesMethodParamsForBinanceOpArgsForBybit(t *testing.T) {
+	bm := subscribeMsg("binance", []string{"btcusdt@markPrice@1s"})
+	if bm["method"] != "SUBSCRIBE" {
+		t.Errorf("binance subscribeMsg method = %v, want SUBSCRIBE", bm["method"])
+	}
+	if _, ok := bm["id"]; !ok {
+		t.Error("binance subscribeMsg missing id field")
+	}
+
+	bb := subscribeMsg("bybit", []string{"tickers.BTCUSDT"})
+	if bb["op"] != "subscribe" {
+		t.Errorf("bybit subscribeMsg op = %v, want subscribe", bb["op"])
+	}
+}
