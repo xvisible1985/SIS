@@ -136,20 +136,20 @@ func TestTickerHub_HandleBinanceMessage_ParsesMarkPriceUpdate(t *testing.T) {
 	h := NewTickerHub(ctx)
 	h.Subscribe("binance", "BTCUSDT", nil)
 
-	data, _ := json.Marshal(map[string]any{
-		"e":  "markPriceUpdate",
-		"E":  1562305380000,
-		"s":  "BTCUSDT",
-		"p":  "63000.25000000",
-		"ap": "63000.10000000",
-		"i":  "62999.00000000",
-		"r":  "0.00038167",
-		"T":  1562306400000,
-	})
+	// A raw string literal, not json.Marshal(map[string]any{...}), is deliberate here:
+	// Go's json.Marshal always alphabetizes map keys, which puts every uppercase key
+	// (ASCII < lowercase) before its lowercase counterpart — "P" would always land
+	// before "p", so the exact-match "p" field would always be decoded last and always
+	// win regardless of whether the P-collision bug is fixed, silently defeating this
+	// test's purpose. Binance's actual wire order sends "p" before "P" (see the field
+	// order in the real payload example in this package's binanceMarkPriceMsg doc
+	// comment), which is the order that actually lets "P" overwrite "p" when the bug is
+	// present — so this test reproduces that exact byte order.
+	data := []byte(`{"e":"markPriceUpdate","E":1562305380000,"s":"BTCUSDT","p":"63000.25000000","P":"61111.11111111","i":"62999.00000000","r":"0.00038167","T":1562306400000}`)
 	h.handleMessage("binance", data)
 
 	if got := h.LatestPrice("binance", "BTCUSDT"); got != 63000.25 {
-		t.Errorf("LatestPrice after Binance message = %v, want 63000.25", got)
+		t.Errorf("LatestPrice after Binance message = %v, want 63000.25 (must read \"p\", not \"P\" the estimated settle price)", got)
 	}
 }
 
