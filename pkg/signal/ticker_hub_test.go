@@ -15,7 +15,9 @@ import (
 var tickerTestUpgrader = websocket.Upgrader{}
 
 func TestTickerHub_SubscribeAndLatestPrice_KeyedByExchangeAndSymbol(t *testing.T) {
-	h := NewTickerHub(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	h := NewTickerHub(ctx)
 
 	// Same symbol, two different exchanges, must not collide.
 	h.SetPrice("bybit", "BTCUSDT", 60000)
@@ -33,7 +35,9 @@ func TestTickerHub_SubscribeAndLatestPrice_KeyedByExchangeAndSymbol(t *testing.T
 }
 
 func TestTickerHub_Subscribe_CallbackFiresOnMatchingExchangeOnly(t *testing.T) {
-	h := NewTickerHub(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	h := NewTickerHub(ctx)
 
 	var bybitCalls, binanceCalls int
 	unsubBybit := h.Subscribe("bybit", "BTCUSDT", func(p float64) { bybitCalls++ })
@@ -52,7 +56,9 @@ func TestTickerHub_Subscribe_CallbackFiresOnMatchingExchangeOnly(t *testing.T) {
 }
 
 func TestTickerHub_Unsubscribe_StopsCallback(t *testing.T) {
-	h := NewTickerHub(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	h := NewTickerHub(ctx)
 	calls := 0
 	unsub := h.Subscribe("bybit", "BTCUSDT", func(p float64) { calls++ })
 	h.setPriceAndDispatch(tickerKey{Exchange: "bybit", Symbol: "BTCUSDT"}, 100)
@@ -64,7 +70,9 @@ func TestTickerHub_Unsubscribe_StopsCallback(t *testing.T) {
 }
 
 func TestTickerHub_HandleBybitMessage_ParsesTickerTopic(t *testing.T) {
-	h := NewTickerHub(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	h := NewTickerHub(ctx)
 	h.Subscribe("bybit", "BTCUSDT", nil)
 
 	data, _ := json.Marshal(map[string]any{
@@ -102,7 +110,9 @@ func TestTickerHub_ReadDeadline_ReturnsWhenConnectionGoesSilent(t *testing.T) {
 	bybitPublicWS = "ws" + strings.TrimPrefix(srv.URL, "http") + "/v5/public/linear"
 	defer func() { bybitPublicWS = origWS }()
 
-	h := NewTickerHub(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	h := NewTickerHub(ctx)
 	h.Subscribe("bybit", "BTCUSDT", nil)
 
 	deadline := time.After(3 * time.Second)
