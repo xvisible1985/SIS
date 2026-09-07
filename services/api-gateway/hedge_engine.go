@@ -598,7 +598,9 @@ func (s *Server) recomputeAndPushPairedClose(entry pairedCloseWatchEntry) {
 	// feature's established "renders nothing until the first message arrives" precedent
 	// (docs/superpowers/specs/2026-07-23-paired-close-realtime-design.md, component 7)
 	// rather than inventing a new "no data" signal.
-	mp := s.signalEngine.PriceHub().LatestPrice(entry.symbol)
+	// TODO(plan #4): "bybit" is hardcoded until this reads the account's real
+	// exchange — see the identical note in pkg/strategy/cycle.go.
+	mp := s.signalEngine.PriceHub().LatestPrice("bybit", entry.symbol)
 	current := pairedCloseCurrentValue(
 		entry.mainDir, entry.hedgeDir,
 		entry.mainEntry, entry.hedgeEntry,
@@ -710,7 +712,9 @@ func (s *Server) applyPairedCloseWatches(newWatches map[string]pairedCloseWatchE
 	hub := s.signalEngine.PriceHub()
 	for sym := range newWatches {
 		sym := sym
-		u := hub.Subscribe(sym, func(mp float64) {
+		// TODO(plan #4): "bybit" is hardcoded until this reads the account's real
+		// exchange — see the identical note in pkg/strategy/cycle.go.
+		u := hub.Subscribe("bybit", sym, func(mp float64) {
 			s.pairedClosePriceCallback(sym)
 		})
 		s.pairedCloseWatchMu.Lock()
@@ -2160,7 +2164,9 @@ func (s *Server) applyHedgeWatches(newWatches map[string]hedgeWatchEntry) {
 	hub := s.signalEngine.PriceHub()
 	for sym := range newWatches {
 		sym := sym
-		u := hub.Subscribe(sym, func(mp float64) {
+		// TODO(plan #4): "bybit" is hardcoded until this reads the account's real
+		// exchange — see the identical note in pkg/strategy/cycle.go.
+		u := hub.Subscribe("bybit", sym, func(mp float64) {
 			s.hedgePriceCallback(sym, mp)
 		})
 		s.hedgeWatchMu.Lock()

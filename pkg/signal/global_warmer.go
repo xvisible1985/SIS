@@ -26,10 +26,10 @@ const (
 type GlobalWarmerMetrics struct {
 	Symbols    int      `json:"symbols"`
 	Intervals  []string `json:"intervals"`
-	WarmCount  int      `json:"warm_count"`   // buffers with ≥2 candles
-	TotalSlots int      `json:"total_slots"`  // symbols × intervals
-	WarmPct    float64  `json:"warm_pct"`     // warm_count / total_slots * 100
-	PrefetchMs int64    `json:"prefetch_ms"`  // ms taken for initial prefetch
+	WarmCount  int      `json:"warm_count"`  // buffers with ≥2 candles
+	TotalSlots int      `json:"total_slots"` // symbols × intervals
+	WarmPct    float64  `json:"warm_pct"`    // warm_count / total_slots * 100
+	PrefetchMs int64    `json:"prefetch_ms"` // ms taken for initial prefetch
 }
 
 // GlobalWarmer subscribes to all active linear USDT symbols for all
@@ -170,8 +170,11 @@ func (w *GlobalWarmer) loadAndSubscribeAll(ctx context.Context) error {
 	w.mu.Unlock()
 
 	// Warm TickerHub for all symbols regardless of whether kline intervals exist.
+	// TODO(plan #4): "bybit" is hardcoded until AccountRunner threads the account's
+	// real exchange through — GlobalWarmer only ever fetches Bybit's linear USDT
+	// symbol list today (fetchLinearUSDTSymbols), so this is behavior-preserving.
 	for _, sym := range syms {
-		w.tickerHub.Subscribe(sym, nil)
+		w.tickerHub.Subscribe("bybit", sym, nil)
 	}
 
 	if len(ivs) == 0 {

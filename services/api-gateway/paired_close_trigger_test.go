@@ -74,7 +74,7 @@ func TestRecomputeAndPushPairedClose_UsesLivePriceForCurrentAndPct(t *testing.T)
 	closeValue := 5.0
 	livePrice := 110.0 // combined = (110-100)*2 + (100-110)*1 = 20-10 = 10
 
-	s.signalEngine.PriceHub().SetPrice("RECOMPUTEUSDT", livePrice)
+	s.signalEngine.PriceHub().SetPrice("bybit", "RECOMPUTEUSDT", livePrice)
 
 	entry := pairedCloseWatchEntry{
 		accountID:     "acc-recompute-bogus",

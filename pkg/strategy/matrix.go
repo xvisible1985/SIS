@@ -789,7 +789,9 @@ func (sr *StrategyRunner) launchMatrixPriceMonitor() {
 	priceCh := make(chan float64, 1)
 
 	go func() {
-		unsub := se.PriceHub().Subscribe(symbol, func(markPrice float64) {
+		// TODO(plan #4): "bybit" is hardcoded until AccountRunner threads the
+		// account's real exchange through — see the identical note in cycle.go.
+		unsub := se.PriceHub().Subscribe("bybit", symbol, func(markPrice float64) {
 			// Non-blocking: drain stale price, insert latest.
 			select {
 			case <-priceCh:

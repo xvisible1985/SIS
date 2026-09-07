@@ -5607,7 +5607,11 @@ func (sr *StrategyRunner) launchGridVirtualMonitor() {
 
 	priceCh := make(chan float64, 1)
 	go func() {
-		unsub := se.PriceHub().Subscribe(symbol, func(markPrice float64) {
+		// TODO(plan #4): "bybit" is hardcoded until AccountRunner threads the
+		// account's real exchange through to StrategyRunner — every account is a
+		// Bybit account today, so this is behavior-preserving, not a shortcut that
+		// silently breaks anything yet.
+		unsub := se.PriceHub().Subscribe("bybit", symbol, func(markPrice float64) {
 			select {
 			case <-priceCh:
 			default:
