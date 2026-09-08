@@ -1,12 +1,15 @@
 import { useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { X, Bot as BotIcon, Camera, Trash2, Smile, ToggleLeft, ToggleRight } from 'lucide-react';
 import { BotForm, type BotFormHandle } from './BotForm';
 import { HedgeBotForm, type HedgeBotFormHandle } from './HedgeBotForm';
 import { BotIconPicker } from './BotIconPicker';
+import { SettingsSyncConfirmModal } from './SettingsSyncConfirmModal';
+import { hasSyncableDiff } from '../syncableSettingsFields';
 import { apiClient } from '../../../api/client';
 import { useSelectedAccount } from '../../../contexts/AccountContext';
-import type { Bot as BotType } from '../types';
+import type { Bot as BotType, CreateBotInput } from '../types';
 
 type Props = {
   // Editing an existing Мультибот passes both legs (see migration 092's paired_bot_id).
@@ -79,6 +82,12 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  const [showApplyActiveConfirm, setShowApplyActiveConfirm] = useState(false);
+  const applyActiveDecisionRef = useRef<boolean | null>(null);
+  const [pendingSavePayloads, setPendingSavePayloads] = useState<{
+    signalPayload: CreateBotInput; hedgePayload: CreateBotInput; identity: Record<string, unknown>;
+  } | null>(null);
+
   const signalRef = useRef<BotFormHandle>(null);
   const hedgeRef = useRef<HedgeBotFormHandle>(null);
 
@@ -123,13 +132,24 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
       };
 
       if (isEdit && signalBot && hedgeBot) {
+        const hasActive = (signalBot.activeStrategiesCount ?? 0) > 0 || (hedgeBot.activeStrategiesCount ?? 0) > 0;
+        const settingsChanged =
+          hasSyncableDiff(signalPayload.strategyConfig ?? {}, signalBot.strategyConfig ?? {}) ||
+          hasSyncableDiff(hedgePayload.strategyConfig ?? {}, hedgeBot.strategyConfig ?? {});
+        if (applyActiveDecisionRef.current === null && hasActive && settingsChanged) {
+          setPendingSavePayloads({ signalPayload, hedgePayload, identity });
+          setShowApplyActiveConfirm(true);
+          setSubmitting(false);
+          return;
+        }
+        const applyToActive = applyActiveDecisionRef.current ?? false;
         await Promise.all([
           apiClient.patch(`/bots/${signalBot.id}`, {
-            ...signalPayload, ...identity,
+            ...signalPayload, ...identity, applyToActive,
             autoMode, maxStrategies, maxLongStrategies, maxShortStrategies, maxMarginUsdt, maxSymConsecutiveRuns,
           }),
           apiClient.patch(`/bots/${hedgeBot.id}`, {
-            ...hedgePayload, ...identity,
+            ...hedgePayload, ...identity, applyToActive,
           }),
         ]);
       } else {
@@ -147,11 +167,20 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
       onSaved();
       onClose();
     } catch (e) {
+      // Submit failed — don't silently reuse this decision on retry; re-ask (if still
+      // relevant) since the user may have changed strategy fields in the meantime.
+      applyActiveDecisionRef.current = null;
       setSubmitError(e instanceof Error ? e.message : 'Неизвестная ошибка');
     } finally {
       setSubmitting(false);
     }
   }
+
+  const handleApplyActiveConfirm = (apply: boolean) => {
+    applyActiveDecisionRef.current = apply;
+    setShowApplyActiveConfirm(false);
+    void handleSave();
+  };
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'basic',  label: 'Основное' },
@@ -380,6 +409,18 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
           </div>
         </div>
       </div>
+
+      {showApplyActiveConfirm && pendingSavePayloads && signalBot && hedgeBot && createPortal(
+        <SettingsSyncConfirmModal
+          title="Применить к активным стратегиям?"
+          description={`У этого МультиБота сейчас есть открытые стратегии на обеих ногах (${(signalBot.activeStrategiesCount ?? 0) + (hedgeBot.activeStrategiesCount ?? 0)}). Применить новые настройки к ним прямо сейчас (TP/SL и ордера на бирже будут пересчитаны немедленно), или сохранить только для новых стратегий, не трогая уже открытые?`}
+          cancelLabel="Нет, только новые стратегии"
+          confirmLabel="Да, применить сейчас"
+          onCancel={() => handleApplyActiveConfirm(false)}
+          onConfirm={() => handleApplyActiveConfirm(true)}
+        />,
+        document.body
+      )}
     </div>
   );
 }
