@@ -191,6 +191,9 @@ func (e *Engine) reconcileStoppedCycles(ctx context.Context) {
 			TPOrderID: c.tpOrderID,
 			SLOrderID: c.slOrderID,
 		}
+		// credCache is populated in lock-step with exCache above (RecordStrategyTrade still
+		// takes raw Credentials — migrating it is deferred to Plan #4c since it's also called
+		// from services/api-gateway).
 		go RecordStrategyTrade(e.pool, credCache[c.accountID], in)
 	}
 }
