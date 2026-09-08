@@ -326,7 +326,7 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 	}
 
 	// Fetch mark price before taking lock.
-	price, err := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	price, err := sr.runner.Exchange().GetMarkPrice(ctx, sr.strategy.Category, sr.strategy.Symbol)
 	if err != nil {
 		return fmt.Errorf("fetch price: %w", err)
 	}
@@ -651,7 +651,7 @@ func (sr *StrategyRunner) placeMatrixLevel(ctx context.Context, l *GridLevel, cu
 			// Try bumping qty by one step and retrying once; if still too small, go virtual.
 			priceForBump := l.TargetPrice
 			if priceForBump <= 0 {
-				priceForBump, _ = trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+				priceForBump, _ = sr.runner.Exchange().GetMarkPrice(ctx, sr.strategy.Category, sr.strategy.Symbol)
 			}
 			qtyF, _ := strconv.ParseFloat(l.Qty, 64)
 			bumped := trader.EnsureMinNotional(qtyF, sr.instr.QtyStep, priceForBump, sr.instr.MinNotionalValue)
@@ -719,7 +719,7 @@ func (sr *StrategyRunner) loadMatrixCycle(ctx context.Context) error {
 		return err
 	}
 	// Fetch mark price before taking lock — used for retroactive stop-cond check below.
-	price, err := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	price, err := sr.runner.Exchange().GetMarkPrice(ctx, sr.strategy.Category, sr.strategy.Symbol)
 	if err != nil {
 		log.Printf("strategy %s: loadMatrixCycle: fetch price for stop-cond check: %v", sr.strategy.ID, err)
 	}
@@ -829,7 +829,7 @@ func (sr *StrategyRunner) launchMatrixPriceMonitor() {
 func (sr *StrategyRunner) runMatrixPriceMonitorPolling(ctx context.Context, cancel context.CancelFunc, stratID, symbol string) {
 	defer cancel()
 	sr.mu.Lock()
-	creds := sr.runner.creds
+	ex := sr.runner.Exchange()
 	category := sr.strategy.Category
 	sr.mu.Unlock()
 
@@ -846,7 +846,7 @@ func (sr *StrategyRunner) runMatrixPriceMonitorPolling(ctx context.Context, canc
 			if !hasCycle {
 				return
 			}
-			price, err := trader.FetchMarkPrice(ctx, creds, category, symbol)
+			price, err := ex.GetMarkPrice(ctx, category, symbol)
 			if err != nil {
 				log.Printf("strategy %s: matrix price monitor: %v", stratID, err)
 				continue
@@ -1260,7 +1260,7 @@ func (sr *StrategyRunner) matrixReplaceSlots(ctx context.Context, currentPrice f
 func (sr *StrategyRunner) resumeMatrixAfterSignal(ctx context.Context) {
 	sr.resetCancelledLevels(ctx)
 
-	price, err := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	price, err := sr.runner.Exchange().GetMarkPrice(ctx, sr.strategy.Category, sr.strategy.Symbol)
 	if err != nil {
 		log.Printf("strategy %s: resumeMatrixAfterSignal: fetch price: %v", sr.strategy.ID, err)
 		return
