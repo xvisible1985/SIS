@@ -789,7 +789,7 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 				return
 			}
 			levStr := strconv.Itoa(exp)
-			if err := trader.SetLeverage(ctx, sr.runner.creds, trader.LeverageRequest{
+			if err := sr.runner.Exchange().SetLeverage(ctx, trader.LeverageRequest{
 				Symbol:       symbol,
 				Category:     category,
 				BuyLeverage:  levStr,

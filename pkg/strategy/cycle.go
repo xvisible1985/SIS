@@ -1563,7 +1563,7 @@ func (sr *StrategyRunner) ensurePositionMode(ctx context.Context) bool {
 	if hedgeMode {
 		mode = 3 // both-side / hedge
 	}
-	if err := trader.SwitchPositionMode(ctx, sr.runner.creds, category, symbol, mode); err != nil {
+	if err := sr.runner.Exchange().SwitchPositionMode(ctx, category, symbol, mode); err != nil {
 		if errors.Is(err, trader.ErrPositionModeUnsupported) {
 			// Dated futures / some symbols don't support mode switching — proceed in
 			// the exchange default mode and cache so we never retry.
@@ -1609,7 +1609,7 @@ func (sr *StrategyRunner) applyConfiguredLeverage(ctx context.Context) (lev, cap
 		lev = 1
 	}
 	levStr := strconv.Itoa(lev)
-	if lerr := trader.SetLeverage(ctx, sr.runner.creds, trader.LeverageRequest{
+	if lerr := sr.runner.Exchange().SetLeverage(ctx, trader.LeverageRequest{
 		Symbol:       sr.strategy.Symbol,
 		Category:     sr.strategy.Category,
 		BuyLeverage:  levStr,
@@ -1620,7 +1620,7 @@ func (sr *StrategyRunner) applyConfiguredLeverage(ctx context.Context) (lev, cap
 			capped := int(info.MaxLeverage)
 			if capped < lev {
 				cappedStr := strconv.Itoa(capped)
-				if lerr2 := trader.SetLeverage(ctx, sr.runner.creds, trader.LeverageRequest{
+				if lerr2 := sr.runner.Exchange().SetLeverage(ctx, trader.LeverageRequest{
 					Symbol:       sr.strategy.Symbol,
 					Category:     sr.strategy.Category,
 					BuyLeverage:  cappedStr,
