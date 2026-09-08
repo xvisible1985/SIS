@@ -1133,6 +1133,7 @@ func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
 	// so we need to re-place TP with the correct exchange entry price.
 	key := ev.Symbol + ":" + strconv.Itoa(ev.PositionIdx)
 	ar.posMu.Lock()
+	prevSize := ar.positions[key]
 	ar.positions[key] = size
 	prevAvg := ar.posAvgEntry[key]
 	if avgPrice > 0 {
@@ -1150,6 +1151,11 @@ func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
 	// Bybit sends position snapshots on every order event (place/cancel) — the avgPrice
 	// guard ensures we only act on real position changes, not noise.
 	avgChanged := size > 0 && avgPrice > 0 && avgPrice != prevAvg
+	// posChanged (size and/or avgPrice actually moved) is logged below so a stale-ТВХ
+	// race (TP computed from a WS avg entry that hasn't yet absorbed the latest fill) is
+	// diagnosable from strategy_events afterwards, without needing the live process console.
+	// Deliberately excludes pure order place/cancel snapshots (same size, same avgPrice).
+	posChanged := size != prevSize || avgChanged || (size == 0 && prevSize != 0)
 
 	ar.mu.RLock()
 	var matched []*StrategyRunner
@@ -1168,6 +1174,14 @@ func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
 	}
 	ar.mu.RUnlock()
 	for _, sr := range matched {
+		if posChanged {
+			sr.submit(func(ctx context.Context) {
+				sr.info(ctx, fmt.Sprintf(
+					"WS позиция %s idx=%d: size=%.6f (было %.6f) avgPrice=%.8f (было %.8f) avgChanged=%v",
+					ev.Symbol, ev.PositionIdx, size, prevSize, avgPrice, prevAvg, avgChanged,
+				))
+			})
+		}
 		if size == 0 {
 			sr.submit(func(ctx context.Context) { sr.handlePositionClose(ctx) })
 		} else {
