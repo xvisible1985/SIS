@@ -59,6 +59,35 @@ describe('StrategyModal — apply to bot confirm', () => {
     })
   })
 
+  it('does not show the confirm dialog for a grid strategy saved with no real edits', async () => {
+    // Regression test: StrategyModal's toForm always fills matrix_levels/matrix_entry_level
+    // with a non-null default literal even for a grid strategy, where they're genuinely
+    // null/absent in storage. Saving without touching anything must not spuriously look
+    // like a syncable diff and pop the confirm dialog. Every other field below is set to
+    // exactly what strategyToForm/handleSubmit's payload building would reproduce
+    // unedited, so the only intentionally-unrealistic mismatch is matrix_levels/
+    // matrix_entry_level being absent — isolating the bug this test targets.
+    const noEditGridStrategy: Strategy = {
+      ...baseStrategy,
+      steps: [{ price_move_pct: 1, size_pct: 50 }],
+      grid_levels: 1, grid_active: 1,
+      trailing_activation_pct: 1.5, trailing_callback_pct: 0.5,
+    }
+    render(<StrategyModal strategy={noEditGridStrategy} onClose={() => {}} onSaved={() => {}} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '3. Завершение' }))
+    await screen.findByTestId('strategy-tp-pct-input')
+    fireEvent.click(screen.getByTestId('strategy-save-button'))
+
+    await waitFor(() => expect(strategiesApi.updateStrategy).toHaveBeenCalled())
+    expect(strategiesApi.updateStrategy).toHaveBeenCalledWith(
+      'strat-1',
+      expect.anything(),
+      undefined,
+    )
+    expect(screen.queryByRole('button', { name: /да, применить к боту/i })).not.toBeInTheDocument()
+  })
+
   it('does not show the confirm dialog for a manual (non-bot) strategy', async () => {
     render(<StrategyModal strategy={{ ...baseStrategy, bot_id: null, bot_name: null }} onClose={() => {}} onSaved={() => {}} />)
 
