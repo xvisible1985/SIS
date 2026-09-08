@@ -468,6 +468,9 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
         onClose();
       }
     } catch (e) {
+      // Submit failed — don't silently reuse this decision on retry; re-ask (if still
+      // relevant) since the user may have changed strategy fields in the meantime.
+      applyActiveDecisionRef.current = null;
       setSubmitError(e instanceof Error ? e.message : 'Неизвестная ошибка');
     } finally {
       setSubmitting(false);
@@ -2010,7 +2013,7 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
       {showApplyActiveConfirm && bot && createPortal(
         <SettingsSyncConfirmModal
           title="Применить к активным стратегиям?"
-          description={`У бота «${bot.name}» сейчас ${bot.activeStrategiesCount} открытые стратегии. Применить новые настройки к ним прямо сейчас (TP/SL и ордера на бирже будут пересчитаны немедленно), или сохранить только для новых стратегий, не трогая уже открытые?`}
+          description={`У бота «${bot.name}» сейчас есть открытые стратегии (${bot.activeStrategiesCount}). Применить новые настройки к ним прямо сейчас (TP/SL и ордера на бирже будут пересчитаны немедленно), или сохранить только для новых стратегий, не трогая уже открытые?`}
           cancelLabel="Нет, только новые стратегии"
           confirmLabel="Да, применить сейчас"
           onCancel={() => handleApplyActiveConfirm(false)}
