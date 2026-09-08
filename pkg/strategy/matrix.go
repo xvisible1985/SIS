@@ -623,7 +623,7 @@ func (sr *StrategyRunner) placeMatrixLevel(ctx context.Context, l *GridLevel, cu
 	// before RegisterOrder(orderId) is called are not dropped.
 	sr.runner.RegisterOrder(linkID, ref)
 
-	result, err := sr.runner.tradeStream.PlaceOrder(ctx, req)
+	result, err := sr.runner.Exchange().PlaceOrder(ctx, req)
 	if err != nil {
 		sr.runner.UnregisterOrder(linkID)
 		if isDuplicateLinkId(err) {
@@ -663,7 +663,7 @@ func (sr *StrategyRunner) placeMatrixLevel(ctx context.Context, l *GridLevel, cu
 				sr.runner.pool.Exec(ctx, //nolint:errcheck
 					`UPDATE strategy_levels SET qty=$1 WHERE id=$2`, newQtyStr, l.ID)
 				sr.runner.RegisterOrder(linkID, ref)
-				result, err = sr.runner.tradeStream.PlaceOrder(ctx, req)
+				result, err = sr.runner.Exchange().PlaceOrder(ctx, req)
 				if err == nil {
 					// Retry succeeded — fall through to the success path below.
 					goto placed
@@ -892,7 +892,7 @@ func (sr *StrategyRunner) matrixApplyStopCondSLs(ctx context.Context, currentPri
 			old := l.SLOrderID
 			sr.runner.UnregisterOrder(old)
 			l.SLOrderID = ""
-			sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{ //nolint:errcheck
+			sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{ //nolint:errcheck
 				Symbol:      sr.strategy.Symbol,
 				Category:    sr.strategy.Category,
 				OrderId:     old,
@@ -919,7 +919,7 @@ func (sr *StrategyRunner) matrixApplyStopCondSLs(ctx context.Context, currentPri
 		ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "matrix_sl"}
 		sr.runner.RegisterOrder(linkID, ref)
 
-		result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+		result, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 			Symbol:           sr.strategy.Symbol,
 			Category:         sr.strategy.Category,
 			Side:             slSide,
@@ -1082,7 +1082,7 @@ func (sr *StrategyRunner) matrixTriggerVirtualLevel(ctx context.Context, l *Grid
 	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
 	sr.runner.RegisterOrder(linkID, ref)
 
-	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+	result, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:      sr.strategy.Symbol,
 		Category:    sr.strategy.Category,
 		Side:        l.Side,
@@ -1440,7 +1440,7 @@ func (sr *StrategyRunner) matrixPlacePerLevelSL(ctx context.Context, l *GridLeve
 	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "matrix_sl"}
 	sr.runner.RegisterOrder(linkID, ref)
 
-	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+	result, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:           sr.strategy.Symbol,
 		Category:         sr.strategy.Category,
 		Side:             slSide,
@@ -1550,7 +1550,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 			old := sr.tpOrderID
 			sr.runner.UnregisterOrder(old)
 			sr.tpOrderID = ""
-			sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{ //nolint:errcheck
+			sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{ //nolint:errcheck
 				Symbol:   sr.strategy.Symbol,
 				Category: sr.strategy.Category,
 				OrderId:  old,
@@ -1573,7 +1573,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 			old := sr.tpOrderID
 			sr.runner.UnregisterOrder(old)
 			sr.tpOrderID = ""
-			if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+			if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 				Symbol:   sr.strategy.Symbol,
 				Category: sr.strategy.Category,
 				OrderId:  old,
@@ -1626,7 +1626,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 		old := sr.tpOrderID
 		sr.runner.UnregisterOrder(old)
 		sr.tpOrderID = ""
-		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+		if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 			Symbol:   sr.strategy.Symbol,
 			Category: sr.strategy.Category,
 			OrderId:  old,
@@ -1651,7 +1651,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	var err error
 	kindLabel := "TP"
 	if !tpAlreadyCrossed {
-		result, err = sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+		result, err = sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 			Symbol:      sr.strategy.Symbol,
 			Category:    sr.strategy.Category,
 			Side:        tpSide,
@@ -1671,7 +1671,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 		if sr.strategy.Direction == DirectionShort {
 			trigDir = 1
 		}
-		result, err = sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+		result, err = sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 			Symbol:           sr.strategy.Symbol,
 			Category:         sr.strategy.Category,
 			Side:             tpSide,
@@ -1749,7 +1749,7 @@ func (sr *StrategyRunner) applyNewMatrixPrices(ctx context.Context, basePrice, c
 			// and mark the level cancelled so it won't be re-placed.
 			if l.ExchangeOrderID != "" {
 				sr.runner.UnregisterOrder(l.ExchangeOrderID)
-				sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{ //nolint:errcheck
+				sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{ //nolint:errcheck
 					Symbol:   sr.strategy.Symbol,
 					Category: sr.strategy.Category,
 					OrderId:  l.ExchangeOrderID,
@@ -1855,14 +1855,14 @@ func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string
 					continue
 				}
 				if l.ExchangeOrderID != "" {
-					cancelErr := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+					cancelErr := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 						Symbol:   sr.strategy.Symbol,
 						Category: sr.strategy.Category,
 						OrderId:  l.ExchangeOrderID,
 					})
 					if cancelErr != nil && isOrderGone(cancelErr) {
 						// Regular cancel found nothing — retry as conditional (StopMarket) order.
-						sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{ //nolint:errcheck
+						sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{ //nolint:errcheck
 							Symbol:      sr.strategy.Symbol,
 							Category:    sr.strategy.Category,
 							OrderId:     l.ExchangeOrderID,
@@ -1970,7 +1970,7 @@ func (sr *StrategyRunner) matrixCancelPerLevelSLs(ctx context.Context) {
 		l.SLPrice = 0
 		sr.runner.pool.Exec(ctx, //nolint:errcheck
 			`UPDATE strategy_levels SET sl_order_id=NULL, sl_price=NULL WHERE id=$1`, l.ID)
-		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+		if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 			Symbol:      sr.strategy.Symbol,
 			Category:    sr.strategy.Category,
 			OrderId:     orderID,
@@ -2513,14 +2513,14 @@ func (sr *StrategyRunner) matrixRebuildFromSZLow(ctx context.Context, stoppedSlo
 		// require OrderFilter="StopOrder" to cancel. Try the plain cancel first; on
 		// "order not found" retry as a conditional order so neither type is silently skipped.
 		if l.ExchangeOrderID != "" {
-			cancelErr := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+			cancelErr := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 				Symbol:   sr.strategy.Symbol,
 				Category: sr.strategy.Category,
 				OrderId:  l.ExchangeOrderID,
 			})
 			if cancelErr != nil && isOrderGone(cancelErr) {
 				// Regular cancel found nothing — retry as a conditional (StopMarket) order.
-				if err2 := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+				if err2 := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 					Symbol:      sr.strategy.Symbol,
 					Category:    sr.strategy.Category,
 					OrderId:     l.ExchangeOrderID,
