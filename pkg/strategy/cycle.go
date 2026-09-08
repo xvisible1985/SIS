@@ -718,7 +718,7 @@ func (sr *StrategyRunner) checkPositionGone(ctx context.Context) bool {
 		sr.tpPlaceSeq++
 		dustLinkID := fmt.Sprintf("SIS_STR-%s-scl-%d-%d", sr.strategy.ID[:8], sr.selfCloseCycleNum(), sr.tpPlaceSeq)
 		sr.mu.Unlock()
-		_, closeErr := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+		_, closeErr := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 			Symbol:      sr.strategy.Symbol,
 			Category:    sr.strategy.Category,
 			Side:        closeSide,
@@ -849,7 +849,7 @@ func (sr *StrategyRunner) closeDustPosition(ctx context.Context) {
 		sr.tpPlaceSeq++
 		dustLinkID := fmt.Sprintf("SIS_STR-%s-scl-%d-%d", sr.strategy.ID[:8], sr.selfCloseCycleNum(), sr.tpPlaceSeq)
 		sr.mu.Unlock()
-		_, closeErr := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+		_, closeErr := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 			Symbol:      symbol,
 			Category:    category,
 			Side:        closeSide,
@@ -1127,7 +1127,7 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 
 	// Place market order — no lock held.
 	sr.info(ctx, fmt.Sprintf("reconcile: L%d цена прошла уровень, исполняю маркетом", nearestLevelIdx))
-	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+	result, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:      symbol,
 		Category:    category,
 		Side:        nearestSide,
@@ -1209,7 +1209,7 @@ func (sr *StrategyRunner) sweepOrphanOrders(ctx context.Context) {
 		if o.OrderFilter == "StopOrder" {
 			orderFilter = "StopOrder"
 		}
-		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+		if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 			Symbol:      symbol,
 			Category:    category,
 			OrderId:     o.OrderId,
@@ -1241,7 +1241,7 @@ func (sr *StrategyRunner) sweepOrphanOrders(ctx context.Context) {
 		if o.OrderFilter == "StopOrder" {
 			orderFilter = "StopOrder"
 		}
-		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+		if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 			Symbol:      symbol,
 			Category:    category,
 			OrderId:     o.OrderId,
@@ -1314,7 +1314,7 @@ func (sr *StrategyRunner) cancelAllStrategyOrders(ctx context.Context) {
 		if o.OrderFilter == "StopOrder" {
 			orderFilter = "StopOrder"
 		}
-		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+		if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 			Symbol:      symbol,
 			Category:    category,
 			OrderId:     o.OrderId,
@@ -1344,7 +1344,7 @@ func (sr *StrategyRunner) closePositionAtMarket(ctx context.Context, reason stri
 	qty := trader.FormatQty(totalQty, sr.instr.QtyStep, sr.instr.MinQty)
 	sr.tpPlaceSeq++
 	linkID := fmt.Sprintf("SIS_STR-%s-scl-%d-%d", sr.strategy.ID[:8], sr.selfCloseCycleNum(), sr.tpPlaceSeq)
-	_, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+	_, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:      sr.strategy.Symbol,
 		Category:    sr.strategy.Category,
 		Side:        closeSide,
@@ -1389,7 +1389,7 @@ func (sr *StrategyRunner) closeGhostPosition(ctx context.Context, exchangeSize f
 	}
 	sr.tpPlaceSeq++
 	linkID := fmt.Sprintf("SIS_STR-%s-scl-%d-%d", sr.strategy.ID[:8], sr.selfCloseCycleNum(), sr.tpPlaceSeq)
-	_, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+	_, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:      sr.strategy.Symbol,
 		Category:    sr.strategy.Category,
 		Side:        closeSide,
@@ -2001,7 +2001,7 @@ func (sr *StrategyRunner) placeLevelsBatch(ctx context.Context, indices []int) {
 		items[j] = item
 	}
 
-	results, err := sr.runner.tradeStream.PlaceOrderBatch(ctx, trader.BatchPlaceRequest{
+	results, err := sr.runner.Exchange().PlaceOrderBatch(ctx, trader.BatchPlaceRequest{
 		Category: sr.strategy.Category,
 		Request:  items,
 	})
@@ -2125,7 +2125,7 @@ func (sr *StrategyRunner) placeLevel(ctx context.Context, idx int) error {
 	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
 	sr.runner.RegisterOrder(linkID, ref)
 
-	result, err := sr.runner.tradeStream.PlaceOrder(ctx, req)
+	result, err := sr.runner.Exchange().PlaceOrder(ctx, req)
 	if err != nil {
 		sr.runner.UnregisterOrder(linkID)
 		if isDuplicateLinkId(err) {
@@ -2511,7 +2511,7 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 		oldTPID := sr.tpOrderID
 		sr.runner.UnregisterOrder(oldTPID)
 		sr.tpOrderID = ""
-		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+		if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category, OrderId: oldTPID,
 		}); err != nil && !isOrderGone(err) {
 			// Cancel failed — restore old TP state so we don't place a duplicate.
@@ -2533,7 +2533,7 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 	// (which checks the live orderIndex) never cancels a freshly-placed TP.
 	tpRef := orderRef{strategyID: sr.strategy.ID, refType: "tp"}
 	sr.runner.RegisterOrder(linkID, tpRef)
-	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+	result, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:      sr.strategy.Symbol,
 		Category:    sr.strategy.Category,
 		Side:        tpSide,
@@ -2708,7 +2708,7 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 		oldSLID := sr.slOrderID
 		sr.runner.UnregisterOrder(oldSLID)
 		sr.slOrderID = ""
-		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+		if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category,
 			OrderId: oldSLID, OrderFilter: "StopOrder",
 		}); err != nil && !isOrderGone(err) {
@@ -2727,7 +2727,7 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 	// cancels a freshly-placed SL.
 	slRef := orderRef{strategyID: sr.strategy.ID, refType: "sl"}
 	sr.runner.RegisterOrder(linkID, slRef)
-	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+	result, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:           sr.strategy.Symbol,
 		Category:         sr.strategy.Category,
 		Side:             slSide,
@@ -2774,7 +2774,7 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 func (sr *StrategyRunner) cancelOrphanedSLs(ctx context.Context, orders []trader.Order) {
 	for _, o := range orders {
 		sr.warn(ctx, fmt.Sprintf("reconcile: осиротевший SL %s (linkId=%s) — отменяю", o.OrderId, o.OrderLinkId))
-		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+		if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 			Symbol:      sr.strategy.Symbol,
 			Category:    sr.strategy.Category,
 			OrderId:     o.OrderId,
@@ -2961,7 +2961,7 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 		log.Printf("strategy %s: closeCycle: failed to end cycle %s: %v", sr.strategy.ID, sr.cycle.ID, err)
 	}
 	if sr.tpOrderID != "" {
-		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+		if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category, OrderId: sr.tpOrderID,
 		}); err != nil && !isOrderGone(err) {
 			sr.warn(ctx, fmt.Sprintf("closeCycle: отмена TP %s: %v", sr.tpOrderID, err))
@@ -2970,7 +2970,7 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 		sr.tpOrderID = ""
 	}
 	if sr.slOrderID != "" {
-		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+		if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category,
 			OrderId: sr.slOrderID, OrderFilter: "StopOrder",
 		}); err != nil && !isOrderGone(err) {
@@ -2990,7 +2990,6 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 		symbol := sr.strategy.Symbol
 		category := sr.strategy.Category
 		ex := sr.runner.Exchange()
-		ts := sr.runner.tradeStream
 		go func() {
 			sweepCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -3007,7 +3006,7 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 				if o.OrderFilter == "StopOrder" {
 					orderFilter = "StopOrder"
 				}
-				if err := ts.CancelOrder(sweepCtx, trader.CancelRequest{
+				if err := ex.CancelOrder(sweepCtx, trader.CancelRequest{
 					Symbol:      symbol,
 					Category:    category,
 					OrderId:     o.OrderId,
@@ -3110,7 +3109,7 @@ func (sr *StrategyRunner) cancelPlacedLevels(ctx context.Context) {
 		if end > len(items) {
 			end = len(items)
 		}
-		if err := sr.runner.tradeStream.CancelOrderBatch(ctx, trader.BatchCancelRequest{
+		if err := sr.runner.Exchange().CancelOrderBatch(ctx, trader.BatchCancelRequest{
 			Category: sr.strategy.Category,
 			Request:  items[start:end],
 		}); err != nil && !isOrderGone(err) {
@@ -3122,7 +3121,7 @@ func (sr *StrategyRunner) cancelPlacedLevels(ctx context.Context) {
 		if end > len(stopItems) {
 			end = len(stopItems)
 		}
-		if err := sr.runner.tradeStream.CancelOrderBatch(ctx, trader.BatchCancelRequest{
+		if err := sr.runner.Exchange().CancelOrderBatch(ctx, trader.BatchCancelRequest{
 			Category: sr.strategy.Category,
 			Request:  stopItems[start:end],
 		}); err != nil && !isOrderGone(err) {
@@ -3813,7 +3812,7 @@ func (sr *StrategyRunner) resumeGridAfterSignal(ctx context.Context) {
 		linkID := fmt.Sprintf("SIS_STR-%s-%d-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, sr.repriceGen)
 		ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
 		sr.runner.RegisterOrder(linkID, ref)
-		result, placeErr := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+		result, placeErr := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 			Symbol:      sr.strategy.Symbol,
 			Category:    sr.strategy.Category,
 			Side:        l.Side,
@@ -4759,7 +4758,7 @@ func (sr *StrategyRunner) trimExcessLevels(ctx context.Context) {
 		if end > len(cancelItems) {
 			end = len(cancelItems)
 		}
-		if err := sr.runner.tradeStream.CancelOrderBatch(ctx, trader.BatchCancelRequest{
+		if err := sr.runner.Exchange().CancelOrderBatch(ctx, trader.BatchCancelRequest{
 			Category: sr.strategy.Category,
 			Request:  cancelItems[start:end],
 		}); err != nil && !isOrderGone(err) {
@@ -5026,7 +5025,7 @@ func (sr *StrategyRunner) retryTPAfterCancelStale(ctx context.Context, tpSide, t
 		if o.Side != tpSide || known[o.OrderId] {
 			continue
 		}
-		if e := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+		if e := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category, OrderId: o.OrderId,
 		}); e != nil && !isOrderGone(e) {
 			sr.warn(ctx, fmt.Sprintf("retryTP: cancel stale %s: %v", o.OrderId[:8], e))
@@ -5045,7 +5044,7 @@ func (sr *StrategyRunner) retryTPAfterCancelStale(ctx context.Context, tpSide, t
 	// A short pause lets Bybit's matching engine process the cancellations first.
 	time.Sleep(400 * time.Millisecond)
 
-	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+	result, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:      sr.strategy.Symbol,
 		Category:    sr.strategy.Category,
 		Side:        tpSide,
@@ -5210,7 +5209,7 @@ func (sr *StrategyRunner) handlePartialPositionChange(ctx context.Context, excha
 				))
 				sr.tpPlaceSeq++
 				remnantLinkID := fmt.Sprintf("SIS_STR-%s-scl-%d-%d", sr.strategy.ID[:8], sr.selfCloseCycleNum(), sr.tpPlaceSeq)
-				if _, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+				if _, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 					Symbol:      sr.strategy.Symbol,
 					Category:    sr.strategy.Category,
 					Side:        closeSide,
@@ -5677,7 +5676,7 @@ func (sr *StrategyRunner) gridVirtualPriceTick(ctx context.Context, price float6
 		ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
 		linkID := fmt.Sprintf("SIS_STR-%s-%d-%d-%d-v", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, sr.repriceGen)
 		sr.runner.RegisterOrder(linkID, ref)
-		result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+		result, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 			Symbol:      sr.strategy.Symbol,
 			Category:    sr.strategy.Category,
 			Side:        l.Side,
