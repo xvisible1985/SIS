@@ -23,7 +23,7 @@ const baseStrategy: Strategy = {
   trailing_stop_enabled: false, trailing_activation_pct: null, trailing_callback_pct: null,
   created_at: '', updated_at: '', volume_usdt: 0, active_levels: 0, last_pnl: 0,
   bot_id: 'bot-1', bot_name: 'Gonchar 2.0',
-} as unknown as Strategy
+}
 
 describe('StrategyModal — apply to bot confirm', () => {
   beforeEach(() => { vi.clearAllMocks() })

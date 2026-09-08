@@ -390,28 +390,33 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
         return
       }
     }
+    const isMatrix = form.strategy_type === 'matrix'
+    const totalMatrixLevels = aboveLevels.length + 1 + belowLevels.length
+    const payload = {
+      ...form,
+      grid_levels: isMatrix ? totalMatrixLevels : (form.steps.length || 1),
+      grid_active: isMatrix
+        ? (form.grid_active > 0 ? form.grid_active : totalMatrixLevels)
+        : (form.grid_active > 0 ? form.grid_active : form.steps.length || 1),
+      grid_step_pct: isMatrix ? (belowLevels[0]?.price_step_pct ?? aboveLevels[0]?.price_step_pct ?? 0) : (form.steps[0]?.price_move_pct ?? 0),
+      signal_filter: form.signal_configs.length > 0,
+    }
+    if (strategy && strategy.bot_id && hasSyncableDiff(payload as Record<string, unknown>, strategy as unknown as Record<string, unknown>)) {
+      setPendingPayload(payload)
+      setShowApplyToBotConfirm(true)
+      return
+    }
+    await doSave(payload)
+  }
+
+  // Core save — runs after all validation/confirmation is resolved. Shared by the
+  // direct-save path in handleSubmit and by finishApplyToBot's confirm-dialog outcome.
+  async function doSave(payload: typeof form, applyToBot?: boolean) {
     setSaving(true)
     setError(null)
     try {
-      const isMatrix = form.strategy_type === 'matrix'
-      const totalMatrixLevels = aboveLevels.length + 1 + belowLevels.length
-      const payload = {
-        ...form,
-        grid_levels: isMatrix ? totalMatrixLevels : (form.steps.length || 1),
-        grid_active: isMatrix
-          ? (form.grid_active > 0 ? form.grid_active : totalMatrixLevels)
-          : (form.grid_active > 0 ? form.grid_active : form.steps.length || 1),
-        grid_step_pct: isMatrix ? (belowLevels[0]?.price_step_pct ?? aboveLevels[0]?.price_step_pct ?? 0) : (form.steps[0]?.price_move_pct ?? 0),
-        signal_filter: form.signal_configs.length > 0,
-      }
       if (strategy) {
-        if (strategy.bot_id && hasSyncableDiff(payload as Record<string, unknown>, strategy as unknown as Record<string, unknown>)) {
-          setPendingPayload(payload)
-          setShowApplyToBotConfirm(true)
-          setSaving(false)
-          return
-        }
-        await updateStrategy(strategy.id, payload as any)
+        await updateStrategy(strategy.id, payload as any, applyToBot ? { applyToBot: true } : undefined)
       } else {
         await createStrategy(payload as any)
       }
@@ -435,20 +440,8 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
   async function finishApplyToBot(applyToBot: boolean) {
     setShowApplyToBotConfirm(false)
     if (!strategy || !pendingPayload) return
-    setSaving(true)
-    setError(null)
-    try {
-      await updateStrategy(strategy.id, pendingPayload as any, { applyToBot })
-      onSaved()
-    } catch (e: any) {
-      const status = e?.response?.status
-      const data = e?.response?.data
-      const serverMsg = typeof data === 'object' ? data?.error : typeof data === 'string' ? data : null
-      setError(serverMsg ? `${serverMsg}${status ? ` (HTTP ${status})` : ''}` : (e?.message ?? 'Неизвестная ошибка'))
-    } finally {
-      setSaving(false)
-      setPendingPayload(null)
-    }
+    await doSave(pendingPayload, applyToBot)
+    setPendingPayload(null)
   }
 
   const tabLabels = ['1. Базовые', form.strategy_type === 'matrix' ? '2. Матрица' : '2. Сетка ордеров', form.strategy_type === 'matrix' ? '3. Параметры' : '3. Завершение']
