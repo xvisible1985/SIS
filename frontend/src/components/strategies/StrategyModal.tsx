@@ -5,6 +5,8 @@ import { createStrategy, updateStrategy, getStrategyState, getInstrumentConstrai
 import { CoinPicker } from '../common/CoinPicker'
 import { LeverageSlider } from '../common/LeverageSlider'
 import { SIGNALS } from '../../features/indicators/signals'
+import { SettingsSyncConfirmModal } from '../../features/bots/components/SettingsSyncConfirmModal'
+import { hasSyncableDiff } from '../../features/bots/syncableSettingsFields'
 import type { Strategy, StrategyFormData, GridStep, MatrixLevel, MatrixEntryLevel } from '../../types'
 
 const DEFAULT_MATRIX_LEVELS: MatrixLevel[] = [
@@ -128,7 +130,7 @@ function MatrixTooltip({ msg }: { msg: string }) {
 
 // NumericInput keeps the raw string while focused so clearing the field
 // shows empty instead of snapping to 0.
-function NumericInput({ value, onChange, className, step, placeholder, disabled, errorMsg }: {
+function NumericInput({ value, onChange, className, step, placeholder, disabled, errorMsg, testId }: {
   value: number
   onChange: (v: number) => void
   className?: string
@@ -136,6 +138,7 @@ function NumericInput({ value, onChange, className, step, placeholder, disabled,
   placeholder?: string
   disabled?: boolean
   errorMsg?: string | null
+  testId?: string
 }) {
   const [draft, setDraft] = useState<string | null>(null)
 
@@ -163,6 +166,7 @@ function NumericInput({ value, onChange, className, step, placeholder, disabled,
         step={step}
         placeholder={placeholder}
         disabled={disabled}
+        data-testid={testId}
         value={draft !== null ? draft : value}
         onChange={handleChange}
         onBlur={handleBlur}
@@ -248,6 +252,8 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
   )
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showApplyToBotConfirm, setShowApplyToBotConfirm] = useState(false)
+  const [pendingPayload, setPendingPayload] = useState<typeof form | null>(null)
   const [filledLevels, setFilledLevels] = useState(filledLevelsProp)
   const [entryFilled, setEntryFilled] = useState(false)
   const [instrInfo, setInstrInfo] = useState<InstrumentConstraints | null>(null)
@@ -384,22 +390,33 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
         return
       }
     }
+    const isMatrix = form.strategy_type === 'matrix'
+    const totalMatrixLevels = aboveLevels.length + 1 + belowLevels.length
+    const payload = {
+      ...form,
+      grid_levels: isMatrix ? totalMatrixLevels : (form.steps.length || 1),
+      grid_active: isMatrix
+        ? (form.grid_active > 0 ? form.grid_active : totalMatrixLevels)
+        : (form.grid_active > 0 ? form.grid_active : form.steps.length || 1),
+      grid_step_pct: isMatrix ? (belowLevels[0]?.price_step_pct ?? aboveLevels[0]?.price_step_pct ?? 0) : (form.steps[0]?.price_move_pct ?? 0),
+      signal_filter: form.signal_configs.length > 0,
+    }
+    if (strategy && strategy.bot_id && hasSyncableDiff(payload as Record<string, unknown>, strategy as unknown as Record<string, unknown>)) {
+      setPendingPayload(payload)
+      setShowApplyToBotConfirm(true)
+      return
+    }
+    await doSave(payload)
+  }
+
+  // Core save — runs after all validation/confirmation is resolved. Shared by the
+  // direct-save path in handleSubmit and by finishApplyToBot's confirm-dialog outcome.
+  async function doSave(payload: typeof form, applyToBot?: boolean) {
     setSaving(true)
     setError(null)
     try {
-      const isMatrix = form.strategy_type === 'matrix'
-      const totalMatrixLevels = aboveLevels.length + 1 + belowLevels.length
-      const payload = {
-        ...form,
-        grid_levels: isMatrix ? totalMatrixLevels : (form.steps.length || 1),
-        grid_active: isMatrix
-          ? (form.grid_active > 0 ? form.grid_active : totalMatrixLevels)
-          : (form.grid_active > 0 ? form.grid_active : form.steps.length || 1),
-        grid_step_pct: isMatrix ? (belowLevels[0]?.price_step_pct ?? aboveLevels[0]?.price_step_pct ?? 0) : (form.steps[0]?.price_move_pct ?? 0),
-        signal_filter: form.signal_configs.length > 0,
-      }
       if (strategy) {
-        await updateStrategy(strategy.id, payload as any)
+        await updateStrategy(strategy.id, payload as any, applyToBot ? { applyToBot: true } : undefined)
       } else {
         await createStrategy(payload as any)
       }
@@ -418,6 +435,13 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
     } finally {
       setSaving(false)
     }
+  }
+
+  async function finishApplyToBot(applyToBot: boolean) {
+    setShowApplyToBotConfirm(false)
+    if (!strategy || !pendingPayload) return
+    await doSave(pendingPayload, applyToBot)
+    setPendingPayload(null)
   }
 
   const tabLabels = ['1. Базовые', form.strategy_type === 'matrix' ? '2. Матрица' : '2. Сетка ордеров', form.strategy_type === 'matrix' ? '3. Параметры' : '3. Завершение']
@@ -458,6 +482,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
     `bg-gray-800 border ${hasErr ? 'border-red-500' : 'border-gray-700'} rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full`
 
   return (
+    <>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
       <div className="bg-gray-900 border border-gray-700 rounded-xl w-[740px] shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
         {/* Header */}
@@ -1238,7 +1263,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                         </label>
                         <div className="flex items-center gap-2">
                           {form.tp_pct !== null
-                            ? <NumericInput step="0.1" value={form.tp_pct} onChange={v => patch({ tp_pct: v })} className={errCls(fieldErrors.tp_pct)} />
+                            ? <NumericInput step="0.1" value={form.tp_pct} onChange={v => patch({ tp_pct: v })} className={errCls(fieldErrors.tp_pct)} testId="strategy-tp-pct-input" />
                             : <div className={`${inputCls} text-gray-600 italic select-none flex-1`}>Без лимита</div>
                           }
                           <button
@@ -1368,6 +1393,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
           <button
             onClick={handleSubmit}
             disabled={saving}
+            data-testid="strategy-save-button"
             className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
           >
             {saving ? 'Сохранение…' : strategy ? 'Сохранить' : 'Создать стратегию'}
@@ -1375,6 +1401,17 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
         </div>
       </div>
     </div>
+    {showApplyToBotConfirm && strategy && (
+      <SettingsSyncConfirmModal
+        title={`Применить к боту «${strategy.bot_name ?? 'Bot'}»?`}
+        description="Изменённые параметры можно сохранить как настройки по умолчанию для бота — тогда новые сделки бота будут открываться с этими же значениями. Другие уже открытые стратегии бота это не затронет."
+        cancelLabel="Нет, только эта стратегия"
+        confirmLabel="Да, применить к боту"
+        onCancel={() => finishApplyToBot(false)}
+        onConfirm={() => finishApplyToBot(true)}
+      />
+    )}
+    </>
   )
 }
 

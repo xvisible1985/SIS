@@ -14,6 +14,8 @@ import { getInstrumentConstraints, type InstrumentConstraints } from '../../../a
 import type { Bot as BotType, BotKind, CreateBotInput, StrategyConfig, MatrixLevel, MatrixEntryLevel } from '../types';
 import { getBotKindMeta } from '../botKindMeta';
 import { ResetStatsConfirmModal } from './ResetStatsConfirmModal';
+import { SettingsSyncConfirmModal } from './SettingsSyncConfirmModal';
+import { hasSyncableDiff } from '../syncableSettingsFields';
 import type { SignalConfig } from '../../../types';
 import { useSelectedAccount } from '../../../contexts/AccountContext';
 
@@ -161,6 +163,8 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
   const [coinFilterSettings, setCoinFilterSettings] = useState<CoinFilterSettings | null>(null);
   const [showCoinFilterConfirm, setShowCoinFilterConfirm] = useState(false);
   const [showResetStatsConfirm, setShowResetStatsConfirm] = useState(false);
+  const [showApplyActiveConfirm, setShowApplyActiveConfirm] = useState(false);
+  const applyActiveDecisionRef = useRef<boolean | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showIconPicker, setShowIconPicker] = useState(false);
@@ -421,6 +425,7 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
       accountId: selectedAccountId || null,
       autoMode,
       ignoreCoinFilter: false,
+      ...(applyActiveDecisionRef.current !== null ? { applyToActive: applyActiveDecisionRef.current } : {}),
     };
   }
 
@@ -452,6 +457,9 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
       await onSubmit(payload);
       onClose();
     } catch (e) {
+      // Submit failed — don't silently reuse this decision on retry; re-ask (if still
+      // relevant) since the user may have changed strategy fields in the meantime.
+      applyActiveDecisionRef.current = null;
       setSubmitError(e instanceof Error ? e.message : 'Неизвестная ошибка');
     } finally {
       setSubmitting(false);
@@ -477,7 +485,23 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
       setShowResetStatsConfirm(true);
       return;
     }
+
+    // Ask whether to cascade the new template into the bot's currently open strategies.
+    // Skipped when embedded (part of a МультиБот save) — MultiBotForm asks this once for
+    // both legs combined instead, see Task 7.
+    if (!embedded && applyActiveDecisionRef.current === null &&
+        bot && (bot.activeStrategiesCount ?? 0) > 0 &&
+        hasSyncableDiff(buildPayload().strategyConfig ?? {}, bot.strategyConfig ?? {})) {
+      setShowApplyActiveConfirm(true);
+      return;
+    }
     await doSubmit();
+  };
+
+  const handleApplyActiveConfirm = (apply: boolean) => {
+    applyActiveDecisionRef.current = apply;
+    setShowApplyActiveConfirm(false);
+    void handleSubmit();
   };
 
   useImperativeHandle(ref, () => ({
@@ -1761,6 +1785,18 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
           tradesWin={bot.tradesWin ?? 0}
           onConfirm={() => { setShowResetStatsConfirm(false); void doSubmit(); }}
           onCancel={() => { setShowResetStatsConfirm(false); resolveEmbedded(null); }}
+        />,
+        document.body
+      )}
+
+      {showApplyActiveConfirm && bot && createPortal(
+        <SettingsSyncConfirmModal
+          title="Применить к активным стратегиям?"
+          description={`У бота «${bot.name}» сейчас есть открытые стратегии (${bot.activeStrategiesCount}). Применить новые настройки к ним прямо сейчас (TP/SL и ордера на бирже будут пересчитаны немедленно), или сохранить только для новых стратегий, не трогая уже открытые?`}
+          cancelLabel="Нет, только новые стратегии"
+          confirmLabel="Да, применить сейчас"
+          onCancel={() => handleApplyActiveConfirm(false)}
+          onConfirm={() => handleApplyActiveConfirm(true)}
         />,
         document.body
       )}

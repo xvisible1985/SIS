@@ -1,12 +1,15 @@
 import { useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { X, Bot as BotIcon, Camera, Trash2, Smile, ToggleLeft, ToggleRight } from 'lucide-react';
 import { BotForm, type BotFormHandle } from './BotForm';
 import { HedgeBotForm, type HedgeBotFormHandle } from './HedgeBotForm';
 import { BotIconPicker } from './BotIconPicker';
+import { SettingsSyncConfirmModal } from './SettingsSyncConfirmModal';
+import { hasSyncableDiff } from '../syncableSettingsFields';
 import { apiClient } from '../../../api/client';
 import { useSelectedAccount } from '../../../contexts/AccountContext';
-import type { Bot as BotType } from '../types';
+import type { Bot as BotType, CreateBotInput } from '../types';
 
 type Props = {
   // Editing an existing Мультибот passes both legs (see migration 092's paired_bot_id).
@@ -79,6 +82,12 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  const [showApplyActiveConfirm, setShowApplyActiveConfirm] = useState(false);
+  const applyActiveDecisionRef = useRef<boolean | null>(null);
+  const [pendingSavePayloads, setPendingSavePayloads] = useState<{
+    signalPayload: CreateBotInput; hedgePayload: CreateBotInput; identity: Record<string, unknown>;
+  } | null>(null);
+
   const signalRef = useRef<BotFormHandle>(null);
   const hedgeRef = useRef<HedgeBotFormHandle>(null);
 
@@ -102,36 +111,63 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      // Both legs validate/build their own payload in parallel. Either can come back null —
-      // failed validation, or it's showing its own confirm dialog (flagged coin, stats
-      // reset) and is waiting for the user; re-clicking Сохранить retries cleanly either way.
-      const [signalPayload, hedgePayload] = await Promise.all([
-        signalRef.current?.trySubmit() ?? Promise.resolve(null),
-        hedgeRef.current?.trySubmit() ?? Promise.resolve(null),
-      ]);
-      if (!signalPayload || !hedgePayload) {
-        setSubmitting(false);
-        return;
+      let signalPayload: CreateBotInput;
+      let hedgePayload: CreateBotInput;
+      let identity: Record<string, unknown>;
+
+      if (pendingSavePayloads) {
+        // Re-entrant call after the combined "применить к активным?" confirm — reuse the
+        // payloads captured on the first pass instead of re-running trySubmit(). Re-running
+        // it would re-invoke each embedded form's own handleSubmit() from scratch, which
+        // would re-trigger any one-shot confirm it already cleared on the first pass (e.g.
+        // BotForm's reset-stats dialog) a second time for a decision the user already made
+        // seconds ago in this same save attempt.
+        ({ signalPayload, hedgePayload, identity } = pendingSavePayloads);
+      } else {
+        // Both legs validate/build their own payload in parallel. Either can come back null —
+        // failed validation, or it's showing its own confirm dialog (flagged coin, stats
+        // reset) and is waiting for the user; re-clicking Сохранить retries cleanly either way.
+        const [signal, hedge] = await Promise.all([
+          signalRef.current?.trySubmit() ?? Promise.resolve(null),
+          hedgeRef.current?.trySubmit() ?? Promise.resolve(null),
+        ]);
+        if (!signal || !hedge) {
+          setSubmitting(false);
+          return;
+        }
+        signalPayload = signal;
+        hedgePayload = hedge;
+        identity = {
+          name: name.trim(),
+          description: description.trim(),
+          fullDescription: fullDescription.trim() || undefined,
+          avatarUrl: avatarUrl || undefined,
+          isPublic: false, // publishing a Мультибот to the catalog isn't wired up yet
+        };
       }
 
-      const identity = {
-        name: name.trim(),
-        description: description.trim(),
-        fullDescription: fullDescription.trim() || undefined,
-        avatarUrl: avatarUrl || undefined,
-        isPublic: false, // publishing a Мультибот to the catalog isn't wired up yet
-      };
-
       if (isEdit && signalBot && hedgeBot) {
+        const hasActive = (signalBot.activeStrategiesCount ?? 0) > 0 || (hedgeBot.activeStrategiesCount ?? 0) > 0;
+        const settingsChanged =
+          hasSyncableDiff(signalPayload.strategyConfig ?? {}, signalBot.strategyConfig ?? {}) ||
+          hasSyncableDiff(hedgePayload.strategyConfig ?? {}, hedgeBot.strategyConfig ?? {});
+        if (applyActiveDecisionRef.current === null && hasActive && settingsChanged) {
+          setPendingSavePayloads({ signalPayload, hedgePayload, identity });
+          setShowApplyActiveConfirm(true);
+          setSubmitting(false);
+          return;
+        }
+        const applyToActive = applyActiveDecisionRef.current ?? false;
         await Promise.all([
           apiClient.patch(`/bots/${signalBot.id}`, {
-            ...signalPayload, ...identity,
+            ...signalPayload, ...identity, applyToActive,
             autoMode, maxStrategies, maxLongStrategies, maxShortStrategies, maxMarginUsdt, maxSymConsecutiveRuns,
           }),
           apiClient.patch(`/bots/${hedgeBot.id}`, {
-            ...hedgePayload, ...identity,
+            ...hedgePayload, ...identity, applyToActive,
           }),
         ]);
+        setPendingSavePayloads(null);
       } else {
         await apiClient.post('/bots/multi', {
           ...identity,
@@ -147,11 +183,22 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
       onSaved();
       onClose();
     } catch (e) {
+      // Submit failed — don't silently reuse this decision (or the stale payload snapshot
+      // it was paired with) on retry; re-ask (if still relevant) since the user may have
+      // changed strategy fields in the meantime.
+      applyActiveDecisionRef.current = null;
+      setPendingSavePayloads(null);
       setSubmitError(e instanceof Error ? e.message : 'Неизвестная ошибка');
     } finally {
       setSubmitting(false);
     }
   }
+
+  const handleApplyActiveConfirm = (apply: boolean) => {
+    applyActiveDecisionRef.current = apply;
+    setShowApplyActiveConfirm(false);
+    void handleSave();
+  };
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'basic',  label: 'Основное' },
@@ -380,6 +427,18 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
           </div>
         </div>
       </div>
+
+      {showApplyActiveConfirm && pendingSavePayloads && signalBot && hedgeBot && createPortal(
+        <SettingsSyncConfirmModal
+          title="Применить к активным стратегиям?"
+          description={`У этого МультиБота сейчас есть открытые стратегии на обеих ногах (${(signalBot.activeStrategiesCount ?? 0) + (hedgeBot.activeStrategiesCount ?? 0)}). Применить новые настройки к ним прямо сейчас (TP/SL и ордера на бирже будут пересчитаны немедленно), или сохранить только для новых стратегий, не трогая уже открытые?`}
+          cancelLabel="Нет, только новые стратегии"
+          confirmLabel="Да, применить сейчас"
+          onCancel={() => handleApplyActiveConfirm(false)}
+          onConfirm={() => handleApplyActiveConfirm(true)}
+        />,
+        document.body
+      )}
     </div>
   );
 }

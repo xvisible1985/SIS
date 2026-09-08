@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"sort"
@@ -130,7 +131,45 @@ type strategyPayload struct {
 	TPSignalConfigs        json.RawMessage `json:"tp_signal_configs"`
 	SLSignalConfigs        json.RawMessage `json:"sl_signal_configs"`
 	AdoptPositionData      json.RawMessage `json:"adopt_position_data,omitempty"`
+	ApplyToBot             bool            `json:"applyToBot,omitempty"`
 }
+
+// applyStrategyToBotConfigSQL merges the synchronizable subset of one strategy row's
+// current values into its owning bot's strategy_config template (shallow jsonb merge —
+// every other key already in strategy_config, e.g. bot_kind or hedge activation fields,
+// is left untouched). Run only after the strategy's own UPDATE has committed, so the
+// subquery reads the just-saved values.
+const applyStrategyToBotConfigSQL = `
+	UPDATE bots SET strategy_config = strategy_config || (
+		SELECT jsonb_build_object(
+			'grid_levels', s.grid_levels,
+			'grid_active', s.grid_active,
+			'grid_step_pct', s.grid_step_pct,
+			'grid_size_usdt', s.grid_size_usdt,
+			'tp_mode', s.tp_mode,
+			'tp_pct', s.tp_pct,
+			'sl_type', s.sl_type,
+			'sl_pct', s.sl_pct,
+			'signal_filter', s.signal_filter,
+			'leverage', s.leverage,
+			'margin_type', s.margin_type,
+			'hedge_mode', s.hedge_mode,
+			'entry_order_type', s.entry_order_type,
+			'signal_configs', s.signal_configs,
+			'steps', COALESCE(s.steps, '[]'::jsonb),
+			'trailing_stop_enabled', s.trailing_stop_enabled,
+			'trailing_activation_pct', s.trailing_activation_pct,
+			'trailing_callback_pct', s.trailing_callback_pct,
+			'matrix_levels', COALESCE(s.matrix_levels, 'null'::jsonb),
+			'matrix_entry_level', COALESCE(s.matrix_entry_level, 'null'::jsonb),
+			'safe_zone_pct', s.safe_zone_pct,
+			'protected_build', s.protected_build,
+			'matrix_rebuild_on_sl', s.matrix_rebuild_on_sl,
+			'matrix_rebuild_from_entry', s.matrix_rebuild_from_entry,
+			'relative_slots', s.relative_slots
+		) FROM strategies s WHERE s.id = $1
+	), updated_at = NOW()
+	WHERE id = $2`
 
 func (p *strategyPayload) applyDefaults() {
 	if p.Category == "" {
@@ -461,10 +500,11 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 
 	// Prevent updating into a duplicate (same account+symbol+direction already exists).
 	var curAccID, curSymbol, curDirection string
+	var curBotID *string
 	_ = s.pool.QueryRow(r.Context(),
-		`SELECT account_id, symbol, direction FROM strategies WHERE id=$1 AND owner_id=$2`,
+		`SELECT account_id, symbol, direction, bot_id FROM strategies WHERE id=$1 AND owner_id=$2`,
 		id, userID,
-	).Scan(&curAccID, &curSymbol, &curDirection)
+	).Scan(&curAccID, &curSymbol, &curDirection, &curBotID)
 	newSym := req.Symbol
 	if newSym == "" {
 		newSym = curSymbol
@@ -537,6 +577,19 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 	if tag.RowsAffected() == 0 {
 		writeError(w, http.StatusNotFound, "strategy not found")
 		return
+	}
+
+	if req.ApplyToBot && curBotID != nil {
+		if _, err := s.pool.Exec(r.Context(), applyStrategyToBotConfigSQL, id, *curBotID); err != nil {
+			log.Printf("strategy: applyToBot merge strategy=%s bot=%s: %v", id, *curBotID, err)
+			s.logBotEvent(r.Context(), *curBotID,
+				fmt.Sprintf("Не удалось синхронизировать настройки из стратегии %s: %v", curSymbol, err),
+				"error", "user")
+		} else {
+			s.logBotEvent(r.Context(), *curBotID,
+				fmt.Sprintf("Настройки синхронизированы из открытой стратегии %s", curSymbol),
+				"info", "user")
+		}
 	}
 
 	newStepsJSON := nullableJSONB(req.Steps)

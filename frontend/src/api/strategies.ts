@@ -12,8 +12,12 @@ export async function createStrategy(data: StrategyFormData): Promise<{ id: stri
   return res.data
 }
 
-export async function updateStrategy(id: string, data: StrategyFormData): Promise<void> {
-  await apiClient.put(`/strategies/${id}`, data)
+export async function updateStrategy(
+  id: string,
+  data: StrategyFormData,
+  opts?: { applyToBot?: boolean },
+): Promise<void> {
+  await apiClient.put(`/strategies/${id}`, opts?.applyToBot ? { ...data, applyToBot: true } : data)
 }
 
 export async function setStrategyStatus(
