@@ -1393,7 +1393,7 @@ func (ar *AccountRunner) OnConnected() {
 // FetchPositions error or an empty response can't wipe cache state that live WS events
 // already populated correctly.
 func (ar *AccountRunner) seedPositionCache(ctx context.Context) {
-	positions, err := trader.FetchPositions(ctx, ar.creds)
+	positions, err := ar.exchange.FetchPositions(ctx)
 	if err != nil {
 		log.Printf("strategy: seedPositionCache account=%s: %v", ar.accountID, err)
 		return

@@ -359,7 +359,7 @@ func (sr *StrategyRunner) resumeMatrixCycle(ctx context.Context) {
 	sr.restoreMatrixWaitingSlots()
 	sr.mu.Unlock()
 
-	resumePrice, _ := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	resumePrice, _ := sr.runner.Exchange().GetMarkPrice(ctx, sr.strategy.Category, sr.strategy.Symbol)
 
 	sr.mu.Lock()
 
@@ -669,7 +669,7 @@ func (sr *StrategyRunner) checkPositionGone(ctx context.Context) bool {
 		return false
 	}
 
-	positions, err := trader.FetchPositions(ctx, sr.runner.creds)
+	positions, err := sr.runner.Exchange().FetchPositions(ctx)
 	if err != nil {
 		log.Printf("strategy %s: fetch positions for startup check: %v", sr.strategy.ID, err)
 		return false
@@ -759,7 +759,7 @@ func (sr *StrategyRunner) checkPositionGone(ctx context.Context) bool {
 // Called for stopped strategies that have no active cycle but may still hold a position.
 // Must NOT be called with sr.mu held.
 func (sr *StrategyRunner) adoptPositionIfOpen(ctx context.Context) {
-	positions, err := trader.FetchPositions(ctx, sr.runner.creds)
+	positions, err := sr.runner.Exchange().FetchPositions(ctx)
 	if err != nil {
 		log.Printf("strategy %s: adoptPositionIfOpen: fetch positions: %v", sr.strategy.ID, err)
 		return
@@ -822,7 +822,7 @@ func (sr *StrategyRunner) closeDustPosition(ctx context.Context) {
 		return // instrument not loaded yet; skip
 	}
 
-	positions, err := trader.FetchPositions(ctx, sr.runner.creds)
+	positions, err := sr.runner.Exchange().FetchPositions(ctx)
 	if err != nil {
 		return
 	}
@@ -903,11 +903,11 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 	prCh := make(chan priceRes, 1)
 	orCh := make(chan ordersRes, 1)
 	go func() {
-		p, e := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+		p, e := sr.runner.Exchange().GetMarkPrice(ctx, sr.strategy.Category, sr.strategy.Symbol)
 		prCh <- priceRes{p, e}
 	}()
 	go func() {
-		o, e := trader.FetchOpenOrdersForSymbolAll(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+		o, e := sr.runner.Exchange().FetchOpenOrdersForSymbolAll(ctx, sr.strategy.Category, sr.strategy.Symbol)
 		orCh <- ordersRes{o, e}
 	}()
 	pr := <-prCh
@@ -1177,7 +1177,7 @@ func (sr *StrategyRunner) sweepOrphanOrders(ctx context.Context) {
 	symbol := sr.strategy.Symbol
 	sr.mu.Unlock()
 
-	openOrders, err := trader.FetchOpenOrdersForSymbolAll(ctx, sr.runner.creds, category, symbol)
+	openOrders, err := sr.runner.Exchange().FetchOpenOrdersForSymbolAll(ctx, category, symbol)
 	if err != nil {
 		log.Printf("strategy %s: sweep orphans fetch: %v", stratID8, err)
 		return
@@ -1299,7 +1299,7 @@ func (sr *StrategyRunner) cancelAllStrategyOrders(ctx context.Context) {
 	symbol := sr.strategy.Symbol
 	sr.mu.Unlock()
 
-	openOrders, err := trader.FetchOpenOrdersForSymbolAll(ctx, sr.runner.creds, category, symbol)
+	openOrders, err := sr.runner.Exchange().FetchOpenOrdersForSymbolAll(ctx, category, symbol)
 	if err != nil {
 		log.Printf("strategy %s: cancelAll fetch: %v", stratID8, err)
 		return
@@ -1705,7 +1705,7 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 		return nil
 	}
 
-	price, err := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	price, err := sr.runner.Exchange().GetMarkPrice(ctx, sr.strategy.Category, sr.strategy.Symbol)
 	if err != nil {
 		return fmt.Errorf("fetch price: %w", err)
 	}
@@ -2400,7 +2400,7 @@ func (sr *StrategyRunner) resolveExchangeAvgEntry(ctx context.Context, wantIdx i
 		sr.info(ctx, fmt.Sprintf("ТВХ биржи (WS) %.6f (расчётная %.6f)", wsAvg, computed))
 		return wsAvg
 	}
-	positions, err := trader.FetchPositions(ctx, sr.runner.creds)
+	positions, err := sr.runner.Exchange().FetchPositions(ctx)
 	if err != nil {
 		sr.warn(ctx, fmt.Sprintf("resolveExchangeAvgEntry: FetchPositions: %v — резерв: расчётная ТВХ %.6f", err, computed))
 		return computed
@@ -2989,12 +2989,12 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 		prefix := "SIS_STR-" + stratID8 + "-"
 		symbol := sr.strategy.Symbol
 		category := sr.strategy.Category
-		creds := sr.runner.creds
+		ex := sr.runner.Exchange()
 		ts := sr.runner.tradeStream
 		go func() {
 			sweepCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			orders, err := trader.FetchOpenOrdersForSymbolAll(sweepCtx, creds, category, symbol)
+			orders, err := ex.FetchOpenOrdersForSymbolAll(sweepCtx, category, symbol)
 			if err != nil {
 				log.Printf("strategy %s: closeCycle sweep: %v", stratID8, err)
 				return
@@ -3780,7 +3780,7 @@ func (sr *StrategyRunner) resumeGridAfterSignal(ctx context.Context) {
 		return
 	}
 
-	price, err := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	price, err := sr.runner.Exchange().GetMarkPrice(ctx, sr.strategy.Category, sr.strategy.Symbol)
 	if err != nil {
 		log.Printf("strategy %s: resumeGridAfterSignal: fetch price: %v", sr.strategy.ID, err)
 		return
@@ -4031,7 +4031,7 @@ func (sr *StrategyRunner) restartMatrixCycle(ctx context.Context) {
 		if lev, cappedLev, wasCapped := sr.applyConfiguredLeverage(ctx); wasCapped {
 			sr.info(ctx, fmt.Sprintf("Матрикс: плечо ограничено биржей: запрошено %dx, установлено %dx", lev, cappedLev))
 		}
-		price, ferr := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+		price, ferr := sr.runner.Exchange().GetMarkPrice(ctx, sr.strategy.Category, sr.strategy.Symbol)
 		sr.mu.Lock()
 		if ferr == nil {
 			// Recalculate target prices / sizes from updated settings before placing.
@@ -4470,7 +4470,7 @@ func (sr *StrategyRunner) handlePositionCloseRetry(ctx context.Context) {
 	// gateway restart); closing on such a false signal wrongly stops a strategy whose
 	// position is actually still open (observed on XLM). FetchPositions must run
 	// WITHOUT sr.mu held.
-	positions, err := trader.FetchPositions(ctx, sr.runner.creds)
+	positions, err := sr.runner.Exchange().FetchPositions(ctx)
 	if err != nil {
 		// Cannot confirm → do not close on an unconfirmed signal. The next position
 		// event or the reconcile loop will re-evaluate.
@@ -4817,7 +4817,7 @@ func (sr *StrategyRunner) reopenCycleIfPositionOpen(ctx context.Context) bool {
 		return false
 	}
 
-	positions, err := trader.FetchPositions(ctx, sr.runner.creds)
+	positions, err := sr.runner.Exchange().FetchPositions(ctx)
 	if err != nil {
 		log.Printf("strategy %s: reopenCycleIfPositionOpen fetch positions: %v", sr.strategy.ID, err)
 		return false
@@ -4871,7 +4871,7 @@ func (sr *StrategyRunner) repriceStale(ctx context.Context) {
 		return
 	}
 
-	currentPrice, err := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	currentPrice, err := sr.runner.Exchange().GetMarkPrice(ctx, sr.strategy.Category, sr.strategy.Symbol)
 	if err != nil {
 		log.Printf("strategy %s: repriceStale fetch price: %v", sr.strategy.ID, err)
 		return
@@ -5504,7 +5504,7 @@ func (sr *StrategyRunner) handleLevelCancelled(ctx context.Context, levelID stri
 
 	if lvl.Slot != nil {
 		// Matrix level — use matrix placement logic (determines Limit vs StopMarket by price).
-		price, err := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+		price, err := sr.runner.Exchange().GetMarkPrice(ctx, sr.strategy.Category, sr.strategy.Symbol)
 		if err != nil {
 			sr.errlog(ctx, fmt.Sprintf("Ошибка получения цены для перевыставления L%d: %v", lvl.LevelIdx, err))
 			return
@@ -5556,14 +5556,14 @@ func (sr *StrategyRunner) launchGridVirtualMonitor() {
 	sr.matrixMonitorStop = cancel
 	symbol := sr.strategy.Symbol
 	category := sr.strategy.Category
-	creds := sr.runner.creds
+	ex := sr.runner.Exchange()
 	se := sr.runner.signalEngine
 	sr.mu.Unlock()
 
 	// Immediate startup check: execute any levels whose trigger condition is already met
 	// (handles server restart where price arrived at target while we were down).
 	go func() {
-		if price, err := trader.FetchMarkPrice(ctx, creds, category, symbol); err == nil {
+		if price, err := ex.GetMarkPrice(ctx, category, symbol); err == nil {
 			sr.submit(func(taskCtx context.Context) {
 				sr.mu.Lock()
 				defer sr.mu.Unlock()
@@ -5588,9 +5588,9 @@ func (sr *StrategyRunner) launchGridVirtualMonitor() {
 					if !hasCycle {
 						return
 					}
-					creds := sr.runner.creds
+					ex := sr.runner.Exchange()
 					category := sr.strategy.Category
-					price, err := trader.FetchMarkPrice(ctx, creds, category, symbol)
+					price, err := ex.GetMarkPrice(ctx, category, symbol)
 					if err != nil {
 						continue
 					}
@@ -5747,7 +5747,7 @@ func (sr *StrategyRunner) checkPositionAfterTPCircuitBreaker(ctx context.Context
 		return
 	}
 
-	markPrice, err := trader.FetchMarkPrice(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	markPrice, err := sr.runner.Exchange().GetMarkPrice(ctx, sr.strategy.Category, sr.strategy.Symbol)
 	if err != nil || markPrice <= 0 {
 		sr.info(ctx, fmt.Sprintf("TP circuit breaker: позиция %.4f есть, сбрасываю circuit breaker и выставляю TP", exchangeSize))
 		sr.tpCancelStreak = 0
