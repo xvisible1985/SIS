@@ -111,25 +111,40 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      // Both legs validate/build their own payload in parallel. Either can come back null —
-      // failed validation, or it's showing its own confirm dialog (flagged coin, stats
-      // reset) and is waiting for the user; re-clicking Сохранить retries cleanly either way.
-      const [signalPayload, hedgePayload] = await Promise.all([
-        signalRef.current?.trySubmit() ?? Promise.resolve(null),
-        hedgeRef.current?.trySubmit() ?? Promise.resolve(null),
-      ]);
-      if (!signalPayload || !hedgePayload) {
-        setSubmitting(false);
-        return;
-      }
+      let signalPayload: CreateBotInput;
+      let hedgePayload: CreateBotInput;
+      let identity: Record<string, unknown>;
 
-      const identity = {
-        name: name.trim(),
-        description: description.trim(),
-        fullDescription: fullDescription.trim() || undefined,
-        avatarUrl: avatarUrl || undefined,
-        isPublic: false, // publishing a Мультибот to the catalog isn't wired up yet
-      };
+      if (pendingSavePayloads) {
+        // Re-entrant call after the combined "применить к активным?" confirm — reuse the
+        // payloads captured on the first pass instead of re-running trySubmit(). Re-running
+        // it would re-invoke each embedded form's own handleSubmit() from scratch, which
+        // would re-trigger any one-shot confirm it already cleared on the first pass (e.g.
+        // BotForm's reset-stats dialog) a second time for a decision the user already made
+        // seconds ago in this same save attempt.
+        ({ signalPayload, hedgePayload, identity } = pendingSavePayloads);
+      } else {
+        // Both legs validate/build their own payload in parallel. Either can come back null —
+        // failed validation, or it's showing its own confirm dialog (flagged coin, stats
+        // reset) and is waiting for the user; re-clicking Сохранить retries cleanly either way.
+        const [signal, hedge] = await Promise.all([
+          signalRef.current?.trySubmit() ?? Promise.resolve(null),
+          hedgeRef.current?.trySubmit() ?? Promise.resolve(null),
+        ]);
+        if (!signal || !hedge) {
+          setSubmitting(false);
+          return;
+        }
+        signalPayload = signal;
+        hedgePayload = hedge;
+        identity = {
+          name: name.trim(),
+          description: description.trim(),
+          fullDescription: fullDescription.trim() || undefined,
+          avatarUrl: avatarUrl || undefined,
+          isPublic: false, // publishing a Мультибот to the catalog isn't wired up yet
+        };
+      }
 
       if (isEdit && signalBot && hedgeBot) {
         const hasActive = (signalBot.activeStrategiesCount ?? 0) > 0 || (hedgeBot.activeStrategiesCount ?? 0) > 0;
@@ -152,6 +167,7 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
             ...hedgePayload, ...identity, applyToActive,
           }),
         ]);
+        setPendingSavePayloads(null);
       } else {
         await apiClient.post('/bots/multi', {
           ...identity,
@@ -167,9 +183,11 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
       onSaved();
       onClose();
     } catch (e) {
-      // Submit failed — don't silently reuse this decision on retry; re-ask (if still
-      // relevant) since the user may have changed strategy fields in the meantime.
+      // Submit failed — don't silently reuse this decision (or the stale payload snapshot
+      // it was paired with) on retry; re-ask (if still relevant) since the user may have
+      // changed strategy fields in the meantime.
       applyActiveDecisionRef.current = null;
+      setPendingSavePayloads(null);
       setSubmitError(e instanceof Error ? e.message : 'Неизвестная ошибка');
     } finally {
       setSubmitting(false);
