@@ -1509,7 +1509,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	// закрытие в плюс вне зависимости от глубины DCA.
 	// Используем ТВХ с биржи (pos.EntryPrice), а не расчётный avgEntry(),
 	// чтобы корректно учесть проскальзывание маркет-ордеров.
-	avgEntryPrice, _ := sr.avgEntry()
+	avgEntryPrice, computedQty := sr.avgEntry()
 	if avgEntryPrice == 0 {
 		sr.warn(ctx, "matrixUpdateTP: расчётная ТВХ = 0 (нет заполненных уровней с FilledPrice) — TP не выставлен, повтор при следующем событии")
 		return
@@ -1519,7 +1519,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 	// trusting it while cold once closed a MIRAUSDT short at a loss.
 	{
 		wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
-		avgEntryPrice = sr.resolveExchangeAvgEntry(ctx, wantIdx, avgEntryPrice)
+		avgEntryPrice = sr.resolveExchangeAvgEntry(ctx, wantIdx, avgEntryPrice, computedQty)
 	}
 
 	// Which side of ТВХ mark price currently sits on decides which extreme fill governs

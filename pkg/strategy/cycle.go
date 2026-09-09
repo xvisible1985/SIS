@@ -2390,15 +2390,30 @@ func (sr *StrategyRunner) updateTrailingStop(ctx context.Context) error {
 // resolveExchangeAvgEntry returns the position's average entry price, preferring the
 // authoritative exchange value over the internally computed VWAP. It first checks the
 // WS-cached exchange avg; if that is cold (0 — e.g. right after a restart, before a
-// position event arrives, or after a hedge→grid conversion), it does a synchronous
-// FetchPositions rather than trusting the internal books, which can drift from the real
-// position (a drift once closed a MIRAUSDT short at a loss while the books showed a
-// profit). The computed VWAP is used only as a last resort — when the exchange cannot be
-// reached or reports no open position. Must be called with sr.mu held.
-func (sr *StrategyRunner) resolveExchangeAvgEntry(ctx context.Context, wantIdx int, computed float64) float64 {
-	if wsAvg := sr.runner.GetPositionAvgEntry(sr.strategy.Symbol, wantIdx); wsAvg > 0 {
+// position event arrives, or after a hedge→grid conversion) OR stale (its cached position
+// size hasn't yet caught up to computedQty — the WS position snapshot for the fill that
+// just triggered this call hasn't arrived), it does a synchronous FetchPositions rather
+// than trusting the internal books, which can drift from the real position (a drift once
+// closed a MIRAUSDT short at a loss while the books showed a profit). The computed VWAP is
+// used only as a last resort — when the exchange cannot be reached or reports no open
+// position. Must be called with sr.mu held.
+//
+// The staleness check exists because a level-fill event triggers this call immediately,
+// but the WS position-update event carrying that same fill's contribution to avg entry can
+// arrive a few hundred ms later — trusting the cache in that window computes TP from an
+// average that doesn't yet include the fill that just happened. Found live (2026-09-07,
+// NIULAIUSDT and 2026-09-08/09, 1000NEIROCTOUSDT): TP repeatedly placed from a WS avg
+// entry frozen at its pre-fill value moments after a new level filled.
+func (sr *StrategyRunner) resolveExchangeAvgEntry(ctx context.Context, wantIdx int, computed float64, computedQty float64) float64 {
+	wsAvg := sr.runner.GetPositionAvgEntry(sr.strategy.Symbol, wantIdx)
+	wsQty := sr.runner.GetPositionSizeCoins(sr.strategy.Symbol, wantIdx)
+	const qtyEps = 1e-9
+	if wsAvg > 0 && wsQty >= computedQty-qtyEps {
 		sr.info(ctx, fmt.Sprintf("ТВХ биржи (WS) %.6f (расчётная %.6f)", wsAvg, computed))
 		return wsAvg
+	}
+	if wsAvg > 0 {
+		sr.info(ctx, fmt.Sprintf("ТВХ биржи (WS) устарела: кэш ещё не учёл последний фил (qty=%.6f < ожидаемых %.6f) — форсирую FetchPositions", wsQty, computedQty))
 	}
 	positions, err := sr.runner.Exchange().FetchPositions(ctx)
 	if err != nil {
@@ -2463,7 +2478,7 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 	// the WS cache, else fetches from the exchange; computed avg is only the last resort.
 	{
 		wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
-		avg = sr.resolveExchangeAvgEntry(ctx, wantIdx, avg)
+		avg = sr.resolveExchangeAvgEntry(ctx, wantIdx, avg, totalQty)
 		// Use the actual exchange position size for TP qty to handle partial closes and
 		// rounding differences. Only override when wsQty is smaller — a larger wsQty means
 		// there is an orphan position from a deleted strategy that must not inflate the TP
