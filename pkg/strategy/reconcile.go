@@ -746,7 +746,7 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 		if o.OrderFilter == "StopOrder" {
 			orderFilter = "StopOrder"
 		}
-		if err := ar.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+		if err := ar.exchange.CancelOrder(ctx, trader.CancelRequest{
 			Symbol:      o.Symbol,
 			Category:    o.Category,
 			OrderId:     o.OrderId,

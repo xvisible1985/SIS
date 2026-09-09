@@ -28,7 +28,7 @@ func (sr *StrategyRunner) cancelTPForHedge(ctx context.Context) {
 		sr.runner.pool.Exec(ctx, //nolint:errcheck
 			`UPDATE strategy_cycles SET tp_order_id=NULL WHERE id=$1`, sr.cycle.ID)
 	}
-	if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+	if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 		Symbol:   sr.strategy.Symbol,
 		Category: sr.strategy.Category,
 		OrderId:  old,
@@ -54,7 +54,7 @@ func (sr *StrategyRunner) cancelSLForHedge(ctx context.Context) {
 			sr.runner.pool.Exec(ctx, //nolint:errcheck
 				`UPDATE strategy_cycles SET sl_order_id=NULL WHERE id=$1`, sr.cycle.ID)
 		}
-		if err := sr.runner.tradeStream.CancelOrder(ctx, trader.CancelRequest{
+		if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 			Symbol:   sr.strategy.Symbol,
 			Category: sr.strategy.Category,
 			OrderId:  old,

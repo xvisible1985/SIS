@@ -225,7 +225,7 @@ func (sr *StrategyRunner) matrixPlaceRelativeVirtualOrder(ctx context.Context, l
 	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
 	sr.runner.RegisterOrder(linkID, ref)
 
-	result, err := sr.runner.tradeStream.PlaceOrder(ctx, trader.OrderRequest{
+	result, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
 		Symbol:      sr.strategy.Symbol,
 		Category:    sr.strategy.Category,
 		Side:        l.Side,
