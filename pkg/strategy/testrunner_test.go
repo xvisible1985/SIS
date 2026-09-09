@@ -9,18 +9,22 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// newTestPool returns a real (not mocked) *pgxpool.Pool pointed at a permanently
+// newUnreachablePool returns a real (not mocked) *pgxpool.Pool pointed at a permanently
 // unreachable address. pgxpool.New does not dial eagerly (connections are established
 // lazily, on first use), so this never blocks or errors at construction time. Code paths
 // that call sr.info/sr.warn/sr.errlog do a fire-and-forget pool.Exec whose error is
 // discarded (see pkg/strategy/events.go:logEvent) — against this pool that Exec fails
 // fast with "connection refused" instead of panicking, so tests can exercise those code
 // paths without a live Postgres.
-func newTestPool(t *testing.T) *pgxpool.Pool {
+//
+// Not to be confused with the real-Postgres newTestPool in trade_recorder_insert_test.go
+// (integration-tagged) — this one is deliberately unreachable, for tests that only need
+// fire-and-forget logging to not panic.
+func newUnreachablePool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	pool, err := pgxpool.New(context.Background(), "postgres://fake:fake@127.0.0.1:1/fake")
 	if err != nil {
-		t.Fatalf("newTestPool: %v", err)
+		t.Fatalf("newUnreachablePool: %v", err)
 	}
 	t.Cleanup(pool.Close)
 	return pool
@@ -34,7 +38,7 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 func newTestAccountRunner(t *testing.T, fake *fakeExchange) *AccountRunner {
 	t.Helper()
 	return &AccountRunner{
-		pool:                newTestPool(t),
+		pool:                newUnreachablePool(t),
 		exchange:            fake,
 		strategies:          make(map[string]*StrategyRunner),
 		orderIndex:          make(map[string]orderRef),
