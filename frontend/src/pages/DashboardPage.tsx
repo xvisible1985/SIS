@@ -41,19 +41,22 @@ function fmtPrice(v: number): string {
   return v < 10 ? v.toFixed(4) : v < 1000 ? v.toFixed(2) : v.toLocaleString('en-US')
 }
 function fmtDay(iso: string): string {
-  const [y, m, d] = iso.split('-')
+  // iso is either a plain "2026-06-03" or a full RFC3339 timestamp
+  // ("2026-06-03T00:00:00+03:00", as sent by the backend for daily_pnl/equity_series) —
+  // slicing to the date prefix first keeps this correct for both.
+  const [y, m, d] = iso.slice(0, 10).split('-')
   return `${d}.${m}.${y}`
 }
 /** Short x-axis label: "06.03" for day, "14:00" for hour. */
 function periodShortLabel(day: string, granularity: 'day' | 'hour'): string {
-  if (granularity === 'hour') return day.slice(11) + ':00'
-  // "2026-06-03" → "06.03"
-  const parts = day.split('-')
+  if (granularity === 'hour') return day.slice(11, 13) + ':00'
+  // "2026-06-03T00:00:00+03:00" → "06.03"
+  const parts = day.slice(0, 10).split('-')
   return `${parts[1]}.${parts[2]}`
 }
 /** Full label for date-range headers: "03.06.2026" for day, "14:00" for hour. */
 function periodFullLabel(day: string, granularity: 'day' | 'hour'): string {
-  if (granularity === 'hour') return day.slice(11) + ':00'
+  if (granularity === 'hour') return day.slice(11, 13) + ':00'
   return fmtDay(day)
 }
 
