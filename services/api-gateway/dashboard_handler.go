@@ -50,11 +50,17 @@ type dashboardRecentTrade struct {
 	ClosedAt  string   `json:"closed_at"`
 }
 
+type dashboardEquityPoint struct {
+	Day    string  `json:"day"`
+	Equity float64 `json:"equity"`
+}
+
 type dashboardResponse struct {
 	Stats        dashboardPeriodStats   `json:"stats"`
 	DailyPnL     []dashboardDayPnL      `json:"daily_pnl"`
 	BotStats     []dashboardBotStat     `json:"bot_stats"`
 	RecentTrades []dashboardRecentTrade `json:"recent_trades"`
+	EquitySeries []dashboardEquityPoint `json:"equity_series"`
 	Granularity  string                 `json:"granularity"` // "day" | "hour"
 }
 
@@ -250,11 +256,55 @@ func (s *Server) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ── 5. Equity series (for the hero deposit/drawdown chart) ─────────────────
+	// Only meaningful for a single selected account — balance_snapshots is written
+	// per-account on GET /accounts/:id/balance, so there is no cross-account series to
+	// bucket when accountID is empty (same "all accounts" limitation daily_pnl doesn't
+	// have but the Equity widget already does).
+	equitySeries := []dashboardEquityPoint{}
+	if accountID != "" {
+		trunc := "day"
+		if granularity == "hour" {
+			trunc = "hour"
+		}
+		args := []any{accountID}
+		sinceSQL := ""
+		if since != nil {
+			sinceSQL = " AND created_at >= $2"
+			args = append(args, *since)
+		}
+		rows, err := s.pool.Query(ctx, `
+			SELECT bucket, equity FROM (
+				SELECT DATE_TRUNC('`+trunc+`', created_at) AS bucket, equity,
+					   ROW_NUMBER() OVER (
+						   PARTITION BY DATE_TRUNC('`+trunc+`', created_at)
+						   ORDER BY created_at DESC
+					   ) AS rn
+				FROM balance_snapshots
+				WHERE account_id = $1`+sinceSQL+`
+			) s WHERE rn = 1
+			ORDER BY bucket ASC`,
+			args...,
+		)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var bucket time.Time
+				var entry dashboardEquityPoint
+				if rows.Scan(&bucket, &entry.Equity) == nil {
+					entry.Day = bucket.Format(time.RFC3339)
+					equitySeries = append(equitySeries, entry)
+				}
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, dashboardResponse{
 		Stats:        stats,
 		DailyPnL:     dailyPnL,
 		BotStats:     botStats,
 		RecentTrades: recentTrades,
+		EquitySeries: equitySeries,
 		Granularity:  granularity,
 	})
 }
