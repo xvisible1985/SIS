@@ -834,15 +834,18 @@ type AccountRunner struct {
 	risk   accountRiskState
 }
 
-// resolveExchange builds the trader.Exchange implementation for one account, based on
-// its exchange_accounts.exchange column value. ws backs Bybit's WS-order-placement path
-// (BybitExchange wraps it directly, zero new behavior vs. today's tradeStream field);
-// Binance has no separate order-placement WS yet (see Plan #2's design — PlaceOrder ==
-// PlaceOrderREST for Binance), so BinanceExchange only needs creds. Unrecognized/empty
-// exchangeName defaults to Bybit — defensive only, exchange_accounts.exchange is
-// NOT NULL with a CHECK constraint limiting it to "bybit"/"binance", so this branch
-// should be unreachable against real data.
-func resolveExchange(exchangeName string, creds trader.Credentials, ws *trader.TradeStream) trader.Exchange {
+// ResolveExchange builds the trader.Exchange implementation for one account, based on
+// its exchange_accounts.exchange column value. Exported so services/api-gateway (which
+// has no live AccountRunner for most of its handlers) can resolve an Exchange the same
+// way AccountRunner itself does, without duplicating this logic.
+//
+// ws backs Bybit's WS-order-placement path (BybitExchange wraps it directly, zero new
+// behavior vs. today's tradeStream field); Binance has no separate order-placement WS yet
+// (see Plan #2's design — PlaceOrder == PlaceOrderREST for Binance), so BinanceExchange
+// only needs creds. Unrecognized/empty exchangeName defaults to Bybit — defensive only,
+// exchange_accounts.exchange is NOT NULL with a CHECK constraint limiting it to
+// "bybit"/"binance", so this branch should be unreachable against real data.
+func ResolveExchange(exchangeName string, creds trader.Credentials, ws *trader.TradeStream) trader.Exchange {
 	if exchangeName == "binance" {
 		return binance.NewBinanceExchange(creds)
 	}
@@ -862,7 +865,7 @@ func newAccountRunnerWithExchange(accountID, accountLabel, ownerUsername string,
 		strategies:          make(map[string]*StrategyRunner),
 		orderIndex:          make(map[string]orderRef),
 		tradeStream:         tradeStream,
-		exchange:            resolveExchange(exchangeName, creds, tradeStream),
+		exchange:            ResolveExchange(exchangeName, creds, tradeStream),
 		cancel:              cancel,
 		positions:           make(map[string]float64),
 		posAvgEntry:         make(map[string]float64),

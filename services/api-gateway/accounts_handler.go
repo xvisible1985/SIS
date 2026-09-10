@@ -268,23 +268,12 @@ func (s *Server) VerifyAccount(w http.ResponseWriter, r *http.Request) {
 func (s *Server) GetAccountBalance(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
-	var apiKeyEnc, secretEnc string
-	var whitelistedIPs []string
-	if err := s.pool.QueryRow(r.Context(),
-		`SELECT api_key_enc, secret_enc, whitelisted_ips FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
-		id, userID,
-	).Scan(&apiKeyEnc, &secretEnc, &whitelistedIPs); err != nil {
+	ex, err := s.loadExchange(r, id, userID)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}
-	apiKey, err1 := crypto.Decrypt(apiKeyEnc, s.encKey)
-	secret, err2 := crypto.Decrypt(secretEnc, s.encKey)
-	if err1 != nil || err2 != nil {
-		writeError(w, http.StatusInternalServerError, "decryption error")
-		return
-	}
-	creds := trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: id, WhitelistedIPs: whitelistedIPs}
-	equity, available, err := trader.GetWalletBalance(r.Context(), creds)
+	equity, available, err := ex.GetWalletBalance(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
 		return
@@ -325,23 +314,12 @@ func (s *Server) GetAccountBalance(w http.ResponseWriter, r *http.Request) {
 func (s *Server) GetAccountPositions(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
-	var apiKeyEnc, secretEnc string
-	var whitelistedIPs []string
-	if err := s.pool.QueryRow(r.Context(),
-		`SELECT api_key_enc, secret_enc, whitelisted_ips FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
-		id, userID,
-	).Scan(&apiKeyEnc, &secretEnc, &whitelistedIPs); err != nil {
+	ex, err := s.loadExchange(r, id, userID)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}
-	apiKey, err1 := crypto.Decrypt(apiKeyEnc, s.encKey)
-	secret, err2 := crypto.Decrypt(secretEnc, s.encKey)
-	if err1 != nil || err2 != nil {
-		writeError(w, http.StatusInternalServerError, "decryption error")
-		return
-	}
-	creds := trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: id, WhitelistedIPs: whitelistedIPs}
-	positions, err := trader.FetchPositions(r.Context(), creds)
+	positions, err := ex.FetchPositions(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
 		return

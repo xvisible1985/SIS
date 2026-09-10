@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"sis/pkg/crypto"
+	"sis/pkg/strategy"
 	"sis/pkg/trader"
 )
 
@@ -31,6 +32,33 @@ func (s *Server) loadCreds(r *http.Request, accountID, userID string) (trader.Cr
 		return trader.Credentials{}, fmt.Errorf("decrypt: %w", err)
 	}
 	return trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: accountID, WhitelistedIPs: whitelistedIPs}, nil
+}
+
+// loadExchange looks up an exchange account by id (must be owned by userID), decrypts
+// keys, and resolves the account's trader.Exchange (Bybit or Binance) — the Exchange-
+// returning counterpart to loadCreds, added for Plan #4c's migration off Bybit-specific
+// free functions. loadCreds itself is left unchanged; callers that still need raw
+// Credentials for something the Exchange interface doesn't cover keep using it.
+func (s *Server) loadExchange(r *http.Request, accountID, userID string) (trader.Exchange, error) {
+	var apiKeyEnc, secretEnc, exchangeName string
+	var whitelistedIPs []string
+	err := s.pool.QueryRow(r.Context(),
+		`SELECT api_key_enc, secret_enc, exchange, whitelisted_ips FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
+		accountID, userID,
+	).Scan(&apiKeyEnc, &secretEnc, &exchangeName, &whitelistedIPs)
+	if err != nil {
+		return nil, fmt.Errorf("account not found")
+	}
+	apiKey, err := crypto.Decrypt(apiKeyEnc, s.encKey)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt: %w", err)
+	}
+	secret, err := crypto.Decrypt(secretEnc, s.encKey)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt: %w", err)
+	}
+	creds := trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: accountID, WhitelistedIPs: whitelistedIPs}
+	return strategy.ResolveExchange(exchangeName, creds, trader.NewTradeStream(creds)), nil
 }
 
 // makeOrderLinkID returns a SIS_TRM-N order link ID for terminal (manual) orders.

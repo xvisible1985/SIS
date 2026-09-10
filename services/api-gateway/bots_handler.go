@@ -1570,13 +1570,13 @@ func (s *Server) scanHedgeBot(w http.ResponseWriter, ctx context.Context, botID,
 		return
 	}
 
-	creds, err := s.loadBotAccountCreds(ctx, accountID)
+	ex, err := s.loadBotAccountExchange(ctx, accountID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "не удалось загрузить ключи аккаунта")
 		return
 	}
 
-	rawPositions, err := trader.FetchPositions(ctx, creds)
+	rawPositions, err := ex.FetchPositions(ctx)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("ошибка получения позиций: %v", err))
 		return

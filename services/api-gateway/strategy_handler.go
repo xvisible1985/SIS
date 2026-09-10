@@ -1421,14 +1421,14 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Load exchange credentials.
-	creds, err := s.loadCreds(r, accountID, userID)
+	ex, err := s.loadExchange(r, accountID, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "creds error")
 		return
 	}
 
 	// 5. Fetch live open orders.
-	exchangeOrders, err := trader.FetchOpenOrdersForSymbolAll(r.Context(), creds, category, symbol)
+	exchangeOrders, err := ex.FetchOpenOrdersForSymbolAll(r.Context(), category, symbol)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "exchange error: "+err.Error())
 		return
@@ -1439,7 +1439,7 @@ func (s *Server) GetCycleAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. Fetch current position.
-	positions, err := trader.FetchPositions(r.Context(), creds)
+	positions, err := ex.FetchPositions(r.Context())
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "exchange error: "+err.Error())
 		return
@@ -1899,9 +1899,9 @@ func (s *Server) BindStrategiesToBot(w http.ResponseWriter, r *http.Request) {
 	// of placing a fresh L0 entry on top of it. On any error, proceed with an empty map:
 	// roles fall back to direction (long=main), adopt to nil.
 	posMap := map[string]map[string]hedgePosInfo{}
-	if creds, cErr := s.loadBotAccountCreds(ctx, a.accountID); cErr != nil {
+	if ex, cErr := s.loadBotAccountExchange(ctx, a.accountID); cErr != nil {
 		s.logBotEvent(ctx, req.BotID, fmt.Sprintf("%s — привязка: не удалось получить ключи для позиций (роли по направлению, без adopt): %v", a.symbol, cErr), "warn", "user")
-	} else if positions, pErr := trader.FetchPositions(ctx, creds); pErr != nil {
+	} else if positions, pErr := ex.FetchPositions(ctx); pErr != nil {
 		s.logBotEvent(ctx, req.BotID, fmt.Sprintf("%s — привязка: не удалось получить позиции (роли по направлению, без adopt): %v", a.symbol, pErr), "warn", "user")
 	} else {
 		posMap, _ = buildHedgePosMap(positions)

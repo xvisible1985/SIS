@@ -59,11 +59,12 @@ type closedPnlAccount struct {
 	apiKeyEnc      string
 	secretEnc      string
 	whitelistedIPs []string
+	exchange       string
 }
 
 func (s *ClosedPnlSyncer) loadAndLaunch(ctx context.Context) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, owner_id, api_key_enc, secret_enc, whitelisted_ips FROM exchange_accounts WHERE is_active = TRUE`)
+		`SELECT id, owner_id, api_key_enc, secret_enc, whitelisted_ips, exchange FROM exchange_accounts WHERE is_active = TRUE`)
 	if err != nil {
 		log.Printf("closed_pnl_syncer: load accounts: %v", err)
 		return
@@ -71,7 +72,7 @@ func (s *ClosedPnlSyncer) loadAndLaunch(ctx context.Context) {
 	defer rows.Close()
 	for rows.Next() {
 		var a closedPnlAccount
-		if err := rows.Scan(&a.id, &a.ownerID, &a.apiKeyEnc, &a.secretEnc, &a.whitelistedIPs); err != nil {
+		if err := rows.Scan(&a.id, &a.ownerID, &a.apiKeyEnc, &a.secretEnc, &a.whitelistedIPs, &a.exchange); err != nil {
 			continue
 		}
 		s.mu.Lock()
@@ -110,10 +111,11 @@ func (s *ClosedPnlSyncer) runAccount(ctx context.Context, a closedPnlAccount) {
 		return
 	}
 	creds := trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: a.id, WhitelistedIPs: a.whitelistedIPs}
+	ex := strategy.ResolveExchange(a.exchange, creds, trader.NewTradeStream(creds))
 
 	// Offset from execution syncer (60s) to spread API calls.
 	time.Sleep(30 * time.Second)
-	s.syncAccount(ctx, a, creds)
+	s.syncAccount(ctx, a, creds, ex)
 
 	ticker := time.NewTicker(90 * time.Second)
 	defer ticker.Stop()
@@ -122,12 +124,12 @@ func (s *ClosedPnlSyncer) runAccount(ctx context.Context, a closedPnlAccount) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.syncAccount(ctx, a, creds)
+			s.syncAccount(ctx, a, creds, ex)
 		}
 	}
 }
 
-func (s *ClosedPnlSyncer) syncAccount(ctx context.Context, a closedPnlAccount, creds trader.Credentials) {
+func (s *ClosedPnlSyncer) syncAccount(ctx context.Context, a closedPnlAccount, creds trader.Credentials, ex trader.Exchange) {
 	s.mu.Lock()
 	since, ok := s.lastSync[a.id]
 	if !ok {
@@ -142,7 +144,7 @@ func (s *ClosedPnlSyncer) syncAccount(ctx context.Context, a closedPnlAccount, c
 	newLast := since
 
 	for _, category := range []string{"linear", "inverse"} {
-		pnls, err := trader.FetchRecentClosedPnl(ctx, creds, category, since)
+		pnls, err := ex.FetchRecentClosedPnl(ctx, category, since)
 		if err != nil {
 			log.Printf("closed_pnl_syncer account=%s category=%s: %v", a.id, category, err)
 			continue
@@ -164,7 +166,7 @@ func (s *ClosedPnlSyncer) syncAccount(ctx context.Context, a closedPnlAccount, c
 	s.lastSync[a.id] = newLast
 	s.mu.Unlock()
 
-	s.reconcileMissingTradeHistory(ctx, a, creds)
+	s.reconcileMissingTradeHistory(ctx, a, creds, ex)
 }
 
 // tradeHistoryGap is one strategy_cycles row that ended via TP/SL long enough ago that
@@ -202,7 +204,7 @@ const gapStaleAfter = 5 * time.Minute
 const gapLookback = 48 * time.Hour
 const gapMatchWindow = 10 * time.Minute
 
-func (s *ClosedPnlSyncer) reconcileMissingTradeHistory(ctx context.Context, a closedPnlAccount, creds trader.Credentials) {
+func (s *ClosedPnlSyncer) reconcileMissingTradeHistory(ctx context.Context, a closedPnlAccount, creds trader.Credentials, ex trader.Exchange) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT sc.id, sc.strategy_id, sc.cycle_num, sc.started_at, sc.ended_at, sc.result,
 		       s.symbol, s.category, s.direction, s.bot_id, s.owner_id
@@ -245,7 +247,7 @@ func (s *ClosedPnlSyncer) reconcileMissingTradeHistory(ctx context.Context, a cl
 		log.Printf("closed_pnl_syncer: WARNING %d trade_history gap(s) on %s (account=%s) — no row written within %s of cycle close, backfilling from exchange",
 			len(symGaps), symbol, a.id, gapStaleAfter)
 
-		pnls, err := trader.FetchClosedPnlForSymbol(ctx, creds, symGaps[0].category, symbol, 50)
+		pnls, err := ex.FetchClosedPnlForSymbol(ctx, symGaps[0].category, symbol, 50)
 		if err != nil {
 			log.Printf("closed_pnl_syncer: gap backfill %s: fetch closed pnl: %v — will retry next tick", symbol, err)
 			continue

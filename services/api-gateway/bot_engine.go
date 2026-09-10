@@ -20,6 +20,7 @@ import (
 	"sis/pkg/bybitnews"
 	"sis/pkg/crypto"
 	"sis/pkg/signal"
+	"sis/pkg/strategy"
 	"sis/pkg/trader"
 )
 
@@ -216,8 +217,8 @@ func (s *Server) applyBotOpportunities(ctx context.Context, botID string, opps [
 	// Used below to prevent opening a new strategy while a хвостик (orphan position)
 	// from a previously stopped strategy is still on the exchange.
 	openPositions := make(map[string]bool)
-	if creds, err := s.loadBotAccountCreds(ctx, b.accountID); err == nil {
-		if positions, err := trader.FetchPositions(ctx, creds); err == nil {
+	if ex, err := s.loadBotAccountExchange(ctx, b.accountID); err == nil {
+		if positions, err := ex.FetchPositions(ctx); err == nil {
 			for _, p := range positions {
 				if size, err2 := strconv.ParseFloat(p.Size, 64); err2 == nil && size > 0 {
 					openPositions[p.Symbol] = true
@@ -1453,6 +1454,29 @@ func (s *Server) loadBotAccountCreds(ctx context.Context, accountID string) (tra
 	return trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: accountID, WhitelistedIPs: whitelistedIPs}, nil
 }
 
+// loadBotAccountExchange resolves an exchange account's trader.Exchange (Bybit or
+// Binance) — the Exchange-returning counterpart to loadBotAccountCreds, added for
+// Plan #4c's migration. loadBotAccountCreds itself is left unchanged.
+func (s *Server) loadBotAccountExchange(ctx context.Context, accountID string) (trader.Exchange, error) {
+	var apiKeyEnc, secretEnc, exchangeName string
+	var whitelistedIPs []string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT api_key_enc, secret_enc, exchange, whitelisted_ips FROM exchange_accounts WHERE id=$1`, accountID,
+	).Scan(&apiKeyEnc, &secretEnc, &exchangeName, &whitelistedIPs); err != nil {
+		return nil, err
+	}
+	apiKey, err := crypto.Decrypt(apiKeyEnc, s.encKey)
+	if err != nil {
+		return nil, err
+	}
+	secret, err := crypto.Decrypt(secretEnc, s.encKey)
+	if err != nil {
+		return nil, err
+	}
+	creds := trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: accountID, WhitelistedIPs: whitelistedIPs}
+	return strategy.ResolveExchange(exchangeName, creds, trader.NewTradeStream(creds)), nil
+}
+
 // cleanupStoppedBotStrategies deletes stopped bot strategies that have no open exchange position.
 // Called each tick for bots configured with after_stop_mode="delete".
 //
@@ -1515,13 +1539,13 @@ func (s *Server) cleanupStoppedBotStrategies(ctx context.Context, b botEngineRow
 		return
 	}
 
-	creds, err := s.loadBotAccountCreds(ctx, b.accountID)
+	ex, err := s.loadBotAccountExchange(ctx, b.accountID)
 	if err != nil {
 		s.logBotEvent(ctx, b.id, fmt.Sprintf("Очистка: ошибка загрузки ключей аккаунта: %v", err), "error", "system")
 		return
 	}
 
-	positions, err := trader.FetchPositions(ctx, creds)
+	positions, err := ex.FetchPositions(ctx)
 	if err != nil {
 		s.logBotEvent(ctx, b.id, fmt.Sprintf("Очистка: ошибка получения позиций с биржи: %v", err), "error", "system")
 		return
