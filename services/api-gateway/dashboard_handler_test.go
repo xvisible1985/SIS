@@ -210,10 +210,18 @@ func TestGetDashboard_EquitySeries_BucketsByDayUsingLastSnapshot(t *testing.T) {
 	userID := createWHUser(t, s, "dasheq3")
 	accID := createTestAccount(t, s, userID)
 
-	now := time.Now().UTC()
-	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1)
-	seedBalanceSnapshot(t, s, accID, 100.0, day.Add(9*time.Hour))
-	seedBalanceSnapshot(t, s, accID, 105.5, day.Add(15*time.Hour))
+	// Read yesterday's day-bucket start back from Postgres' own DATE_TRUNC — the same
+	// function and (implicitly) the same session timezone the production query in
+	// GetDashboard uses, so this test stays correct no matter what timezone the DB
+	// session is configured with, instead of assuming UTC.
+	var dayStart time.Time
+	if err := s.pool.QueryRow(context.Background(),
+		`SELECT DATE_TRUNC('day', NOW() - INTERVAL '1 day')`,
+	).Scan(&dayStart); err != nil {
+		t.Fatalf("read back day bucket start: %v", err)
+	}
+	seedBalanceSnapshot(t, s, accID, 100.0, dayStart.Add(9*time.Hour))
+	seedBalanceSnapshot(t, s, accID, 105.5, dayStart.Add(15*time.Hour))
 
 	resp := getDashboardStats(t, s, userID, url.Values{"period": {"30d"}, "account_id": {accID}})
 	if len(resp.EquitySeries) != 1 {
