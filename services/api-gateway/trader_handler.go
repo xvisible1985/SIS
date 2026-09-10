@@ -234,12 +234,12 @@ func (s *Server) TraderSetLeverage(w http.ResponseWriter, r *http.Request) {
 	if req.Category == "" {
 		req.Category = "linear"
 	}
-	creds, err := s.loadCreds(r, req.AccountID, userID)
+	ex, err := s.loadExchange(r, req.AccountID, userID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}
-	if err := trader.SetLeverage(r.Context(), creds, trader.LeverageRequest{
+	if err := ex.SetLeverage(r.Context(), trader.LeverageRequest{
 		Symbol:       req.Symbol,
 		Category:     req.Category,
 		BuyLeverage:  req.Leverage,
@@ -272,12 +272,12 @@ func (s *Server) TraderSwitchPositionMode(w http.ResponseWriter, r *http.Request
 	if req.Category == "" {
 		req.Category = "linear"
 	}
-	creds, err := s.loadCreds(r, req.AccountID, userID)
+	ex, err := s.loadExchange(r, req.AccountID, userID)
 	if err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
-	if err := trader.SwitchPositionMode(r.Context(), creds, req.Category, req.Symbol, req.Mode); err != nil {
+	if err := ex.SwitchPositionMode(r.Context(), req.Category, req.Symbol, req.Mode); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
 		return
 	}
