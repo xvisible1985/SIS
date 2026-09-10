@@ -217,8 +217,8 @@ func (s *Server) applyBotOpportunities(ctx context.Context, botID string, opps [
 	// Used below to prevent opening a new strategy while a хвостик (orphan position)
 	// from a previously stopped strategy is still on the exchange.
 	openPositions := make(map[string]bool)
-	if creds, err := s.loadBotAccountCreds(ctx, b.accountID); err == nil {
-		if positions, err := trader.FetchPositions(ctx, creds); err == nil {
+	if ex, err := s.loadBotAccountExchange(ctx, b.accountID); err == nil {
+		if positions, err := ex.FetchPositions(ctx); err == nil {
 			for _, p := range positions {
 				if size, err2 := strconv.ParseFloat(p.Size, 64); err2 == nil && size > 0 {
 					openPositions[p.Symbol] = true
@@ -1539,13 +1539,13 @@ func (s *Server) cleanupStoppedBotStrategies(ctx context.Context, b botEngineRow
 		return
 	}
 
-	creds, err := s.loadBotAccountCreds(ctx, b.accountID)
+	ex, err := s.loadBotAccountExchange(ctx, b.accountID)
 	if err != nil {
 		s.logBotEvent(ctx, b.id, fmt.Sprintf("Очистка: ошибка загрузки ключей аккаунта: %v", err), "error", "system")
 		return
 	}
 
-	positions, err := trader.FetchPositions(ctx, creds)
+	positions, err := ex.FetchPositions(ctx)
 	if err != nil {
 		s.logBotEvent(ctx, b.id, fmt.Sprintf("Очистка: ошибка получения позиций с биржи: %v", err), "error", "system")
 		return

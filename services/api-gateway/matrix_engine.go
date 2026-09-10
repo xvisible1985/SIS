@@ -51,8 +51,13 @@ func (s *Server) processMatrixBot(ctx context.Context, botID, ownerID, accountID
 		s.logBotEvent(ctx, botID, fmt.Sprintf("Матрикс: ошибка ключей аккаунта: %v", err), "error", "system")
 		return
 	}
+	ex, err := s.loadBotAccountExchange(ctx, accountID)
+	if err != nil {
+		s.logBotEvent(ctx, botID, fmt.Sprintf("Матрикс: ошибка ключей аккаунта: %v", err), "error", "system")
+		return
+	}
 
-	rawPositions, err := trader.FetchPositions(ctx, creds)
+	rawPositions, err := ex.FetchPositions(ctx)
 	if err != nil {
 		s.logBotEvent(ctx, botID, fmt.Sprintf("Матрикс: ошибка получения позиций: %v", err), "error", "system")
 		return

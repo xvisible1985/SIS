@@ -138,8 +138,14 @@ func (s *Server) processHedgeBot(ctx context.Context, botID, ownerID, accountID 
 			fmt.Sprintf("Хедж: ошибка ключей аккаунта: %v", err), "error", "system")
 		return
 	}
+	ex, err := s.loadBotAccountExchange(ctx, accountID)
+	if err != nil {
+		s.logBotEvent(ctx, botID,
+			fmt.Sprintf("Хедж: ошибка ключей аккаунта: %v", err), "error", "system")
+		return
+	}
 
-	rawPositions, err := trader.FetchPositions(ctx, creds)
+	rawPositions, err := ex.FetchPositions(ctx)
 	if err != nil {
 		s.logBotEvent(ctx, botID,
 			fmt.Sprintf("Хедж: ошибка получения позиций: %v", err), "error", "system")
@@ -669,7 +675,11 @@ func (s *Server) verifyAndClosePairedBot(ctx context.Context, entry pairedCloseW
 	if err != nil {
 		return
 	}
-	rawPositions, err := trader.FetchPositions(ctx, creds)
+	ex, err := s.loadBotAccountExchange(ctx, entry.accountID)
+	if err != nil {
+		return
+	}
+	rawPositions, err := ex.FetchPositions(ctx)
 	if err != nil {
 		return
 	}
