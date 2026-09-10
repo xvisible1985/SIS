@@ -200,3 +200,42 @@ func TestClearAccountStats_HidesOlderTradesButNotNewerOnes(t *testing.T) {
 		t.Error("BEFOREUSDT row was deleted — clear-stats must be non-destructive")
 	}
 }
+
+// TestGetDashboard_EquitySeries_BucketsByDayUsingLastSnapshot is the regression for the
+// equity_series aggregation: two snapshots on the same day must collapse into one bucket,
+// keeping the LATEST snapshot in that bucket (equity "as of end of bucket"), not an
+// average or the first one.
+func TestGetDashboard_EquitySeries_BucketsByDayUsingLastSnapshot(t *testing.T) {
+	s := newTestServer(t)
+	userID := createWHUser(t, s, "dasheq3")
+	accID := createTestAccount(t, s, userID)
+
+	now := time.Now().UTC()
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1)
+	seedBalanceSnapshot(t, s, accID, 100.0, day.Add(9*time.Hour))
+	seedBalanceSnapshot(t, s, accID, 105.5, day.Add(15*time.Hour))
+
+	resp := getDashboardStats(t, s, userID, url.Values{"period": {"30d"}, "account_id": {accID}})
+	if len(resp.EquitySeries) != 1 {
+		t.Fatalf("EquitySeries = %+v, want exactly 1 bucket (both snapshots fall on the same day)", resp.EquitySeries)
+	}
+	if resp.EquitySeries[0].Equity != 105.5 {
+		t.Errorf("Equity = %v, want 105.5 (the later of the two same-day snapshots)", resp.EquitySeries[0].Equity)
+	}
+}
+
+// TestGetDashboard_EquitySeries_EmptyWithoutAccountID documents the intentional limitation:
+// balance_snapshots is per-account, so there is no equity series to show in the "all
+// accounts" aggregate view — the field must come back empty, not an error, so the frontend
+// can fall back to the old cumulative P&L chart.
+func TestGetDashboard_EquitySeries_EmptyWithoutAccountID(t *testing.T) {
+	s := newTestServer(t)
+	userID := createWHUser(t, s, "dasheq4")
+	accID := createTestAccount(t, s, userID)
+	seedBalanceSnapshot(t, s, accID, 100.0, time.Now().Add(-time.Hour))
+
+	resp := getDashboardStats(t, s, userID, url.Values{"period": {"30d"}})
+	if len(resp.EquitySeries) != 0 {
+		t.Errorf("EquitySeries = %+v, want empty when no account_id is given (aggregate view)", resp.EquitySeries)
+	}
+}
