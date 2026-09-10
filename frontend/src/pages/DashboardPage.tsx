@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getDashboard, type DashboardData, type DailyPnL } from '../api/dashboard'
+import { getDashboard, type DashboardData, type DailyPnL, type EquityPoint } from '../api/dashboard'
 import { getAccountBalance, getAccountPositions, listAccounts, clearAccountStats } from '../api/accounts'
 import { useSelectedAccount } from '../contexts/AccountContext'
 import type { Position, ExchangeAccount } from '../types'
@@ -269,6 +269,131 @@ function DrawdownChart({ daily }: { daily: DailyPnL[] }) {
   )
 }
 
+// ─── Deposit series: merge equity_series onto the daily_pnl x-axis ───────────
+// equity_series is not guaranteed to have a snapshot in every daily_pnl bucket (a bucket
+// might have trades but no balance fetch, or vice versa) — forward-fill from the last known
+// snapshot, and back-fill any leading gap with the first known snapshot, so the resulting
+// series is always fully defined and the line never has a gap.
+function mergeEquityToDailyBuckets(dailyPnL: DailyPnL[], equitySeries: EquityPoint[]): number[] {
+  const equityByDay = new Map(equitySeries.map(e => [e.day, e.equity]))
+  let last = equitySeries.length > 0 ? equitySeries[0].equity : 0
+  return dailyPnL.map(d => {
+    const v = equityByDay.get(d.day)
+    if (v != null) last = v
+    return last
+  })
+}
+
+// ─── Legend for the deposit/drawdown chart ────────────────────────────────────
+function ChartLegend() {
+  const items = [
+    { label: 'Депозит', color: T.blue },
+    { label: 'Свободный', color: T.green },
+    { label: 'Просадка', color: T.red },
+  ]
+  return (
+    <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+      {items.map(it => (
+        <span key={it.label} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, fontWeight: 600, color: T.dim }}>
+          <span style={{ width: 7, height: 7, borderRadius: 2, background: it.color, display: 'inline-block' }} />
+          {it.label}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+// ─── Chart: Deposit / Free deposit / Drawdown (hero) ──────────────────────────
+function DepositChart({ dailyPnL, equitySeries, granularity }: {
+  dailyPnL: DailyPnL[]; equitySeries: EquityPoint[]; granularity: 'day' | 'hour'
+}) {
+  const id = useMemo(() => 'dep' + Math.random().toString(36).slice(2, 7), [])
+
+  const deposit = useMemo(() => mergeEquityToDailyBuckets(dailyPnL, equitySeries), [dailyPnL, equitySeries])
+  const { free, drawdown } = useMemo(() => {
+    let peak = -Infinity
+    const free: number[] = []
+    const drawdown: number[] = []
+    for (const v of deposit) {
+      if (v > peak) peak = v
+      const dd = peak - v
+      drawdown.push(dd)
+      free.push(v - dd)
+    }
+    return { free, drawdown }
+  }, [deposit])
+
+  if (deposit.length < 2) return <NoData height={140} />
+
+  const W = 400, H = 210
+  const pad = { t: 10, r: 8, b: 20, l: 40 }
+  const ddH = 30, ddGap = 8
+  const mainH = H - pad.t - pad.b - ddH - ddGap
+  const mainTop = pad.t
+  const ddTop = mainTop + mainH + ddGap
+  const ddBottom = ddTop + ddH
+  const cw = W - pad.l - pad.r
+
+  const allMin = Math.min(...deposit, ...free)
+  const allMax = Math.max(...deposit, ...free)
+  const vRange = Math.max(allMax - allMin, 0.01)
+  const yMin = allMin - vRange * 0.08
+  const yMax = allMax + vRange * 0.08
+  const yRange = yMax - yMin
+
+  const maxDD = Math.max(...drawdown, 0.01)
+  const step = deposit.length > 1 ? cw / (deposit.length - 1) : 0
+
+  const toMainPts = (arr: number[]): [number, number][] =>
+    arr.map((v, i) => [pad.l + i * step, mainTop + mainH - ((v - yMin) / yRange) * mainH])
+  const depositPts = toMainPts(deposit)
+  const freePts = toMainPts(free)
+  const ddPts: [number, number][] = drawdown.map((v, i) => [pad.l + i * step, ddBottom - (v / maxDD) * ddH])
+
+  const depositPath = smoothPath(depositPts)
+  const freePath = smoothPath(freePts)
+  const ddPath = smoothPath(ddPts)
+
+  const yTicks = 3
+  const lastIdx = dailyPnL.length - 1
+  const xIdxs = [0, Math.floor(lastIdx * 0.25), Math.floor(lastIdx * 0.5), Math.floor(lastIdx * 0.75), lastIdx]
+  const xLabels = [...new Set(xIdxs)].map(i => ({ i, label: periodShortLabel(dailyPnL[i].day, granularity) }))
+
+  const clipId = id + 'c'
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" preserveAspectRatio="none" style={{ display: 'block', height: '100%', flex: 1 }}>
+      <defs>
+        <clipPath id={clipId}>
+          <rect x="0" y="0" width={0} height={H}>
+            <animate attributeName="width" from={0} to={W} dur="1.1s"
+              calcMode="spline" keySplines="0.25 0.46 0.45 0.94" fill="freeze" />
+          </rect>
+        </clipPath>
+      </defs>
+      {Array.from({ length: yTicks + 1 }).map((_, i) => {
+        const v = yMin + (yRange * i) / yTicks
+        const y = mainTop + mainH - ((v - yMin) / yRange) * mainH
+        return (
+          <g key={i}>
+            <line x1={pad.l} x2={pad.l + cw} y1={y} y2={y} stroke={T.border} strokeDasharray="2 4" />
+            <text x={pad.l - 6} y={y + 3} fill={T.faint} fontSize="9" fontFamily="'JetBrains Mono',monospace" textAnchor="end">
+              {fmt$(v, 0)}
+            </text>
+          </g>
+        )
+      })}
+      <g clipPath={`url(#${clipId})`}>
+        <path d={freePath} fill="none" stroke={T.green} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={depositPath} fill="none" stroke={T.blue} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={ddPath} fill="none" stroke={T.red} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      </g>
+      {xLabels.map(({ i, label }) => (
+        <text key={i} x={pad.l + i * step} y={H - 4} fill={T.faint} fontSize="9" fontFamily="'Inter',sans-serif" textAnchor="middle">{label}</text>
+      ))}
+    </svg>
+  )
+}
+
 // ─── Chart: Donut ─────────────────────────────────────────────────────────────
 function DonutChart({ segs, size = 130, thick = 15 }: {
   segs: { pct: number; color: string }[]; size?: number; thick?: number
@@ -481,8 +606,8 @@ function HeroCard({ data, period, equity, equityChange, isMobile = false }: {
       border: '1px solid rgba(123,140,255,.22)', borderRadius: 18,
       boxShadow: '0 28px 70px -32px rgba(91,140,255,.4)',
       position: 'relative', overflow: 'hidden',
-      display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,2fr) minmax(0,1fr)',
-      gridTemplateRows: '1fr',
+      display: 'grid', gridTemplateColumns: 'minmax(0,0.8fr) minmax(0,2.6fr) minmax(0,0.8fr)',
+      gridTemplateRows: '1fr', minHeight: 275,
     }}>
       <div style={{ position: 'absolute', top: -60, right: 120, width: 340, height: 340, pointerEvents: 'none', background: 'radial-gradient(circle,rgba(91,140,255,.35),transparent 60%)', filter: 'blur(20px)' }} />
       <div style={{ position: 'absolute', bottom: -90, left: -80, width: 280, height: 280, pointerEvents: 'none', background: 'radial-gradient(circle,rgba(193,77,255,.22),transparent 60%)', filter: 'blur(24px)' }} />
@@ -510,18 +635,28 @@ function HeroCard({ data, period, equity, equityChange, isMobile = false }: {
 
       {/* CENTER */}
       <div style={{ padding: '22px 4px 12px 12px', position: 'relative', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '0 16px 8px', flexShrink: 0 }}>
-          <Lbl>Кривая P&L</Lbl>
-          {daily_pnl.length > 0 && (
-            <span style={{ ...mono, fontSize: 11, color: T.dim }}>
-              {periodFullLabel(daily_pnl[0].day, data.granularity)} — {periodFullLabel(daily_pnl[daily_pnl.length - 1].day, data.granularity)}
-            </span>
-          )}
-        </div>
-        {cumSeries.length >= 2
-          ? <AreaChart data={cumSeries} width={540} height={170} color="#b8c8ff" fullHeight />
-          : <NoData height={140} />
-        }
+        {(() => {
+          const equitySeries = data.equity_series ?? []
+          return (<>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '0 16px 8px', flexShrink: 0 }}>
+              <Lbl>{equitySeries.length > 0 ? 'Кривая депозита' : 'Кривая P&L'}</Lbl>
+              {equitySeries.length > 0
+                ? <ChartLegend />
+                : daily_pnl.length > 0 && (
+                  <span style={{ ...mono, fontSize: 11, color: T.dim }}>
+                    {periodFullLabel(daily_pnl[0].day, data.granularity)} — {periodFullLabel(daily_pnl[daily_pnl.length - 1].day, data.granularity)}
+                  </span>
+                )
+              }
+            </div>
+            {equitySeries.length > 0
+              ? <DepositChart dailyPnL={daily_pnl} equitySeries={equitySeries} granularity={data.granularity} />
+              : cumSeries.length >= 2
+                ? <AreaChart data={cumSeries} width={540} height={170} color="#b8c8ff" fullHeight />
+                : <NoData height={140} />
+            }
+          </>)
+        })()}
       </div>
 
       {/* RIGHT */}

@@ -43,6 +43,19 @@ func seedTradeHistory(t *testing.T, s *Server, userID, accountID, symbol string,
 	t.Cleanup(func() { s.pool.Exec(context.Background(), "DELETE FROM trade_history WHERE id=$1", id) })
 }
 
+func seedBalanceSnapshot(t *testing.T, s *Server, accountID string, equity float64, createdAt time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	var id string
+	if err := s.pool.QueryRow(ctx,
+		`INSERT INTO balance_snapshots (account_id, equity, created_at) VALUES ($1,$2,$3) RETURNING id`,
+		accountID, equity, createdAt,
+	).Scan(&id); err != nil {
+		t.Fatalf("seed balance_snapshots: %v", err)
+	}
+	t.Cleanup(func() { s.pool.Exec(context.Background(), "DELETE FROM balance_snapshots WHERE id=$1", id) })
+}
+
 func getDashboardStats(t *testing.T, s *Server, userID string, params url.Values) dashboardResponse {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/dashboard?"+params.Encode(), nil)
@@ -100,6 +113,40 @@ func TestGetDashboard_WithoutAccountID_AggregatesAllAccounts(t *testing.T) {
 	}
 }
 
+// TestGetDashboard_EquitySeries_DoesNotLeakOtherUsersAccountData is the regression for a
+// cross-tenant IDOR: balance_snapshots has no owner_id of its own — ownership only exists
+// via exchange_accounts.owner_id — so the equity_series query must join against
+// exchange_accounts and check owner_id, exactly like every other section of GetDashboard
+// (trade_history queries AND th.owner_id = $1; the stats_cleared_at lookup does
+// WHERE id=$1 AND owner_id=$2). Without that check, any authenticated user could pass
+// another user's account_id and receive that other user's equity/balance history.
+//
+// The owner-side assertion below is not incidental: without it, this test would still pass
+// "green" even if equity_series broke entirely for everyone (e.g. a regression that makes
+// the join always return zero rows) — it must positively confirm the legitimate owner still
+// gets their own data back, not just that the attacker gets nothing.
+func TestGetDashboard_EquitySeries_DoesNotLeakOtherUsersAccountData(t *testing.T) {
+	s := newTestServer(t)
+	owner := createWHUser(t, s, "dasheq_owner")
+	attacker := createWHUser(t, s, "dasheq_attacker")
+	victimAcc := createTestAccountLabeled(t, s, owner, "victim")
+
+	seedBalanceSnapshot(t, s, victimAcc, 1000.0, time.Now().Add(-1*time.Hour))
+
+	resp := getDashboardStats(t, s, attacker, url.Values{"period": {"30d"}, "account_id": {victimAcc}})
+	if len(resp.EquitySeries) != 0 {
+		t.Errorf("EquitySeries = %+v, want empty — attacker must not see another user's account balance history", resp.EquitySeries)
+	}
+
+	ownerResp := getDashboardStats(t, s, owner, url.Values{"period": {"30d"}, "account_id": {victimAcc}})
+	if len(ownerResp.EquitySeries) != 1 {
+		t.Fatalf("EquitySeries = %+v, want exactly 1 point (the owner querying their own account)", ownerResp.EquitySeries)
+	}
+	if ownerResp.EquitySeries[0].Equity != 1000.0 {
+		t.Errorf("EquitySeries[0].Equity = %v, want 1000.0 (the seeded snapshot)", ownerResp.EquitySeries[0].Equity)
+	}
+}
+
 // TestClearAccountStats_HidesOlderTradesButNotNewerOnes is the regression for the
 // non-destructive "Очистить статистику" button: trades before the marker disappear from
 // the dashboard; trades after it (and the underlying trade_history rows themselves) must
@@ -151,5 +198,52 @@ func TestClearAccountStats_HidesOlderTradesButNotNewerOnes(t *testing.T) {
 	}
 	if !stillExists {
 		t.Error("BEFOREUSDT row was deleted — clear-stats must be non-destructive")
+	}
+}
+
+// TestGetDashboard_EquitySeries_BucketsByDayUsingLastSnapshot is the regression for the
+// equity_series aggregation: two snapshots on the same day must collapse into one bucket,
+// keeping the LATEST snapshot in that bucket (equity "as of end of bucket"), not an
+// average or the first one.
+func TestGetDashboard_EquitySeries_BucketsByDayUsingLastSnapshot(t *testing.T) {
+	s := newTestServer(t)
+	userID := createWHUser(t, s, "dasheq3")
+	accID := createTestAccount(t, s, userID)
+
+	// Read yesterday's day-bucket start back from Postgres' own DATE_TRUNC — the same
+	// function and (implicitly) the same session timezone the production query in
+	// GetDashboard uses, so this test stays correct no matter what timezone the DB
+	// session is configured with, instead of assuming UTC.
+	var dayStart time.Time
+	if err := s.pool.QueryRow(context.Background(),
+		`SELECT DATE_TRUNC('day', NOW() - INTERVAL '1 day')`,
+	).Scan(&dayStart); err != nil {
+		t.Fatalf("read back day bucket start: %v", err)
+	}
+	seedBalanceSnapshot(t, s, accID, 100.0, dayStart.Add(9*time.Hour))
+	seedBalanceSnapshot(t, s, accID, 105.5, dayStart.Add(15*time.Hour))
+
+	resp := getDashboardStats(t, s, userID, url.Values{"period": {"30d"}, "account_id": {accID}})
+	if len(resp.EquitySeries) != 1 {
+		t.Fatalf("EquitySeries = %+v, want exactly 1 bucket (both snapshots fall on the same day)", resp.EquitySeries)
+	}
+	if resp.EquitySeries[0].Equity != 105.5 {
+		t.Errorf("Equity = %v, want 105.5 (the later of the two same-day snapshots)", resp.EquitySeries[0].Equity)
+	}
+}
+
+// TestGetDashboard_EquitySeries_EmptyWithoutAccountID documents the intentional limitation:
+// balance_snapshots is per-account, so there is no equity series to show in the "all
+// accounts" aggregate view — the field must come back empty, not an error, so the frontend
+// can fall back to the old cumulative P&L chart.
+func TestGetDashboard_EquitySeries_EmptyWithoutAccountID(t *testing.T) {
+	s := newTestServer(t)
+	userID := createWHUser(t, s, "dasheq4")
+	accID := createTestAccount(t, s, userID)
+	seedBalanceSnapshot(t, s, accID, 100.0, time.Now().Add(-time.Hour))
+
+	resp := getDashboardStats(t, s, userID, url.Values{"period": {"30d"}})
+	if len(resp.EquitySeries) != 0 {
+		t.Errorf("EquitySeries = %+v, want empty when no account_id is given (aggregate view)", resp.EquitySeries)
 	}
 }

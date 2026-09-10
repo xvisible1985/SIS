@@ -27,6 +27,7 @@ const fakeDashboard: DashboardData = {
   ],
   bot_stats: [],
   recent_trades: [],
+  equity_series: [],
   granularity: 'day',
 }
 
