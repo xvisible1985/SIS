@@ -14,6 +14,12 @@ import (
 // by fake and with a fresh WS cache (avoids exercising the staleness fallback from Task
 // 3 — that's a separate concern, covered separately). lastMatrixPrice is the caller's to
 // set afterward to control whether matrixTPCrossed is true or false.
+//
+// instr.QtyStep is deliberately set nonzero: matrixUpdateTP falls back to the real,
+// unfaked trader.GetInstrumentInfo (a live signed HTTP call to Bybit, not part of the
+// trader.Exchange interface fakeExchange covers) whenever QtyStep==0. A future test
+// reusing this helper for a different scenario must keep instr.QtyStep nonzero (or
+// otherwise avoid triggering that branch) to stay network-free.
 func newMatrixTPTestStrategy(t *testing.T, fake *fakeExchange) *StrategyRunner {
 	t.Helper()
 	ar := newTestAccountRunner(t, fake)
