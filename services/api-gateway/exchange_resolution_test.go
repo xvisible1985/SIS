@@ -63,4 +63,12 @@ func TestLoadExchange_ResolvesBybitAndBinance(t *testing.T) {
 	if _, ok := exBotBybit.(*trader.BybitExchange); !ok {
 		t.Errorf("loadBotAccountExchange(bybit) = %T, want *trader.BybitExchange", exBotBybit)
 	}
+
+	exBotBinance, err := s.loadBotAccountExchange(ctx, binanceID)
+	if err != nil {
+		t.Fatalf("loadBotAccountExchange(binance): %v", err)
+	}
+	if _, ok := exBotBinance.(*binance.BinanceExchange); !ok {
+		t.Errorf("loadBotAccountExchange(binance) = %T, want *binance.BinanceExchange", exBotBinance)
+	}
 }
