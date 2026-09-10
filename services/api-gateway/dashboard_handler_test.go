@@ -120,6 +120,11 @@ func TestGetDashboard_WithoutAccountID_AggregatesAllAccounts(t *testing.T) {
 // (trade_history queries AND th.owner_id = $1; the stats_cleared_at lookup does
 // WHERE id=$1 AND owner_id=$2). Without that check, any authenticated user could pass
 // another user's account_id and receive that other user's equity/balance history.
+//
+// The owner-side assertion below is not incidental: without it, this test would still pass
+// "green" even if equity_series broke entirely for everyone (e.g. a regression that makes
+// the join always return zero rows) — it must positively confirm the legitimate owner still
+// gets their own data back, not just that the attacker gets nothing.
 func TestGetDashboard_EquitySeries_DoesNotLeakOtherUsersAccountData(t *testing.T) {
 	s := newTestServer(t)
 	owner := createWHUser(t, s, "dasheq_owner")
@@ -131,6 +136,14 @@ func TestGetDashboard_EquitySeries_DoesNotLeakOtherUsersAccountData(t *testing.T
 	resp := getDashboardStats(t, s, attacker, url.Values{"period": {"30d"}, "account_id": {victimAcc}})
 	if len(resp.EquitySeries) != 0 {
 		t.Errorf("EquitySeries = %+v, want empty — attacker must not see another user's account balance history", resp.EquitySeries)
+	}
+
+	ownerResp := getDashboardStats(t, s, owner, url.Values{"period": {"30d"}, "account_id": {victimAcc}})
+	if len(ownerResp.EquitySeries) != 1 {
+		t.Fatalf("EquitySeries = %+v, want exactly 1 point (the owner querying their own account)", ownerResp.EquitySeries)
+	}
+	if ownerResp.EquitySeries[0].Equity != 1000.0 {
+		t.Errorf("EquitySeries[0].Equity = %v, want 1000.0 (the seeded snapshot)", ownerResp.EquitySeries[0].Equity)
 	}
 }
 
