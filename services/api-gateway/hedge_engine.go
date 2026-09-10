@@ -132,12 +132,6 @@ func (s *Server) hedgeEngineTick(ctx context.Context) {
 //  2. Checks existing hedges for deactivation.
 //  3. Checks unhedged positions for activation.
 func (s *Server) processHedgeBot(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, watches map[string]hedgeWatchEntry, pairedWatches map[string]pairedCloseWatchEntry) {
-	creds, err := s.loadBotAccountCreds(ctx, accountID)
-	if err != nil {
-		s.logBotEvent(ctx, botID,
-			fmt.Sprintf("Хедж: ошибка ключей аккаунта: %v", err), "error", "system")
-		return
-	}
 	ex, err := s.loadBotAccountExchange(ctx, accountID)
 	if err != nil {
 		s.logBotEvent(ctx, botID,
@@ -162,10 +156,10 @@ func (s *Server) processHedgeBot(ctx context.Context, botID, ownerID, accountID 
 	}
 
 	s.checkHedgeDeactivation(ctx, botID, accountID, cfg, posMap)
-	s.checkHedgeActivation(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, creds, posMap, watches)
+	s.checkHedgeActivation(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, ex, posMap, watches)
 	s.buildPairedCloseWatches(ctx, botID, accountID, "hedge", cfg, posMap, pairedWatches)
 	if cfg.RescuePartialCloseEnabled {
-		s.checkRescuePartialClose(ctx, botID, accountID, cfg, posMap)
+		s.checkRescuePartialClose(ctx, botID, accountID, cfg, ex, posMap)
 	}
 }
 
@@ -924,7 +918,7 @@ func symbolPassesHedgeFilter(symbol string, whitelist, blacklist, delistSymbols 
 
 // checkHedgeActivation iterates over open exchange positions and creates hedge
 // strategies for those that meet the activation criteria and have no active hedge yet.
-func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, creds trader.Credentials, posMap map[string]map[string]hedgePosInfo, watches map[string]hedgeWatchEntry) {
+func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, ex trader.Exchange, posMap map[string]map[string]hedgePosInfo, watches map[string]hedgeWatchEntry) {
 	delistSymbols := s.GetDelistingSymbols()
 
 	for _, bySymbol := range posMap {
@@ -1157,7 +1151,7 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 			// Handle conflicting strategy in the hedge slot.
 			// suspendedSlotID is non-empty when HedgeCloseType=2: the strategy was suspended
 			// and must be linked to the new hedge for restoration on deactivation.
-			suspendedSlotID, ok := s.resolveHedgeSlotConflict(ctx, botID, accountID, pos.Symbol, hedgeDir, cfg, creds, posMap)
+			suspendedSlotID, ok := s.resolveHedgeSlotConflict(ctx, botID, accountID, pos.Symbol, hedgeDir, cfg, ex, posMap)
 			if !ok {
 				continue
 			}
@@ -1234,7 +1228,7 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 	// Standalone force-activation: create hedge strategies for whitelisted symbols
 	// even when no main position exists on the exchange.
 	if cfg.HedgeForceActivation && len(whitelist) > 0 {
-		s.checkHedgeForceStandaloneActivation(ctx, botID, ownerID, accountID, whitelist, blacklist, delistSymbols, cfg, creds)
+		s.checkHedgeForceStandaloneActivation(ctx, botID, ownerID, accountID, whitelist, blacklist, delistSymbols, cfg)
 	}
 }
 
@@ -1242,7 +1236,7 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 // without requiring a corresponding main position on the exchange. Used when HedgeForceActivation=true.
 // The hedge direction is the opposite of cfg.Direction ("long" cfg → short hedge, "short" cfg → long hedge).
 // cfg.Direction="both" is skipped — direction is ambiguous without a main position.
-func (s *Server) checkHedgeForceStandaloneActivation(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist, delistSymbols []string, cfg botCfgJSON, creds trader.Credentials) {
+func (s *Server) checkHedgeForceStandaloneActivation(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist, delistSymbols []string, cfg botCfgJSON) {
 	var hedgeDir string
 	switch cfg.Direction {
 	case "long":
@@ -1519,7 +1513,7 @@ func (s *Server) cleanupStoppedHedgeCards(ctx context.Context, botID, symbol, he
 //   - ok=true   → slot is free or was freed; proceed with hedge creation
 //   - suspendedStrategyID non-empty only for HedgeCloseType=2: the strategy that was suspended
 //     and must be linked to the new hedge strategy via hedge_stopped_by for later restoration.
-func (s *Server) resolveHedgeSlotConflict(ctx context.Context, botID, accountID, symbol, hedgeDir string, cfg botCfgJSON, creds trader.Credentials, posMap map[string]map[string]hedgePosInfo) (string, bool) {
+func (s *Server) resolveHedgeSlotConflict(ctx context.Context, botID, accountID, symbol, hedgeDir string, cfg botCfgJSON, ex trader.Exchange, posMap map[string]map[string]hedgePosInfo) (string, bool) {
 	var conflictID string
 	err := s.pool.QueryRow(ctx,
 		`SELECT id FROM strategies
@@ -1576,7 +1570,7 @@ func (s *Server) resolveHedgeSlotConflict(ctx context.Context, botID, accountID,
 		}
 
 		// Cancel all active orders synchronously — maximum speed before stopping the strategy.
-		cancelled, cancelErrors := s.cancelStrategyOrders(ctx, botID, conflictID, symbol, category, creds)
+		cancelled, cancelErrors := s.cancelStrategyOrders(ctx, botID, conflictID, symbol, category, ex)
 
 		// Stop the strategy in DB.
 		if _, err := s.pool.Exec(ctx,
@@ -1607,7 +1601,7 @@ func (s *Server) resolveHedgeSlotConflict(ctx context.Context, botID, accountID,
 // the cycle-level TP and SL orders, all placed grid-level orders, and per-level SL orders.
 // Orders are cancelled directly via the exchange API for maximum speed.
 // Returns count of successfully cancelled orders and count of errors.
-func (s *Server) cancelStrategyOrders(ctx context.Context, botID, stratID, symbol, category string, creds trader.Credentials) (cancelled, errors int) {
+func (s *Server) cancelStrategyOrders(ctx context.Context, botID, stratID, symbol, category string, ex trader.Exchange) (cancelled, errors int) {
 	// Get active cycle and its TP/SL order IDs.
 	var cycleID, tpOrderID, slOrderID string
 	if err := s.pool.QueryRow(ctx,
@@ -1622,7 +1616,7 @@ func (s *Server) cancelStrategyOrders(ctx context.Context, botID, stratID, symbo
 
 	// Cancel TP order (regular limit/market order).
 	if tpOrderID != "" {
-		if err := trader.CancelOrder(ctx, creds, trader.CancelRequest{
+		if err := ex.CancelOrderREST(ctx, trader.CancelRequest{
 			Symbol: symbol, Category: category, OrderId: tpOrderID,
 		}); err != nil {
 			s.logBotEvent(ctx, botID,
@@ -1639,11 +1633,11 @@ func (s *Server) cancelStrategyOrders(ctx context.Context, botID, stratID, symbo
 
 	// Cancel SL order (conditional stop — try StopOrder filter first, then plain).
 	if slOrderID != "" {
-		err1 := trader.CancelOrder(ctx, creds, trader.CancelRequest{
+		err1 := ex.CancelOrderREST(ctx, trader.CancelRequest{
 			Symbol: symbol, Category: category, OrderId: slOrderID, OrderFilter: "StopOrder",
 		})
 		if err1 != nil {
-			err2 := trader.CancelOrder(ctx, creds, trader.CancelRequest{
+			err2 := ex.CancelOrderREST(ctx, trader.CancelRequest{
 				Symbol: symbol, Category: category, OrderId: slOrderID,
 			})
 			if err2 != nil {
@@ -1688,7 +1682,7 @@ func (s *Server) cancelStrategyOrders(ctx context.Context, botID, stratID, symbo
 	rows.Close()
 
 	for _, o := range lvlOrders {
-		if err := trader.CancelOrder(ctx, creds, trader.CancelRequest{
+		if err := ex.CancelOrderREST(ctx, trader.CancelRequest{
 			Symbol: symbol, Category: category, OrderId: o.orderID,
 		}); err != nil {
 			s.logBotEvent(ctx, botID,
@@ -1700,7 +1694,7 @@ func (s *Server) cancelStrategyOrders(ctx context.Context, botID, stratID, symbo
 		}
 		// Level SL (conditional) — best-effort, not counted in errors.
 		if o.slID != "" {
-			trader.CancelOrder(ctx, creds, trader.CancelRequest{ //nolint:errcheck
+			ex.CancelOrderREST(ctx, trader.CancelRequest{ //nolint:errcheck
 				Symbol: symbol, Category: category, OrderId: o.slID, OrderFilter: "StopOrder",
 			})
 		}

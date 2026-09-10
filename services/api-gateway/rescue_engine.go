@@ -215,7 +215,7 @@ func rescueCalcPartialCloseQty(accumulatedPnl, mainReducedUsdt, price, qtyStep, 
 // with RescuePartialCloseEnabled=true. It queries all open hedge sessions for
 // the bot, evaluates rescue conditions for each pair, and places a reduce-only
 // market order on the main position when all gates are open.
-func (s *Server) checkRescuePartialClose(ctx context.Context, botID, accountID string, cfg botCfgJSON, posMap map[string]map[string]hedgePosInfo) {
+func (s *Server) checkRescuePartialClose(ctx context.Context, botID, accountID string, cfg botCfgJSON, ex trader.Exchange, posMap map[string]map[string]hedgePosInfo) {
 	type sessionRow struct {
 		hedgeStratID    string
 		accumulatedPnl  float64
@@ -250,12 +250,6 @@ func (s *Server) checkRescuePartialClose(ctx context.Context, botID, accountID s
 		sessions = append(sessions, sr)
 	}
 	rows.Close()
-
-	creds, err := s.loadBotAccountCreds(ctx, accountID)
-	if err != nil {
-		log.Printf("checkRescuePartialClose [bot %s]: creds: %v", botID, err)
-		return
-	}
 
 	for _, sr := range sessions {
 		mainSide := hedgeDirToSide(sr.mainDir)
@@ -349,7 +343,7 @@ func (s *Server) checkRescuePartialClose(ctx context.Context, botID, accountID s
 			PositionIdx: posIdx,
 		}
 
-		result, err := trader.PlaceOrder(ctx, creds, orderReq)
+		result, err := ex.PlaceOrderREST(ctx, orderReq)
 		if err != nil {
 			log.Printf("checkRescuePartialClose [%s %s]: PlaceOrder: %v", botID, sr.symbol, err)
 			s.logBotEvent(ctx, botID,
