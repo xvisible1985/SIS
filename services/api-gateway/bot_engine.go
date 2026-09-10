@@ -20,6 +20,7 @@ import (
 	"sis/pkg/bybitnews"
 	"sis/pkg/crypto"
 	"sis/pkg/signal"
+	"sis/pkg/strategy"
 	"sis/pkg/trader"
 )
 
@@ -1451,6 +1452,29 @@ func (s *Server) loadBotAccountCreds(ctx context.Context, accountID string) (tra
 		return trader.Credentials{}, err
 	}
 	return trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: accountID, WhitelistedIPs: whitelistedIPs}, nil
+}
+
+// loadBotAccountExchange resolves an exchange account's trader.Exchange (Bybit or
+// Binance) — the Exchange-returning counterpart to loadBotAccountCreds, added for
+// Plan #4c's migration. loadBotAccountCreds itself is left unchanged.
+func (s *Server) loadBotAccountExchange(ctx context.Context, accountID string) (trader.Exchange, error) {
+	var apiKeyEnc, secretEnc, exchangeName string
+	var whitelistedIPs []string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT api_key_enc, secret_enc, exchange, whitelisted_ips FROM exchange_accounts WHERE id=$1`, accountID,
+	).Scan(&apiKeyEnc, &secretEnc, &exchangeName, &whitelistedIPs); err != nil {
+		return nil, err
+	}
+	apiKey, err := crypto.Decrypt(apiKeyEnc, s.encKey)
+	if err != nil {
+		return nil, err
+	}
+	secret, err := crypto.Decrypt(secretEnc, s.encKey)
+	if err != nil {
+		return nil, err
+	}
+	creds := trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: accountID, WhitelistedIPs: whitelistedIPs}
+	return strategy.ResolveExchange(exchangeName, creds, trader.NewTradeStream(creds)), nil
 }
 
 // cleanupStoppedBotStrategies deletes stopped bot strategies that have no open exchange position.

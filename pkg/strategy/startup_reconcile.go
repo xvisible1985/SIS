@@ -112,7 +112,7 @@ func (e *Engine) reconcileStoppedCycles(ctx context.Context) {
 			}
 			creds := trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: c.accountID, WhitelistedIPs: c.whitelistedIPs}
 			credCache[c.accountID] = creds
-			exCache[c.accountID] = resolveExchange(c.exchangeName, creds, trader.NewTradeStream(creds))
+			exCache[c.accountID] = ResolveExchange(c.exchangeName, creds, trader.NewTradeStream(creds))
 		}
 		ex := exCache[c.accountID]
 		if ex == nil {
@@ -268,7 +268,7 @@ func (e *Engine) reconcileStoppedNoCycle(ctx context.Context) {
 		}
 
 		creds := trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: accountID, WhitelistedIPs: acc.whitelistedIPs}
-		ex := resolveExchange(acc.exchangeName, creds, trader.NewTradeStream(creds))
+		ex := ResolveExchange(acc.exchangeName, creds, trader.NewTradeStream(creds))
 		positions, err := ex.FetchPositions(ctx)
 		if err != nil {
 			log.Printf("reconcileStoppedNoCycle: fetch positions account=%s: %v", accountID, err)

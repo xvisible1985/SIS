@@ -13,7 +13,7 @@ func testCreds() trader.Credentials {
 
 func TestResolveExchange_Bybit_ReturnsBybitExchange(t *testing.T) {
 	ts := trader.NewTradeStream(testCreds())
-	ex := resolveExchange("bybit", testCreds(), ts)
+	ex := ResolveExchange("bybit", testCreds(), ts)
 
 	if _, ok := ex.(*trader.BybitExchange); !ok {
 		t.Fatalf("resolveExchange(bybit, ...) returned %T, want *trader.BybitExchange", ex)
@@ -22,7 +22,7 @@ func TestResolveExchange_Bybit_ReturnsBybitExchange(t *testing.T) {
 
 func TestResolveExchange_Binance_ReturnsBinanceExchange(t *testing.T) {
 	ts := trader.NewTradeStream(testCreds())
-	ex := resolveExchange("binance", testCreds(), ts)
+	ex := ResolveExchange("binance", testCreds(), ts)
 
 	if _, ok := ex.(*binance.BinanceExchange); !ok {
 		t.Fatalf("resolveExchange(binance, ...) returned %T, want *binance.BinanceExchange", ex)
@@ -31,7 +31,7 @@ func TestResolveExchange_Binance_ReturnsBinanceExchange(t *testing.T) {
 
 func TestResolveExchange_UnknownDefaultsToBybit(t *testing.T) {
 	ts := trader.NewTradeStream(testCreds())
-	ex := resolveExchange("", testCreds(), ts)
+	ex := ResolveExchange("", testCreds(), ts)
 
 	if _, ok := ex.(*trader.BybitExchange); !ok {
 		t.Fatalf("resolveExchange(\"\", ...) returned %T, want *trader.BybitExchange (defensive default)", ex)
