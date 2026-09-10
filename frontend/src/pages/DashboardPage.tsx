@@ -606,8 +606,8 @@ function HeroCard({ data, period, equity, equityChange, isMobile = false }: {
       border: '1px solid rgba(123,140,255,.22)', borderRadius: 18,
       boxShadow: '0 28px 70px -32px rgba(91,140,255,.4)',
       position: 'relative', overflow: 'hidden',
-      display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,2fr) minmax(0,1fr)',
-      gridTemplateRows: '1fr',
+      display: 'grid', gridTemplateColumns: 'minmax(0,0.8fr) minmax(0,2.6fr) minmax(0,0.8fr)',
+      gridTemplateRows: '1fr', minHeight: 275,
     }}>
       <div style={{ position: 'absolute', top: -60, right: 120, width: 340, height: 340, pointerEvents: 'none', background: 'radial-gradient(circle,rgba(91,140,255,.35),transparent 60%)', filter: 'blur(20px)' }} />
       <div style={{ position: 'absolute', bottom: -90, left: -80, width: 280, height: 280, pointerEvents: 'none', background: 'radial-gradient(circle,rgba(193,77,255,.22),transparent 60%)', filter: 'blur(24px)' }} />
@@ -635,18 +635,28 @@ function HeroCard({ data, period, equity, equityChange, isMobile = false }: {
 
       {/* CENTER */}
       <div style={{ padding: '22px 4px 12px 12px', position: 'relative', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '0 16px 8px', flexShrink: 0 }}>
-          <Lbl>Кривая P&L</Lbl>
-          {daily_pnl.length > 0 && (
-            <span style={{ ...mono, fontSize: 11, color: T.dim }}>
-              {periodFullLabel(daily_pnl[0].day, data.granularity)} — {periodFullLabel(daily_pnl[daily_pnl.length - 1].day, data.granularity)}
-            </span>
-          )}
-        </div>
-        {cumSeries.length >= 2
-          ? <AreaChart data={cumSeries} width={540} height={170} color="#b8c8ff" fullHeight />
-          : <NoData height={140} />
-        }
+        {(() => {
+          const equitySeries = data.equity_series ?? []
+          return (<>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '0 16px 8px', flexShrink: 0 }}>
+              <Lbl>{equitySeries.length > 0 ? 'Кривая депозита' : 'Кривая P&L'}</Lbl>
+              {equitySeries.length > 0
+                ? <ChartLegend />
+                : daily_pnl.length > 0 && (
+                  <span style={{ ...mono, fontSize: 11, color: T.dim }}>
+                    {periodFullLabel(daily_pnl[0].day, data.granularity)} — {periodFullLabel(daily_pnl[daily_pnl.length - 1].day, data.granularity)}
+                  </span>
+                )
+              }
+            </div>
+            {equitySeries.length > 0
+              ? <DepositChart dailyPnL={daily_pnl} equitySeries={equitySeries} granularity={data.granularity} />
+              : cumSeries.length >= 2
+                ? <AreaChart data={cumSeries} width={540} height={170} color="#b8c8ff" fullHeight />
+                : <NoData height={140} />
+            }
+          </>)
+        })()}
       </div>
 
       {/* RIGHT */}
