@@ -19,6 +19,11 @@ export interface DailyPnL {
   wins: number
 }
 
+export interface EquityPoint {
+  day: string
+  equity: number
+}
+
 export interface BotStat {
   bot_id: string
   name: string
@@ -44,6 +49,7 @@ export interface DashboardData {
   daily_pnl: DailyPnL[]
   bot_stats: BotStat[]
   recent_trades: RecentTrade[]
+  equity_series: EquityPoint[]
   /** "day" for all periods except "1d"; "hour" for the 1-day period. */
   granularity: 'day' | 'hour'
 }
