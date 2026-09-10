@@ -665,10 +665,6 @@ func (s *Server) loadFreshBotCfg(ctx context.Context, botID string) (botCfgJSON,
 // edge-case-heavy code on a live-money system, so this deliberately re-runs the whole
 // per-bot check rather than a narrower per-pair one.
 func (s *Server) verifyAndClosePairedBot(ctx context.Context, entry pairedCloseWatchEntry) {
-	creds, err := s.loadBotAccountCreds(ctx, entry.accountID)
-	if err != nil {
-		return
-	}
 	ex, err := s.loadBotAccountExchange(ctx, entry.accountID)
 	if err != nil {
 		return
@@ -695,7 +691,7 @@ func (s *Server) verifyAndClosePairedBot(ctx context.Context, entry pairedCloseW
 	case "hedge":
 		s.checkHedgeDeactivation(ctx, entry.botID, entry.accountID, cfg, posMap)
 	case "matrix":
-		s.checkMatrixPairedClose(ctx, entry.botID, entry.accountID, cfg, creds, posMap)
+		s.checkMatrixPairedClose(ctx, entry.botID, entry.accountID, cfg, ex, posMap)
 	}
 }
 
