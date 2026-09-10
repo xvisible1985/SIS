@@ -43,6 +43,19 @@ func seedTradeHistory(t *testing.T, s *Server, userID, accountID, symbol string,
 	t.Cleanup(func() { s.pool.Exec(context.Background(), "DELETE FROM trade_history WHERE id=$1", id) })
 }
 
+func seedBalanceSnapshot(t *testing.T, s *Server, accountID string, equity float64, createdAt time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	var id string
+	if err := s.pool.QueryRow(ctx,
+		`INSERT INTO balance_snapshots (account_id, equity, created_at) VALUES ($1,$2,$3) RETURNING id`,
+		accountID, equity, createdAt,
+	).Scan(&id); err != nil {
+		t.Fatalf("seed balance_snapshots: %v", err)
+	}
+	t.Cleanup(func() { s.pool.Exec(context.Background(), "DELETE FROM balance_snapshots WHERE id=$1", id) })
+}
+
 func getDashboardStats(t *testing.T, s *Server, userID string, params url.Values) dashboardResponse {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/dashboard?"+params.Encode(), nil)
@@ -97,6 +110,27 @@ func TestGetDashboard_WithoutAccountID_AggregatesAllAccounts(t *testing.T) {
 	resp := getDashboardStats(t, s, userID, url.Values{"period": {"30d"}})
 	if resp.Stats.Total != 2 {
 		t.Errorf("Total = %d, want 2 (aggregated across both accounts)", resp.Stats.Total)
+	}
+}
+
+// TestGetDashboard_EquitySeries_DoesNotLeakOtherUsersAccountData is the regression for a
+// cross-tenant IDOR: balance_snapshots has no owner_id of its own — ownership only exists
+// via exchange_accounts.owner_id — so the equity_series query must join against
+// exchange_accounts and check owner_id, exactly like every other section of GetDashboard
+// (trade_history queries AND th.owner_id = $1; the stats_cleared_at lookup does
+// WHERE id=$1 AND owner_id=$2). Without that check, any authenticated user could pass
+// another user's account_id and receive that other user's equity/balance history.
+func TestGetDashboard_EquitySeries_DoesNotLeakOtherUsersAccountData(t *testing.T) {
+	s := newTestServer(t)
+	owner := createWHUser(t, s, "dasheq_owner")
+	attacker := createWHUser(t, s, "dasheq_attacker")
+	victimAcc := createTestAccountLabeled(t, s, owner, "victim")
+
+	seedBalanceSnapshot(t, s, victimAcc, 1000.0, time.Now().Add(-1*time.Hour))
+
+	resp := getDashboardStats(t, s, attacker, url.Values{"period": {"30d"}, "account_id": {victimAcc}})
+	if len(resp.EquitySeries) != 0 {
+		t.Errorf("EquitySeries = %+v, want empty — attacker must not see another user's account balance history", resp.EquitySeries)
 	}
 }
 

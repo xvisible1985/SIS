@@ -267,21 +267,22 @@ func (s *Server) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		if granularity == "hour" {
 			trunc = "hour"
 		}
-		args := []any{accountID}
+		args := []any{accountID, userID}
 		sinceSQL := ""
 		if since != nil {
-			sinceSQL = " AND created_at >= $2"
+			sinceSQL = " AND bs.created_at >= $3"
 			args = append(args, *since)
 		}
 		rows, err := s.pool.Query(ctx, `
 			SELECT bucket, equity FROM (
-				SELECT DATE_TRUNC('`+trunc+`', created_at) AS bucket, equity,
+				SELECT DATE_TRUNC('`+trunc+`', bs.created_at) AS bucket, bs.equity,
 					   ROW_NUMBER() OVER (
-						   PARTITION BY DATE_TRUNC('`+trunc+`', created_at)
-						   ORDER BY created_at DESC
+						   PARTITION BY DATE_TRUNC('`+trunc+`', bs.created_at)
+						   ORDER BY bs.created_at DESC
 					   ) AS rn
-				FROM balance_snapshots
-				WHERE account_id = $1`+sinceSQL+`
+				FROM balance_snapshots bs
+				JOIN exchange_accounts ea ON ea.id = bs.account_id
+				WHERE bs.account_id = $1 AND ea.owner_id = $2`+sinceSQL+`
 			) s WHERE rn = 1
 			ORDER BY bucket ASC`,
 			args...,
