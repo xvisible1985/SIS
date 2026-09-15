@@ -364,6 +364,20 @@ func (e *Engine) GetTradeStream(accountID string) *trader.TradeStream {
 	return runner.tradeStream
 }
 
+// GetExchange returns the resolved trader.Exchange for an account's live runner, or nil
+// if no runner exists. Mirrors GetTradeStream — runner.exchange is set unconditionally
+// during AccountRunner construction (same invariant as runner.tradeStream), so this never
+// returns a non-nil runner with a nil exchange.
+func (e *Engine) GetExchange(accountID string) trader.Exchange {
+	e.mu.RLock()
+	runner := e.runners[accountID]
+	e.mu.RUnlock()
+	if runner == nil {
+		return nil
+	}
+	return runner.exchange
+}
+
 // RestartCycle cancels the current cycle for a strategy and starts a new one.
 // Called after strategy settings are updated so new grid parameters take effect.
 func (e *Engine) RestartCycle(ctx context.Context, strategyID string) {

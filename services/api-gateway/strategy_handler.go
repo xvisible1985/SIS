@@ -1252,7 +1252,7 @@ func (s *Server) DetachFromBot(w http.ResponseWriter, r *http.Request) {
 		go s.engine.Notify(context.Background(), id)
 
 		if body.Position != nil && body.Position.Size != "" && body.Position.Size != "0" {
-			if creds, credsErr := s.loadCreds(r, accountID, userID); credsErr == nil {
+			if ex, credsErr := s.loadExchange(r, accountID, userID); credsErr == nil {
 				closeSide := "Sell"
 				if body.Position.Side == "Sell" {
 					closeSide = "Buy"
@@ -1273,7 +1273,7 @@ func (s *Server) DetachFromBot(w http.ResponseWriter, r *http.Request) {
 					// symbol+direction can get its brand-new cycle force-closed instead).
 					OrderLinkId: fmt.Sprintf("SIS_STR-%s-scl-%d", id[:8], time.Now().UnixMilli()),
 				}
-				if _, placeErr := trader.PlaceOrder(r.Context(), creds, closeReq); placeErr != nil && botID != nil {
+				if _, placeErr := ex.PlaceOrderREST(r.Context(), closeReq); placeErr != nil && botID != nil {
 					s.logBotEvent(r.Context(), *botID,
 						fmt.Sprintf("Хедж: ошибка закрытия позиции %s при detach: %v", symbol, placeErr),
 						"error", "hedge")

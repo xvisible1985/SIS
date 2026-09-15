@@ -112,10 +112,25 @@ func (s *Server) TraderPlaceOrder(w http.ResponseWriter, r *http.Request) {
 		req.Category = "linear"
 	}
 
-	creds, err := s.loadCreds(r, req.AccountID, userID)
-	if err != nil {
+	var exchangeName string
+	if err := s.pool.QueryRow(r.Context(),
+		`SELECT exchange FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
+		req.AccountID, userID,
+	).Scan(&exchangeName); err != nil {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
+	}
+
+	var ex trader.Exchange
+	if e := s.engine.GetExchange(req.AccountID); e != nil {
+		ex = e
+	} else {
+		var err error
+		ex, err = s.loadExchange(r, req.AccountID, userID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "account not found")
+			return
+		}
 	}
 
 	orderLinkID := s.makeOrderLinkID(r.Context())
@@ -136,12 +151,7 @@ func (s *Server) TraderPlaceOrder(w http.ResponseWriter, r *http.Request) {
 		OrderLinkId:      orderLinkID,
 	}
 
-	var result trader.OrderResult
-	if ts := s.engine.GetTradeStream(req.AccountID); ts != nil {
-		result, err = ts.PlaceOrder(r.Context(), orderReq)
-	} else {
-		result, err = trader.PlaceOrder(r.Context(), creds, orderReq)
-	}
+	result, err := ex.PlaceOrder(r.Context(), orderReq)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
 		return
@@ -150,8 +160,8 @@ func (s *Server) TraderPlaceOrder(w http.ResponseWriter, r *http.Request) {
 	_, _ = s.pool.Exec(r.Context(),
 		`INSERT INTO trader_orders
 		 (owner_id, account_id, order_link_id, order_id, exchange, symbol, category, side, order_type, qty, price, trigger_price)
-		 VALUES ($1,$2,$3,$4,'bybit',$5,$6,$7,$8,$9,$10,$11)`,
-		userID, req.AccountID, orderLinkID, result.OrderId,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		userID, req.AccountID, orderLinkID, result.OrderId, exchangeName,
 		req.Symbol, req.Category, req.Side, req.OrderType,
 		nullNum(req.Qty), nullNum(req.Price), nullNum(req.TriggerPrice),
 	)
@@ -185,8 +195,7 @@ func (s *Server) TraderCancelOrder(w http.ResponseWriter, r *http.Request) {
 	if req.Category == "" {
 		req.Category = "linear"
 	}
-	creds, err := s.loadCreds(r, req.AccountID, userID)
-	if err != nil {
+	if _, err := s.loadCreds(r, req.AccountID, userID); err != nil {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}
@@ -196,12 +205,18 @@ func (s *Server) TraderCancelOrder(w http.ResponseWriter, r *http.Request) {
 		OrderId:     req.OrderID,
 		OrderFilter: req.OrderFilter,
 	}
-	var cancelErr error
-	if ts := s.engine.GetTradeStream(req.AccountID); ts != nil {
-		cancelErr = ts.CancelOrder(r.Context(), cancelReq)
+	var ex trader.Exchange
+	if e := s.engine.GetExchange(req.AccountID); e != nil {
+		ex = e
 	} else {
-		cancelErr = trader.CancelOrder(r.Context(), creds, cancelReq)
+		var err error
+		ex, err = s.loadExchange(r, req.AccountID, userID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "account not found")
+			return
+		}
 	}
+	cancelErr := ex.CancelOrder(r.Context(), cancelReq)
 	if cancelErr != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": cancelErr.Error()})
 		return

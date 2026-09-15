@@ -5,8 +5,6 @@ package main
 import (
 	"context"
 	"testing"
-
-	"sis/pkg/trader"
 )
 
 // TestEnsureMatrixStrategies_RespectsStrategyLimits: with a whitelist larger than what
@@ -35,7 +33,7 @@ func TestEnsureMatrixStrategies_RespectsStrategyLimits(t *testing.T) {
 	whitelist := []string{"LIMA1USDT", "LIMA2USDT", "LIMA3USDT", "LIMA4USDT", "LIMA5USDT", "LIMA6USDT"}
 	cfg := botCfgJSON{StrategyType: "matrix"}
 
-	s.ensureMatrixStrategies(ctx, botID, userID, accID, whitelist, nil, cfg, trader.Credentials{}, map[string]map[string]hedgePosInfo{}, map[string]bool{})
+	s.ensureMatrixStrategies(ctx, botID, userID, accID, whitelist, nil, cfg, map[string]map[string]hedgePosInfo{}, map[string]bool{})
 
 	var total, long, short int
 	if err := s.pool.QueryRow(ctx,
@@ -172,7 +170,7 @@ func TestEnsureMatrixStrategies_RepairsOneSidedPairBeforeNewOnes(t *testing.T) {
 
 	// Empty whitelist (no new-pair candidates to scan) — if the missing leg opens, it can
 	// only be the repair pass that did it.
-	s.ensureMatrixStrategies(ctx, botID, userID, accID, []string{}, nil, cfg, trader.Credentials{}, map[string]map[string]hedgePosInfo{}, map[string]bool{})
+	s.ensureMatrixStrategies(ctx, botID, userID, accID, []string{}, nil, cfg, map[string]map[string]hedgePosInfo{}, map[string]bool{})
 
 	var shortCount int
 	if err := s.pool.QueryRow(ctx,
@@ -218,7 +216,7 @@ func TestEnsureMatrixStrategies_RepairTakesPrioritySlotOverNewPair(t *testing.T)
 	whitelist := []string{"FRESHUSDT"}
 	cfg := botCfgJSON{StrategyType: "matrix"} // no ActivationSignals -> new-pair path always passes activation
 
-	s.ensureMatrixStrategies(ctx, botID, userID, accID, whitelist, nil, cfg, trader.Credentials{}, map[string]map[string]hedgePosInfo{}, map[string]bool{})
+	s.ensureMatrixStrategies(ctx, botID, userID, accID, whitelist, nil, cfg, map[string]map[string]hedgePosInfo{}, map[string]bool{})
 
 	var prioLong, freshLong int
 	if err := s.pool.QueryRow(ctx,
