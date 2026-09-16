@@ -74,7 +74,7 @@ const MarkHtx     = () => <Mk><path d="M5 19V8"/><path d="M11 19v-8"/><path d="M
 
 const EXCHANGES: Record<string, { name: string; color: string; Mark: React.FC; supported?: boolean }> = {
   bybit:   { name: 'Bybit',   color: '#f7a600', Mark: MarkBybit,   supported: true },
-  binance: { name: 'Binance', color: '#f0b90b', Mark: MarkBinance },
+  binance: { name: 'Binance', color: '#f0b90b', Mark: MarkBinance, supported: true },
   okx:     { name: 'OKX',     color: '#e8edf5', Mark: MarkOkx },
   bingx:   { name: 'BingX',   color: '#5b8cff', Mark: MarkBingx },
   bitget:  { name: 'Bitget',  color: '#00d4d4', Mark: MarkBitget },
