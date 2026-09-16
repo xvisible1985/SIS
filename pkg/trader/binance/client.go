@@ -23,6 +23,12 @@ import (
 // mirrors pkg/trader/bybit.go's bybitBase.
 var binanceBase = "https://fapi.binance.com"
 
+// binanceMainBase is Binance's general/spot API host — a var (not const), same reason as
+// binanceBase, so account_restrictions_test.go can point it at an httptest.Server.
+// /sapi/v1/account/apiRestrictions (used by QueryAPIRestrictions) lives here, not on the
+// futures host every other call in this package uses.
+var binanceMainBase = "https://api.binance.com"
+
 const recvWindowMs = "5000"
 
 // sign returns the hex-encoded HMAC-SHA256 of payload using secret as the key —
@@ -79,6 +85,15 @@ func checkBinanceError(data []byte) error {
 // proxy/IP, matching pkg/trader/bybit.go's doSignedGET/doSignedPOST pattern.
 // proxy.HTTPClientFor also guarantees a request timeout, unlike http.DefaultClient.
 func doRequest(ctx context.Context, method, path string, values url.Values, creds trader.Credentials, apiKey string, body bool) ([]byte, error) {
+	return doRequestToBase(ctx, binanceBase, method, path, values, creds, apiKey, body)
+}
+
+// doRequestToBase is doRequest's actual implementation, parameterized by host — added so
+// account_restrictions.go can call Binance's general/spot API host (api.binance.com)
+// instead of the futures host (fapi.binance.com) every other call in this package uses,
+// while sharing the exact same signing/proxy/error-handling logic. doRequest itself
+// remains the entry point for every existing (futures-host) call site, unchanged.
+func doRequestToBase(ctx context.Context, base, method, path string, values url.Values, creds trader.Credentials, apiKey string, body bool) ([]byte, error) {
 	var req *http.Request
 	var err error
 	if body {
@@ -86,13 +101,13 @@ func doRequest(ctx context.Context, method, path string, values url.Values, cred
 		// constructing the request with a nil body) lets net/http set ContentLength and
 		// GetBody automatically, so the request is sent with a known Content-Length
 		// instead of chunked transfer encoding.
-		req, err = http.NewRequestWithContext(ctx, method, binanceBase+path, strings.NewReader(values.Encode()))
+		req, err = http.NewRequestWithContext(ctx, method, base+path, strings.NewReader(values.Encode()))
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	} else {
-		full := binanceBase + path
+		full := base + path
 		if len(values) > 0 {
 			full += "?" + values.Encode()
 		}
