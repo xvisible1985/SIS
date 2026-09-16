@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"sis/pkg/crypto"
 	"sis/pkg/trader"
+	"sis/pkg/trader/binance"
 )
 
 type accountRow struct {
@@ -198,11 +199,11 @@ func (s *Server) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 func (s *Server) VerifyAccount(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	id := chi.URLParam(r, "id")
-	var apiKeyEnc, secretEnc string
+	var apiKeyEnc, secretEnc, exchangeName string
 	if err := s.pool.QueryRow(r.Context(),
-		`SELECT api_key_enc, secret_enc FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
+		`SELECT api_key_enc, secret_enc, exchange FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
 		id, userID,
-	).Scan(&apiKeyEnc, &secretEnc); err != nil {
+	).Scan(&apiKeyEnc, &secretEnc, &exchangeName); err != nil {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}
@@ -218,6 +219,12 @@ func (s *Server) VerifyAccount(w http.ResponseWriter, r *http.Request) {
 	// self-lock the account out of ever correcting it. Mirrors Syncer.refreshWhitelistedIPs
 	// (pkg/trader/syncer.go), which learned this the same way.
 	unrestricted := trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: id}
+
+	if exchangeName == "binance" {
+		s.verifyBinanceAccount(w, r, id, userID, unrestricted)
+		return
+	}
+
 	raw, err := trader.QueryAPI(r.Context(), unrestricted)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
@@ -258,6 +265,54 @@ func (s *Server) VerifyAccount(w http.ResponseWriter, r *http.Request) {
 		"permissions": parsed.Permissions,
 		"ips":         parsed.IPs,
 		"expires_at":  parsed.ExpiredTime,
+		"proxy_host":  proxyHost,
+	})
+}
+
+// verifyBinanceAccount is VerifyAccount's Binance branch — mirrors its Bybit counterpart's
+// response shape exactly (read_only/permissions/ips/expires_at/proxy_host) using Bybit's
+// own permission-category names (ContractTrade, Wallet) so the frontend's existing parsing
+// (frontend/src/pages/AccountsPage.tsx: verify.permissions?.ContractTrade?.length,
+// verify.permissions?.Wallet?.some(...)) picks these up with zero frontend changes.
+// Binance's API never exposes the account's actual IP whitelist (only whether IP
+// restriction is on) — ips is always [] here, and whitelisted_ips is deliberately left
+// untouched (NULL/unset), so pkg/proxy.PickForIPs treats Binance accounts as unrestricted,
+// exactly like a Bybit key with no IP restriction already behaves. This is a confirmed,
+// deliberate limitation, not a bug — see this plan's own header comment for the rationale.
+func (s *Server) verifyBinanceAccount(w http.ResponseWriter, r *http.Request, id, userID string, creds trader.Credentials) {
+	restrictions, err := binance.QueryAPIRestrictions(r.Context(), creds)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
+		return
+	}
+
+	permissions := map[string][]string{}
+	if restrictions.EnableFutures {
+		permissions["ContractTrade"] = []string{"Trade"}
+	}
+	if restrictions.EnableWithdrawals {
+		permissions["Wallet"] = []string{"Withdraw"}
+	}
+
+	var expiresAt *time.Time
+	if restrictions.TradingAuthorityExpirationTime > 0 {
+		t := time.UnixMilli(restrictions.TradingAuthorityExpirationTime)
+		expiresAt = &t
+		_, _ = s.pool.Exec(r.Context(),
+			`UPDATE exchange_accounts SET expires_at=$1 WHERE id=$2 AND owner_id=$3`,
+			expiresAt, id, userID)
+	}
+
+	var proxyHost string
+	if s.proxyManager != nil {
+		proxyHost = s.proxyManager.LastPickedHost()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":          true,
+		"read_only":   !restrictions.EnableSpotAndMarginTrading && !restrictions.EnableFutures,
+		"permissions": permissions,
+		"ips":         []string{},
+		"expires_at":  restrictions.TradingAuthorityExpirationTime,
 		"proxy_host":  proxyHost,
 	})
 }
