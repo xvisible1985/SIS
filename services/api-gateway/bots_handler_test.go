@@ -790,3 +790,220 @@ func TestPatchBot_StrategyResetTimer(t *testing.T) {
 		t.Error("expected active_since=NULL after strategy change")
 	}
 }
+
+// TestDeployBot_ClonesMultiBotPair pins this plan's core fix: deploying a public
+// Мультибот's signal leg must clone BOTH legs (not just the one that was deployed),
+// link the two new clones via paired_bot_id, and re-point the new hedge clone's
+// hedge_bot_whitelist at the new signal clone's id — not the original template's.
+func TestDeployBot_ClonesMultiBotPair(t *testing.T) {
+	s := newTestServer(t)
+	authorID := createAdminTestUser(t, s, "bots_multi_deploy_author@example.com", "pass1234", false)
+	deployerID := createAdminTestUser(t, s, "bots_multi_deploy_er@example.com", "pass1234", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", authorID)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", deployerID)
+	authorAcctID := createTestAccountLabeled(t, s, authorID, "multi-deploy-author-acct")
+	deployerAcctID := createTestAccountLabeled(t, s, deployerID, "multi-deploy-deployer-acct")
+
+	// Create a Мультибот (both legs private by default) and publish the signal leg.
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "Public Multi", "accountId": authorAcctID,
+		"strategyConfig":      map[string]interface{}{"symbol": "BTCUSDT", "direction": "long"},
+		"hedgeStrategyConfig": map[string]interface{}{"direction": "both"},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bots/multi", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withUserID(req, authorID)
+	s.CreateMultiBot(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create multi: got %d: %s", rec.Code, rec.Body.String())
+	}
+	var signalBot map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&signalBot)
+	origSignalID := signalBot["id"].(string)
+	origHedgeID := signalBot["pairedBotId"].(string)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1 OR id=$2", origSignalID, origHedgeID)
+
+	if _, err := s.pool.Exec(context.Background(), "UPDATE bots SET is_public = true WHERE id=$1", origSignalID); err != nil {
+		t.Fatalf("publish signal leg: %v", err)
+	}
+
+	// Deploy the signal leg (the only leg the catalog ever exposes, per Task 2).
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/bots/"+origSignalID+"/deploy", bytes.NewBufferString(`{"accountId":"`+deployerAcctID+`"}`))
+	req2 = withUserID(req2, deployerID)
+	req2 = addChiParams(req2, map[string]string{"id": origSignalID})
+	s.DeployBot(rec2, req2)
+	if rec2.Code != http.StatusCreated {
+		t.Fatalf("deploy: got %d: %s", rec2.Code, rec2.Body.String())
+	}
+	var newSignalBot map[string]interface{}
+	json.NewDecoder(rec2.Body).Decode(&newSignalBot)
+	newSignalID := newSignalBot["id"].(string)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1 OR id=(SELECT paired_bot_id FROM bots WHERE id=$1)", newSignalID)
+
+	newHedgeIDVal, _ := newSignalBot["pairedBotId"].(string)
+	if newHedgeIDVal == "" {
+		t.Fatalf("expected pairedBotId set on the new signal clone, got %v", newSignalBot["pairedBotId"])
+	}
+	if newHedgeIDVal == origHedgeID {
+		t.Fatalf("new signal clone's pairedBotId still points at the ORIGINAL hedge leg (%s) — a new hedge clone should have been created", origHedgeID)
+	}
+
+	// The new hedge clone must exist, belong to the deployer, and be linked back.
+	var hedgeOwner, hedgePairedID string
+	if err := s.pool.QueryRow(context.Background(),
+		`SELECT owner_id, paired_bot_id FROM bots WHERE id=$1`, newHedgeIDVal,
+	).Scan(&hedgeOwner, &hedgePairedID); err != nil {
+		t.Fatalf("new hedge clone not found: %v", err)
+	}
+	if hedgeOwner != deployerID {
+		t.Errorf("new hedge clone owner = %s, want %s", hedgeOwner, deployerID)
+	}
+	if hedgePairedID != newSignalID {
+		t.Errorf("new hedge clone's paired_bot_id = %s, want %s", hedgePairedID, newSignalID)
+	}
+
+	// The new hedge clone's hedge_bot_whitelist must point at the NEW signal clone, not the
+	// original template's signal leg — otherwise it would watch a bot the deployer doesn't own.
+	var hedgeCfgRaw []byte
+	s.pool.QueryRow(context.Background(), `SELECT strategy_config FROM bots WHERE id=$1`, newHedgeIDVal).Scan(&hedgeCfgRaw)
+	var hedgeCfg struct {
+		HedgeBotWhitelist []string `json:"hedge_bot_whitelist"`
+	}
+	json.Unmarshal(hedgeCfgRaw, &hedgeCfg)
+	if len(hedgeCfg.HedgeBotWhitelist) != 1 || hedgeCfg.HedgeBotWhitelist[0] != newSignalID {
+		t.Errorf("new hedge clone's hedge_bot_whitelist = %v, want [%s]", hedgeCfg.HedgeBotWhitelist, newSignalID)
+	}
+}
+
+// TestListBots_ExcludesMultiBotHedgeLeg pins Task 2's fix: even if a Мультибот's hedge
+// leg somehow has is_public=true (e.g. an old row from before this fix, or the
+// "Публичный бот" toggle setting it on both legs), it must never appear in the catalog
+// on its own — only the signal leg represents the pair there.
+func TestListBots_ExcludesMultiBotHedgeLeg(t *testing.T) {
+	s := newTestServer(t)
+	userID := createAdminTestUser(t, s, "bots_multi_catalog@example.com", "pass1234", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", userID)
+	acctID := createTestAccountLabeled(t, s, userID, "multi-catalog-acct")
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "Catalog Multi", "accountId": acctID,
+		"strategyConfig": map[string]interface{}{}, "hedgeStrategyConfig": map[string]interface{}{},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bots/multi", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withUserID(req, userID)
+	s.CreateMultiBot(rec, req)
+	var signalBot map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&signalBot)
+	signalID := signalBot["id"].(string)
+	hedgeID := signalBot["pairedBotId"].(string)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1 OR id=$2", signalID, hedgeID)
+
+	// Publish BOTH legs, exactly as MultiBotForm.tsx's "Публичный бот" toggle does.
+	if _, err := s.pool.Exec(context.Background(),
+		"UPDATE bots SET is_public = true WHERE id=$1 OR id=$2", signalID, hedgeID,
+	); err != nil {
+		t.Fatalf("publish pair: %v", err)
+	}
+
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/bots", nil)
+	req2 = withUserID(req2, userID)
+	s.ListBots(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec2.Code, rec2.Body.String())
+	}
+	var resp struct {
+		Catalog []map[string]interface{} `json:"catalog"`
+	}
+	json.NewDecoder(rec2.Body).Decode(&resp)
+
+	sawSignal, sawHedge := false, false
+	for _, b := range resp.Catalog {
+		if b["id"] == signalID {
+			sawSignal = true
+		}
+		if b["id"] == hedgeID {
+			sawHedge = true
+		}
+	}
+	if !sawSignal {
+		t.Error("expected the signal leg in the catalog")
+	}
+	if sawHedge {
+		t.Error("hedge leg must NOT appear in the catalog on its own")
+	}
+}
+
+// TestForkBot_CascadesToPairedLeg pins Task 3's fix — mirrors the existing
+// TestStopBot_CascadesToPairedLeg/TestDeleteBot_CascadesToPairedLeg tests' structure.
+func TestForkBot_CascadesToPairedLeg(t *testing.T) {
+	s := newTestServer(t)
+	authorID := createAdminTestUser(t, s, "bots_multi_fork_author@example.com", "pass1234", false)
+	forkerID := createAdminTestUser(t, s, "bots_multi_forker@example.com", "pass1234", false)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", authorID)
+	defer s.pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", forkerID)
+	authorAcctID := createTestAccountLabeled(t, s, authorID, "multi-fork-author-acct")
+	forkerAcctID := createTestAccountLabeled(t, s, forkerID, "multi-fork-forker-acct")
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "Fork Multi", "accountId": authorAcctID,
+		"strategyConfig": map[string]interface{}{}, "hedgeStrategyConfig": map[string]interface{}{},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bots/multi", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withUserID(req, authorID)
+	s.CreateMultiBot(rec, req)
+	var signalBot map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&signalBot)
+	origSignalID := signalBot["id"].(string)
+	origHedgeID := signalBot["pairedBotId"].(string)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1 OR id=$2", origSignalID, origHedgeID)
+
+	if _, err := s.pool.Exec(context.Background(), "UPDATE bots SET is_public = true WHERE id=$1", origSignalID); err != nil {
+		t.Fatalf("publish signal leg: %v", err)
+	}
+
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/bots/"+origSignalID+"/deploy", bytes.NewBufferString(`{"accountId":"`+forkerAcctID+`"}`))
+	req2 = withUserID(req2, forkerID)
+	req2 = addChiParams(req2, map[string]string{"id": origSignalID})
+	s.DeployBot(rec2, req2)
+	var depSignalBot map[string]interface{}
+	json.NewDecoder(rec2.Body).Decode(&depSignalBot)
+	depSignalID := depSignalBot["id"].(string)
+	depHedgeID := depSignalBot["pairedBotId"].(string)
+	defer s.pool.Exec(context.Background(), "DELETE FROM bots WHERE id=$1 OR id=$2", depSignalID, depHedgeID)
+
+	// DeployBot's INSERT hardcodes is_fork=true at creation (a separate, pre-existing gap
+	// unrelated to this plan — see TestDeployBot/TestPatchBot_LinkedSubscriptionBlocked, which
+	// already fail against this same baseline quirk). Reset both legs to is_fork=false here so
+	// this test exercises ForkBot's own paired-leg cascade (Task 3's actual fix) in isolation,
+	// against the genuine "linked, not-yet-forked" subscription state ForkBot's guard expects.
+	if _, err := s.pool.Exec(context.Background(),
+		"UPDATE bots SET is_fork = false WHERE id=$1 OR id=$2", depSignalID, depHedgeID,
+	); err != nil {
+		t.Fatalf("reset is_fork for linked-subscription fixture: %v", err)
+	}
+
+	rec3 := httptest.NewRecorder()
+	req3 := httptest.NewRequest(http.MethodPost, "/bots/"+depSignalID+"/fork", nil)
+	req3 = withUserID(req3, forkerID)
+	req3 = addChiParams(req3, map[string]string{"id": depSignalID})
+	s.ForkBot(rec3, req3)
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("fork: got %d: %s", rec3.Code, rec3.Body.String())
+	}
+
+	var hedgeIsFork bool
+	if err := s.pool.QueryRow(context.Background(), "SELECT is_fork FROM bots WHERE id=$1", depHedgeID).Scan(&hedgeIsFork); err != nil {
+		t.Fatalf("hedge leg not found: %v", err)
+	}
+	if !hedgeIsFork {
+		t.Error("expected the paired hedge leg's is_fork to also be true after forking the signal leg")
+	}
+}
