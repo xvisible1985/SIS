@@ -1167,8 +1167,15 @@ func (s *Server) ForkBot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A Мультибот's two legs fork together — same reasoning and same SQL idiom as
+	// StartBot/StopBot's existing paired-leg cascade (see those functions above): a lone
+	// hedge leg left un-forked after its signal twin forks would still be treated as a live
+	// (non-fork) linked subscription, an inconsistent state the rest of this file doesn't
+	// expect. ownerID was already verified above (matches callerID) for botID itself; the
+	// paired leg (if any) always shares the same owner_id by construction (see CreateMultiBot/
+	// DeployBot), so no separate ownership re-check is needed for it here.
 	if _, err := s.pool.Exec(ctx,
-		`UPDATE bots SET is_fork = true, updated_at = NOW() WHERE id = $1`, botID,
+		`UPDATE bots SET is_fork = true, updated_at = NOW() WHERE id = $1 OR id = (SELECT paired_bot_id FROM bots WHERE id = $1)`, botID,
 	); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
