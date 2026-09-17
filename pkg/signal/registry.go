@@ -249,6 +249,15 @@ func init() {
 		return &leverageFilterSignal{minLeverage: cfg.Float("min_leverage", 0)}
 	})
 
+	Register("timesfm", func(cfg Config) Signal {
+		return &timesfmSignal{
+			contextBars:        cfg.Float("context_bars", 512),
+			horizonBars:        cfg.Float("horizon_bars", 12),
+			thresholdPct:       cfg.Float("threshold_pct", 0.5),
+			refreshIntervalSec: cfg.Float("refresh_interval_sec", 300),
+		}
+	})
+
 	// Fires when the coin moved by >= thresholdPct over the last periodHours
 	// (rolling wall-clock window, not candle count). mode "trend" signals with
 	// the move (rise→Buy, fall→Sell); "counter" signals against it.
