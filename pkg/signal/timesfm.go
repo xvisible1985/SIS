@@ -32,7 +32,12 @@ func (s *timesfmSignal) ComputeWithSymbol(symbol string, candles []Candle) State
 	predictedPct, fresh := GetTimesfmForecast(symbol, tf, contextBars, horizonBars, maxAge)
 	if !fresh && TimesfmRefreshFunc != nil && tryStartTimesfmRefresh(symbol, tf, contextBars, horizonBars) {
 		context := candles
-		if len(context) > contextBars {
+		// contextBars > 0 guards against a misconfigured (e.g. negative) context_bars bot
+		// param slicing out of bounds here — this runs synchronously, BEFORE the goroutine
+		// below (and its recover()) is even entered, so an unguarded negative index here
+		// would crash the whole process, not just this signal. A non-positive contextBars
+		// falls back to "use all available history" rather than panicking.
+		if contextBars > 0 && len(context) > contextBars {
 			context = context[len(context)-contextBars:]
 		}
 		refresh := TimesfmRefreshFunc

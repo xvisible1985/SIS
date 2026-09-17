@@ -194,3 +194,43 @@ func TestTimesfmSignal_ComputeWithSymbol_ShortHistory_PassesConfiguredContextBar
 		t.Errorf("len(candles) passed to TimesfmRefreshFunc = %d, want 40 (all available candles, unpadded)", gotCandleLen)
 	}
 }
+
+// TestTimesfmSignal_ComputeWithSymbol_NegativeContextBars_DoesNotPanic is the regression for
+// a crash found in code review: a misconfigured (e.g. negative) context_bars bot param would
+// have hit `context[len(context)-contextBars:]` with an out-of-range index — and this slice
+// arithmetic runs synchronously in ComputeWithSymbol, BEFORE the goroutine (and its
+// recover()) is ever entered, so it would have crashed the whole process, not just this
+// signal. contextBars <= 0 must fall back to "use all available history" instead.
+func TestTimesfmSignal_ComputeWithSymbol_NegativeContextBars_DoesNotPanic(t *testing.T) {
+	orig := TimesfmRefreshFunc
+	defer func() { TimesfmRefreshFunc = orig }()
+
+	var gotCandleLen int
+	calls := make(chan struct{}, 1)
+	TimesfmRefreshFunc = func(symbol, timeframe string, candles []Candle, contextBars, horizonBars int) {
+		gotCandleLen = len(candles)
+		calls <- struct{}{}
+	}
+
+	s := &timesfmSignal{contextBars: -5, horizonBars: 12, thresholdPct: 0.5, refreshIntervalSec: 300}
+	candles := make([]Candle, 150)
+	for i := range candles {
+		candles[i] = Candle{Time: int64(i) * 300_000, Close: 1.0} // 5m spacing
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("ComputeWithSymbol panicked with negative contextBars: %v", r)
+		}
+	}()
+	s.ComputeWithSymbol("TFSIG_NEGCTX", candles)
+
+	select {
+	case <-calls:
+	case <-time.After(time.Second):
+		t.Fatal("TimesfmRefreshFunc was never called")
+	}
+	if gotCandleLen != 150 {
+		t.Errorf("len(candles) passed to TimesfmRefreshFunc = %d, want 150 (all available candles, since contextBars<=0 must not truncate)", gotCandleLen)
+	}
+}
