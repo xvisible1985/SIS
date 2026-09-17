@@ -757,6 +757,16 @@ var timesfmIntervalDuration = map[string]time.Duration{
 	"1h": time.Hour, "4h": 4 * time.Hour, "1d": 24 * time.Hour,
 }
 
+// timesfmExchange/timesfmMarket are the only exchange/market this platform's candles table
+// currently stores (models.ExchangeBybit / models.MarketFutures — see pkg/models/candle.go).
+// Written explicitly into every row (timesfm_predictions.exchange/.market, added in Task 1)
+// rather than relying on a DB default, so it's always clear from the Go code — not just the
+// schema — which candle series a prediction is scored against.
+const (
+	timesfmExchange = "bybit"
+	timesfmMarket   = "futures"
+)
+
 // timesfmLogThresholdPct is the FIXED threshold used to classify predicted_direction/
 // actual_direction in the timesfm_predictions log — deliberately independent of any
 // individual bot's own threshold_pct (which can differ per bot config; see timesfm.go's
@@ -785,9 +795,9 @@ func insertTimesfmPrediction(ctx context.Context, pool *pgxpool.Pool, symbol, ti
 	targetAt := predictedAt.Add(time.Duration(horizonBars) * barDur)
 	_, err := pool.Exec(ctx, `
 		INSERT INTO timesfm_predictions
-			(symbol, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		symbol, timeframe, contextBars, horizonBars, predictedAt, priceAtPredict, predictedPct, timesfmDirection(predictedPct), targetAt,
+			(exchange, symbol, market, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		timesfmExchange, symbol, timesfmMarket, timeframe, contextBars, horizonBars, predictedAt, priceAtPredict, predictedPct, timesfmDirection(predictedPct), targetAt,
 	)
 	return err
 }
@@ -878,8 +888,8 @@ func TestBackfillTimesfmPredictions_FillsOutcomeForPastTarget(t *testing.T) {
 	targetAt := time.Now().Add(-10 * time.Minute)
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO timesfm_predictions
-			(symbol, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at)
-		VALUES ($1,'5m',100,3,$2,100.0,2.0,'buy',$3)`,
+			(exchange, symbol, market, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at)
+		VALUES ('bybit',$1,'futures','5m',100,3,$2,100.0,2.0,'buy',$3)`,
 		"TFBACKFILLUSDT", targetAt.Add(-15*time.Minute), targetAt,
 	); err != nil {
 		t.Fatalf("seed prediction: %v", err)
@@ -924,8 +934,8 @@ func TestBackfillTimesfmPredictions_SkipsFutureTarget(t *testing.T) {
 	futureTarget := time.Now().Add(1 * time.Hour)
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO timesfm_predictions
-			(symbol, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at)
-		VALUES ($1,'5m',100,3,NOW(),100.0,2.0,'buy',$2)`,
+			(exchange, symbol, market, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at)
+		VALUES ('bybit',$1,'futures','5m',100,3,NOW(),100.0,2.0,'buy',$2)`,
 		"TFBACKFILLFUTUREUSDT", futureTarget,
 	); err != nil {
 		t.Fatalf("seed prediction: %v", err)
@@ -941,6 +951,68 @@ func TestBackfillTimesfmPredictions_SkipsFutureTarget(t *testing.T) {
 	}
 	if actualPrice != nil {
 		t.Error("actual_price was filled in for a prediction whose target_at is still in the future")
+	}
+}
+
+func TestBackfillTimesfmPredictions_NoCandleFound_IncrementsAttempts(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM timesfm_predictions WHERE symbol=$1", "TFBACKFILLNOCANDLEUSDT") })
+
+	targetAt := time.Now().Add(-10 * time.Minute)
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO timesfm_predictions
+			(exchange, symbol, market, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at)
+		VALUES ('bybit',$1,'futures','5m',100,3,$2,100.0,2.0,'buy',$3)`,
+		"TFBACKFILLNOCANDLEUSDT", targetAt.Add(-15*time.Minute), targetAt,
+	); err != nil {
+		t.Fatalf("seed prediction: %v", err)
+	}
+	// Deliberately no candle seeded — nearestCandleClose must find nothing for this symbol.
+
+	backfillTimesfmPredictions(ctx, s.pool)
+
+	var attempts int
+	var actualPrice *float64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT attempts, actual_price FROM timesfm_predictions WHERE symbol=$1`, "TFBACKFILLNOCANDLEUSDT",
+	).Scan(&attempts, &actualPrice); err != nil {
+		t.Fatalf("query result: %v", err)
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1 after one failed lookup", attempts)
+	}
+	if actualPrice != nil {
+		t.Error("actual_price was filled in despite no matching candle existing")
+	}
+}
+
+func TestBackfillTimesfmPredictions_MaxAttemptsReached_StopsBeingSelected(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM timesfm_predictions WHERE symbol=$1", "TFBACKFILLMAXATTEMPTSUSDT") })
+
+	targetAt := time.Now().Add(-10 * time.Minute)
+	var id string
+	if err := s.pool.QueryRow(ctx, `
+		INSERT INTO timesfm_predictions
+			(exchange, symbol, market, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at, attempts)
+		VALUES ('bybit',$1,'futures','5m',100,3,$2,100.0,2.0,'buy',$3,50) RETURNING id`,
+		"TFBACKFILLMAXATTEMPTSUSDT", targetAt.Add(-15*time.Minute), targetAt,
+	).Scan(&id); err != nil {
+		t.Fatalf("seed prediction: %v", err)
+	}
+	// No candle seeded — if this row were (wrongly) selected, it would fail the lookup and
+	// increment attempts past 50; the assertion below proves it was never selected at all.
+
+	backfillTimesfmPredictions(ctx, s.pool)
+
+	var attempts int
+	if err := s.pool.QueryRow(ctx, `SELECT attempts FROM timesfm_predictions WHERE id=$1`, id).Scan(&attempts); err != nil {
+		t.Fatalf("query result: %v", err)
+	}
+	if attempts != 50 {
+		t.Errorf("attempts = %d, want unchanged 50 — a row at the cap must not be selected/incremented again", attempts)
 	}
 }
 ```
@@ -984,18 +1056,30 @@ func RunTimesfmAccuracyBackfill(ctx context.Context, pool *pgxpool.Pool) {
 
 type pendingTimesfmPrediction struct {
 	id             string
+	exchange       string
 	symbol         string
+	market         string
 	timeframe      string
 	priceAtPredict float64
 	targetAt       time.Time
 }
 
+// timesfmMaxBackfillAttempts caps how many times the backfill job will retry looking up a
+// candle for one prediction before giving up on it. Without this, a permanently
+// unresolvable row (a delisted symbol, or candle history for it that simply never arrives)
+// would sit in the unordered `LIMIT 200` pending scan forever and could crowd out
+// genuinely-recent rows once the backlog grows past 200. A row that hits the cap stays in
+// the table (still visible, still counted as "not checked") — it's just never selected
+// again, distinguishable from a genuinely-pending row via its `attempts` value.
+const timesfmMaxBackfillAttempts = 50
+
 func backfillTimesfmPredictions(ctx context.Context, pool *pgxpool.Pool) {
 	rows, err := pool.Query(ctx, `
-		SELECT id, symbol, timeframe, price_at_predict, target_at
+		SELECT id, exchange, symbol, market, timeframe, price_at_predict, target_at
 		FROM timesfm_predictions
-		WHERE target_at <= NOW() AND actual_price IS NULL
+		WHERE target_at <= NOW() AND actual_price IS NULL AND attempts < $1
 		LIMIT 200`,
+		timesfmMaxBackfillAttempts,
 	)
 	if err != nil {
 		log.Printf("timesfm accuracy backfill: query pending: %v", err)
@@ -1004,7 +1088,7 @@ func backfillTimesfmPredictions(ctx context.Context, pool *pgxpool.Pool) {
 	var pending []pendingTimesfmPrediction
 	for rows.Next() {
 		var p pendingTimesfmPrediction
-		if err := rows.Scan(&p.id, &p.symbol, &p.timeframe, &p.priceAtPredict, &p.targetAt); err != nil {
+		if err := rows.Scan(&p.id, &p.exchange, &p.symbol, &p.market, &p.timeframe, &p.priceAtPredict, &p.targetAt); err != nil {
 			continue
 		}
 		pending = append(pending, p)
@@ -1012,9 +1096,14 @@ func backfillTimesfmPredictions(ctx context.Context, pool *pgxpool.Pool) {
 	rows.Close()
 
 	for _, p := range pending {
-		actualPrice, ok := nearestCandleClose(ctx, pool, p.symbol, p.timeframe, p.targetAt)
+		actualPrice, ok := nearestCandleClose(ctx, pool, p.exchange, p.symbol, p.market, p.timeframe, p.targetAt)
 		if !ok {
-			continue // no candle at/before target_at yet — retry on the next sweep
+			// No candle at/before target_at yet (or ever, for an unresolvable row) — count
+			// the attempt and retry on a later sweep.
+			if _, err := pool.Exec(ctx, `UPDATE timesfm_predictions SET attempts = attempts + 1 WHERE id=$1`, p.id); err != nil {
+				log.Printf("timesfm accuracy backfill: increment attempts %s: %v", p.id, err)
+			}
+			continue
 		}
 		actualDirection := timesfmDirection((actualPrice - p.priceAtPredict) / p.priceAtPredict * 100)
 
@@ -1030,17 +1119,18 @@ func backfillTimesfmPredictions(ctx context.Context, pool *pgxpool.Pool) {
 }
 
 // nearestCandleClose returns the close price of the most recent candle at or before at, for
-// symbol/timeframe, on Bybit linear futures — the only exchange/market this platform's
-// candles table currently stores (models.ExchangeBybit / models.MarketFutures).
-func nearestCandleClose(ctx context.Context, pool *pgxpool.Pool, symbol, timeframe string, at time.Time) (float64, bool) {
+// the given exchange/symbol/market/timeframe — matching candles' own primary key shape
+// (migrations/001_initial.sql) so a backfilled outcome is always scored against the correct
+// candle series, not an assumed one.
+func nearestCandleClose(ctx context.Context, pool *pgxpool.Pool, exchange, symbol, market, timeframe string, at time.Time) (float64, bool) {
 	var close float64
 	err := pool.QueryRow(ctx, `
 		SELECT close FROM candles
-		WHERE exchange='bybit' AND symbol=$1 AND market='futures' AND timeframe=$2
-		  AND open_time <= $3
+		WHERE exchange=$1 AND symbol=$2 AND market=$3 AND timeframe=$4
+		  AND open_time <= $5
 		ORDER BY open_time DESC
 		LIMIT 1`,
-		symbol, timeframe, at,
+		exchange, symbol, market, timeframe, at,
 	).Scan(&close)
 	if err != nil {
 		return 0, false
@@ -1052,7 +1142,8 @@ func nearestCandleClose(ctx context.Context, pool *pgxpool.Pool, symbol, timefra
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test -tags=integration ./services/api-gateway/ -run TestBackfillTimesfmPredictions -v`
-Expected: `PASS` for both tests.
+Expected: `PASS` for all 4 tests (`_FillsOutcomeForPastTarget`, `_SkipsFutureTarget`,
+`_NoCandleFound_IncrementsAttempts`, `_MaxAttemptsReached_StopsBeingSelected`).
 
 - [ ] **Step 5: Commit**
 
