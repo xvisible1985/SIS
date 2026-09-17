@@ -67,6 +67,17 @@ func TestTimesfmSignal_ComputeWithSymbol_ColdCache_TriggersRefreshOnce(t *testin
 
 	calls := make(chan struct{}, 10)
 	TimesfmRefreshFunc = func(symbol, timeframe string, candles []Candle, contextBars, horizonBars int) {
+		// A real refresh is an HTTP round-trip plus a DB write — comfortably longer than the
+		// time it takes 5 goroutines to get scheduled, which is why the dedup guard
+		// (tryStartTimesfmRefresh/finishTimesfmRefresh) is safe in production. A truly
+		// instant mock doesn't reproduce that: on a many-core machine, the FIRST winning
+		// goroutine's whole refresh-and-clear-inflight cycle can complete before the other 4
+		// outer goroutines below even get scheduled onto a thread, so they'd legitimately
+		// see the flag already cleared and correctly start a second refresh — not a bug in
+		// the dedup guard (mutual exclusion during an ACTUAL in-flight window is exactly what
+		// it promises), just a test racing against goroutine-dispatch jitter instead of
+		// against realistic refresh latency. This sleep restores that realism.
+		time.Sleep(50 * time.Millisecond)
 		calls <- struct{}{}
 	}
 
@@ -93,7 +104,11 @@ func TestTimesfmSignal_ComputeWithSymbol_ColdCache_TriggersRefreshOnce(t *testin
 	select {
 	case <-calls:
 		t.Fatal("TimesfmRefreshFunc was called more than once for concurrent requests on the same key")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(200 * time.Millisecond):
+		// Comfortably longer than the mock's own 50ms sleep, so a genuine second call (were
+		// the dedup guard actually broken) would have arrived on `calls` well within this
+		// window — this isn't racing against the mock's latency the way a tighter window
+		// would.
 	}
 }
 
