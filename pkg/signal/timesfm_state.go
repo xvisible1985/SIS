@@ -86,4 +86,16 @@ func finishTimesfmRefresh(symbol, timeframe string, contextBars, horizonBars int
 // the real refresh needs, neither of which pkg/signal itself ever holds (mirrors why
 // whale/leverage state is only ever pushed in from outside, never fetched by pkg/signal
 // itself — see whale_state.go, leverage_state.go).
-var TimesfmRefreshFunc func(symbol, timeframe string, candles []Candle, horizonBars int)
+//
+// contextBars is passed explicitly — NOT inferred from len(candles) by the receiver — and
+// the caller MUST pass the exact same contextBars value it used for the
+// GetTimesfmForecast/tryStartTimesfmRefresh/finishTimesfmRefresh calls around this refresh.
+// candles can legitimately be SHORTER than contextBars (e.g. a symbol/timeframe that hasn't
+// accumulated contextBars worth of history yet) — if the receiver were to key its
+// SetTimesfmForecast call on len(candles) instead of the passed-in contextBars, a
+// short-history call would cache its result under a DIFFERENT key than every future read
+// ever queries, permanently missing the cache and re-triggering a real model call (an
+// external HTTP round-trip plus a DB insert) on every single tick for that symbol until
+// history happens to reach exactly contextBars candles — silently defeating the entire
+// point of this cache. Always thread the caller's contextBars through untouched.
+var TimesfmRefreshFunc func(symbol, timeframe string, candles []Candle, contextBars, horizonBars int)
