@@ -200,9 +200,16 @@ func (s *Server) ListBots(w http.ResponseWriter, r *http.Request) {
 
 	// Hide an original that has a detached catalog copy — the copy represents it
 	// in the library (and survives deletion of the original).
+	// Also hide a Мультибот's hedge leg — it exists only to be driven by its paired signal
+	// leg (hedge_bot_whitelist locks it to that one bot's strategies) and must never be
+	// independently browsable/deployable on its own; the signal leg already represents the
+	// whole pair in the catalog (see DeployBot, Task 1, which clones both legs together
+	// however the pair is reached). Mirrors frontend/src/pages/BotsPage.tsx's existing
+	// visibleMine filter, which hides the same row from "Мои боты" for the same reason.
 	catalogSQL := `SELECT ` + botCols + zeroStatsCols + botFrom + `
 		WHERE b.is_public = true
 		  AND NOT EXISTS (SELECT 1 FROM bots c WHERE c.published_from_id = b.id)
+		  AND NOT (b.strategy_config->>'bot_kind' = 'hedge' AND b.paired_bot_id IS NOT NULL)
 		  AND ($1 = '' OR b.name ILIKE '%' || $1 || '%')
 		  AND ($2 = '' OR b.strategy_config->>'direction' = $2)
 		ORDER BY ` + orderBy
