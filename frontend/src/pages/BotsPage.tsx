@@ -61,7 +61,10 @@ function toFeaturedBot(b: Bot): FeaturedBot {
     name:      b.name,
     author:    b.isOfficial ? 'NovaBot' : b.ownerName,
     avatarUrl: b.avatarUrl,
-    botKind:   (b.strategyConfig?.bot_kind as BotKind) ?? 'signal',
+    // Matches toMyBot's derivation above — a Мультибот's signal leg (the only leg the
+    // catalog ever shows, see the ListBots fix) must render with the 'multi' color/label,
+    // not its own raw strategyConfig.bot_kind ('signal').
+    botKind:   b.pairedBotId ? 'multi' : ((b.strategyConfig?.bot_kind as BotKind) ?? 'signal'),
     strategy:  (b.strategyConfig?.strategy_type as BotStrategy) ?? 'grid',
     risk:      'medium' as RiskLevel,
     verified:  b.isOfficial,
