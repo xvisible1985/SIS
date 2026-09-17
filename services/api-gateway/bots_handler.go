@@ -326,6 +326,18 @@ func setJSONField(raw json.RawMessage, key string, val interface{}) json.RawMess
 	return out
 }
 
+// getJSONStringField reads a single string field out of a strategy_config-shaped
+// json.RawMessage — the read counterpart to setJSONField, same tolerant style (empty
+// string if raw is empty, absent, or not a string).
+func getJSONStringField(raw json.RawMessage, key string) string {
+	m := map[string]interface{}{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &m) //nolint:errcheck
+	}
+	v, _ := m[key].(string)
+	return v
+}
+
 // POST /bots/multi вЂ" creates a "МультиБот": a signal leg and a hedge leg created and
 // managed together as one entity in the UI. Internally these are two ordinary bots rows —
 // the hedge leg is a normal hedge bot whose hedge_bot_whitelist is locked to the signal
@@ -1005,10 +1017,11 @@ func (s *Server) DeployBot(w http.ResponseWriter, r *http.Request) {
 	var name, desc, fullDesc string
 	var triggers, stratCfg []byte
 	var isPublic bool
+	var pairedSourceID *string
 	if err := s.pool.QueryRow(ctx,
-		`SELECT name, description, full_description, is_public, triggers, strategy_config FROM bots WHERE id = $1`,
+		`SELECT name, description, full_description, is_public, triggers, strategy_config, paired_bot_id FROM bots WHERE id = $1`,
 		sourceID,
-	).Scan(&name, &desc, &fullDesc, &isPublic, &triggers, &stratCfg); err != nil {
+	).Scan(&name, &desc, &fullDesc, &isPublic, &triggers, &stratCfg, &pairedSourceID); err != nil {
 		writeError(w, http.StatusNotFound, "bot not found")
 		return
 	}
@@ -1051,6 +1064,65 @@ func (s *Server) DeployBot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
+
+	// The source bot is one leg of a Мультибот (see CreateMultiBot above) — clone its paired
+	// leg too and link the two new clones the same way, otherwise a deployed Мультибот would
+	// silently lose its other leg (the exact bug this task fixes). Mirrors CreateMultiBot's
+	// own pair-creation wiring, including re-pointing the hedge clone's hedge_bot_whitelist
+	// at the new signal clone's id — without that, the cloned hedge leg would still watch the
+	// ORIGINAL template's signal leg (owned by someone else) instead of its own new twin.
+	if pairedSourceID != nil {
+		var pName, pDesc, pFullDesc string
+		var pTriggers, pStratCfg []byte
+		if err := tx.QueryRow(ctx,
+			`SELECT name, description, full_description, triggers, strategy_config FROM bots WHERE id = $1`,
+			*pairedSourceID,
+		).Scan(&pName, &pDesc, &pFullDesc, &pTriggers, &pStratCfg); err != nil {
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+
+		var pairedNewID string
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO bots (owner_id, source_bot_id, is_fork, name, description, full_description, triggers, strategy_config, account_id)
+			VALUES ($1, $2, true, $3, $4, $5, $6, $7, $8)
+			RETURNING id`,
+			callerID, *pairedSourceID, pName, pDesc, pFullDesc, pTriggers, pStratCfg, req.AccountID,
+		).Scan(&pairedNewID); err != nil {
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE bots SET paired_bot_id = $1 WHERE id = $2`, pairedNewID, newID,
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE bots SET paired_bot_id = $1 WHERE id = $2`, newID, pairedNewID,
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+
+		// Whichever of the two new clones is the hedge leg gets its hedge_bot_whitelist
+		// re-pointed at the OTHER clone (the signal leg's) new id. Determined by each row's
+		// OWN bot_kind, not by which one happened to be sourceID — after Task 2, the catalog
+		// only ever exposes the signal leg, but this stays correct even if a hedge leg's id
+		// were ever passed directly (e.g. a stale link from before Task 2 shipped).
+		newSignalID, newHedgeID, hedgeStratCfg := newID, pairedNewID, pStratCfg
+		if getJSONStringField(stratCfg, "bot_kind") == "hedge" {
+			newSignalID, newHedgeID, hedgeStratCfg = pairedNewID, newID, stratCfg
+		}
+		hedgeStratCfg = setJSONField(hedgeStratCfg, "hedge_bot_whitelist", []string{newSignalID})
+		if _, err := tx.Exec(ctx,
+			`UPDATE bots SET strategy_config = $1 WHERE id = $2`, []byte(hedgeStratCfg), newHedgeID,
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		writeError(w, http.StatusInternalServerError, "tx commit error")
 		return
