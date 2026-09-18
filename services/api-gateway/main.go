@@ -21,6 +21,7 @@ import (
 	"sis/pkg/db"
 	"sis/pkg/heartbeat"
 	"sis/pkg/proxy"
+	tfsignal "sis/pkg/signal"
 	traderPkg "sis/pkg/trader"
 )
 
@@ -134,6 +135,15 @@ func main() {
 	// universe — the "leverage" activation signal needs whitelist candidates too, not
 	// just symbols already being traded)
 	RunLeverageRefresher(ctx, pool)
+
+	// Wire the experimental TimesFM signal's refresh hook — pkg/signal itself never calls
+	// the model service or the DB directly (see pkg/signal/timesfm_state.go); this closure
+	// is the only thing that does, invoked async whenever a subscribed symbol's cached
+	// forecast goes stale. Also start the periodic job that backfills each prediction's
+	// actual outcome once its forecast horizon has passed.
+	timesfmURL := getEnv("TIMESFM_SERVICE_URL", "http://localhost:8500")
+	tfsignal.TimesfmRefreshFunc = newTimesfmRefreshFunc(pool, timesfmURL)
+	RunTimesfmAccuracyBackfill(ctx, pool)
 
 	// Start bot + hedge automation engines (order-managing — leader only)
 	if isTradingLeader {
