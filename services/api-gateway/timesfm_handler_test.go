@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 )
 
 func TestGetTimesfmPredictions_ReturnsRowsAndAggregates(t *testing.T) {
@@ -59,6 +58,58 @@ func TestGetTimesfmPredictions_ReturnsRowsAndAggregates(t *testing.T) {
 	}
 }
 
+func TestGetTimesfmPredictions_FiltersByTimeframeAndLimit(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM timesfm_predictions WHERE symbol=$1", "TFHANDLERTFUSDT") })
+
+	insert := func(timeframe string) {
+		s.pool.Exec(ctx, `
+			INSERT INTO timesfm_predictions
+				(exchange, symbol, market, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at, actual_price, actual_direction, correct, checked_at)
+			VALUES ('bybit',$1,'futures',$2,100,3,NOW(),100.0,2.0,'buy',NOW(),NULL,NULL,NULL,NULL)`,
+			"TFHANDLERTFUSDT", timeframe)
+	}
+	insert("5m")
+	insert("5m")
+	insert("15m")
+
+	// timeframe filter: only the two 5m rows should come back.
+	req := httptest.NewRequest(http.MethodGet, "/signals/timesfm/predictions?symbol=TFHANDLERTFUSDT&timeframe=5m", nil)
+	w := httptest.NewRecorder()
+	s.GetTimesfmPredictions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var out timesfmPredictionsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if out.Total != 2 {
+		t.Errorf("timeframe=5m: total = %d, want 2", out.Total)
+	}
+	for _, p := range out.Predictions {
+		if p.Timeframe != "5m" {
+			t.Errorf("timeframe=5m filter leaked row with timeframe=%q", p.Timeframe)
+		}
+	}
+
+	// limit: capped to the requested count across all timeframes for the symbol.
+	req = httptest.NewRequest(http.MethodGet, "/signals/timesfm/predictions?symbol=TFHANDLERTFUSDT&limit=1", nil)
+	w = httptest.NewRecorder()
+	s.GetTimesfmPredictions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	out = timesfmPredictionsResponse{}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if out.Total != 1 {
+		t.Errorf("limit=1: total = %d, want 1", out.Total)
+	}
+}
+
 func TestGetTimesfmPredictions_MissingSymbol_400(t *testing.T) {
 	s := newTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/signals/timesfm/predictions", nil)
@@ -68,5 +119,3 @@ func TestGetTimesfmPredictions_MissingSymbol_400(t *testing.T) {
 		t.Errorf("status = %d, want 400", w.Code)
 	}
 }
-
-var _ = time.Now // keep time imported if unused by a future edit; harmless no-op reference
