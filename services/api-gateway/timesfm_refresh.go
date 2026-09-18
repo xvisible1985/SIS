@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -46,6 +48,10 @@ func callTimesfmService(ctx context.Context, baseURL string, series []float64, h
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// Drain the body before returning so http.Transport can reuse the underlying
+		// connection for the next call to this host — this function runs once per stale
+		// symbol/timeframe, so an undrained body here forces a fresh connection every time.
+		io.Copy(io.Discard, resp.Body)
 		return nil, fmt.Errorf("timesfm service: status %d", resp.StatusCode)
 	}
 	var out timesfmForecastResponse
@@ -123,6 +129,11 @@ func insertTimesfmPrediction(ctx context.Context, pool *pgxpool.Pool, symbol, ti
 // queries by the signal's CONFIGURED contextBars — would ever read back, silently defeating
 // the cache. See TimesfmRefreshFunc's doc comment in pkg/signal/timesfm_state.go.
 func newTimesfmRefreshFunc(pool *pgxpool.Pool, baseURL string) func(symbol, timeframe string, candles []signal.Candle, contextBars, horizonBars int) {
+	// Trim a trailing slash once, here, rather than on every call — an operator-set
+	// TIMESFM_SERVICE_URL with a trailing slash (e.g. "http://localhost:8500/") would
+	// otherwise produce "//forecast", which FastAPI's exact routing 404s on silently.
+	baseURL = strings.TrimRight(baseURL, "/")
+
 	return func(symbol, timeframe string, candles []signal.Candle, contextBars, horizonBars int) {
 		if len(candles) == 0 {
 			return
@@ -132,6 +143,12 @@ func newTimesfmRefreshFunc(pool *pgxpool.Pool, baseURL string) func(symbol, time
 			series[i] = c.Close
 		}
 		lastClose := series[len(series)-1]
+		// Checked before the HTTP call (not after) — this is known from the candles alone,
+		// so there's no reason to pay for an external round-trip before failing on it.
+		if lastClose == 0 {
+			log.Printf("timesfm: %s/%s: lastClose is 0, cannot compute predicted_pct", symbol, timeframe)
+			return
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -141,15 +158,24 @@ func newTimesfmRefreshFunc(pool *pgxpool.Pool, baseURL string) func(symbol, time
 			log.Printf("timesfm: forecast %s/%s: %v", symbol, timeframe, err)
 			return
 		}
+		if len(forecast) != horizonBars {
+			// Not a hard failure — still use the last element below — just make a mismatch
+			// visible. If this ever fires it means the model service capped the horizon
+			// below what was requested, which would otherwise silently mispair
+			// predicted_pct/target_at for the accuracy backfill job.
+			log.Printf("timesfm: %s/%s: forecast length %d != requested horizon %d", symbol, timeframe, len(forecast), horizonBars)
+		}
 
 		predicted := forecast[len(forecast)-1]
-		if lastClose == 0 {
-			log.Printf("timesfm: %s/%s: lastClose is 0, cannot compute predicted_pct", symbol, timeframe)
-			return
-		}
 		predictedPct := (predicted - lastClose) / lastClose * 100
 
-		if err := insertTimesfmPrediction(ctx, pool, symbol, timeframe, contextBars, horizonBars, lastClose, predictedPct); err != nil {
+		// The DB insert gets its own fresh timeout, started only after the (expensive,
+		// external) HTTP call has already succeeded — sharing the outer 20s budget would let
+		// a slow HTTP call leave the DB insert with an arbitrarily shrunk deadline, discarding
+		// an already-successful model call over a transient DB hiccup.
+		dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer dbCancel()
+		if err := insertTimesfmPrediction(dbCtx, pool, symbol, timeframe, contextBars, horizonBars, lastClose, predictedPct); err != nil {
 			log.Printf("timesfm: insert prediction %s/%s: %v", symbol, timeframe, err)
 			return
 		}

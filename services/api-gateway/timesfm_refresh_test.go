@@ -94,6 +94,45 @@ func TestNewTimesfmRefreshFunc_ServiceError_DoesNotUpdateCacheOrInsertRow(t *tes
 	}
 }
 
+// TestNewTimesfmRefreshFunc_UnknownTimeframe_DoesNotUpdateCacheOrInsertRow covers the
+// DB-insert-failure path specifically (as opposed to the HTTP-failure path covered by
+// TestNewTimesfmRefreshFunc_ServiceError_DoesNotUpdateCacheOrInsertRow above): the mock HTTP
+// server returns a valid forecast, so callTimesfmService succeeds, but insertTimesfmPrediction
+// fails on its unknown-timeframe branch. The documented invariant — cache only updates after
+// a successful DB write — has no other regression coverage; a future refactor reordering the
+// HTTP call and the DB insert would pass every other test while silently breaking this.
+func TestNewTimesfmRefreshFunc_UnknownTimeframe_DoesNotUpdateCacheOrInsertRow(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM timesfm_predictions WHERE symbol=$1", "TFREFRESH4USDT") })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"point_forecast":[100.5,101.0,102.0]}`))
+	}))
+	defer srv.Close()
+
+	refresh := newTimesfmRefreshFunc(s.pool, srv.URL)
+
+	candles := make([]signal.Candle, 5)
+	for i := range candles {
+		candles[i] = signal.Candle{Time: int64(i) * 300_000, Close: 100.0}
+	}
+
+	// "3m" is not in timesfmIntervalDuration, so insertTimesfmPrediction fails AFTER the
+	// HTTP call has already succeeded.
+	refresh("TFREFRESH4USDT", "3m", candles, 5, 3)
+
+	if _, fresh := signal.GetTimesfmForecast("TFREFRESH4USDT", "3m", 5, 3, time.Minute); fresh {
+		t.Error("cache marked fresh after a failed DB insert (unknown timeframe)")
+	}
+	var count int
+	s.pool.QueryRow(ctx, `SELECT count(*) FROM timesfm_predictions WHERE symbol=$1`, "TFREFRESH4USDT").Scan(&count)
+	if count != 0 {
+		t.Errorf("timesfm_predictions rows = %d, want 0 after a failed DB insert", count)
+	}
+}
+
 // TestNewTimesfmRefreshFunc_ContextBarsIndependentOfCandleLength is the regression for a
 // cache-key mismatch bug caught in code review: the closure must cache/log under the
 // EXPLICITLY PASSED contextBars, never under len(candles) — those two can legitimately
