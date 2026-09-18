@@ -91,6 +91,15 @@ func main() {
 		}
 	}
 
+	// Wire the experimental TimesFM signal's refresh hook — pkg/signal itself never calls
+	// the model service or the DB directly (see pkg/signal/timesfm_state.go); this closure
+	// is the only thing that does, invoked async whenever a subscribed symbol's cached
+	// forecast goes stale. TimesfmRefreshFunc is an unsynchronized package-level var (same
+	// pattern as strategy.OnAccumulate), so it must be assigned before any goroutine that
+	// might read it starts — in particular before go s.engine.Start(ctx) below.
+	timesfmURL := getEnv("TIMESFM_SERVICE_URL", "http://localhost:8500")
+	tfsignal.TimesfmRefreshFunc = newTimesfmRefreshFunc(pool, timesfmURL)
+
 	// Trading-engine leadership: ensure only one api-gateway instance runs the
 	// order-managing engines (strategy/bot/hedge). Prevents a second instance
 	// (accidental double-start, overlapping deploy) from double-managing accounts
@@ -136,13 +145,9 @@ func main() {
 	// just symbols already being traded)
 	RunLeverageRefresher(ctx, pool)
 
-	// Wire the experimental TimesFM signal's refresh hook — pkg/signal itself never calls
-	// the model service or the DB directly (see pkg/signal/timesfm_state.go); this closure
-	// is the only thing that does, invoked async whenever a subscribed symbol's cached
-	// forecast goes stale. Also start the periodic job that backfills each prediction's
-	// actual outcome once its forecast horizon has passed.
-	timesfmURL := getEnv("TIMESFM_SERVICE_URL", "http://localhost:8500")
-	tfsignal.TimesfmRefreshFunc = newTimesfmRefreshFunc(pool, timesfmURL)
+	// Start the periodic job that backfills each TimesFM prediction's actual outcome once
+	// its forecast horizon has passed (TimesfmRefreshFunc itself is wired earlier above,
+	// before any engine goroutines start — see the comment there for why).
 	RunTimesfmAccuracyBackfill(ctx, pool)
 
 	// Start bot + hedge automation engines (order-managing — leader only)
