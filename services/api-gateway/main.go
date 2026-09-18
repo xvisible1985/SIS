@@ -210,6 +210,7 @@ func main() {
 		r.Post("/custom-signals", s.CreateCustomSignal)
 		r.Delete("/custom-signals/{id}", s.DeleteCustomSignal)
 		r.Get("/signals", s.ListSignals)
+		r.Get("/signals/timesfm/predictions", s.GetTimesfmPredictions)
 		r.Post("/signals", s.CreateSignal)
 		r.Get("/signals/{id}", s.GetSignal)
 		r.Put("/signals/{id}", s.UpdateSignal)
