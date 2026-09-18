@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -39,10 +41,10 @@ type pendingTimesfmPrediction struct {
 // timesfmMaxBackfillAttempts caps how many times the backfill job will retry looking up a
 // candle for one prediction before giving up on it. Without this, a permanently
 // unresolvable row (a delisted symbol, or candle history for it that simply never arrives)
-// would sit in the unordered `LIMIT 200` pending scan forever and could crowd out
-// genuinely-recent rows once the backlog grows past 200. A row that hits the cap stays in
-// the table (still visible, still counted as "not checked") — it's just never selected
-// again, distinguishable from a genuinely-pending row via its `attempts` value.
+// would keep occupying a slot in the oldest-first `LIMIT 200` pending scan forever and could
+// crowd out genuinely-recent rows once the backlog grows past 200. A row that hits the cap
+// stays in the table (still visible, still counted as "not checked") — it's just never
+// selected again, distinguishable from a genuinely-pending row via its `attempts` value.
 const timesfmMaxBackfillAttempts = 50
 
 func backfillTimesfmPredictions(ctx context.Context, pool *pgxpool.Pool) {
@@ -50,6 +52,7 @@ func backfillTimesfmPredictions(ctx context.Context, pool *pgxpool.Pool) {
 		SELECT id, exchange, symbol, market, timeframe, price_at_predict, target_at
 		FROM timesfm_predictions
 		WHERE target_at <= NOW() AND actual_price IS NULL AND attempts < $1
+		ORDER BY target_at ASC
 		LIMIT 200`,
 		timesfmMaxBackfillAttempts,
 	)
@@ -61,9 +64,13 @@ func backfillTimesfmPredictions(ctx context.Context, pool *pgxpool.Pool) {
 	for rows.Next() {
 		var p pendingTimesfmPrediction
 		if err := rows.Scan(&p.id, &p.exchange, &p.symbol, &p.market, &p.timeframe, &p.priceAtPredict, &p.targetAt); err != nil {
+			log.Printf("timesfm accuracy backfill: scan pending row: %v", err)
 			continue
 		}
 		pending = append(pending, p)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("timesfm accuracy backfill: iterate pending: %v", err)
 	}
 	rows.Close()
 
@@ -75,6 +82,15 @@ func backfillTimesfmPredictions(ctx context.Context, pool *pgxpool.Pool) {
 			if _, err := pool.Exec(ctx, `UPDATE timesfm_predictions SET attempts = attempts + 1 WHERE id=$1`, p.id); err != nil {
 				log.Printf("timesfm accuracy backfill: increment attempts %s: %v", p.id, err)
 			}
+			continue
+		}
+		if p.priceAtPredict == 0 {
+			// price_at_predict should never be 0 — timesfm_refresh.go guards lastClose == 0
+			// before ever writing a prediction row — so this signals a data-integrity issue
+			// (bad manual insert, a future bug elsewhere) rather than "candle not found yet."
+			// Leave the row untouched (don't burn an attempt on it) so it stays visible for
+			// investigation instead of being silently corrupted with +Inf/NaN direction.
+			log.Printf("timesfm accuracy backfill: prediction %s has price_at_predict=0, skipping", p.id)
 			continue
 		}
 		actualDirection := timesfmDirection((actualPrice - p.priceAtPredict) / p.priceAtPredict * 100)
@@ -105,6 +121,13 @@ func nearestCandleClose(ctx context.Context, pool *pgxpool.Pool, exchange, symbo
 		exchange, symbol, market, timeframe, at,
 	).Scan(&close)
 	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			// A genuine "no row found yet" is the expected/common case and stays silent —
+			// this branch is for everything else (connection drop, context timeout, ...),
+			// which would otherwise burn one of the row's limited attempts with zero
+			// diagnostic trail.
+			log.Printf("timesfm accuracy backfill: nearestCandleClose %s/%s: %v", symbol, timeframe, err)
+		}
 		return 0, false
 	}
 	return close, true
