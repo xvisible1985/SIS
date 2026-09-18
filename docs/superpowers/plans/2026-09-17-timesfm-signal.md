@@ -1386,8 +1386,8 @@ func TestGetTimesfmPredictions_ReturnsRowsAndAggregates(t *testing.T) {
 	insert := func(correct *bool) {
 		s.pool.Exec(ctx, `
 			INSERT INTO timesfm_predictions
-				(symbol, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at, actual_price, actual_direction, correct, checked_at)
-			VALUES ($1,'5m',100,3,NOW(),100.0,2.0,'buy',NOW(),
+				(exchange, symbol, market, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at, actual_price, actual_direction, correct, checked_at)
+			VALUES ('bybit',$1,'futures','5m',100,3,NOW(),100.0,2.0,'buy',NOW(),
 			        CASE WHEN $2::bool IS NULL THEN NULL ELSE 101.0 END,
 			        CASE WHEN $2::bool IS NULL THEN NULL ELSE 'buy' END,
 			        $2, CASE WHEN $2::bool IS NULL THEN NULL ELSE NOW() END)`,
