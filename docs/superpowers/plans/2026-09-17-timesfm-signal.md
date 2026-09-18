@@ -1586,14 +1586,28 @@ Add immediately after it:
 	// forecast goes stale. Also start the periodic job that backfills each prediction's
 	// actual outcome once its forecast horizon has passed.
 	timesfmURL := getEnv("TIMESFM_SERVICE_URL", "http://localhost:8500")
-	signal.TimesfmRefreshFunc = newTimesfmRefreshFunc(pool, timesfmURL)
+	tfsignal.TimesfmRefreshFunc = newTimesfmRefreshFunc(pool, timesfmURL)
 	RunTimesfmAccuracyBackfill(ctx, pool)
 ```
 
-Confirm `"sis/pkg/signal"` is already imported in `main.go` (it is — `RunLeverageRefresher`'s
-own file already imports it, and `main.go` itself references `signal` package symbols
-elsewhere for the webhook/signal-engine wiring). If the build fails with `undefined: signal`,
-add `"sis/pkg/signal"` to `main.go`'s import block.
+**Important — `main.go` does NOT already import `sis/pkg/signal` (this is a correction from an
+earlier version of this plan, which wrongly claimed it did).** `main.go` currently imports the
+*standard library* `os/signal` package, unaliased, and uses it as `signal.NotifyContext(...)`
+(see the top of `main()`). Adding `"sis/pkg/signal"` unaliased would collide with that existing
+`signal` identifier and fail to compile (`signal redeclared in this block`). Every OTHER file in
+`services/api-gateway` that uses `sis/pkg/signal` (e.g. `leverage_cache.go`, `server.go`,
+`webhooks_engine.go`) imports it unaliased as `signal` because none of THEM also import
+`os/signal` — `main.go` is the one exception in this package.
+
+**Add it to `main.go`'s import block with an alias**, e.g. right after the existing
+`traderPkg "sis/pkg/trader"` line:
+
+```go
+	tfsignal "sis/pkg/signal"
+```
+
+Use `tfsignal.TimesfmRefreshFunc` (not `signal.TimesfmRefreshFunc`) in the wiring code above —
+this has already been corrected in the code block above this note.
 
 - [ ] **Step 3: Build to verify it compiles**
 
