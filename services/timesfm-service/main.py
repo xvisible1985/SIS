@@ -30,5 +30,10 @@ def forecast(req: ForecastRequest):
         raise HTTPException(status_code=400, detail="series must not be empty")
     if req.horizon <= 0:
         raise HTTPException(status_code=400, detail="horizon must be positive")
-    values = run_forecast(req.series, req.horizon)
+    try:
+        values = run_forecast(req.series, req.horizon)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"forecast unavailable: {e}")
     return ForecastResponse(point_forecast=values)

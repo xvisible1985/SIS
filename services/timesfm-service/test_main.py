@@ -37,3 +37,25 @@ def test_forecast_rejects_nonpositive_horizon(monkeypatch):
     client = TestClient(main.app)
     resp = client.post("/forecast", json={"series": [1.0, 2.0], "horizon": 0})
     assert resp.status_code == 400
+
+
+def test_forecast_maps_value_error_to_400(monkeypatch):
+    def raising_forecast(series: list[float], horizon: int) -> list[float]:
+        raise ValueError("horizon 200 exceeds the model's max horizon_len (128)")
+
+    monkeypatch.setattr(main, "run_forecast", raising_forecast)
+    client = TestClient(main.app)
+    resp = client.post("/forecast", json={"series": [1.0, 2.0], "horizon": 200})
+    assert resp.status_code == 400
+    assert "horizon_len" in resp.json()["detail"]
+
+
+def test_forecast_maps_unexpected_error_to_503(monkeypatch):
+    def raising_forecast(series: list[float], horizon: int) -> list[float]:
+        raise RuntimeError("checkpoint download failed")
+
+    monkeypatch.setattr(main, "run_forecast", raising_forecast)
+    client = TestClient(main.app)
+    resp = client.post("/forecast", json={"series": [1.0, 2.0], "horizon": 5})
+    assert resp.status_code == 503
+    assert "forecast unavailable" in resp.json()["detail"]

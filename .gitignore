@@ -9,3 +9,9 @@ frontend/tsconfig.tsbuildinfo
 .claude/
 .superpowers/
 *.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
