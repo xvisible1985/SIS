@@ -734,6 +734,17 @@ func (s *Server) DeleteStrategy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clear any dangling hedged_strategy_id references first — strategies.hedged_strategy_id
+	// REFERENCES strategies(id) with no ON DELETE clause (migration 056), so the DELETE
+	// below would otherwise fail with a foreign key violation whenever another strategy
+	// still points at this one. Found live 2026-09-18: this surfaced to the user as a raw
+	// "db error" on the strategy card with no way to resolve it. The referencing strategy
+	// itself is left untouched — only the stale reference is nulled out.
+	if _, err := s.pool.Exec(r.Context(), `UPDATE strategies SET hedged_strategy_id=NULL WHERE hedged_strategy_id=$1`, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
 	if _, err := s.pool.Exec(r.Context(), `DELETE FROM strategies WHERE id=$1`, id); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return

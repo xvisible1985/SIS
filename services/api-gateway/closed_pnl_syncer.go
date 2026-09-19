@@ -116,15 +116,20 @@ func (s *ClosedPnlSyncer) runAccount(ctx context.Context, a closedPnlAccount) {
 	// Offset from execution syncer (60s) to spread API calls.
 	time.Sleep(30 * time.Second)
 	s.syncAccount(ctx, a, creds, ex)
+	s.fullReconcile(ctx, a, creds, ex)
 
-	ticker := time.NewTicker(90 * time.Second)
-	defer ticker.Stop()
+	tailTicker := time.NewTicker(90 * time.Second)
+	defer tailTicker.Stop()
+	fullTicker := time.NewTicker(fullReconcileInterval)
+	defer fullTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-tailTicker.C:
 			s.syncAccount(ctx, a, creds, ex)
+		case <-fullTicker.C:
+			s.fullReconcile(ctx, a, creds, ex)
 		}
 	}
 }
@@ -138,10 +143,42 @@ func (s *ClosedPnlSyncer) syncAccount(ctx context.Context, a closedPnlAccount, c
 	}
 	s.mu.Unlock()
 
+	newLast := s.fetchAndProcess(ctx, a, creds, ex, since)
+
+	s.mu.Lock()
+	s.lastSync[a.id] = newLast
+	s.mu.Unlock()
+
+	s.reconcileMissingTradeHistory(ctx, a, creds, ex)
+}
+
+// fullReconcileInterval/fullReconcileLookback are the periodic safety net's cadence and
+// depth — independent of syncAccount's own lastSync watermark. syncAccount's watermark
+// advances on ANY symbol's close (whichever is most recent across the whole account), so
+// a single order that's missed on its own tick for a transient reason (a request error,
+// pagination hiccup, exchange-side delay) can fall permanently outside its rolling window
+// once a later close on some OTHER symbol pushes the watermark past it — syncAccount alone
+// never re-checks older ground. fullReconcile re-fetches a much wider window on a slow
+// cadence and re-runs the exact same idempotent processClosedPnl attribution, so anything
+// syncAccount missed gets a second (third, ...) chance regardless of cause.
+const fullReconcileInterval = 6 * time.Hour
+const fullReconcileLookback = 14 * 24 * time.Hour
+
+func (s *ClosedPnlSyncer) fullReconcile(ctx context.Context, a closedPnlAccount, creds trader.Credentials, ex trader.Exchange) {
+	s.fetchAndProcess(ctx, a, creds, ex, time.Now().Add(-fullReconcileLookback))
+}
+
+// fetchAndProcess fetches closed-pnl entries since `since` (both linear and inverse) and
+// runs each one through processClosedPnl, which is itself idempotent (step 1 checks
+// bybit_close_order_id against trade_history) — so calling this with a wide, overlapping
+// `since` is always safe, just wasted API calls for anything already recorded. Returns the
+// newest close time seen, for callers that track a rolling watermark (syncAccount); callers
+// that don't (fullReconcile) simply discard it.
+func (s *ClosedPnlSyncer) fetchAndProcess(ctx context.Context, a closedPnlAccount, creds trader.Credentials, ex trader.Exchange, since time.Time) time.Time {
 	// Strategy recorder writes within ~20s of cycle close.
 	// We only consider items that are at least 30s old to let PATH 1 write first.
 	cutoff := time.Now().Add(-30 * time.Second)
-	newLast := since
+	newest := since
 
 	for _, category := range []string{"linear", "inverse"} {
 		pnls, err := ex.FetchRecentClosedPnl(ctx, category, since)
@@ -155,18 +192,13 @@ func (s *ClosedPnlSyncer) syncAccount(ctx context.Context, a closedPnlAccount, c
 			if closeTime.After(cutoff) {
 				continue // too recent — wait for strategy recorder
 			}
-			if closeTime.After(newLast) {
-				newLast = closeTime
+			if closeTime.After(newest) {
+				newest = closeTime
 			}
 			s.processClosedPnl(ctx, a, creds, p, closeTime)
 		}
 	}
-
-	s.mu.Lock()
-	s.lastSync[a.id] = newLast
-	s.mu.Unlock()
-
-	s.reconcileMissingTradeHistory(ctx, a, creds, ex)
+	return newest
 }
 
 // tradeHistoryGap is one strategy_cycles row that ended via TP/SL long enough ago that
@@ -406,6 +438,27 @@ func (s *ClosedPnlSyncer) processClosedPnl(ctx context.Context, a closedPnlAccou
 		}
 	}
 
+	// 1c. Fallback attribution via strategy_levels.sl_order_id — catches a per-level matrix
+	// SL close whose OrderLinkId didn't survive the round trip. Bybit does not reliably echo
+	// a conditional/stop order's OrderLinkId back once it triggers and converts to a market
+	// fill, so 1b's parse can miss orders that were, in fact, placed by us with a proper
+	// SIS_STR-...-msl-... linkID. Without this check such a close fell through all the way
+	// to the zombie-cycle heuristic (step 3) and force-closed the ENTIRE cycle — even with
+	// other levels still open on the exchange. Found live 2026-09-19, CROSSUSDT: two hedge
+	// legs (on two separate accounts) each had a level SL-close ghost-close their whole
+	// cycle this way, orphaning a live ~524-qty position with no TP/SL. handleMatrixSLFill
+	// already recorded this level's PnL directly into strategy_levels — trade_history and
+	// strategy_cycles must stay untouched.
+	var levelStratID string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT st.id FROM strategy_levels sl JOIN strategies st ON st.id = sl.strategy_id
+		 WHERE st.account_id = $1 AND sl.sl_order_id = $2`,
+		a.id, p.OrderId,
+	).Scan(&levelStratID); err == nil {
+		log.Printf("closed_pnl_syncer: %s per-level matrix SL (order=%s) matched via strategy_levels.sl_order_id — already tracked, skip", p.Symbol, p.OrderId)
+		return
+	}
+
 	// 2. Does a strategy cycle own this close?
 	// A strategy cycle that ended near this close time for this symbol+direction.
 	dir := "long"
@@ -444,6 +497,16 @@ func (s *ClosedPnlSyncer) processClosedPnl(ctx context.Context, a closedPnlAccou
 
 	// 3. Zombie cycle — open cycle whose closeCycle was missed (gateway was down).
 	// Ghost-close it and record as a strategy trade instead of manual.
+	//
+	// sc.started_at < closeTime is a correctness invariant, not an optimization: a cycle
+	// cannot have been closed by an order that predates its own start. Without this guard,
+	// a stale/unrelated closed-pnl entry (an old order this syncer never managed to
+	// attribute — e.g. fullReconcile reaching back further than usual) can match whichever
+	// open cycle currently happens to share symbol+direction, even one that started well
+	// after that old order closed — silently ghost-closing a live, currently-trading
+	// position. Found live (2026-09-16): a 2026-09-11 order matched and ghost-closed a
+	// matrix cycle that had opened on 2026-09-16, ending it with ended_at BEFORE
+	// started_at and halting all further order placement on a real open position.
 	var zc struct {
 		cycleID   string
 		cycleNum  int
@@ -465,9 +528,10 @@ func (s *ClosedPnlSyncer) processClosedPnl(ctx context.Context, a closedPnlAccou
 		  AND st.symbol     = $2
 		  AND st.direction  = $3
 		  AND sc.ended_at IS NULL
+		  AND sc.started_at < $4
 		ORDER BY sc.started_at DESC
 		LIMIT 1`,
-		a.id, p.Symbol, dir,
+		a.id, p.Symbol, dir, closeTime,
 	).Scan(&zc.cycleID, &zc.cycleNum, &zc.startedAt,
 		&zc.tpOrderID, &zc.slOrderID,
 		&zc.stratID, &zc.botID, &zc.category, &zc.hedgeMode)

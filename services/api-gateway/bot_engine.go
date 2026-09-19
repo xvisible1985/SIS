@@ -1477,6 +1477,15 @@ func (s *Server) loadBotAccountExchange(ctx context.Context, accountID string) (
 	return strategy.ResolveExchange(exchangeName, creds, trader.NewTradeStream(creds)), nil
 }
 
+// stoppedStrategy is a stopped strategy row considered for deletion by
+// cleanupStoppedBotStrategies/cleanupStoppedStrategies.
+type stoppedStrategy struct {
+	id        string
+	symbol    string
+	category  string
+	direction string
+}
+
 // cleanupStoppedBotStrategies deletes stopped bot strategies that have no open exchange position.
 // Called each tick for bots configured with after_stop_mode="delete".
 //
@@ -1484,13 +1493,6 @@ func (s *Server) loadBotAccountExchange(ctx context.Context, accountID string) (
 // (the same window configured in the signal) so that processNewsBots cannot immediately re-create
 // the same strategy after a TP/SL close. Once the window expires the record is deleted.
 func (s *Server) cleanupStoppedBotStrategies(ctx context.Context, b botEngineRow, cfg botCfgJSON) {
-	type stoppedStrategy struct {
-		id        string
-		symbol    string
-		category  string
-		direction string
-	}
-
 	// Detect news bot and read its lifetime_minutes.
 	isNewsBot := false
 	lifetimeMin := 60
@@ -1562,23 +1564,44 @@ func (s *Server) cleanupStoppedBotStrategies(ctx context.Context, b botEngineRow
 		}
 	}
 
-	const cleanupMaxWait = 10 * time.Minute
+	s.cleanupStoppedStrategies(ctx, b, stopped, openPositions)
+}
 
+// cleanupStoppedStrategiesMaxWait is the grace period cleanupStoppedStrategies waits,
+// per strategy, for an exchange position it still sees open to close on its own before
+// escalating to a persistent alert. Var (not const) so tests can shrink it.
+var cleanupStoppedStrategiesMaxWait = 10 * time.Minute
+
+// cleanupStoppedStrategies applies the keep/delete decision for each stopped strategy
+// given a snapshot of which symbol+direction slots the exchange still reports an open
+// position for. Split out of cleanupStoppedBotStrategies so the decision logic is
+// testable without a live exchange connection.
+//
+// A strategy is deleted ONLY once the exchange confirms its position is actually closed.
+// It must NEVER be deleted while openPositions still reports it open — no matter how long
+// that has been true. Found live 2026-09-18: this cleanup used to force-delete a strategy
+// after a fixed 10-minute grace period even when the position was still open (a hedge
+// leg's cycle had been wrongly cleared by a separate startup-reconcile bug), orphaning a
+// real ICXUSDT position with no strategy left to manage its TP/SL. Past the grace period
+// this now logs a persistent error-level alert instead of deleting, so a human can
+// investigate — the row stays until the position genuinely closes.
+func (s *Server) cleanupStoppedStrategies(ctx context.Context, b botEngineRow, stopped []stoppedStrategy, openPositions map[string]bool) {
 	for _, st := range stopped {
 		posKey := st.symbol + ":" + st.direction
 		if openPositions[posKey] {
 			now := time.Now()
 			firstSeen, _ := s.cleanupWaiters.LoadOrStore(st.id, now)
 			waited := now.Sub(firstSeen.(time.Time))
-			if waited < cleanupMaxWait {
+			if waited < cleanupStoppedStrategiesMaxWait {
 				s.logBotEvent(ctx, b.id,
 					fmt.Sprintf("Очистка: стратегия %s ожидает закрытия позиции на бирже", st.symbol),
 					"info", "strategy")
-				continue
+			} else {
+				s.logBotEvent(ctx, b.id,
+					fmt.Sprintf("Очистка: стратегия %s — позиция всё ещё открыта спустя %v, требуется ручная проверка (стратегия НЕ удаляется)", st.symbol, cleanupStoppedStrategiesMaxWait),
+					"error", "strategy")
 			}
-			s.logBotEvent(ctx, b.id,
-				fmt.Sprintf("Очистка: стратегия %s — позиция не закрылась за %v, принудительное удаление", st.symbol, cleanupMaxWait),
-				"warn", "strategy")
+			continue
 		}
 		// Delete first, record the symbol run in history only once that actually
 		// succeeds. Previously this order was reversed ("record before deletion so

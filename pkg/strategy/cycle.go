@@ -651,6 +651,54 @@ func (sr *StrategyRunner) resumeGridCycle(ctx context.Context) {
 	sr.launchExitSignalMonitors(ctx)
 }
 
+// positionGoneConfirmDelay is the wait before checkPositionGone re-fetches positions to
+// confirm a "not found" result. A single empty/stale FetchPositions response — e.g. right
+// after a process restart, before REST/WS caches are warm — must not be trusted on its
+// own; see engine.go's seedPositionCache/applyPositionSnapshot for the same guard applied
+// to the WS position cache. Found live 2026-09-18: exactly one stale snapshot wiped a
+// hedge leg's cycle, which in turn defeated hedge_engine.go's hedgeHasOpenFilledLevels
+// guard on the next tick (no filled levels left to detect), and the strategy was
+// eventually deleted by bot_engine.go's stopped-strategy cleanup while its real position
+// was still open on the exchange. Var (not const) so tests can shrink it.
+var positionGoneConfirmDelay = 3 * time.Second
+
+// fetchPositionState does one FetchPositions call and reports whether this strategy's
+// symbol+direction position is open, and if not, whether a sub-minQty dust fragment was
+// found instead. Split out of checkPositionGone so it can be called twice (initial +
+// confirmation) without duplicating the matching logic.
+func (sr *StrategyRunner) fetchPositionState(ctx context.Context) (open bool, dustSize float64, err error) {
+	positions, err := sr.runner.Exchange().FetchPositions(ctx)
+	if err != nil {
+		log.Printf("strategy %s: fetch positions for startup check: %v", sr.strategy.ID, err)
+		return false, 0, err
+	}
+
+	wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
+
+	// Also load minQty for dust detection (best-effort; zero means unknown).
+	sr.mu.Lock()
+	minQty := sr.instr.MinQty
+	sr.mu.Unlock()
+
+	for _, p := range positions {
+		size, _ := strconv.ParseFloat(p.Size, 64)
+		if p.Symbol != sr.strategy.Symbol || size == 0 {
+			continue
+		}
+		// In hedge mode match the position slot to this strategy's direction.
+		if sr.strategy.HedgeMode && p.PositionIdx != wantIdx {
+			continue
+		}
+		// If minQty is known and the position is smaller than one lot, treat it as
+		// dust: attempt a market close, then clean up the cycle as if gone.
+		if minQty > 0 && size < minQty {
+			return false, size, nil
+		}
+		return true, 0, nil
+	}
+	return false, 0, nil
+}
+
 // checkPositionGone checks if there are filled levels in the current cycle but no
 // corresponding open position on the exchange. If so, it cleans up the cycle and
 // returns true. Called only from loadOrStart (no lock held).
@@ -669,38 +717,18 @@ func (sr *StrategyRunner) checkPositionGone(ctx context.Context) bool {
 		return false
 	}
 
-	positions, err := sr.runner.Exchange().FetchPositions(ctx)
+	positionOpen, dustSize, err := sr.fetchPositionState(ctx)
 	if err != nil {
-		log.Printf("strategy %s: fetch positions for startup check: %v", sr.strategy.ID, err)
 		return false
 	}
-
-	wantIdx := positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction)
-
-	// Also load minQty for dust detection (best-effort; zero means unknown).
-	sr.mu.Lock()
-	minQty := sr.instr.MinQty
-	sr.mu.Unlock()
-
-	var dustSize float64 // non-zero if a sub-minQty fragment was found
-	positionOpen := false
-	for _, p := range positions {
-		size, _ := strconv.ParseFloat(p.Size, 64)
-		if p.Symbol != sr.strategy.Symbol || size == 0 {
-			continue
+	if !positionOpen && dustSize == 0 {
+		// Nothing found at all on the first fetch — confirm with a second fetch
+		// before treating "no position" as ground truth (see positionGoneConfirmDelay).
+		time.Sleep(positionGoneConfirmDelay)
+		positionOpen, dustSize, err = sr.fetchPositionState(ctx)
+		if err != nil {
+			return false
 		}
-		// In hedge mode match the position slot to this strategy's direction.
-		if sr.strategy.HedgeMode && p.PositionIdx != wantIdx {
-			continue
-		}
-		// If minQty is known and the position is smaller than one lot, treat it as
-		// dust: attempt a market close, then clean up the cycle as if gone.
-		if minQty > 0 && size < minQty {
-			dustSize = size
-			break
-		}
-		positionOpen = true
-		break
 	}
 	if positionOpen {
 		return false
@@ -725,7 +753,7 @@ func (sr *StrategyRunner) checkPositionGone(ctx context.Context) bool {
 			OrderType:   "Market",
 			Qty:         dustQty,
 			ReduceOnly:  !sr.strategy.HedgeMode,
-			PositionIdx: wantIdx,
+			PositionIdx: positionIdxForClose(sr.strategy.HedgeMode, sr.strategy.Direction),
 			OrderLinkId: dustLinkID,
 		})
 		if closeErr != nil {
