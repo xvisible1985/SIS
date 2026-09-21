@@ -1798,7 +1798,9 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 				qty := trader.FormatQty(sizeUSDT/priceForQty, sr.instr.QtyStep, sr.instr.MinQty)
 				// Positive price_move_pct = with direction = virtual (tracks momentum)
 				// Negative price_move_pct = against direction = exchange limit (passive, waits for price)
-				forceVirtual := step.OrderType == "virtual" || step.PriceMovePct > 0
+				// Signal-gated levels are always virtual — a level nothing would ever re-check
+				// the signal on must never be a blind resting order.
+				forceVirtual := step.OrderType == "virtual" || step.PriceMovePct > 0 || step.UseSignal
 
 				// Adopt path: absorb existing exchange position as pre-filled L1.
 				// Works for both market-entry (targetPrice==0) and limit-entry grids:
@@ -1839,9 +1841,9 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 
 				var levelID string
 				if err := sr.runner.pool.QueryRow(ctx,
-					`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, force_virtual)
-					 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-					sr.strategy.ID, cycleID, levelIdx, side, targetPrice, sizeUSDT, qty, forceVirtual,
+					`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, force_virtual, use_signal)
+					 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+					sr.strategy.ID, cycleID, levelIdx, side, targetPrice, sizeUSDT, qty, forceVirtual, step.UseSignal,
 				).Scan(&levelID); err != nil {
 					log.Printf("strategy %s: insert level %d: %v", sr.strategy.ID, levelIdx, err)
 					levelIdx++
@@ -1850,7 +1852,7 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 				sr.levels = append(sr.levels, GridLevel{
 					ID: levelID, LevelIdx: levelIdx, Side: side,
 					TargetPrice: targetPrice, SizeUSDT: sizeUSDT, Qty: qty,
-					Status: LevelPending, ForceVirtual: forceVirtual,
+					Status: LevelPending, ForceVirtual: forceVirtual, UseSignal: step.UseSignal,
 				})
 				levelIdx++
 			}
@@ -4390,13 +4392,15 @@ func (sr *StrategyRunner) repriceRemainingFromFills(ctx context.Context) {
 				}
 				sizeUSDT := sizePct / 100 * sr.strategy.GridSizeUSDT
 				qty := trader.FormatQty(sizeUSDT/target, sr.instr.QtyStep, sr.instr.MinQty)
-				forceVirtual := step.OrderType == "virtual" || step.PriceMovePct > 0
+				// Signal-gated levels are always virtual — a level nothing would ever re-check
+				// the signal on must never be a blind resting order.
+				forceVirtual := step.OrderType == "virtual" || step.PriceMovePct > 0 || step.UseSignal
 				maxIdx++
 				var levelID string
 				if err := sr.runner.pool.QueryRow(ctx,
-					`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, force_virtual)
-					 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-					sr.strategy.ID, sr.cycle.ID, maxIdx, side, target, sizeUSDT, qty, forceVirtual,
+					`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, force_virtual, use_signal)
+					 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+					sr.strategy.ID, sr.cycle.ID, maxIdx, side, target, sizeUSDT, qty, forceVirtual, step.UseSignal,
 				).Scan(&levelID); err != nil {
 					sr.errlog(ctx, fmt.Sprintf("Создание нового уровня L%d: %v", maxIdx, err))
 					break
@@ -4410,6 +4414,7 @@ func (sr *StrategyRunner) repriceRemainingFromFills(ctx context.Context) {
 					Qty:          qty,
 					Status:       LevelPending,
 					ForceVirtual: forceVirtual,
+					UseSignal:    step.UseSignal,
 				})
 				if target > 0 {
 					prevPrice = target
