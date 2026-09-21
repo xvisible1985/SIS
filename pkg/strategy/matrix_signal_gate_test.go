@@ -11,12 +11,33 @@ import (
 // TestMatrixIsVirtual_UseSignalLevel_AlwaysVirtual is the matrix equivalent of the grid
 // forceVirtual regression: a UseSignal=true level must be treated as virtual even when
 // nothing else about it (Slot, OrderType) would normally make it so.
+//
+// Uses Direction: DirectionLong, slot: -1 deliberately — NOT slot: 1, which would hit
+// matrixIsVirtual's "long: above levels always virtual" branch and return true
+// unconditionally regardless of UseSignal, making the test pass for the wrong reason.
+// slot=-1 for a long hits the below-slot branch instead
+// (`idx := -slot-1; return idx < len(below) && below[idx].OrderType == "virtual"`), which
+// with an empty MatrixLevels config returns false by default — so UseSignal=true is the
+// only thing that can flip this particular case to true, genuinely proving the check.
 func TestMatrixIsVirtual_UseSignalLevel_AlwaysVirtual(t *testing.T) {
 	sr := &StrategyRunner{strategy: Strategy{Direction: DirectionLong}}
-	slot := 1
+	slot := -1
 	l := &GridLevel{Slot: &slot, UseSignal: true}
 	if !sr.matrixIsVirtual(l) {
-		t.Error("matrixIsVirtual = false, want true — UseSignal must force virtual regardless of slot/OrderType config")
+		t.Error("matrixIsVirtual = false, want true — UseSignal must force virtual even for a below-slot whose OrderType config isn't 'virtual'")
+	}
+}
+
+// TestMatrixIsVirtual_NoUseSignalNoConfig_NotVirtual is the negative control for the test
+// above: the same slot/direction combination, without UseSignal, must still correctly
+// return false — locking in that the pre-existing default-false behavior for an
+// unconfigured below-slot wasn't silently changed by the new check.
+func TestMatrixIsVirtual_NoUseSignalNoConfig_NotVirtual(t *testing.T) {
+	sr := &StrategyRunner{strategy: Strategy{Direction: DirectionLong}}
+	slot := -1
+	l := &GridLevel{Slot: &slot, UseSignal: false}
+	if sr.matrixIsVirtual(l) {
+		t.Error("matrixIsVirtual = true, want false — an unconfigured below-slot with UseSignal=false must not be forced virtual")
 	}
 }
 
