@@ -164,3 +164,47 @@ func TestMatrixHandleSLFlattenOrContinue_OtherLevelsStillFilled_CycleStaysOpen(t
 	}()
 	sr.matrixHandleSLFlattenOrContinue(context.Background())
 }
+
+// TestMatrixAfterSLClose_RelativeSlots_OnlyFillFlattens_ClosesCycle is the regression for a
+// live incident (2026-09-21, 3 FUSDT hedge accounts, all relative_slots=true): the ONLY
+// filled level (L0) got SL-closed, fully flattening the position — but the RelativeSlots
+// branch of the old handleMatrixSLFill just recomputed TP and returned, NEVER reaching
+// matrixHandleSLFlattenOrContinue below it. The cycle stayed open (status 'active',
+// ended_at NULL) for over an hour with no new entry ever attempted, on all 3 accounts
+// simultaneously — not a race, a deterministic gap in the RelativeSlots branch.
+//
+// Proven by reaching the nil-runner panic inside cancelPlacedLevels/closeCycle (cycle.go) —
+// the pre-fix code instead panics inside matrixUpdateTP's own nil-pool warn (events.go),
+// since matrixActiveQty()==0 also means avgEntry()==0 there, an entirely different file and
+// call chain. The second assertion below fails loudly if that's what actually happened,
+// rather than silently accepting any panic as proof.
+func TestMatrixAfterSLClose_RelativeSlots_OnlyFillFlattens_ClosesCycle(t *testing.T) {
+	slot := 0
+	sr := &StrategyRunner{
+		strategy: Strategy{
+			ID:            "11111111-2222-3333-4444-555555555555",
+			StrategyType:  "matrix",
+			Direction:     DirectionShort,
+			Symbol:        "TESTUSDT",
+			RelativeSlots: true,
+		},
+		cycle: &Cycle{ID: "cycle-1", CycleNum: 2, StartPrice: 100.0},
+		levels: []GridLevel{
+			{ID: "level-0", Slot: &slot, Status: LevelSLClosed},
+		},
+	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic reaching closeCycle — a fully flattened RelativeSlots position must still close the cycle")
+		}
+		stack := string(debug.Stack())
+		if !strings.Contains(stack, "cycle.go") {
+			t.Fatalf("panic did not reach cycle.go (cancelPlacedLevels/closeCycle) — got %v\nstack:\n%s", r, stack)
+		}
+		if strings.Contains(stack, "matrixUpdateTP") {
+			t.Fatalf("panicked inside matrixUpdateTP instead — the flatten-check must run before (or regardless of) matrixUpdateTP so a fully flat RelativeSlots position still closes its cycle:\n%s", stack)
+		}
+	}()
+	sr.matrixAfterSLClose(context.Background(), &sr.levels[0], 99.0)
+}

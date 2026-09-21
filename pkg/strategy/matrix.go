@@ -1842,11 +1842,38 @@ func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string
 	sr.warn(ctx, fmt.Sprintf("Matrix SL сработал %s @ %.4f",
 		slotLabel(closed.Slot), slTrigger))
 
+	sr.matrixAfterSLClose(ctx, closed, slTrigger)
+}
+
+// matrixAfterSLClose runs the decision logic that follows a per-level SL close, once the
+// level itself has already been marked sl_closed (both in DB and in sr.levels) by the
+// caller (handleMatrixSLFill). Extracted from handleMatrixSLFill's tail — mirroring
+// matrixHandleSLFlattenOrContinue's own extraction (see its doc comment) — for the same
+// reason: the caller's own unconditional pool.Exec/sr.warn calls before this point would
+// otherwise force any test through a panic that masks which branch actually runs here.
+//
+// Must be called with sr.mu held (same as handleMatrixSLFill).
+func (sr *StrategyRunner) matrixAfterSLClose(ctx context.Context, closed *GridLevel, slTrigger float64) {
 	// Relative-slots mode: the slot is closed for good. Skip the absolute re-entry /
 	// rebuild paths below (matrixWaitingSlots, matrixRebuildFromSZLow, RebuildFromEntry) —
 	// the drop in open-slot count makes the next relative slot recompute on the next
 	// price tick (see matrixRelativeExpand). Other slots' SLs are untouched.
+	//
+	// The flatten-check runs FIRST, before matrixUpdateTP — found live (2026-09-21, 3
+	// FUSDT hedge accounts): when the closed level was the ONLY fill, the position had
+	// fully flattened, but the old code recomputed TP and returned here WITHOUT ever
+	// reaching matrixHandleSLFlattenOrContinue below — the cycle stayed open forever
+	// (status 'active', ended_at NULL) with no new entry ever attempted, on all 3 accounts
+	// simultaneously (deterministic, not a race). If other slots are still filled,
+	// matrixHandleSLFlattenOrContinue is a no-op and TP still gets recomputed exactly as
+	// before; if the position is now fully flat, the cycle closes/restarts and recomputing
+	// TP for it afterward would be meaningless (matrixUpdateTP would immediately bail out
+	// on avgEntryPrice==0 anyway), so it's skipped once sr.cycle is nil.
 	if sr.strategy.RelativeSlots {
+		sr.matrixHandleSLFlattenOrContinue(ctx)
+		if sr.cycle == nil {
+			return // cycle just closed — nothing left to recompute TP for
+		}
 		sr.matrixUpdateTP(ctx) // recompute global TP from the new average entry
 		return
 	}
