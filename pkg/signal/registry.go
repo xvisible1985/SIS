@@ -249,6 +249,15 @@ func init() {
 		return &leverageFilterSignal{minLeverage: cfg.Float("min_leverage", 0)}
 	})
 
+	Register("timesfm", func(cfg Config) Signal {
+		return &timesfmSignal{
+			contextBars:        clampTimesfmContextBars(cfg.Float("context_bars", 512)),
+			horizonBars:        clampTimesfmHorizonBars(cfg.Float("horizon_bars", 12)),
+			thresholdPct:       clampTimesfmThresholdPct(cfg.Float("threshold_pct", 0.5)),
+			refreshIntervalSec: clampTimesfmRefreshIntervalSec(cfg.Float("refresh_interval_sec", 300)),
+		}
+	})
+
 	// Fires when the coin moved by >= thresholdPct over the last periodHours
 	// (rolling wall-clock window, not candle count). mode "trend" signals with
 	// the move (rise→Buy, fall→Sell); "counter" signals against it.
@@ -265,4 +274,49 @@ func init() {
 			mode:         cfg.Str("mode", "trend"),
 		}
 	})
+}
+
+// ── timesfm config validation ──────────────────────────────────────────────
+// A misconfigured (unset/zero/negative, or out-of-range) timesfm param isn't just "use a
+// slightly wrong value" — it's a signal that gets HTTP 400'd by the model service forever
+// (horizon_bars > 128), fires Buy/Sell on noise (threshold_pct <= 0), retries on every tick
+// (refresh_interval_sec <= 0), or corrupts the accuracy log's own record of context actually
+// used (context_bars <= 0, written verbatim into timesfm_predictions). Clamped once here, at
+// the single boundary every consumer of this signal's config goes through, rather than left
+// for each downstream reader to guard against separately.
+
+// timesfmMaxHorizonBars mirrors services/timesfm-service's own hard cap (_HORIZON_LEN = 128
+// in forecast.py) — going through the registry means a bad value is corrected once, here,
+// rather than discovered via a runtime HTTP 400 with a silently-stuck-Neutral outcome.
+const timesfmMaxHorizonBars = 128
+
+func clampTimesfmContextBars(v float64) float64 {
+	if v <= 0 {
+		return 512
+	}
+	return v
+}
+
+func clampTimesfmHorizonBars(v float64) float64 {
+	if v <= 0 {
+		return 12
+	}
+	if v > timesfmMaxHorizonBars {
+		return timesfmMaxHorizonBars
+	}
+	return v
+}
+
+func clampTimesfmThresholdPct(v float64) float64 {
+	if v <= 0 {
+		return 0.5
+	}
+	return v
+}
+
+func clampTimesfmRefreshIntervalSec(v float64) float64 {
+	if v <= 0 {
+		return 300
+	}
+	return v
 }

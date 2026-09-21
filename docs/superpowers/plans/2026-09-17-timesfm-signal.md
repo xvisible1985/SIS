@@ -280,7 +280,19 @@ func finishTimesfmRefresh(symbol, timeframe string, contextBars, horizonBars int
 // HTTP client the real refresh needs, neither of which pkg/signal itself ever holds. Mirrors
 // why whale/leverage state is only ever pushed in from outside, never fetched by pkg/signal
 // itself (see whale_state.go, leverage_state.go).
-var TimesfmRefreshFunc func(symbol, timeframe string, candles []Candle, horizonBars int)
+//
+// contextBars is passed explicitly — NOT inferred from len(candles) by the receiver — and
+// the caller MUST pass the exact same contextBars value it used for the
+// GetTimesfmForecast/tryStartTimesfmRefresh/finishTimesfmRefresh calls around this refresh.
+// candles can legitimately be SHORTER than contextBars (e.g. a symbol/timeframe that hasn't
+// accumulated contextBars worth of history yet) — if the receiver were to key its
+// SetTimesfmForecast call on len(candles) instead of the passed-in contextBars, a
+// short-history call would cache its result under a DIFFERENT key than every future read
+// ever queries, permanently missing the cache and re-triggering a real model call (an
+// external HTTP round-trip plus a DB insert) on every single tick for that symbol until
+// history happens to reach exactly contextBars candles — silently defeating the entire
+// point of this cache. Always thread the caller's contextBars through untouched.
+var TimesfmRefreshFunc func(symbol, timeframe string, candles []Candle, contextBars, horizonBars int)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -378,7 +390,18 @@ func TestTimesfmSignal_ComputeWithSymbol_ColdCache_TriggersRefreshOnce(t *testin
 	defer func() { TimesfmRefreshFunc = orig }()
 
 	calls := make(chan struct{}, 10)
-	TimesfmRefreshFunc = func(symbol, timeframe string, candles []Candle, horizonBars int) {
+	TimesfmRefreshFunc = func(symbol, timeframe string, candles []Candle, contextBars, horizonBars int) {
+		// A real refresh is an HTTP round-trip plus a DB write — comfortably longer than the
+		// time it takes 5 goroutines to get scheduled, which is why the dedup guard
+		// (tryStartTimesfmRefresh/finishTimesfmRefresh) is safe in production. A truly
+		// instant mock doesn't reproduce that: on a many-core machine, the FIRST winning
+		// goroutine's whole refresh-and-clear-inflight cycle can complete before the other 4
+		// outer goroutines below even get scheduled onto a thread, so they'd legitimately
+		// see the flag already cleared and correctly start a second refresh — not a bug in
+		// the dedup guard (mutual exclusion during an ACTUAL in-flight window is exactly what
+		// it promises), just a test racing against goroutine-dispatch jitter instead of
+		// against realistic refresh latency. This sleep restores that realism.
+		time.Sleep(50 * time.Millisecond)
 		calls <- struct{}{}
 	}
 
@@ -405,7 +428,11 @@ func TestTimesfmSignal_ComputeWithSymbol_ColdCache_TriggersRefreshOnce(t *testin
 	select {
 	case <-calls:
 		t.Fatal("TimesfmRefreshFunc was called more than once for concurrent requests on the same key")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(200 * time.Millisecond):
+		// Comfortably longer than the mock's own 50ms sleep, so a genuine second call (were
+		// the dedup guard actually broken) would have arrived on `calls` well within this
+		// window — this isn't racing against the mock's latency the way a tighter window
+		// would.
 	}
 }
 
@@ -415,7 +442,7 @@ func TestTimesfmSignal_ComputeWithSymbol_FreshCache_DoesNotRefresh(t *testing.T)
 
 	SetTimesfmForecast("TFSIG_FRESH", "5m", 100, 12, 1.0)
 	called := false
-	TimesfmRefreshFunc = func(symbol, timeframe string, candles []Candle, horizonBars int) { called = true }
+	TimesfmRefreshFunc = func(symbol, timeframe string, candles []Candle, contextBars, horizonBars int) { called = true }
 
 	s := &timesfmSignal{contextBars: 100, horizonBars: 12, thresholdPct: 0.5, refreshIntervalSec: 300}
 	candles := make([]Candle, 150)
@@ -436,7 +463,7 @@ func TestTimesfmSignal_ComputeWithSymbol_UnrecognizedSpacing_ReturnsNeutral(t *t
 	orig := TimesfmRefreshFunc
 	defer func() { TimesfmRefreshFunc = orig }()
 	called := false
-	TimesfmRefreshFunc = func(symbol, timeframe string, candles []Candle, horizonBars int) { called = true }
+	TimesfmRefreshFunc = func(symbol, timeframe string, candles []Candle, contextBars, horizonBars int) { called = true }
 
 	s := &timesfmSignal{contextBars: 100, horizonBars: 12, thresholdPct: 0.5, refreshIntervalSec: 300}
 	candles := []Candle{{Time: 0, Close: 1.0}, {Time: 12345, Close: 1.0}}
@@ -446,6 +473,89 @@ func TestTimesfmSignal_ComputeWithSymbol_UnrecognizedSpacing_ReturnsNeutral(t *t
 	}
 	if called {
 		t.Error("TimesfmRefreshFunc was called despite an unrecognized timeframe")
+	}
+}
+
+// TestTimesfmSignal_ComputeWithSymbol_ShortHistory_PassesConfiguredContextBars is the
+// regression for a cache-key mismatch bug caught in code review before this task was ever
+// implemented: if ComputeWithSymbol has fewer candles available than s.contextBars (e.g. a
+// symbol/timeframe that hasn't accumulated enough history yet), it must still pass the
+// CONFIGURED contextBars (not len(candles)) to TimesfmRefreshFunc — otherwise the eventual
+// SetTimesfmForecast call (made by the refresh function, in a later task) would cache its
+// result under a different key than every future GetTimesfmForecast call ever queries,
+// permanently missing the cache for that symbol/timeframe.
+func TestTimesfmSignal_ComputeWithSymbol_ShortHistory_PassesConfiguredContextBars(t *testing.T) {
+	orig := TimesfmRefreshFunc
+	defer func() { TimesfmRefreshFunc = orig }()
+
+	var gotContextBars int
+	var gotCandleLen int
+	calls := make(chan struct{}, 1)
+	TimesfmRefreshFunc = func(symbol, timeframe string, candles []Candle, contextBars, horizonBars int) {
+		gotContextBars = contextBars
+		gotCandleLen = len(candles)
+		calls <- struct{}{}
+	}
+
+	// contextBars=100 configured, but only 40 candles actually available — shorter history.
+	s := &timesfmSignal{contextBars: 100, horizonBars: 12, thresholdPct: 0.5, refreshIntervalSec: 300}
+	candles := make([]Candle, 40)
+	for i := range candles {
+		candles[i] = Candle{Time: int64(i) * 300_000, Close: 1.0} // 5m spacing
+	}
+
+	s.ComputeWithSymbol("TFSIG_SHORTHIST", candles)
+
+	select {
+	case <-calls:
+	case <-time.After(time.Second):
+		t.Fatal("TimesfmRefreshFunc was never called")
+	}
+	if gotContextBars != 100 {
+		t.Errorf("contextBars passed to TimesfmRefreshFunc = %d, want 100 (the configured value, not len(candles))", gotContextBars)
+	}
+	if gotCandleLen != 40 {
+		t.Errorf("len(candles) passed to TimesfmRefreshFunc = %d, want 40 (all available candles, unpadded)", gotCandleLen)
+	}
+}
+
+// TestTimesfmSignal_ComputeWithSymbol_NegativeContextBars_DoesNotPanic is the regression for
+// a crash found in code review: a misconfigured (e.g. negative) context_bars bot param would
+// have hit `context[len(context)-contextBars:]` with an out-of-range index — and this slice
+// arithmetic runs synchronously in ComputeWithSymbol, BEFORE the goroutine (and its
+// recover()) is ever entered, so it would have crashed the whole process, not just this
+// signal. contextBars <= 0 must fall back to "use all available history" instead.
+func TestTimesfmSignal_ComputeWithSymbol_NegativeContextBars_DoesNotPanic(t *testing.T) {
+	orig := TimesfmRefreshFunc
+	defer func() { TimesfmRefreshFunc = orig }()
+
+	var gotCandleLen int
+	calls := make(chan struct{}, 1)
+	TimesfmRefreshFunc = func(symbol, timeframe string, candles []Candle, contextBars, horizonBars int) {
+		gotCandleLen = len(candles)
+		calls <- struct{}{}
+	}
+
+	s := &timesfmSignal{contextBars: -5, horizonBars: 12, thresholdPct: 0.5, refreshIntervalSec: 300}
+	candles := make([]Candle, 150)
+	for i := range candles {
+		candles[i] = Candle{Time: int64(i) * 300_000, Close: 1.0} // 5m spacing
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("ComputeWithSymbol panicked with negative contextBars: %v", r)
+		}
+	}()
+	s.ComputeWithSymbol("TFSIG_NEGCTX", candles)
+
+	select {
+	case <-calls:
+	case <-time.After(time.Second):
+		t.Fatal("TimesfmRefreshFunc was never called")
+	}
+	if gotCandleLen != 150 {
+		t.Errorf("len(candles) passed to TimesfmRefreshFunc = %d, want 150 (all available candles, since contextBars<=0 must not truncate)", gotCandleLen)
 	}
 }
 ```
@@ -461,7 +571,10 @@ Expected: FAIL with `undefined: inferTimeframe`.
 // pkg/signal/timesfm.go
 package signal
 
-import "time"
+import (
+	"log"
+	"time"
+)
 
 // timesfmSignal reads a symbol+timeframe forecast from the in-memory cache
 // (timesfm_state.go), kicking off an async refresh via TimesfmRefreshFunc whenever the
@@ -490,13 +603,36 @@ func (s *timesfmSignal) ComputeWithSymbol(symbol string, candles []Candle) State
 	predictedPct, fresh := GetTimesfmForecast(symbol, tf, contextBars, horizonBars, maxAge)
 	if !fresh && TimesfmRefreshFunc != nil && tryStartTimesfmRefresh(symbol, tf, contextBars, horizonBars) {
 		context := candles
-		if len(context) > contextBars {
+		// contextBars > 0 guards against a misconfigured (e.g. negative) context_bars bot
+		// param slicing out of bounds here — this runs synchronously, BEFORE the goroutine
+		// below (and its recover()) is even entered, so an unguarded negative index here
+		// would crash the whole process, not just this signal. A non-positive contextBars
+		// falls back to "use all available history" rather than panicking.
+		if contextBars > 0 && len(context) > contextBars {
 			context = context[len(context)-contextBars:]
 		}
 		refresh := TimesfmRefreshFunc
 		go func() {
 			defer finishTimesfmRefresh(symbol, tf, contextBars, horizonBars)
-			refresh(symbol, tf, context, horizonBars)
+			// recover() here matters beyond just this one forecast: TimesfmRefreshFunc's
+			// real implementation (a later task) makes an HTTP call to an external service
+			// this process doesn't control — an unrecovered panic in ANY goroutine, including
+			// this one, crashes the entire api-gateway process (all live trading, not just
+			// this signal). finishTimesfmRefresh still runs via defer either way (Go runs
+			// deferred calls during panic unwinding), so without this recover the failure
+			// mode wouldn't even be "this forecast stays stale" — it would take down every
+			// bot this process is running.
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("timesfm: refresh panic for %s/%s: %v", symbol, tf, r)
+				}
+			}()
+			// contextBars is passed explicitly (not re-derived from len(context)) — see
+			// TimesfmRefreshFunc's doc comment in timesfm_state.go for why: context can be
+			// shorter than contextBars when a symbol/timeframe hasn't accumulated enough
+			// history yet, and the eventual SetTimesfmForecast call must cache under the
+			// SAME key this ComputeWithSymbol call (and every future one) reads from.
+			refresh(symbol, tf, context, contextBars, horizonBars)
 		}()
 	}
 	return deriveTimesfmState(predictedPct, s.thresholdPct)
@@ -560,7 +696,9 @@ right after the `Register("leverage", ...)` block:
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `go test ./pkg/signal/... -run "TestInferTimeframe|TestDeriveTimesfmState|TestTimesfmSignal" -v`
-Expected: `PASS` for all 6 tests.
+Expected: `PASS` for all 8 tests (the 6 originally listed, plus
+`TestTimesfmSignal_ComputeWithSymbol_ShortHistory_PassesConfiguredContextBars` and
+`TestTimesfmSignal_ComputeWithSymbol_NegativeContextBars_DoesNotPanic`).
 
 - [ ] **Step 6: Run the full `pkg/signal` suite for regressions**
 
@@ -620,7 +758,7 @@ func TestNewTimesfmRefreshFunc_SuccessfulCall_UpdatesCacheAndInsertsRow(t *testi
 		candles[i] = signal.Candle{Time: int64(i) * 300_000, Close: 100.0}
 	}
 
-	refresh("TFREFRESH1USDT", "5m", candles, 3)
+	refresh("TFREFRESH1USDT", "5m", candles, 5, 3)
 
 	// Cache must be updated: predicted = 102.0, lastClose = 100.0 → pct = 2.0%
 	pct, fresh := signal.GetTimesfmForecast("TFREFRESH1USDT", "5m", 5, 3, time.Minute)
@@ -634,6 +772,7 @@ func TestNewTimesfmRefreshFunc_SuccessfulCall_UpdatesCacheAndInsertsRow(t *testi
 	var count int
 	var predictedDirection string
 	var predictedPct float64
+	var contextBars int
 	if err := s.pool.QueryRow(ctx,
 		`SELECT count(*) FROM timesfm_predictions WHERE symbol=$1`, "TFREFRESH1USDT",
 	).Scan(&count); err != nil {
@@ -643,8 +782,8 @@ func TestNewTimesfmRefreshFunc_SuccessfulCall_UpdatesCacheAndInsertsRow(t *testi
 		t.Fatalf("timesfm_predictions rows = %d, want 1", count)
 	}
 	if err := s.pool.QueryRow(ctx,
-		`SELECT predicted_direction, predicted_pct FROM timesfm_predictions WHERE symbol=$1`, "TFREFRESH1USDT",
-	).Scan(&predictedDirection, &predictedPct); err != nil {
+		`SELECT predicted_direction, predicted_pct, context_bars FROM timesfm_predictions WHERE symbol=$1`, "TFREFRESH1USDT",
+	).Scan(&predictedDirection, &predictedPct, &contextBars); err != nil {
 		t.Fatalf("query row: %v", err)
 	}
 	if predictedDirection != "buy" {
@@ -652,6 +791,9 @@ func TestNewTimesfmRefreshFunc_SuccessfulCall_UpdatesCacheAndInsertsRow(t *testi
 	}
 	if predictedPct < 1.99 || predictedPct > 2.01 {
 		t.Errorf("predicted_pct = %v, want ~2.0", predictedPct)
+	}
+	if contextBars != 5 {
+		t.Errorf("context_bars = %d, want 5", contextBars)
 	}
 }
 
@@ -668,7 +810,7 @@ func TestNewTimesfmRefreshFunc_ServiceError_DoesNotUpdateCacheOrInsertRow(t *tes
 	refresh := newTimesfmRefreshFunc(s.pool, srv.URL)
 	candles := []signal.Candle{{Time: 0, Close: 100.0}, {Time: 300_000, Close: 100.0}}
 
-	refresh("TFREFRESH2USDT", "5m", candles, 3)
+	refresh("TFREFRESH2USDT", "5m", candles, 2, 3)
 
 	if _, fresh := signal.GetTimesfmForecast("TFREFRESH2USDT", "5m", 2, 3, time.Minute); fresh {
 		t.Error("cache marked fresh after a failed model-service call")
@@ -677,6 +819,56 @@ func TestNewTimesfmRefreshFunc_ServiceError_DoesNotUpdateCacheOrInsertRow(t *tes
 	s.pool.QueryRow(ctx, `SELECT count(*) FROM timesfm_predictions WHERE symbol=$1`, "TFREFRESH2USDT").Scan(&count)
 	if count != 0 {
 		t.Errorf("timesfm_predictions rows = %d, want 0 after a failed call", count)
+	}
+}
+
+// TestNewTimesfmRefreshFunc_ContextBarsIndependentOfCandleLength is the regression for a
+// cache-key mismatch bug caught in code review: the closure must cache/log under the
+// EXPLICITLY PASSED contextBars, never under len(candles) — those two can legitimately
+// differ (a symbol/timeframe that hasn't accumulated contextBars worth of history yet still
+// gets forecast on whatever candles it has, but must be cached under the caller's configured
+// contextBars so a later ComputeWithSymbol call — which always queries by configured
+// contextBars, see pkg/signal/timesfm.go — actually finds it).
+func TestNewTimesfmRefreshFunc_ContextBarsIndependentOfCandleLength(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM timesfm_predictions WHERE symbol=$1", "TFREFRESH3USDT") })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"point_forecast":[100.5,101.0,102.0]}`))
+	}))
+	defer srv.Close()
+
+	refresh := newTimesfmRefreshFunc(s.pool, srv.URL)
+
+	// Only 5 candles available, but the configured contextBars is 100 (simulating a
+	// symbol/timeframe still ramping up its history).
+	candles := make([]signal.Candle, 5)
+	for i := range candles {
+		candles[i] = signal.Candle{Time: int64(i) * 300_000, Close: 100.0}
+	}
+
+	refresh("TFREFRESH3USDT", "5m", candles, 100, 3)
+
+	// Must be cached under contextBars=100 (the configured value) — NOT contextBars=5
+	// (len(candles)) — since that's the only key a real ComputeWithSymbol call will ever
+	// query with.
+	if _, fresh := signal.GetTimesfmForecast("TFREFRESH3USDT", "5m", 100, 3, time.Minute); !fresh {
+		t.Error("cache entry not found under the configured contextBars=100 — likely cached under len(candles)=5 instead")
+	}
+	if _, fresh := signal.GetTimesfmForecast("TFREFRESH3USDT", "5m", 5, 3, time.Minute); fresh {
+		t.Error("cache entry found under contextBars=5 (len(candles)) — must only be cached under the configured contextBars")
+	}
+
+	var contextBars int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT context_bars FROM timesfm_predictions WHERE symbol=$1`, "TFREFRESH3USDT",
+	).Scan(&contextBars); err != nil {
+		t.Fatalf("query row: %v", err)
+	}
+	if contextBars != 100 {
+		t.Errorf("context_bars logged = %d, want 100 (the configured value)", contextBars)
 	}
 }
 ```
@@ -757,6 +949,16 @@ var timesfmIntervalDuration = map[string]time.Duration{
 	"1h": time.Hour, "4h": 4 * time.Hour, "1d": 24 * time.Hour,
 }
 
+// timesfmExchange/timesfmMarket are the only exchange/market this platform's candles table
+// currently stores (models.ExchangeBybit / models.MarketFutures — see pkg/models/candle.go).
+// Written explicitly into every row (timesfm_predictions.exchange/.market, added in Task 1)
+// rather than relying on a DB default, so it's always clear from the Go code — not just the
+// schema — which candle series a prediction is scored against.
+const (
+	timesfmExchange = "bybit"
+	timesfmMarket   = "futures"
+)
+
 // timesfmLogThresholdPct is the FIXED threshold used to classify predicted_direction/
 // actual_direction in the timesfm_predictions log — deliberately independent of any
 // individual bot's own threshold_pct (which can differ per bot config; see timesfm.go's
@@ -785,9 +987,9 @@ func insertTimesfmPrediction(ctx context.Context, pool *pgxpool.Pool, symbol, ti
 	targetAt := predictedAt.Add(time.Duration(horizonBars) * barDur)
 	_, err := pool.Exec(ctx, `
 		INSERT INTO timesfm_predictions
-			(symbol, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		symbol, timeframe, contextBars, horizonBars, predictedAt, priceAtPredict, predictedPct, timesfmDirection(predictedPct), targetAt,
+			(exchange, symbol, market, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		timesfmExchange, symbol, timesfmMarket, timeframe, contextBars, horizonBars, predictedAt, priceAtPredict, predictedPct, timesfmDirection(predictedPct), targetAt,
 	)
 	return err
 }
@@ -797,8 +999,15 @@ func insertTimesfmPrediction(ctx context.Context, pool *pgxpool.Pool, symbol, ti
 // the external model service, and a DB write — then pushes the result back into pkg/signal's
 // cache via signal.SetTimesfmForecast. On any failure (service unreachable, bad response, DB
 // error) the cache is left untouched — the next stale ComputeWithSymbol call will retry.
-func newTimesfmRefreshFunc(pool *pgxpool.Pool, baseURL string) func(symbol, timeframe string, candles []signal.Candle, horizonBars int) {
-	return func(symbol, timeframe string, candles []signal.Candle, horizonBars int) {
+//
+// contextBars is used verbatim for both the cache key (signal.SetTimesfmForecast) and the
+// logged row (insertTimesfmPrediction) — NEVER re-derived from len(candles), which can
+// legitimately be smaller (a symbol/timeframe still ramping up its history). Caching under
+// len(candles) instead would write to a key no future ComputeWithSymbol call — which always
+// queries by the signal's CONFIGURED contextBars — would ever read back, silently defeating
+// the cache. See TimesfmRefreshFunc's doc comment in pkg/signal/timesfm_state.go.
+func newTimesfmRefreshFunc(pool *pgxpool.Pool, baseURL string) func(symbol, timeframe string, candles []signal.Candle, contextBars, horizonBars int) {
+	return func(symbol, timeframe string, candles []signal.Candle, contextBars, horizonBars int) {
 		if len(candles) == 0 {
 			return
 		}
@@ -824,13 +1033,13 @@ func newTimesfmRefreshFunc(pool *pgxpool.Pool, baseURL string) func(symbol, time
 		}
 		predictedPct := (predicted - lastClose) / lastClose * 100
 
-		if err := insertTimesfmPrediction(ctx, pool, symbol, timeframe, len(candles), horizonBars, lastClose, predictedPct); err != nil {
+		if err := insertTimesfmPrediction(ctx, pool, symbol, timeframe, contextBars, horizonBars, lastClose, predictedPct); err != nil {
 			log.Printf("timesfm: insert prediction %s/%s: %v", symbol, timeframe, err)
 			return
 		}
 		// Cache is only updated after the DB write succeeds, so a DB failure doesn't leave
 		// pkg/signal confidently serving a forecast this service has no record of.
-		signal.SetTimesfmForecast(symbol, timeframe, len(candles), horizonBars, predictedPct)
+		signal.SetTimesfmForecast(symbol, timeframe, contextBars, horizonBars, predictedPct)
 	}
 }
 ```
@@ -838,7 +1047,8 @@ func newTimesfmRefreshFunc(pool *pgxpool.Pool, baseURL string) func(symbol, time
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test -tags=integration ./services/api-gateway/ -run TestNewTimesfmRefreshFunc -v`
-Expected: `PASS` for both tests.
+Expected: `PASS` for all 3 tests (`_SuccessfulCall_UpdatesCacheAndInsertsRow`,
+`_ServiceError_DoesNotUpdateCacheOrInsertRow`, `_ContextBarsIndependentOfCandleLength`).
 
 - [ ] **Step 5: Commit**
 
@@ -878,8 +1088,8 @@ func TestBackfillTimesfmPredictions_FillsOutcomeForPastTarget(t *testing.T) {
 	targetAt := time.Now().Add(-10 * time.Minute)
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO timesfm_predictions
-			(symbol, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at)
-		VALUES ($1,'5m',100,3,$2,100.0,2.0,'buy',$3)`,
+			(exchange, symbol, market, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at)
+		VALUES ('bybit',$1,'futures','5m',100,3,$2,100.0,2.0,'buy',$3)`,
 		"TFBACKFILLUSDT", targetAt.Add(-15*time.Minute), targetAt,
 	); err != nil {
 		t.Fatalf("seed prediction: %v", err)
@@ -924,8 +1134,8 @@ func TestBackfillTimesfmPredictions_SkipsFutureTarget(t *testing.T) {
 	futureTarget := time.Now().Add(1 * time.Hour)
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO timesfm_predictions
-			(symbol, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at)
-		VALUES ($1,'5m',100,3,NOW(),100.0,2.0,'buy',$2)`,
+			(exchange, symbol, market, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at)
+		VALUES ('bybit',$1,'futures','5m',100,3,NOW(),100.0,2.0,'buy',$2)`,
 		"TFBACKFILLFUTUREUSDT", futureTarget,
 	); err != nil {
 		t.Fatalf("seed prediction: %v", err)
@@ -941,6 +1151,68 @@ func TestBackfillTimesfmPredictions_SkipsFutureTarget(t *testing.T) {
 	}
 	if actualPrice != nil {
 		t.Error("actual_price was filled in for a prediction whose target_at is still in the future")
+	}
+}
+
+func TestBackfillTimesfmPredictions_NoCandleFound_IncrementsAttempts(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM timesfm_predictions WHERE symbol=$1", "TFBACKFILLNOCANDLEUSDT") })
+
+	targetAt := time.Now().Add(-10 * time.Minute)
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO timesfm_predictions
+			(exchange, symbol, market, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at)
+		VALUES ('bybit',$1,'futures','5m',100,3,$2,100.0,2.0,'buy',$3)`,
+		"TFBACKFILLNOCANDLEUSDT", targetAt.Add(-15*time.Minute), targetAt,
+	); err != nil {
+		t.Fatalf("seed prediction: %v", err)
+	}
+	// Deliberately no candle seeded — nearestCandleClose must find nothing for this symbol.
+
+	backfillTimesfmPredictions(ctx, s.pool)
+
+	var attempts int
+	var actualPrice *float64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT attempts, actual_price FROM timesfm_predictions WHERE symbol=$1`, "TFBACKFILLNOCANDLEUSDT",
+	).Scan(&attempts, &actualPrice); err != nil {
+		t.Fatalf("query result: %v", err)
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1 after one failed lookup", attempts)
+	}
+	if actualPrice != nil {
+		t.Error("actual_price was filled in despite no matching candle existing")
+	}
+}
+
+func TestBackfillTimesfmPredictions_MaxAttemptsReached_StopsBeingSelected(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM timesfm_predictions WHERE symbol=$1", "TFBACKFILLMAXATTEMPTSUSDT") })
+
+	targetAt := time.Now().Add(-10 * time.Minute)
+	var id string
+	if err := s.pool.QueryRow(ctx, `
+		INSERT INTO timesfm_predictions
+			(exchange, symbol, market, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at, attempts)
+		VALUES ('bybit',$1,'futures','5m',100,3,$2,100.0,2.0,'buy',$3,50) RETURNING id`,
+		"TFBACKFILLMAXATTEMPTSUSDT", targetAt.Add(-15*time.Minute), targetAt,
+	).Scan(&id); err != nil {
+		t.Fatalf("seed prediction: %v", err)
+	}
+	// No candle seeded — if this row were (wrongly) selected, it would fail the lookup and
+	// increment attempts past 50; the assertion below proves it was never selected at all.
+
+	backfillTimesfmPredictions(ctx, s.pool)
+
+	var attempts int
+	if err := s.pool.QueryRow(ctx, `SELECT attempts FROM timesfm_predictions WHERE id=$1`, id).Scan(&attempts); err != nil {
+		t.Fatalf("query result: %v", err)
+	}
+	if attempts != 50 {
+		t.Errorf("attempts = %d, want unchanged 50 — a row at the cap must not be selected/incremented again", attempts)
 	}
 }
 ```
@@ -984,18 +1256,30 @@ func RunTimesfmAccuracyBackfill(ctx context.Context, pool *pgxpool.Pool) {
 
 type pendingTimesfmPrediction struct {
 	id             string
+	exchange       string
 	symbol         string
+	market         string
 	timeframe      string
 	priceAtPredict float64
 	targetAt       time.Time
 }
 
+// timesfmMaxBackfillAttempts caps how many times the backfill job will retry looking up a
+// candle for one prediction before giving up on it. Without this, a permanently
+// unresolvable row (a delisted symbol, or candle history for it that simply never arrives)
+// would sit in the unordered `LIMIT 200` pending scan forever and could crowd out
+// genuinely-recent rows once the backlog grows past 200. A row that hits the cap stays in
+// the table (still visible, still counted as "not checked") — it's just never selected
+// again, distinguishable from a genuinely-pending row via its `attempts` value.
+const timesfmMaxBackfillAttempts = 50
+
 func backfillTimesfmPredictions(ctx context.Context, pool *pgxpool.Pool) {
 	rows, err := pool.Query(ctx, `
-		SELECT id, symbol, timeframe, price_at_predict, target_at
+		SELECT id, exchange, symbol, market, timeframe, price_at_predict, target_at
 		FROM timesfm_predictions
-		WHERE target_at <= NOW() AND actual_price IS NULL
+		WHERE target_at <= NOW() AND actual_price IS NULL AND attempts < $1
 		LIMIT 200`,
+		timesfmMaxBackfillAttempts,
 	)
 	if err != nil {
 		log.Printf("timesfm accuracy backfill: query pending: %v", err)
@@ -1004,7 +1288,7 @@ func backfillTimesfmPredictions(ctx context.Context, pool *pgxpool.Pool) {
 	var pending []pendingTimesfmPrediction
 	for rows.Next() {
 		var p pendingTimesfmPrediction
-		if err := rows.Scan(&p.id, &p.symbol, &p.timeframe, &p.priceAtPredict, &p.targetAt); err != nil {
+		if err := rows.Scan(&p.id, &p.exchange, &p.symbol, &p.market, &p.timeframe, &p.priceAtPredict, &p.targetAt); err != nil {
 			continue
 		}
 		pending = append(pending, p)
@@ -1012,9 +1296,14 @@ func backfillTimesfmPredictions(ctx context.Context, pool *pgxpool.Pool) {
 	rows.Close()
 
 	for _, p := range pending {
-		actualPrice, ok := nearestCandleClose(ctx, pool, p.symbol, p.timeframe, p.targetAt)
+		actualPrice, ok := nearestCandleClose(ctx, pool, p.exchange, p.symbol, p.market, p.timeframe, p.targetAt)
 		if !ok {
-			continue // no candle at/before target_at yet — retry on the next sweep
+			// No candle at/before target_at yet (or ever, for an unresolvable row) — count
+			// the attempt and retry on a later sweep.
+			if _, err := pool.Exec(ctx, `UPDATE timesfm_predictions SET attempts = attempts + 1 WHERE id=$1`, p.id); err != nil {
+				log.Printf("timesfm accuracy backfill: increment attempts %s: %v", p.id, err)
+			}
+			continue
 		}
 		actualDirection := timesfmDirection((actualPrice - p.priceAtPredict) / p.priceAtPredict * 100)
 
@@ -1030,17 +1319,18 @@ func backfillTimesfmPredictions(ctx context.Context, pool *pgxpool.Pool) {
 }
 
 // nearestCandleClose returns the close price of the most recent candle at or before at, for
-// symbol/timeframe, on Bybit linear futures — the only exchange/market this platform's
-// candles table currently stores (models.ExchangeBybit / models.MarketFutures).
-func nearestCandleClose(ctx context.Context, pool *pgxpool.Pool, symbol, timeframe string, at time.Time) (float64, bool) {
+// the given exchange/symbol/market/timeframe — matching candles' own primary key shape
+// (migrations/001_initial.sql) so a backfilled outcome is always scored against the correct
+// candle series, not an assumed one.
+func nearestCandleClose(ctx context.Context, pool *pgxpool.Pool, exchange, symbol, market, timeframe string, at time.Time) (float64, bool) {
 	var close float64
 	err := pool.QueryRow(ctx, `
 		SELECT close FROM candles
-		WHERE exchange='bybit' AND symbol=$1 AND market='futures' AND timeframe=$2
-		  AND open_time <= $3
+		WHERE exchange=$1 AND symbol=$2 AND market=$3 AND timeframe=$4
+		  AND open_time <= $5
 		ORDER BY open_time DESC
 		LIMIT 1`,
-		symbol, timeframe, at,
+		exchange, symbol, market, timeframe, at,
 	).Scan(&close)
 	if err != nil {
 		return 0, false
@@ -1052,7 +1342,8 @@ func nearestCandleClose(ctx context.Context, pool *pgxpool.Pool, symbol, timefra
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test -tags=integration ./services/api-gateway/ -run TestBackfillTimesfmPredictions -v`
-Expected: `PASS` for both tests.
+Expected: `PASS` for all 4 tests (`_FillsOutcomeForPastTarget`, `_SkipsFutureTarget`,
+`_NoCandleFound_IncrementsAttempts`, `_MaxAttemptsReached_StopsBeingSelected`).
 
 - [ ] **Step 5: Commit**
 
@@ -1095,8 +1386,8 @@ func TestGetTimesfmPredictions_ReturnsRowsAndAggregates(t *testing.T) {
 	insert := func(correct *bool) {
 		s.pool.Exec(ctx, `
 			INSERT INTO timesfm_predictions
-				(symbol, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at, actual_price, actual_direction, correct, checked_at)
-			VALUES ($1,'5m',100,3,NOW(),100.0,2.0,'buy',NOW(),
+				(exchange, symbol, market, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at, actual_price, actual_direction, correct, checked_at)
+			VALUES ('bybit',$1,'futures','5m',100,3,NOW(),100.0,2.0,'buy',NOW(),
 			        CASE WHEN $2::bool IS NULL THEN NULL ELSE 101.0 END,
 			        CASE WHEN $2::bool IS NULL THEN NULL ELSE 'buy' END,
 			        $2, CASE WHEN $2::bool IS NULL THEN NULL ELSE NOW() END)`,
@@ -1295,14 +1586,28 @@ Add immediately after it:
 	// forecast goes stale. Also start the periodic job that backfills each prediction's
 	// actual outcome once its forecast horizon has passed.
 	timesfmURL := getEnv("TIMESFM_SERVICE_URL", "http://localhost:8500")
-	signal.TimesfmRefreshFunc = newTimesfmRefreshFunc(pool, timesfmURL)
+	tfsignal.TimesfmRefreshFunc = newTimesfmRefreshFunc(pool, timesfmURL)
 	RunTimesfmAccuracyBackfill(ctx, pool)
 ```
 
-Confirm `"sis/pkg/signal"` is already imported in `main.go` (it is — `RunLeverageRefresher`'s
-own file already imports it, and `main.go` itself references `signal` package symbols
-elsewhere for the webhook/signal-engine wiring). If the build fails with `undefined: signal`,
-add `"sis/pkg/signal"` to `main.go`'s import block.
+**Important — `main.go` does NOT already import `sis/pkg/signal` (this is a correction from an
+earlier version of this plan, which wrongly claimed it did).** `main.go` currently imports the
+*standard library* `os/signal` package, unaliased, and uses it as `signal.NotifyContext(...)`
+(see the top of `main()`). Adding `"sis/pkg/signal"` unaliased would collide with that existing
+`signal` identifier and fail to compile (`signal redeclared in this block`). Every OTHER file in
+`services/api-gateway` that uses `sis/pkg/signal` (e.g. `leverage_cache.go`, `server.go`,
+`webhooks_engine.go`) imports it unaliased as `signal` because none of THEM also import
+`os/signal` — `main.go` is the one exception in this package.
+
+**Add it to `main.go`'s import block with an alias**, e.g. right after the existing
+`traderPkg "sis/pkg/trader"` line:
+
+```go
+	tfsignal "sis/pkg/signal"
+```
+
+Use `tfsignal.TimesfmRefreshFunc` (not `signal.TimesfmRefreshFunc`) in the wiring code above —
+this has already been corrected in the code block above this note.
 
 - [ ] **Step 3: Build to verify it compiles**
 
@@ -1834,8 +2139,20 @@ that the following require a manual step before the feature is actually usable e
   threshold (`timesfmLogThresholdPct`) — independent of any individual bot's own
   `threshold_pct` — documented at the constant's definition in Task 4.
 - **Type/name consistency checked**: `signal.TimesfmRefreshFunc`'s signature
-  (`func(symbol, timeframe string, candles []Candle, horizonBars int)`) is identical
-  everywhere it's referenced (Task 2's declaration, Task 3's `ComputeWithSymbol`, Task 4's
-  `newTimesfmRefreshFunc` return type, Task 7's assignment). `SetTimesfmForecast`/
+  (`func(symbol, timeframe string, candles []Candle, contextBars, horizonBars int)`) is
+  identical everywhere it's referenced (Task 2's declaration, Task 3's `ComputeWithSymbol`,
+  Task 4's `newTimesfmRefreshFunc` return type, Task 7's assignment). `SetTimesfmForecast`/
   `GetTimesfmForecast`'s four-key signature (`symbol, timeframe string, contextBars,
   horizonBars int`) is likewise consistent across Tasks 2-4.
+- **Post-Task-2-review fix (before Task 3 was ever implemented):** code review on Task 2
+  found that `TimesfmRefreshFunc`'s original signature (`..., horizonBars int`, no
+  `contextBars`) would have let Task 3/4's sample code cache a forecast under `len(candles)`
+  instead of the signal's configured `contextBars` whenever a symbol/timeframe had fewer
+  candles available than configured — permanently missing the cache for that key. Fixed by
+  threading `contextBars` explicitly through the whole call chain (never re-derived from
+  slice length), with a dedicated regression test in both Task 3
+  (`TestTimesfmSignal_ComputeWithSymbol_ShortHistory_PassesConfiguredContextBars`) and Task 4
+  (`TestNewTimesfmRefreshFunc_ContextBarsIndependentOfCandleLength`). Also added `recover()`
+  around the refresh goroutine's body in Task 3 (an unrecovered panic in any goroutine
+  crashes the whole process, not just this signal — the goroutine calls out to an external
+  HTTP service this process doesn't control).

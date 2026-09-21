@@ -321,6 +321,20 @@ export const SIGNALS: SignalDef<any>[] = [
     compute: (): SignalState => 'neutral',
   },
   {
+    id: 'timesfm', abbr: 'TFM', name: 'TimesFM Forecast', cat: 'fundamental', state: 'buy' as const,
+    desc: 'Экспериментальный прогноз через модель Google TimesFM',
+    about: 'Кормит модели последние N свечей и получает прогноз цены на M баров вперёд. Если прогнозное движение превышает порог — Buy/Sell, иначе Neutral. Реальный вызов модели происходит не чаще, чем раз в refresh_interval_sec — между вызовами отдаётся последний закэшированный прогноз.',
+    defaults: { context_bars: 512, horizon_bars: 12, threshold_pct: 0.5, refresh_interval_sec: 300 },
+    params: [
+      { kind: 'number', key: 'context_bars',        label: 'Контекст (баров)', hint: 'Сколько последних свечей подаётся модели как история.', min: 32, step: 32, decimals: 0 },
+      { kind: 'number', key: 'horizon_bars',         label: 'Горизонт (баров)', hint: 'На сколько баров вперёд строится прогноз.', min: 1, max: 128, step: 1, decimals: 0 },
+      { kind: 'number', key: 'threshold_pct',        label: 'Порог, %',        hint: 'Минимальное прогнозное движение в %, чтобы считать Buy/Sell вместо Neutral.', min: 0.1, step: 0.1, decimals: 1 },
+      { kind: 'number', key: 'refresh_interval_sec', label: 'Обновление, сек', hint: 'Минимальный интервал между реальными вызовами модели на символ.', min: 30, step: 30, decimals: 0 },
+    ],
+    formula: (p: any) => <>{name('TimesFM')} {op('прогноз ≥')} {num(`${p.threshold_pct}%`)} {op('за')} {num(p.horizon_bars)} {op('баров')}</>,
+    compute: (): SignalState => 'neutral',
+  },
+  {
     id: 'leverage', abbr: 'LEV', name: 'Leverage Filter', cat: 'fundamental', state: 'buy' as const,
     desc: 'Пропускает монету, только если биржа разрешает плечо не ниже заданного',
     about: 'Нецелевой (не по свечам) фильтр по символу: сравнивает максимальное плечо, разрешённое биржей на этой монете, с заданным порогом. Биржа сама ограничивает плечо на монетах с низкой ликвидностью/высоким риском — этот фильтр отсекает такие монеты. Не имеет направления (Buy/Sell) — как и Whale Tracker, боты учитывают только сам факт срабатывания. 0 — фильтр выключен.',

@@ -21,6 +21,7 @@ import (
 	"sis/pkg/db"
 	"sis/pkg/heartbeat"
 	"sis/pkg/proxy"
+	tfsignal "sis/pkg/signal"
 	traderPkg "sis/pkg/trader"
 )
 
@@ -90,6 +91,15 @@ func main() {
 		}
 	}
 
+	// Wire the experimental TimesFM signal's refresh hook — pkg/signal itself never calls
+	// the model service or the DB directly (see pkg/signal/timesfm_state.go); this closure
+	// is the only thing that does, invoked async whenever a subscribed symbol's cached
+	// forecast goes stale. TimesfmRefreshFunc is an unsynchronized package-level var (same
+	// pattern as strategy.OnAccumulate), so it must be assigned before any goroutine that
+	// might read it starts — in particular before go s.engine.Start(ctx) below.
+	timesfmURL := getEnv("TIMESFM_SERVICE_URL", "http://localhost:8500")
+	tfsignal.TimesfmRefreshFunc = newTimesfmRefreshFunc(pool, timesfmURL)
+
 	// Trading-engine leadership: ensure only one api-gateway instance runs the
 	// order-managing engines (strategy/bot/hedge). Prevents a second instance
 	// (accidental double-start, overlapping deploy) from double-managing accounts
@@ -134,6 +144,11 @@ func main() {
 	// universe — the "leverage" activation signal needs whitelist candidates too, not
 	// just symbols already being traded)
 	RunLeverageRefresher(ctx, pool)
+
+	// Start the periodic job that backfills each TimesFM prediction's actual outcome once
+	// its forecast horizon has passed (TimesfmRefreshFunc itself is wired earlier above,
+	// before any engine goroutines start — see the comment there for why).
+	RunTimesfmAccuracyBackfill(ctx, pool)
 
 	// Start bot + hedge automation engines (order-managing — leader only)
 	if isTradingLeader {
@@ -210,6 +225,7 @@ func main() {
 		r.Post("/custom-signals", s.CreateCustomSignal)
 		r.Delete("/custom-signals/{id}", s.DeleteCustomSignal)
 		r.Get("/signals", s.ListSignals)
+		r.Get("/signals/timesfm/predictions", s.GetTimesfmPredictions)
 		r.Post("/signals", s.CreateSignal)
 		r.Get("/signals/{id}", s.GetSignal)
 		r.Put("/signals/{id}", s.UpdateSignal)

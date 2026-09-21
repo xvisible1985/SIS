@@ -211,6 +211,36 @@ test('combo mode: editing a leg\'s params via the ⚙ button carries through to 
   )
 })
 
+test('selecting the TimesFM catalog signal renders the forecast panel, not the chart', async () => {
+  vi.mocked(webhooksApi.listWebhooks).mockResolvedValue([])
+  vi.mocked(apiClient.get).mockImplementation((url: string) => {
+    if (url === '/admin/signal-types') return Promise.reject(new Error('forbidden'))
+    if (url === '/signal-types') return Promise.resolve({ data: [{ id: 'rsi-os', panel: 'signal' }, { id: 'macd-x', panel: 'signal' }, { id: 'timesfm', panel: 'signal' }] })
+    if (url.startsWith('/signals/timesfm/predictions')) {
+      return Promise.resolve({ data: { predictions: [], total: 0, checked: 0, correct: 0, win_rate: 0 } })
+    }
+    return Promise.reject(new Error('unexpected url ' + url))
+  })
+  renderPage()
+
+  await waitFor(() => screen.getByText('RSI Oversold'))
+  const { createChart } = await import('lightweight-charts')
+  vi.mocked(createChart).mockClear() // the default (no signal selected) chart already rendered once above
+
+  // The 'fundamental' catalog category (timesfm/whale/leverage) is hidden from the picker by
+  // default (DEFAULT_CATS) — reveal it via the category filter chip before the TimesFM card
+  // is clickable.
+  fireEvent.click(screen.getByRole('button', { name: 'Фундаментал' }))
+  await waitFor(() => screen.getByText('TimesFM Forecast'))
+  fireEvent.click(screen.getByText('TimesFM Forecast'))
+
+  // Text rendered only by TimesfmForecastPanel's empty state — this can only be true if the
+  // chartActiveSignal?.id === 'timesfm' branch actually took over the chart area.
+  await waitFor(() => expect(screen.getByText('Прогнозов ещё не было')).toBeInTheDocument())
+  // Guards against a broken conditional that always falls through to SignalPreviewChart.
+  expect(createChart).not.toHaveBeenCalled()
+})
+
 test('deleting a custom signal calls deleteCustomSignal', async () => {
   vi.mocked(webhooksApi.listWebhooks).mockResolvedValue([])
   vi.mocked(customSignalsApi.listCustomSignals).mockResolvedValue([{

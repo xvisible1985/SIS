@@ -6,6 +6,7 @@ import { ParamNumber, ParamSegmented } from '../features/indicators/components/P
 import { SignalPickCard, CAT_LABEL } from '../features/indicators/components/SignalPickCard'
 import { useEnabledSignals } from '../features/indicators/useEnabledSignals'
 import { SignalPreviewChart } from '../features/webhooks/SignalPreviewChart'
+import { TimesfmForecastPanel } from '../features/webhooks/TimesfmForecastPanel'
 import { CoinPicker } from '../components/common/CoinPicker'
 import type { SignalDef, IndicatorCategory } from '../features/indicators/types'
 import type { ChartEvent } from '../features/indicators/signalChartShared'
@@ -368,7 +369,9 @@ export function WebhooksPage() {
               )}
             </div>
             <div className="min-h-0 flex-1">
-              <SignalPreviewChart symbol={symbol} tf={timeframe} activeSignal={chartActiveSignal} combo={comboPreviewState} />
+              {chartActiveSignal?.id === 'timesfm'
+                ? <TimesfmForecastPanel symbol={symbol} tf={timeframe} />
+                : <SignalPreviewChart symbol={symbol} tf={timeframe} activeSignal={chartActiveSignal} combo={comboPreviewState} />}
             </div>
           </div>
 
