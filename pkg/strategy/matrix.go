@@ -901,11 +901,25 @@ func (sr *StrategyRunner) matrixApplyStopCondSLs(ctx context.Context, currentPri
 		}
 
 		var slSide string
-		var trigDir int
 		if sr.strategy.Direction == DirectionLong {
-			slSide, trigDir = "Sell", 2
+			slSide = "Sell"
 		} else {
-			slSide, trigDir = "Buy", 1
+			slSide = "Buy"
+		}
+		// Unlike matrixPlacePerLevelSL's fixed-direction protective stop (placed right at
+		// fill, always on the adverse side of a price that hasn't moved yet), newTrigger
+		// here trails BEHIND price on the FAVORABLE side — that's the whole point of a
+		// stop-cond replace: it only fires once price has already moved stopCondPct in our
+		// favor, and stopReplacePct is normally smaller than stopCondPct, so newTrigger
+		// ends up on the side price is retreating FROM, not the side it's heading TO. A
+		// direction fixed by strategy.Direction alone (as if this were a plain protective
+		// stop) gets this backwards and Bybit rejects it outright. Found live (2026-09-16,
+		// ICXUSDT): every stop-cond SL replace for a short failed with
+		// retCode=110092 "expect Rising, but trigger_price <= current" — trigDir=1 was sent
+		// for a newTrigger that had already fallen below currentPrice.
+		trigDir := 2 // Falling: price must drop to reach newTrigger
+		if newTrigger > currentPrice {
+			trigDir = 1 // Rising: price must climb to reach newTrigger
 		}
 		sr.matrixSLSeq++
 		linkID := fmt.Sprintf("SIS_STR-%s-msl-%s-%d",
