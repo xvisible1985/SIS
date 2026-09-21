@@ -114,9 +114,9 @@ func (sr *StrategyRunner) matrixPlaceRelativeSlot(ctx context.Context, side stri
 
 	var levelID string
 	if err := sr.runner.pool.QueryRow(ctx,
-		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, status, slot)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8) RETURNING id`,
-		sr.strategy.ID, sr.cycle.ID, levelIdx, side2, target, sizeUSDT, qty, slot,
+		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, status, slot, use_signal)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9) RETURNING id`,
+		sr.strategy.ID, sr.cycle.ID, levelIdx, side2, target, sizeUSDT, qty, slot, cfg.UseSignal,
 	).Scan(&levelID); err != nil {
 		sr.errlog(ctx, fmt.Sprintf("[REL] вставка слота L(%d): %v", slot, err))
 		return
@@ -125,7 +125,7 @@ func (sr *StrategyRunner) matrixPlaceRelativeSlot(ctx context.Context, side stri
 	newLevel := GridLevel{
 		ID: levelID, LevelIdx: levelIdx, Side: side2,
 		TargetPrice: target, SizeUSDT: sizeUSDT, Qty: qty,
-		Status: LevelPending, Slot: &s,
+		Status: LevelPending, Slot: &s, UseSignal: cfg.UseSignal,
 	}
 	sr.levels = append(sr.levels, newLevel)
 	placed := &sr.levels[len(sr.levels)-1]
@@ -171,9 +171,9 @@ func (sr *StrategyRunner) matrixTriggerRelativeVirtualLevel(ctx context.Context,
 
 	var levelID string
 	if err := sr.runner.pool.QueryRow(ctx,
-		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, status, slot)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8) RETURNING id`,
-		sr.strategy.ID, sr.cycle.ID, levelIdx, side2, target, sizeUSDT, qty, slot,
+		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, status, slot, use_signal)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9) RETURNING id`,
+		sr.strategy.ID, sr.cycle.ID, levelIdx, side2, target, sizeUSDT, qty, slot, cfg.UseSignal,
 	).Scan(&levelID); err != nil {
 		sr.errlog(ctx, fmt.Sprintf("[REL-V] вставка виртуального слота L(%d): %v", slot, err))
 		return
@@ -182,7 +182,7 @@ func (sr *StrategyRunner) matrixTriggerRelativeVirtualLevel(ctx context.Context,
 	newLevel := GridLevel{
 		ID: levelID, LevelIdx: levelIdx, Side: side2,
 		TargetPrice: target, SizeUSDT: sizeUSDT, Qty: qty,
-		Status: LevelPending, Slot: &s,
+		Status: LevelPending, Slot: &s, UseSignal: cfg.UseSignal,
 	}
 	sr.levels = append(sr.levels, newLevel)
 	placed := &sr.levels[len(sr.levels)-1]

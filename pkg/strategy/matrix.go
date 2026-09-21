@@ -436,11 +436,12 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 		qty := rawQty
 
 		slotCopy := slot
+		_, _, _, _, useSignal := sr.matrixLevelConfig(slot)
 		var levelID string
 		if err := sr.runner.pool.QueryRow(ctx,
-			`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-			sr.strategy.ID, cycleID, levelIdx, side, targetPrice, sizeUSDT, qty, slotCopy,
+			`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot, use_signal)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+			sr.strategy.ID, cycleID, levelIdx, side, targetPrice, sizeUSDT, qty, slotCopy, useSignal,
 		).Scan(&levelID); err != nil {
 			log.Printf("strategy %s: insert matrix level slot=%d: %v", sr.strategy.ID, slot, err)
 			levelIdx++
@@ -455,6 +456,7 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 			Qty:         qty,
 			Status:      LevelPending,
 			Slot:        &slotCopy,
+			UseSignal:   useSignal,
 		})
 		levelIdx++
 	}
@@ -1235,11 +1237,12 @@ func (sr *StrategyRunner) matrixReplaceSlots(ctx context.Context, currentPrice f
 
 		levelIdx := nextLevelIdx
 		s := slot
+		_, _, _, _, useSignal := sr.matrixLevelConfig(slot)
 		var levelID string
 		if err := sr.runner.pool.QueryRow(ctx,
-			`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-			sr.strategy.ID, sr.cycle.ID, levelIdx, side, targetPrice, sizeUSDT, qty, slot,
+			`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot, use_signal)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+			sr.strategy.ID, sr.cycle.ID, levelIdx, side, targetPrice, sizeUSDT, qty, slot, useSignal,
 		).Scan(&levelID); err != nil {
 			log.Printf("strategy %s: matrix re-entry slot %d insert: %v", sr.strategy.ID, slot, err)
 			continue
@@ -1247,7 +1250,7 @@ func (sr *StrategyRunner) matrixReplaceSlots(ctx context.Context, currentPrice f
 		newLevel := GridLevel{
 			ID: levelID, LevelIdx: levelIdx, Side: side,
 			TargetPrice: targetPrice, SizeUSDT: sizeUSDT, Qty: qty,
-			Status: LevelPending, Slot: &s,
+			Status: LevelPending, Slot: &s, UseSignal: useSignal,
 		}
 		sr.levels = append(sr.levels, newLevel)
 		placed := &sr.levels[len(sr.levels)-1]
@@ -2195,11 +2198,12 @@ func (sr *StrategyRunner) matrixReenterRelativeToRef(ctx context.Context, waitin
 	nextLevelIdx++
 
 	slotCopy := waitingSlot
+	_, _, _, _, useSignal := sr.matrixLevelConfig(waitingSlot)
 	var levelID string
 	if err := sr.runner.pool.QueryRow(ctx,
-		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-		sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, newTargetPrice, sizeUSDT, qty, slotCopy,
+		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot, use_signal)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+		sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, newTargetPrice, sizeUSDT, qty, slotCopy, useSignal,
 	).Scan(&levelID); err != nil {
 		log.Printf("strategy %s: matrixReenterRelativeToRef slot=%d: %v", sr.strategy.ID, waitingSlot, err)
 		return
@@ -2208,7 +2212,7 @@ func (sr *StrategyRunner) matrixReenterRelativeToRef(ctx context.Context, waitin
 	newLevel := GridLevel{
 		ID: levelID, LevelIdx: nextLevelIdx, Side: side,
 		TargetPrice: newTargetPrice, SizeUSDT: sizeUSDT, Qty: qty,
-		Status: LevelPending, Slot: &slotCopy,
+		Status: LevelPending, Slot: &slotCopy, UseSignal: useSignal,
 	}
 	sr.levels = append(sr.levels, newLevel)
 	placed := &sr.levels[len(sr.levels)-1]
@@ -2266,11 +2270,12 @@ func (sr *StrategyRunner) matrixReenterAtConfigPrice(ctx context.Context, waitin
 	nextLevelIdx++
 
 	slotCopy := waitingSlot
+	_, _, _, _, useSignal := sr.matrixLevelConfig(waitingSlot)
 	var levelID string
 	if err := sr.runner.pool.QueryRow(ctx,
-		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-		sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, targetPrice, sizeUSDT, qty, slotCopy,
+		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot, use_signal)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+		sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, targetPrice, sizeUSDT, qty, slotCopy, useSignal,
 	).Scan(&levelID); err != nil {
 		log.Printf("strategy %s: matrixReenterAtConfigPrice slot=%d: %v", sr.strategy.ID, waitingSlot, err)
 		return
@@ -2279,7 +2284,7 @@ func (sr *StrategyRunner) matrixReenterAtConfigPrice(ctx context.Context, waitin
 	newLevel := GridLevel{
 		ID: levelID, LevelIdx: nextLevelIdx, Side: side,
 		TargetPrice: targetPrice, SizeUSDT: sizeUSDT, Qty: qty,
-		Status: LevelPending, Slot: &slotCopy,
+		Status: LevelPending, Slot: &slotCopy, UseSignal: useSignal,
 	}
 	sr.levels = append(sr.levels, newLevel)
 	placed := &sr.levels[len(sr.levels)-1]
@@ -2344,24 +2349,26 @@ func (sr *StrategyRunner) matrixReenterL0AtMarket(ctx context.Context, currentPr
 
 	side := matrixLevelSide(sr.strategy.Direction)
 	slotZero := 0
+	_, _, _, _, useSignal := sr.matrixLevelConfig(slotZero)
 	var levelID string
 	if err := sr.runner.pool.QueryRow(ctx,
-		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-		sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, 0.0, sizeUSDT, qty, slotZero,
+		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot, use_signal)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+		sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, 0.0, sizeUSDT, qty, slotZero, useSignal,
 	).Scan(&levelID); err != nil {
 		log.Printf("strategy %s: matrixReenterL0AtMarket insert: %v", sr.strategy.ID, err)
 		return
 	}
 
 	newLevel := GridLevel{
-		ID:       levelID,
-		LevelIdx: nextLevelIdx,
-		Side:     side,
-		SizeUSDT: sizeUSDT,
-		Qty:      qty,
-		Status:   LevelPending,
-		Slot:     &slotZero,
+		ID:        levelID,
+		LevelIdx:  nextLevelIdx,
+		Side:      side,
+		SizeUSDT:  sizeUSDT,
+		Qty:       qty,
+		Status:    LevelPending,
+		Slot:      &slotZero,
+		UseSignal: useSignal,
 	}
 	sr.levels = append(sr.levels, newLevel)
 	placed := &sr.levels[len(sr.levels)-1]
@@ -2420,11 +2427,12 @@ func (sr *StrategyRunner) matrixReenterFromL0(ctx context.Context, waitingSlot i
 	nextLevelIdx++
 
 	slotCopy := waitingSlot
+	_, _, _, _, useSignal := sr.matrixLevelConfig(waitingSlot)
 	var levelID string
 	if err := sr.runner.pool.QueryRow(ctx,
-		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-		sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, targetPrice, sizeUSDT, qty, slotCopy,
+		`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot, use_signal)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+		sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, targetPrice, sizeUSDT, qty, slotCopy, useSignal,
 	).Scan(&levelID); err != nil {
 		log.Printf("strategy %s: matrixReenterFromL0 slot=%d: %v", sr.strategy.ID, waitingSlot, err)
 		return
@@ -2433,7 +2441,7 @@ func (sr *StrategyRunner) matrixReenterFromL0(ctx context.Context, waitingSlot i
 	newLevel := GridLevel{
 		ID: levelID, LevelIdx: nextLevelIdx, Side: side,
 		TargetPrice: targetPrice, SizeUSDT: sizeUSDT, Qty: qty,
-		Status: LevelPending, Slot: &slotCopy,
+		Status: LevelPending, Slot: &slotCopy, UseSignal: useSignal,
 	}
 	sr.levels = append(sr.levels, newLevel)
 	placed := &sr.levels[len(sr.levels)-1]
@@ -2651,11 +2659,12 @@ func (sr *StrategyRunner) matrixRebuildFromSZLow(ctx context.Context, stoppedSlo
 
 		nextLevelIdx++
 		slotCopy := slot
+		_, _, _, _, useSignal := sr.matrixLevelConfig(slot)
 		var levelID string
 		if err := sr.runner.pool.QueryRow(ctx,
-			`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-			sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, targetPrice, sizeUSDT, qty, slotCopy,
+			`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, slot, use_signal)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+			sr.strategy.ID, sr.cycle.ID, nextLevelIdx, side, targetPrice, sizeUSDT, qty, slotCopy, useSignal,
 		).Scan(&levelID); err != nil {
 			sr.errlog(ctx, fmt.Sprintf("matrixRebuildFromSZLow: insert L%d: %v", slot, err))
 			continue
@@ -2664,7 +2673,7 @@ func (sr *StrategyRunner) matrixRebuildFromSZLow(ctx context.Context, stoppedSlo
 		newLevel := GridLevel{
 			ID: levelID, LevelIdx: nextLevelIdx, Side: side,
 			TargetPrice: targetPrice, SizeUSDT: sizeUSDT, Qty: qty,
-			Status: LevelPending, Slot: &slotCopy,
+			Status: LevelPending, Slot: &slotCopy, UseSignal: useSignal,
 		}
 		sr.levels = append(sr.levels, newLevel)
 		newPtr := &sr.levels[len(sr.levels)-1]
