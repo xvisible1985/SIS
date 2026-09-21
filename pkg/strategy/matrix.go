@@ -71,26 +71,26 @@ func filterMatrixLevels(levels []MatrixLevel, dir string) []MatrixLevel {
 
 // matrixLevelConfig looks up TP/SL config pointers for a given slot.
 // Returns nil pointers when the slot is out of range or config is absent.
-func (sr *StrategyRunner) matrixLevelConfig(slot int) (tpPct, stopPct, stopCondPct, stopReplacePct *float64) {
+func (sr *StrategyRunner) matrixLevelConfig(slot int) (tpPct, stopPct, stopCondPct, stopReplacePct *float64, useSignal bool) {
 	if slot == 0 {
 		e := sr.strategy.MatrixEntryLevel
 		if e == nil {
 			return
 		}
-		return e.TPPct, e.StopPct, e.StopCondPct, e.StopReplacePct
+		return e.TPPct, e.StopPct, e.StopCondPct, e.StopReplacePct, e.UseSignal
 	}
 	if slot > 0 {
 		above := filterMatrixLevels(sr.strategy.MatrixLevels, "above")
 		if idx := slot - 1; idx < len(above) {
 			l := above[idx]
-			return l.TPPct, l.StopPct, l.StopCondPct, l.StopReplacePct
+			return l.TPPct, l.StopPct, l.StopCondPct, l.StopReplacePct, l.UseSignal
 		}
 		return
 	}
 	below := filterMatrixLevels(sr.strategy.MatrixLevels, "below")
 	if idx := -slot - 1; idx < len(below) {
 		l := below[idx]
-		return l.TPPct, l.StopPct, l.StopCondPct, l.StopReplacePct
+		return l.TPPct, l.StopPct, l.StopCondPct, l.StopReplacePct, l.UseSignal
 	}
 	return
 }
@@ -871,7 +871,7 @@ func (sr *StrategyRunner) matrixApplyStopCondSLs(ctx context.Context, currentPri
 		if l.Status != LevelFilled || l.SLReplaced || l.Slot == nil {
 			continue
 		}
-		_, _, stopCondPct, stopReplacePct := sr.matrixLevelConfig(*l.Slot)
+		_, _, stopCondPct, stopReplacePct, _ := sr.matrixLevelConfig(*l.Slot)
 		if stopCondPct == nil || stopReplacePct == nil {
 			continue
 		}
@@ -1057,7 +1057,7 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 		if *l.Slot < 0 {
 			continue // negative slots don't use per-level SL
 		}
-		_, stopPct, _, _ := sr.matrixLevelConfig(*l.Slot)
+		_, stopPct, _, _, _ := sr.matrixLevelConfig(*l.Slot)
 		if stopPct == nil {
 			continue
 		}
@@ -1390,7 +1390,7 @@ func (sr *StrategyRunner) handleMatrixLevelFill(ctx context.Context, levelID str
 
 	// Place per-level SL if configured for this slot
 	if filled.Slot != nil {
-		_, stopPct, _, _ := sr.matrixLevelConfig(*filled.Slot)
+		_, stopPct, _, _, _ := sr.matrixLevelConfig(*filled.Slot)
 		if stopPct != nil {
 			sr.matrixPlacePerLevelSL(ctx, filled, filledPrice, *stopPct)
 		}
@@ -1579,7 +1579,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 
 	var tpPctVal *float64
 	if governing.Slot != nil {
-		tpPctVal, _, _, _ = sr.matrixLevelConfig(*governing.Slot)
+		tpPctVal, _, _, _, _ = sr.matrixLevelConfig(*governing.Slot)
 	}
 	if tpPctVal == nil {
 		// TP percentage removed from config — cancel any standing TP order.
@@ -1984,7 +1984,7 @@ func (sr *StrategyRunner) handleMatrixSLCancelled(ctx context.Context, levelID s
 			if l.Slot == nil {
 				return
 			}
-			_, stopPct, _, _ := sr.matrixLevelConfig(*l.Slot)
+			_, stopPct, _, _, _ := sr.matrixLevelConfig(*l.Slot)
 			if stopPct == nil {
 				return
 			}

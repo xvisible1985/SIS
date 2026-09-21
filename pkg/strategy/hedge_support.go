@@ -107,7 +107,7 @@ func (sr *StrategyRunner) restoreSLAfterHedge(ctx context.Context) {
 		if l.Status != LevelFilled || l.SLOrderID != "" || l.Slot == nil {
 			continue
 		}
-		_, stopPct, _, _ := sr.matrixLevelConfig(*l.Slot)
+		_, stopPct, _, _, _ := sr.matrixLevelConfig(*l.Slot)
 		if stopPct == nil || l.FilledPrice <= 0 {
 			continue
 		}
