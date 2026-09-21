@@ -27,7 +27,7 @@ class _FakeArray(list):
 
 def test_run_forecast_allows_horizon_at_max(monkeypatch):
     class FakeModel:
-        def forecast(self, series, freq):
+        def forecast(self, horizon, inputs):
             return [_FakeArray(float(i) for i in range(forecast._HORIZON_LEN))], None
 
     monkeypatch.setattr(forecast, "_load_model", lambda: FakeModel())

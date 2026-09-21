@@ -4,3 +4,10 @@ pydantic==2.9.2
 httpx==0.27.2
 pytest==8.3.3
 timesfm==3.0.2
+# CPU-only build — install with:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.14.0
+# (the default PyPI `torch` wheel pulls a much larger CUDA build; this service never uses a
+# GPU). Required for timesfm.TimesFM_2p5_200M_torch — without it, `import timesfm` silently
+# omits that class (wrapped in a try/except ImportError in timesfm's own __init__.py) and
+# forecast.py's _load_model() fails with AttributeError instead of a clear "torch missing".
+torch==2.14.0
