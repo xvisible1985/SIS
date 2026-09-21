@@ -327,7 +327,7 @@ export const SIGNALS: SignalDef<any>[] = [
     defaults: { context_bars: 512, horizon_bars: 12, threshold_pct: 0.5, refresh_interval_sec: 300 },
     params: [
       { kind: 'number', key: 'context_bars',        label: 'Контекст (баров)', hint: 'Сколько последних свечей подаётся модели как история.', min: 32, step: 32, decimals: 0 },
-      { kind: 'number', key: 'horizon_bars',         label: 'Горизонт (баров)', hint: 'На сколько баров вперёд строится прогноз.', min: 1, step: 1, decimals: 0 },
+      { kind: 'number', key: 'horizon_bars',         label: 'Горизонт (баров)', hint: 'На сколько баров вперёд строится прогноз.', min: 1, max: 128, step: 1, decimals: 0 },
       { kind: 'number', key: 'threshold_pct',        label: 'Порог, %',        hint: 'Минимальное прогнозное движение в %, чтобы считать Buy/Sell вместо Neutral.', min: 0.1, step: 0.1, decimals: 1 },
       { kind: 'number', key: 'refresh_interval_sec', label: 'Обновление, сек', hint: 'Минимальный интервал между реальными вызовами модели на символ.', min: 30, step: 30, decimals: 0 },
     ],

@@ -3,6 +3,10 @@ import { listTimesfmPredictions, type TimesfmPredictionsResponse } from '../../a
 
 type Props = { symbol: string; tf: string }
 
+function directionColor(d: string): string {
+  return d === 'buy' ? 'text-emerald-400' : d === 'sell' ? 'text-rose-400' : 'text-slate-400'
+}
+
 // Replaces SignalPreviewChart for the timesfm signal: that chart recomputes Compute() over
 // every past candle, which timesfm's own signal deliberately never supports (Compute()
 // always returns Neutral — only ComputeWithSymbol, backed by the live cache, does anything —
@@ -41,15 +45,7 @@ export function TimesfmForecastPanel({ symbol, tf }: Props) {
         <div className="text-[11px] text-slate-500">Текущий прогноз ({symbol}, {tf})</div>
         {latest ? (
           <div className="mt-1 flex items-center gap-2 text-[12px]">
-            <span
-              className={
-                latest.predicted_direction === 'buy'
-                  ? 'text-emerald-400'
-                  : latest.predicted_direction === 'sell'
-                  ? 'text-rose-400'
-                  : 'text-slate-400'
-              }
-            >
+            <span className={directionColor(latest.predicted_direction)}>
               {latest.predicted_direction.toUpperCase()}
             </span>
             <span className="text-slate-300">{latest.predicted_pct.toFixed(2)}%</span>
@@ -72,15 +68,7 @@ export function TimesfmForecastPanel({ symbol, tf }: Props) {
               className="flex items-center justify-between gap-2 border-b border-white/[.04] py-1 text-[11px] last:border-0"
             >
               <span className="text-slate-500">{new Date(p.predicted_at).toLocaleString('ru-RU')}</span>
-              <span
-                className={
-                  p.predicted_direction === 'buy'
-                    ? 'text-emerald-400'
-                    : p.predicted_direction === 'sell'
-                    ? 'text-rose-400'
-                    : 'text-slate-400'
-                }
-              >
+              <span className={directionColor(p.predicted_direction)}>
                 {p.predicted_direction}
               </span>
               <span className="text-slate-600">
