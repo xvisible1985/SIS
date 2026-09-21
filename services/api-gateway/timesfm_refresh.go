@@ -67,7 +67,7 @@ func callTimesfmService(ctx context.Context, baseURL string, series []float64, h
 // timesfmIntervalDuration maps this codebase's canonical timeframe strings to their
 // wall-clock bar length — used to compute target_at (predicted_at + horizon_bars bars).
 var timesfmIntervalDuration = map[string]time.Duration{
-	"1m": time.Minute, "5m": 5 * time.Minute, "15m": 15 * time.Minute,
+	"1m": time.Minute, "5m": 5 * time.Minute, "15m": 15 * time.Minute, "30m": 30 * time.Minute,
 	"1h": time.Hour, "4h": 4 * time.Hour, "1d": 24 * time.Hour,
 }
 

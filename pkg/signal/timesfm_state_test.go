@@ -57,15 +57,45 @@ func TestTimesfmForecast_DifferentContextOrHorizon_DoesNotCollide(t *testing.T) 
 }
 
 func TestTimesfmRefresh_InflightDedup(t *testing.T) {
-	if !tryStartTimesfmRefresh("TFSTATE_INFLIGHT", "5m", 100, 12) {
+	// maxAge=0 here: this test is exercising inflight dedup specifically, not the
+	// refresh-attempt cooldown (see TestTryStartTimesfmRefresh_DoesNotRetryWithinMaxAgeAfterFinish
+	// for that) — a zero maxAge means time.Since(last) < maxAge is never true, so the cooldown
+	// gate never blocks the post-finish retry this test asserts on below.
+	if !tryStartTimesfmRefresh("TFSTATE_INFLIGHT", "5m", 100, 12, 0) {
 		t.Fatal("first tryStartTimesfmRefresh = false, want true")
 	}
-	if tryStartTimesfmRefresh("TFSTATE_INFLIGHT", "5m", 100, 12) {
+	if tryStartTimesfmRefresh("TFSTATE_INFLIGHT", "5m", 100, 12, 0) {
 		t.Error("second tryStartTimesfmRefresh while first still in flight = true, want false")
 	}
 	finishTimesfmRefresh("TFSTATE_INFLIGHT", "5m", 100, 12)
-	if !tryStartTimesfmRefresh("TFSTATE_INFLIGHT", "5m", 100, 12) {
+	if !tryStartTimesfmRefresh("TFSTATE_INFLIGHT", "5m", 100, 12, 0) {
 		t.Error("tryStartTimesfmRefresh after finish = false, want true")
 	}
 	finishTimesfmRefresh("TFSTATE_INFLIGHT", "5m", 100, 12) // cleanup
+}
+
+// TestTryStartTimesfmRefresh_DoesNotRetryWithinMaxAgeAfterFinish is the regression for the
+// retry-storm bug found in review: on a FAILED refresh, SetTimesfmForecast is never called, so
+// GetTimesfmForecast's freshness check can never throttle the next attempt on its own —
+// tryStartTimesfmRefresh must independently remember when the last attempt (successful or
+// failed) started, and refuse a new one until maxAge has passed, the same minimum spacing a
+// successful refresh already gets for free via the cache's own updatedAt.
+func TestTryStartTimesfmRefresh_DoesNotRetryWithinMaxAgeAfterFinish(t *testing.T) {
+	const maxAge = 100 * time.Millisecond
+
+	if !tryStartTimesfmRefresh("TFSTATE_COOLDOWN", "5m", 100, 12, maxAge) {
+		t.Fatal("first tryStartTimesfmRefresh = false, want true")
+	}
+	finishTimesfmRefresh("TFSTATE_COOLDOWN", "5m", 100, 12)
+
+	if tryStartTimesfmRefresh("TFSTATE_COOLDOWN", "5m", 100, 12, maxAge) {
+		t.Error("tryStartTimesfmRefresh immediately after finish, within maxAge = true, want false")
+	}
+
+	time.Sleep(maxAge + 20*time.Millisecond)
+
+	if !tryStartTimesfmRefresh("TFSTATE_COOLDOWN", "5m", 100, 12, maxAge) {
+		t.Error("tryStartTimesfmRefresh after maxAge elapsed = false, want true")
+	}
+	finishTimesfmRefresh("TFSTATE_COOLDOWN", "5m", 100, 12) // cleanup
 }

@@ -13,14 +13,16 @@ type timesfmEntry struct {
 }
 
 var timesfmCache struct {
-	mu       sync.RWMutex
-	entries  map[string]timesfmEntry
-	inflight map[string]bool
+	mu          sync.RWMutex
+	entries     map[string]timesfmEntry
+	inflight    map[string]bool
+	lastAttempt map[string]time.Time
 }
 
 func init() {
 	timesfmCache.entries = make(map[string]timesfmEntry)
 	timesfmCache.inflight = make(map[string]bool)
+	timesfmCache.lastAttempt = make(map[string]time.Time)
 }
 
 func timesfmCacheKey(symbol, timeframe string, contextBars, horizonBars int) string {
@@ -57,16 +59,23 @@ func GetTimesfmForecast(symbol, timeframe string, contextBars, horizonBars int, 
 }
 
 // tryStartTimesfmRefresh marks a key as having a refresh in flight and returns true if this
-// call is the one that should actually run it — false means another goroutine already has
-// one in flight for the same key, and the caller must not start a second.
-func tryStartTimesfmRefresh(symbol, timeframe string, contextBars, horizonBars int) bool {
+// call is the one that should actually run it. Returns false if another goroutine already has
+// one in flight for the same key, OR if an attempt (successful or failed) was already made
+// within maxAge — this is what makes refresh_interval_sec a real minimum spacing between
+// attempts even when the model service is down/erroring and no successful SetTimesfmForecast
+// call is ever reached to naturally throttle further attempts via the freshness check alone.
+func tryStartTimesfmRefresh(symbol, timeframe string, contextBars, horizonBars int, maxAge time.Duration) bool {
 	key := timesfmCacheKey(symbol, timeframe, contextBars, horizonBars)
 	timesfmCache.mu.Lock()
 	defer timesfmCache.mu.Unlock()
 	if timesfmCache.inflight[key] {
 		return false
 	}
+	if last, ok := timesfmCache.lastAttempt[key]; ok && time.Since(last) < maxAge {
+		return false
+	}
 	timesfmCache.inflight[key] = true
+	timesfmCache.lastAttempt[key] = time.Now()
 	return true
 }
 

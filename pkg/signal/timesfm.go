@@ -30,7 +30,7 @@ func (s *timesfmSignal) ComputeWithSymbol(symbol string, candles []Candle) State
 	maxAge := time.Duration(s.refreshIntervalSec) * time.Second
 
 	predictedPct, fresh := GetTimesfmForecast(symbol, tf, contextBars, horizonBars, maxAge)
-	if !fresh && TimesfmRefreshFunc != nil && tryStartTimesfmRefresh(symbol, tf, contextBars, horizonBars) {
+	if !fresh && TimesfmRefreshFunc != nil && tryStartTimesfmRefresh(symbol, tf, contextBars, horizonBars, maxAge) {
 		context := candles
 		// contextBars > 0 guards against a misconfigured (e.g. negative) context_bars bot
 		// param slicing out of bounds here — this runs synchronously, BEFORE the goroutine
@@ -92,6 +92,7 @@ var timesfmIntervalsMs = map[int64]string{
 	60_000:     "1m",
 	300_000:    "5m",
 	900_000:    "15m",
+	1_800_000:  "30m",
 	3_600_000:  "1h",
 	14_400_000: "4h",
 	86_400_000: "1d",
