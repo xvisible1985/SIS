@@ -372,6 +372,7 @@ export interface StrategyLevel {
   sl_price?: number
   sl_replaced?: boolean
   force_virtual?: boolean
+  use_signal?: boolean
 }
 
 // MatrixRelativePreview is the upcoming (not-yet-triggered) relative slot for one side

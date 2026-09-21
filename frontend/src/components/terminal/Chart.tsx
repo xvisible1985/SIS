@@ -594,8 +594,14 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         const isLong = lv.side === 'Buy'
         const pct = currentPrice > 0 ? ` ${pctFromPrice(p, currentPrice, isLong)}` : ''
         const usdt = lv.size_usdt > 0 ? ` ${lv.size_usdt.toFixed(0)}$` : ''
-        const color = isLong ? '#6ee7b7' : '#fca5a5'
-        const vText = `${lv.slot != null ? `L(${lv.slot})` : `L${lv.level_idx}`}${pct}${usdt} [V]`
+        // Signal-gated levels render muted (reduced-opacity direction color) with a "⏸
+        // signal" badge instead of the normal lighter "virtual, waiting on price" color —
+        // chosen over a gray palette (browser-mockup comparison, 2026-09-21) so the line
+        // still reads as this level's own buy/sell color, just visibly held back.
+        const signalWithheld = lv.status === 'pending' && !!lv.use_signal
+        const color = signalWithheld ? (isLong ? '#34d39955' : '#f8717155') : (isLong ? '#6ee7b7' : '#fca5a5')
+        const badge = signalWithheld ? ' ⏸ signal' : ''
+        const vText = `${lv.slot != null ? `L(${lv.slot})` : `L${lv.level_idx}`}${pct}${usdt} [V]${badge}`
         priceLineTitlesRef.current.push({ price: p, color, text: vText, filled: false })
         priceLines.current.push(series.createPriceLine({
           price: p,

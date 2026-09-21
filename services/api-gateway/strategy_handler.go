@@ -961,6 +961,7 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 		SLPrice         float64 `json:"sl_price,omitempty"`
 		SLReplaced      bool    `json:"sl_replaced,omitempty"`
 		ForceVirtual    bool    `json:"force_virtual,omitempty"`
+		UseSignal       bool    `json:"use_signal,omitempty"`
 		RelativeSlot    int     `json:"relative_slot,omitempty"`
 	}
 	var levels []levelInfo
@@ -973,7 +974,7 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 	if err == nil && !cycleEnded {
 		lrows, lErr := s.pool.Query(r.Context(), `
 			SELECT level_idx, side, target_price, size_usdt, status, COALESCE(filled_price,0), COALESCE(exchange_order_id,''),
-			       slot, COALESCE(sl_order_id,''), COALESCE(sl_price,0), COALESCE(sl_replaced,false), COALESCE(force_virtual,false)
+			       slot, COALESCE(sl_order_id,''), COALESCE(sl_price,0), COALESCE(sl_replaced,false), COALESCE(force_virtual,false), COALESCE(use_signal,false)
 			FROM strategy_levels WHERE cycle_id=$1 ORDER BY level_idx`, cycleID)
 		if lErr == nil && lrows != nil {
 			defer lrows.Close()
@@ -981,7 +982,7 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 				var l levelInfo
 				if lrows.Scan(&l.LevelIdx, &l.Side, &l.TargetPrice,
 					&l.SizeUSDT, &l.Status, &l.FilledPrice, &l.ExchangeOrderID,
-					&l.Slot, &l.SLOrderID, &l.SLPrice, &l.SLReplaced, &l.ForceVirtual) == nil {
+					&l.Slot, &l.SLOrderID, &l.SLPrice, &l.SLReplaced, &l.ForceVirtual, &l.UseSignal) == nil {
 					levels = append(levels, l)
 					if l.Status == "filled" && l.FilledPrice > 0 {
 						volumeUSDT += l.SizeUSDT
