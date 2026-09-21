@@ -52,6 +52,8 @@ type StrategyRunner struct {
 	currentSignalState      string    // last observed signal state: "buy","sell","neutral","" (no filter)
 	exitTPSignalSubID       string    // non-empty while exit TP signal gate is active
 	exitSLSignalSubID       string    // non-empty while exit SL signal gate is active
+	signalGateCachedAt      time.Time // last time signalGateAllows() actually evaluated (vs. returned its cache)
+	signalGateCachedResult  bool      // signalGateAllows()'s result as of signalGateCachedAt
 
 	// Matrix strategy runtime state
 	matrixMonitorStop  context.CancelFunc
