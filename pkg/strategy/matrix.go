@@ -1047,6 +1047,11 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 		}
 	}
 
+	// Cancel resting signal-gated orders whose signal no longer agrees, reverting them to
+	// Pending so they resume silent monitoring. Runs for both RelativeSlots and absolute
+	// matrix modes — placed after the branch above rather than inside either arm.
+	sr.cancelSignalLostLevels(ctx)
+
 	// 3. Check stop conditions for filled levels
 	sr.matrixApplyStopCondSLs(ctx, currentPrice)
 

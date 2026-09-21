@@ -5764,6 +5764,7 @@ func (sr *StrategyRunner) gridVirtualPriceTick(ctx context.Context, price float6
 			result.OrderId, linkID, l.ID)
 		sr.info(ctx, fmt.Sprintf("Виртуальный L%d %s: маркет @ %.4f (цена достигла %.4f)", l.LevelIdx, l.Side, price, l.TargetPrice))
 	}
+	sr.cancelSignalLostLevels(ctx)
 	sr.lastVirtualPrice = price
 }
 
