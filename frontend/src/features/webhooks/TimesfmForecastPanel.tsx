@@ -11,11 +11,23 @@ type Props = { symbol: string; tf: string }
 // running accuracy log instead.
 export function TimesfmForecastPanel({ symbol, tf }: Props) {
   const [data, setData] = useState<TimesfmPredictionsResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     setData(null)
-    listTimesfmPredictions(symbol).then(setData).catch(() => setData(null))
-  }, [symbol])
+    setError(null)
+    let cancelled = false
+    listTimesfmPredictions(symbol, tf)
+      .then(res => { if (!cancelled) setData(res) })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Не удалось загрузить прогнозы')
+      })
+    return () => { cancelled = true }
+  }, [symbol, tf])
+
+  if (error !== null) {
+    return <div className="px-3 py-2 text-[11px] text-rose-400">{error}</div>
+  }
 
   if (data === null) {
     return <div className="px-3 py-2 text-[11px] text-slate-500">Загрузка…</div>
@@ -50,7 +62,7 @@ export function TimesfmForecastPanel({ symbol, tf }: Props) {
           Точность: {data.checked > 0 ? `${data.win_rate.toFixed(0)}% (${data.correct}/${data.checked})` : '—'}
         </div>
       </div>
-      <div className="max-h-40 overflow-auto px-3 py-2">
+      <div className="flex-1 overflow-auto px-3 py-2">
         {data.predictions.length === 0 ? (
           <div className="text-[11px] text-slate-500">История пуста</div>
         ) : (

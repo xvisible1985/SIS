@@ -22,9 +22,9 @@ export type TimesfmPredictionsResponse = {
   win_rate: number
 }
 
-export async function listTimesfmPredictions(symbol: string): Promise<TimesfmPredictionsResponse> {
-  const res = await apiClient.get<TimesfmPredictionsResponse>(
-    `/signals/timesfm/predictions?symbol=${encodeURIComponent(symbol)}`
-  )
+export async function listTimesfmPredictions(symbol: string, timeframe?: string): Promise<TimesfmPredictionsResponse> {
+  const params = new URLSearchParams({ symbol })
+  if (timeframe) params.set('timeframe', timeframe)
+  const res = await apiClient.get<TimesfmPredictionsResponse>(`/signals/timesfm/predictions?${params.toString()}`)
   return res.data
 }
