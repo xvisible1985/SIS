@@ -779,13 +779,41 @@ func FetchClosedPnl(ctx context.Context, creds Credentials, category, cursor str
 }
 
 // FetchRecentClosedPnl fetches all closed PnL records since `since` for a given category.
-// Pages through cursor until items become older than `since`.
+//
+// Bybit's /v5/position/closed-pnl caps startTime..endTime at 7 days per request — passing
+// only startTime (no endTime) does NOT mean "since to now", it means "startTime to
+// startTime+7 days", silently returning a stale week once `since` is more than 7 days in
+// the past. Windows in ≤7-day steps from `since` to now, mirroring
+// pkg/trader/binance/exchange.go's FetchRecentClosedPnl.
 func FetchRecentClosedPnl(ctx context.Context, creds Credentials, category string, since time.Time) ([]ClosedPnl, error) {
-	startMs := strconv.FormatInt(since.UnixMilli(), 10)
+	const maxWindow = 7 * 24 * time.Hour
+	var all []ClosedPnl
+	now := time.Now()
+	windowStart := since
+	for windowStart.Before(now) {
+		windowEnd := windowStart.Add(maxWindow)
+		if windowEnd.After(now) {
+			windowEnd = now
+		}
+		rows, err := fetchClosedPnlWindow(ctx, creds, category, windowStart, windowEnd)
+		if err != nil {
+			return all, err
+		}
+		all = append(all, rows...)
+		windowStart = windowEnd
+	}
+	return all, nil
+}
+
+// fetchClosedPnlWindow pages through cursor for one explicit startTime..endTime window
+// (≤7 days, Bybit's own cap on this endpoint).
+func fetchClosedPnlWindow(ctx context.Context, creds Credentials, category string, start, end time.Time) ([]ClosedPnl, error) {
+	startMs := strconv.FormatInt(start.UnixMilli(), 10)
+	endMs := strconv.FormatInt(end.UnixMilli(), 10)
 	var all []ClosedPnl
 	cursor := ""
 	for {
-		q := "category=" + category + "&limit=50&startTime=" + startMs
+		q := "category=" + category + "&limit=50&startTime=" + startMs + "&endTime=" + endMs
 		if cursor != "" {
 			q += "&cursor=" + url.QueryEscape(cursor)
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -218,6 +219,71 @@ func TestBybitExchange_FetchRecentClosedPnl_DelegatesToREST(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].OrderId != "ord-2" {
 		t.Errorf("FetchRecentClosedPnl = %+v, want one ord-2 row", got)
+	}
+}
+
+func TestBybitExchange_FetchRecentClosedPnl_WindowsRequestsAt7Days(t *testing.T) {
+	var gotStartTimes, gotEndTimes []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/v5/position/closed-pnl" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		gotStartTimes = append(gotStartTimes, r.URL.Query().Get("startTime"))
+		gotEndTimes = append(gotEndTimes, r.URL.Query().Get("endTime"))
+		_, _ = w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{"list":[],"nextPageCursor":""}}`))
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	ex := NewBybitExchange(Credentials{APIKey: "k", SecretKey: "s"}, &fakeWSOrderClient{})
+	since := time.Now().Add(-16 * 24 * time.Hour)
+	if _, err := ex.FetchRecentClosedPnl(context.Background(), "linear", since); err != nil {
+		t.Fatalf("FetchRecentClosedPnl: %v", err)
+	}
+	if len(gotStartTimes) < 3 {
+		t.Errorf("FetchRecentClosedPnl issued %d closed-pnl calls for a 16-day window, want at least 3 (7-day cap per call)", len(gotStartTimes))
+	}
+	for i, s := range gotStartTimes {
+		if s == "" || gotEndTimes[i] == "" {
+			t.Errorf("call %d: startTime=%q endTime=%q, want both set on every windowed request", i, s, gotEndTimes[i])
+		}
+	}
+}
+
+func TestBybitExchange_FetchRecentClosedPnl_LastWindowCapsAtNow(t *testing.T) {
+	var gotEndTimes []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/v5/position/closed-pnl" {
+			// e.g. /v5/market/time — doSignedGET's timestamp sync. Not load-bearing here.
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		gotEndTimes = append(gotEndTimes, r.URL.Query().Get("endTime"))
+		_, _ = w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{"list":[],"nextPageCursor":""}}`))
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	ex := NewBybitExchange(Credentials{APIKey: "k", SecretKey: "s"}, &fakeWSOrderClient{})
+	before := time.Now()
+	since := before.Add(-time.Hour) // well within a single 7-day window
+	if _, err := ex.FetchRecentClosedPnl(context.Background(), "linear", since); err != nil {
+		t.Fatalf("FetchRecentClosedPnl: %v", err)
+	}
+	after := time.Now()
+	if len(gotEndTimes) != 1 {
+		t.Fatalf("got %d calls, want exactly 1 for a 1-hour window", len(gotEndTimes))
+	}
+	var endMs int64
+	fmt.Sscanf(gotEndTimes[0], "%d", &endMs)
+	end := time.UnixMilli(endMs)
+	// UnixMilli() truncates sub-millisecond precision, so end can land up to 1ms
+	// before `before` even though it was computed from a `now` sampled after it.
+	if end.Before(before.Add(-time.Millisecond)) || end.After(after) {
+		t.Errorf("last window endTime = %v, want it capped at ~now (between %v and %v)", end, before, after)
 	}
 }
 
