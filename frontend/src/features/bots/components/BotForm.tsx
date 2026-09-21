@@ -532,8 +532,8 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
       ];
 
   return (
-    <div className={embedded ? 'flex h-full flex-col overflow-hidden' : 'fixed inset-0 z-[100] flex items-center justify-center overflow-auto bg-[rgba(8,11,18,.78)] p-6 backdrop-blur'}>
-      <div className={embedded ? 'flex flex-1 flex-col overflow-hidden' : 'flex max-h-[calc(100vh-48px)] w-full max-w-[680px] flex-col overflow-hidden rounded-[18px] border border-white/[.08] bg-[#0c1018] shadow-[0_32px_80px_-16px_rgba(0,0,0,.7)]'}>
+    <div className={embedded ? 'flex min-h-0 flex-1 flex-col overflow-hidden' : 'fixed inset-0 z-[100] flex items-center justify-center overflow-auto bg-[rgba(8,11,18,.78)] p-6 backdrop-blur'}>
+      <div className={embedded ? 'flex min-h-0 flex-1 flex-col overflow-hidden' : 'flex max-h-[calc(100vh-48px)] w-full max-w-[680px] flex-col overflow-hidden rounded-[18px] border border-white/[.08] bg-[#0c1018] shadow-[0_32px_80px_-16px_rgba(0,0,0,.7)]'}>
         {/* header */}
         {!embedded && (
         <div className="flex items-center gap-3 border-b border-white/[.06] px-5 py-4">
@@ -581,7 +581,7 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
         </div>
 
         {/* body */}
-        <div className="flex-1 overflow-auto p-5">
+        <div className="min-h-0 flex-1 overflow-auto p-5">
 
           {outerTab === 'basic' && (
             <div className="flex flex-col gap-4">

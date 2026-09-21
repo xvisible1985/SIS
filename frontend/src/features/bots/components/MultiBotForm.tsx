@@ -70,6 +70,13 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
   const [fullDescription, setFullDescription] = useState(signalBot?.fullDescription ?? '');
   const [avatarUrl, setAvatarUrl] = useState(signalBot?.avatarUrl ?? '');
   const [autoMode, setAutoMode] = useState(signalBot?.autoMode ?? false);
+  const [isPublic, setIsPublic] = useState(signalBot?.isPublic ?? false);
+  // Shared toggle applied to BOTH legs' strategyConfig at save time — see handleSave.
+  // If the legs previously diverged (edited separately via their own tabs), saving here
+  // unifies them onto this one value.
+  const [afterStopMode, setAfterStopMode] = useState<'delete' | 'restart'>(
+    signalBot?.strategyConfig?.after_stop_mode ?? 'restart'
+  );
   const [maxStrategies, setMaxStrategies] = useState(signalBot?.maxStrategies ?? 0);
   const [maxLongStrategies, setMaxLongStrategies] = useState(signalBot?.maxLongStrategies ?? 0);
   const [maxShortStrategies, setMaxShortStrategies] = useState(signalBot?.maxShortStrategies ?? 0);
@@ -135,14 +142,16 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
           setSubmitting(false);
           return;
         }
-        signalPayload = signal;
-        hedgePayload = hedge;
+        // Overrides the per-leg after_stop_mode each embedded form built on its own —
+        // the shared "Основное" toggle is the single source of truth for both legs.
+        signalPayload = { ...signal, strategyConfig: { ...signal.strategyConfig, after_stop_mode: afterStopMode } };
+        hedgePayload = { ...hedge, strategyConfig: { ...hedge.strategyConfig, after_stop_mode: afterStopMode } };
         identity = {
           name: name.trim(),
           description: description.trim(),
           fullDescription: fullDescription.trim() || undefined,
           avatarUrl: avatarUrl || undefined,
-          isPublic: false, // publishing a Мультибот to the catalog isn't wired up yet
+          isPublic,
         };
       }
 
@@ -254,8 +263,8 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
 
         {/* body — all three tabs stay mounted (display:none when inactive) so the embedded
             forms' refs stay attached and their state survives switching tabs. */}
-        <div className="relative flex-1 overflow-hidden">
-          <div style={{ display: tab === 'basic' ? 'block' : 'none' }} className="h-full overflow-auto p-5">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div style={{ display: tab === 'basic' ? 'block' : 'none' }} className="min-h-0 flex-1 overflow-auto p-5">
             <div className="flex flex-col gap-4">
               {/* Avatar upload */}
               <div className="flex items-center gap-4">
@@ -360,6 +369,41 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
                 </div>
               </div>
 
+              <div className="rounded-lg border border-white/[.06] bg-white/[.02]">
+                <div className="flex items-center justify-between px-4 py-3">
+                  <div>
+                    <div className="text-[13px] font-semibold text-slate-200">Публичный бот</div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">
+                      Другие пользователи смогут подписаться на этого бота
+                    </div>
+                  </div>
+                  <button type="button" onClick={() => setIsPublic(v => !v)} className="text-slate-400">
+                    {isPublic
+                      ? <ToggleRight size={28} className="text-[#5b8cff]" />
+                      : <ToggleLeft size={28} />}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between border-t border-white/[.05] px-4 py-2.5">
+                  <div>
+                    <div className="text-[12px] font-medium text-slate-300">Удалять стратегию после TP/SL</div>
+                    <div className="text-[11px] text-slate-500">
+                      {afterStopMode === 'delete'
+                        ? 'Стратегии удаляются на обеих ногах — можно открыть новые на той же монете'
+                        : 'Стратегии перезапускаются на обеих ногах — продолжают работу без нового сигнала'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAfterStopMode(v => v === 'delete' ? 'restart' : 'delete')}
+                    className="ml-4 shrink-0 text-slate-400"
+                  >
+                    {afterStopMode === 'delete'
+                      ? <ToggleRight size={26} className="text-[#5b8cff]" />
+                      : <ToggleLeft size={26} />}
+                  </button>
+                </div>
+              </div>
+
               <div>
                 <div className="mb-3 flex items-center gap-2">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Ограничения сигнальной ноги</span>
@@ -393,11 +437,11 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
             </div>
           </div>
 
-          <div style={{ display: tab === 'signal' ? 'flex' : 'none' }} className="h-full flex-col overflow-hidden">
+          <div style={{ display: tab === 'signal' ? 'flex' : 'none' }} className="min-h-0 flex-1 flex-col overflow-hidden">
             <BotForm ref={signalRef} embedded initialKind="signal" bot={signalBot} onSubmit={() => {}} onClose={onClose} />
           </div>
 
-          <div style={{ display: tab === 'hedge' ? 'flex' : 'none' }} className="h-full flex-col overflow-hidden">
+          <div style={{ display: tab === 'hedge' ? 'flex' : 'none' }} className="min-h-0 flex-1 flex-col overflow-hidden">
             <HedgeBotForm ref={hedgeRef} embedded hideFilters bot={hedgeBot} onSubmit={() => {}} onClose={onClose} />
           </div>
         </div>

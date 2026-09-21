@@ -526,8 +526,8 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
   ];
 
   return (
-    <div className={embedded ? 'flex h-full flex-col overflow-hidden' : 'fixed inset-0 z-[100] flex items-center justify-center overflow-auto bg-[rgba(8,11,18,.78)] p-6 backdrop-blur'}>
-      <div className={embedded ? 'flex flex-1 flex-col overflow-hidden' : 'flex max-h-[calc(100vh-48px)] w-full max-w-[680px] flex-col overflow-hidden rounded-[18px] border border-white/[.08] bg-[#0c1018] shadow-[0_32px_80px_-16px_rgba(0,0,0,.7)]'}>
+    <div className={embedded ? 'flex min-h-0 flex-1 flex-col overflow-hidden' : 'fixed inset-0 z-[100] flex items-center justify-center overflow-auto bg-[rgba(8,11,18,.78)] p-6 backdrop-blur'}>
+      <div className={embedded ? 'flex min-h-0 flex-1 flex-col overflow-hidden' : 'flex max-h-[calc(100vh-48px)] w-full max-w-[680px] flex-col overflow-hidden rounded-[18px] border border-white/[.08] bg-[#0c1018] shadow-[0_32px_80px_-16px_rgba(0,0,0,.7)]'}>
 
         {/* ── header ── */}
         {!embedded && (
@@ -575,7 +575,7 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
         </div>
 
         {/* ── body ── */}
-        <div className="flex-1 overflow-auto p-5">
+        <div className="min-h-0 flex-1 overflow-auto p-5">
 
           {/* ═══════════════════════════ BASIC ═══════════════════════════════ */}
           {outerTab === 'basic' && (
