@@ -5733,6 +5733,9 @@ func (sr *StrategyRunner) gridVirtualPriceTick(ctx context.Context, price float6
 		if !crossed {
 			continue
 		}
+		if l.UseSignal && !sr.signalGateAllows() {
+			continue // price reached, but the configured signal doesn't currently agree — stay pending
+		}
 		// Execute at market price
 		ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
 		linkID := fmt.Sprintf("SIS_STR-%s-%d-%d-%d-v", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, sr.repriceGen)
