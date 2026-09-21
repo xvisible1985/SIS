@@ -234,6 +234,9 @@ func (sr *StrategyRunner) matrixIsVirtual(l *GridLevel) bool {
 	if l.ForceVirtual {
 		return true
 	}
+	if l.UseSignal {
+		return true
+	}
 	if l.Slot == nil {
 		return false
 	}
@@ -1093,6 +1096,9 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 // matrixTriggerVirtualLevel fires a virtual level by placing a market order.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixTriggerVirtualLevel(ctx context.Context, l *GridLevel) {
+	if l.UseSignal && !sr.signalGateAllows() {
+		return // price reached, but the configured signal doesn't currently agree — stay pending
+	}
 	linkID := fmt.Sprintf("SIS_STR-%s-%d-%d-v%d",
 		sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, sr.repriceGen)
 	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}

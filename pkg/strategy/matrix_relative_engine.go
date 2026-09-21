@@ -221,6 +221,15 @@ func (sr *StrategyRunner) matrixPlaceRelativeVirtualOrder(ctx context.Context, l
 		}
 	}
 
+	// Signal gate — mirrors matrixTriggerVirtualLevel's absolute-mode check (and grid's
+	// gridVirtualPriceTick): a UseSignal=true level must never reach PlaceOrder while the
+	// configured signal doesn't currently agree, regardless of whether the risk gate above
+	// would have allowed it through. Independent of that risk gate — either can block on its
+	// own, and neither bypasses the other.
+	if l.UseSignal && !sr.signalGateAllows() {
+		return // price reached, but the configured signal doesn't currently agree — stay pending
+	}
+
 	linkID := fmt.Sprintf("SIS_STR-%s-%d-%d-v%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, sr.repriceGen)
 	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
 	sr.runner.RegisterOrder(linkID, ref)
