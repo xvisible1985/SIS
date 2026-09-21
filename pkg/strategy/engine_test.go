@@ -546,6 +546,7 @@ func TestOnPositionEvent_CachesLeverage(t *testing.T) {
 	ar := &AccountRunner{
 		positions:           make(map[string]float64),
 		posAvgEntry:         make(map[string]float64),
+		posAvgEntrySize:     make(map[string]float64),
 		posLeverage:         make(map[string]float64),
 		discrepancyLoggedAt: make(map[string]time.Time),
 		strategies:          make(map[string]*StrategyRunner),

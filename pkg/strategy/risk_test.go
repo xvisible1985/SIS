@@ -195,9 +195,10 @@ func TestRiskGate_ZeroValueAccountRiskState_GuardIsActive(t *testing.T) {
 // fresh exchange snapshot before the gate is next consulted.
 func TestApplyPositionSnapshot_UnblocksHedgeAfterColdCacheRestart(t *testing.T) {
 	ar := &AccountRunner{
-		positions:   map[string]float64{},
-		posAvgEntry: map[string]float64{},
-		posLeverage: map[string]float64{},
+		positions:       map[string]float64{},
+		posAvgEntry:     map[string]float64{},
+		posAvgEntrySize: map[string]float64{},
+		posLeverage:     map[string]float64{},
 	}
 	ar.risk = accountRiskState{equity: 5, notionalPct: 99, paused: false, updatedAt: time.Now()} // cap ≈ 4.95
 
@@ -228,9 +229,10 @@ func TestApplyPositionSnapshot_UnblocksHedgeAfterColdCacheRestart(t *testing.T) 
 // snapshot actually reports with a non-zero size.
 func TestApplyPositionSnapshot_NeverClearsExistingEntries(t *testing.T) {
 	ar := &AccountRunner{
-		positions:   map[string]float64{"ETHUSDT:1": 5},
-		posAvgEntry: map[string]float64{"ETHUSDT:1": 100},
-		posLeverage: map[string]float64{},
+		positions:       map[string]float64{"ETHUSDT:1": 5},
+		posAvgEntry:     map[string]float64{"ETHUSDT:1": 100},
+		posAvgEntrySize: map[string]float64{"ETHUSDT:1": 5},
+		posLeverage:     map[string]float64{},
 	}
 	// Snapshot reports an unrelated symbol only.
 	ar.applyPositionSnapshot([]trader.Position{

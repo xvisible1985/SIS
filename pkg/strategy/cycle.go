@@ -2432,16 +2432,27 @@ func (sr *StrategyRunner) updateTrailingStop(ctx context.Context) error {
 // average that doesn't yet include the fill that just happened. Found live (2026-09-07,
 // NIULAIUSDT and 2026-09-08/09, 1000NEIROCTOUSDT): TP repeatedly placed from a WS avg
 // entry frozen at its pre-fill value moments after a new level filled.
+//
+// The freshness check compares computedQty against GetPositionAvgEntrySize — the size that
+// was in effect when the avg entry cache was last actually written — rather than
+// GetPositionSizeCoins, which can move on its own: a WS payload can carry a freshly updated
+// size with avgPrice=0 (OnPositionEvent then leaves the avg cache untouched but the size
+// cache still advances), leaving the two out of sync. Comparing against the general size
+// cache alone would then wrongly read as "fresh" even though the paired avg predates the
+// latest fill. Found live (2026-09-20, NIULAIUSDT): after a 3rd DCA level filled, the WS
+// event's size caught up to 1030 while avgPrice arrived as 0 — the old check saw
+// wsQty>=computedQty and trusted a stale avg (0.1077, from before the fill) instead of the
+// true 0.1003, placing TP 0.1120 instead of 0.1043.
 func (sr *StrategyRunner) resolveExchangeAvgEntry(ctx context.Context, wantIdx int, computed float64, computedQty float64) float64 {
 	wsAvg := sr.runner.GetPositionAvgEntry(sr.strategy.Symbol, wantIdx)
-	wsQty := sr.runner.GetPositionSizeCoins(sr.strategy.Symbol, wantIdx)
+	avgAsOfQty := sr.runner.GetPositionAvgEntrySize(sr.strategy.Symbol, wantIdx)
 	const qtyEps = 1e-9
-	if wsAvg > 0 && wsQty >= computedQty-qtyEps {
+	if wsAvg > 0 && avgAsOfQty >= computedQty-qtyEps {
 		sr.info(ctx, fmt.Sprintf("ТВХ биржи (WS) %.6f (расчётная %.6f)", wsAvg, computed))
 		return wsAvg
 	}
 	if wsAvg > 0 {
-		sr.info(ctx, fmt.Sprintf("ТВХ биржи (WS) устарела: кэш ещё не учёл последний фил (qty=%.6f < ожидаемых %.6f) — форсирую FetchPositions", wsQty, computedQty))
+		sr.info(ctx, fmt.Sprintf("ТВХ биржи (WS) устарела: кэш ещё не учёл последний фил (qty=%.6f < ожидаемых %.6f) — форсирую FetchPositions", avgAsOfQty, computedQty))
 	}
 	positions, err := sr.runner.Exchange().FetchPositions(ctx)
 	if err != nil {

@@ -44,19 +44,23 @@ func newTestAccountRunner(t *testing.T, fake *fakeExchange) *AccountRunner {
 		orderIndex:          make(map[string]orderRef),
 		positions:           make(map[string]float64),
 		posAvgEntry:         make(map[string]float64),
+		posAvgEntrySize:     make(map[string]float64),
 		posLeverage:         make(map[string]float64),
 		discrepancyLoggedAt: make(map[string]time.Time),
 	}
 }
 
-// setWSPosition seeds the WS-cached position size/avg-entry for symbol+positionIdx,
-// using the same "SYMBOL:positionIdx" key format OnPositionEvent writes
-// (pkg/strategy/engine.go). Call this to set up the WS-cache state a test scenario needs
-// (fresh, stale, or cold — omit the call entirely for cold/absent).
+// setWSPosition seeds the WS-cached position size/avg-entry for symbol+positionIdx, as if
+// both arrived together in the same WS payload — using the same "SYMBOL:positionIdx" key
+// format OnPositionEvent writes (pkg/strategy/engine.go). Call this to set up the WS-cache
+// state a test scenario needs (fresh, stale, or cold — omit the call entirely for
+// cold/absent). To simulate a payload that updated size but left avgPrice stale (arrived as
+// 0), set `ar.positions[key]` directly instead of calling this helper again.
 func setWSPosition(ar *AccountRunner, symbol string, positionIdx int, size, avgEntry float64) {
 	key := symbol + ":" + strconv.Itoa(positionIdx)
 	ar.posMu.Lock()
 	defer ar.posMu.Unlock()
 	ar.positions[key] = size
 	ar.posAvgEntry[key] = avgEntry
+	ar.posAvgEntrySize[key] = size
 }

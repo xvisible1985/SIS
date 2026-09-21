@@ -61,6 +61,44 @@ func TestResolveExchangeAvgEntry_StaleWSCache_FallsBackToFetchPositions(t *testi
 	}
 }
 
+// TestResolveExchangeAvgEntry_SizeFreshButAvgStale_FallsBackToFetchPositions is the
+// regression for the incident found live 2026-09-20 on NIULAIUSDT: a WS position event can
+// carry a freshly updated size with avgPrice=0 (Bybit sent size=1030 but avgPrice=0 right
+// after the 3rd DCA level filled). OnPositionEvent correctly leaves the avg entry cache
+// untouched in that case, but the general size cache still advances to 1030 — so comparing
+// computedQty against GetPositionSizeCoins alone would wrongly read the stale avg (still
+// paired with the old size 410) as "fresh". The check must compare against
+// GetPositionAvgEntrySize (the size the avg was actually last confirmed at) instead.
+func TestResolveExchangeAvgEntry_SizeFreshButAvgStale_FallsBackToFetchPositions(t *testing.T) {
+	fake := &fakeExchange{}
+	ar := newTestAccountRunner(t, fake)
+	// Avg entry cache last confirmed at size=410 (before the 3rd level's fill).
+	setWSPosition(ar, "TESTUSDT", 0, 410, 0.1077)
+	// The general size cache then advanced to 1030 on its own (WS payload carried a fresh
+	// size with avgPrice=0) — simulate that without touching the avg-entry pairing.
+	ar.posMu.Lock()
+	ar.positions["TESTUSDT:0"] = 1030
+	ar.posMu.Unlock()
+
+	fake.fetchPositionsQ.push([]trader.Position{
+		{Symbol: "TESTUSDT", PositionIdx: 0, Size: "1030", EntryPrice: "0.1003"},
+	}, nil)
+
+	sr := &StrategyRunner{
+		strategy: Strategy{ID: "11111111-2222-3333-4444-555555555555", Symbol: "TESTUSDT"},
+		runner:   ar,
+	}
+
+	got := sr.resolveExchangeAvgEntry(context.Background(), 0, 0.1003, 1030)
+
+	if got != 0.1003 {
+		t.Errorf("resolveExchangeAvgEntry = %v, want 0.1003 (from FetchPositions) — the WS avg (0.1077) is stale relative to computedQty=1030, must not be trusted", got)
+	}
+	if fake.fetchPositionsCalls != 1 {
+		t.Errorf("FetchPositions called %d times, want 1 — a size-fresh-but-avg-stale cache must trigger exactly one fallback call", fake.fetchPositionsCalls)
+	}
+}
+
 func TestResolveExchangeAvgEntry_ColdWSCache_FallsBackToFetchPositions(t *testing.T) {
 	fake := &fakeExchange{}
 	ar := newTestAccountRunner(t, fake)

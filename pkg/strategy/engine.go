@@ -827,12 +827,20 @@ type AccountRunner struct {
 
 	// positions caches the latest position size (in coins) from private WS events.
 	// posAvgEntry caches the exchange avg entry price for the same position.
-	// Key for both: "SYMBOL:positionIdx" (e.g. "BTCUSDT:1").
+	// posAvgEntrySize records the position SIZE that was in effect the last time
+	// posAvgEntry was actually written (as opposed to `positions`, which can update on its
+	// own — see OnPositionEvent, a WS payload can carry a fresh size with avgPrice=0, in
+	// which case posAvgEntry is deliberately left untouched but `positions` still moves).
+	// Comparing computedQty against posAvgEntrySize (not positions) is what lets
+	// resolveExchangeAvgEntry detect that specific case: size looks fresh, but the avg
+	// price it's paired with predates the latest fill. Key for all three:
+	// "SYMBOL:positionIdx" (e.g. "BTCUSDT:1").
 	// discrepancyLoggedAt tracks when a position discrepancy was last logged per symbol
 	// to prevent log spam when Bybit sends high-frequency position snapshots.
 	posMu               sync.RWMutex
 	positions           map[string]float64
 	posAvgEntry         map[string]float64
+	posAvgEntrySize     map[string]float64
 	posLeverage         map[string]float64
 	discrepancyLoggedAt map[string]time.Time
 
@@ -883,6 +891,7 @@ func newAccountRunnerWithExchange(accountID, accountLabel, ownerUsername string,
 		cancel:              cancel,
 		positions:           make(map[string]float64),
 		posAvgEntry:         make(map[string]float64),
+		posAvgEntrySize:     make(map[string]float64),
 		posLeverage:         make(map[string]float64),
 		discrepancyLoggedAt: make(map[string]time.Time),
 	}
@@ -909,6 +918,18 @@ func (ar *AccountRunner) GetPositionAvgEntry(symbol string, positionIdx int) flo
 	key := symbol + ":" + strconv.Itoa(positionIdx)
 	ar.posMu.RLock()
 	v := ar.posAvgEntry[key]
+	ar.posMu.RUnlock()
+	return v
+}
+
+// GetPositionAvgEntrySize returns the position size (in coins) that was in effect the last
+// time GetPositionAvgEntry's cached value was actually written. Used by
+// resolveExchangeAvgEntry to detect a WS payload that refreshed the size cache but left the
+// avg entry cache untouched (avgPrice arrived as 0) — see the posAvgEntrySize field comment.
+func (ar *AccountRunner) GetPositionAvgEntrySize(symbol string, positionIdx int) float64 {
+	key := symbol + ":" + strconv.Itoa(positionIdx)
+	ar.posMu.RLock()
+	v := ar.posAvgEntrySize[key]
 	ar.posMu.RUnlock()
 	return v
 }
@@ -1155,8 +1176,10 @@ func (ar *AccountRunner) OnPositionEvent(ev trader.PositionEvent) {
 	prevAvg := ar.posAvgEntry[key]
 	if avgPrice > 0 {
 		ar.posAvgEntry[key] = avgPrice
+		ar.posAvgEntrySize[key] = size
 	} else if size == 0 {
 		ar.posAvgEntry[key] = 0
+		ar.posAvgEntrySize[key] = 0
 	}
 	if leverage > 0 {
 		ar.posLeverage[key] = leverage
@@ -1450,6 +1473,7 @@ func (ar *AccountRunner) applyPositionSnapshot(positions []trader.Position) {
 		ar.positions[key] = size
 		if avg, _ := strconv.ParseFloat(p.EntryPrice, 64); avg > 0 {
 			ar.posAvgEntry[key] = avg
+			ar.posAvgEntrySize[key] = size
 		}
 		if lev, _ := strconv.ParseFloat(p.Leverage, 64); lev > 0 {
 			ar.posLeverage[key] = lev
