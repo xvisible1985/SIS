@@ -89,6 +89,48 @@ func nextSlotPrice(levels []GridLevel, entry float64, side string, dir Direction
 	return base * (1 + matrixStepMul(dir)*stepPct/100)
 }
 
+// matrixRelativeSafeZoneBlocks reports whether `slot` is still cooling down after its most
+// recent SL close, mirroring the absolute-mode safe zone in matrixCheckWaitingReentry
+// (require price to recover SafeZonePct% past the SL trigger before allowing a new entry).
+// matrixAfterSLClose's relative-slots branch skips that absolute-mode gate entirely — a
+// closed relative slot's config index simply becomes "free" again the moment
+// nextConfigIndex recounts open levels, with nothing stopping it from immediately
+// reopening at (near enough) the same price it was just stopped out at. This is the
+// relative-slots equivalent, called from matrixRelativeExpand before a freshly-closed
+// slot's index is allowed to reopen. Found live 2026-09-21/22 (Gonchar 2.0 hedge,
+// poligonorigin33 account, COTIUSDT): with no gate at all, L(4) reopened and stopped out 8
+// times in under 5 hours as price ground steadily in one direction.
+//
+// sr.levels is append-only in chronological order (a re-triggered slot gets a brand new
+// GridLevel/DB row, never reuses the old one — see matrixTriggerRelativeVirtualLevel /
+// matrixPlaceRelativeSlot), so the last matching sl_closed entry in iteration order is
+// always the most recent one; no separate timestamp is needed.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixRelativeSafeZoneBlocks(slot int, currentPrice float64) bool {
+	if sr.strategy.SafeZonePct <= 0 {
+		return false
+	}
+	var lastSLTrigger float64
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Slot == nil || *l.Slot != slot || l.Status != LevelSLClosed {
+			continue
+		}
+		trigger := l.SLPrice
+		if trigger == 0 {
+			trigger = l.FilledPrice
+		}
+		lastSLTrigger = trigger
+	}
+	if lastSLTrigger <= 0 {
+		return false
+	}
+	if sr.strategy.Direction == DirectionLong {
+		return currentPrice < lastSLTrigger*(1+sr.strategy.SafeZonePct/100)
+	}
+	return currentPrice > lastSLTrigger*(1-sr.strategy.SafeZonePct/100)
+}
+
 // matrixSlotReached reports whether currentPrice has moved far enough to trigger the
 // next relative slot at target. The trigger direction follows the SAME sign inversion
 // nextSlotPrice applied (matrixStepMul(dir)*stepPct), not the raw config-list name

@@ -374,8 +374,11 @@ func (sr *StrategyRunner) matrixRelativeExpand(ctx context.Context, side string,
 		return
 	}
 
-	idx, _, target, cfg, isVirtual, ok := sr.matrixNextRelativeSlot(side)
+	idx, slot, target, cfg, isVirtual, ok := sr.matrixNextRelativeSlot(side)
 	if !ok {
+		return
+	}
+	if sr.matrixRelativeSafeZoneBlocks(slot, currentPrice) {
 		return
 	}
 	if !matrixSlotReached(sr.strategy.Direction, cfg.PriceStepPct, currentPrice, target) {

@@ -107,6 +107,84 @@ func TestNextSlotPrice_LongDirection_KeepsNegativeStepDownward(t *testing.T) {
 	}
 }
 
+// --- matrixRelativeSafeZoneBlocks ---
+//
+// Regression for the incident found live 2026-09-21/22 (Gonchar 2.0 hedge, poligonorigin33
+// account, COTIUSDT): matrixAfterSLClose's relative-slots branch skips the absolute-mode
+// safe zone entirely, so a just-closed slot's config index became immediately eligible to
+// reopen the moment nextConfigIndex recounted open levels — L(4) reopened and stopped out
+// 8 times in under 5 hours. matrixRelativeSafeZoneBlocks is the gate that closes this hole.
+
+func TestMatrixRelativeSafeZoneBlocks_NoSafeZoneConfigured_NeverBlocks(t *testing.T) {
+	sr := shortStrategyWithLevels()
+	sr.strategy.SafeZonePct = 0
+	two := 2
+	sr.levels = append(sr.levels, GridLevel{Slot: &two, Status: LevelSLClosed, SLPrice: 96.04})
+	if sr.matrixRelativeSafeZoneBlocks(2, 95.0) {
+		t.Error("SafeZonePct=0 must never block")
+	}
+}
+
+func TestMatrixRelativeSafeZoneBlocks_NoPriorSLOnThisSlot_NeverBlocks(t *testing.T) {
+	sr := shortStrategyWithLevels()
+	sr.strategy.SafeZonePct = 1.5
+	// Slot 2 was never SL-closed (only slot 1 was) — nothing to cool down from.
+	one := 1
+	sr.levels = append(sr.levels, GridLevel{Slot: &one, Status: LevelSLClosed, SLPrice: 96.04})
+	if sr.matrixRelativeSafeZoneBlocks(2, 95.0) {
+		t.Error("must not block a slot with no prior SL close of its own")
+	}
+}
+
+func TestMatrixRelativeSafeZoneBlocks_Short_BlocksUntilPriceFallsBelowThreshold(t *testing.T) {
+	sr := shortStrategyWithLevels()
+	sr.strategy.SafeZonePct = 1.5
+	two := 2
+	sr.levels = append(sr.levels, GridLevel{Slot: &two, Status: LevelSLClosed, SLPrice: 96.04})
+	// threshold = 96.04 * (1 - 1.5/100) = 94.5994
+	if !sr.matrixRelativeSafeZoneBlocks(2, 95.0) {
+		t.Error("price 95.0 has not recovered past the safe-zone threshold (~94.60) — must block")
+	}
+	if sr.matrixRelativeSafeZoneBlocks(2, 94.0) {
+		t.Error("price 94.0 has recovered past the safe-zone threshold (~94.60) — must not block")
+	}
+}
+
+func TestMatrixRelativeSafeZoneBlocks_Long_BlocksUntilPriceRisesAboveThreshold(t *testing.T) {
+	sr := shortStrategyWithLevels()
+	sr.strategy.Direction = DirectionLong
+	sr.strategy.SafeZonePct = 1.5
+	negOne := -1
+	sr.levels = append(sr.levels, GridLevel{Slot: &negOne, Status: LevelSLClosed, SLPrice: 96.04})
+	// threshold = 96.04 * (1 + 1.5/100) = 97.4806
+	if !sr.matrixRelativeSafeZoneBlocks(-1, 97.0) {
+		t.Error("price 97.0 has not recovered past the safe-zone threshold (~97.48) — must block")
+	}
+	if sr.matrixRelativeSafeZoneBlocks(-1, 98.0) {
+		t.Error("price 98.0 has recovered past the safe-zone threshold (~97.48) — must not block")
+	}
+}
+
+func TestMatrixRelativeSafeZoneBlocks_UsesMostRecentSLOnRepeatedCloses(t *testing.T) {
+	sr := shortStrategyWithLevels()
+	sr.strategy.SafeZonePct = 1.5
+	two := 2
+	// Slot 2 was stopped out twice; the SECOND (most recent, lower) trigger must govern.
+	sr.levels = append(sr.levels,
+		GridLevel{Slot: &two, Status: LevelSLClosed, SLPrice: 96.04},
+		GridLevel{Slot: &two, Status: LevelSLClosed, SLPrice: 94.0},
+	)
+	// Against the stale first trigger (96.04) this price would already be clear (>94.6034
+	// threshold with old trigger 96.04, no — recompute: 94.0*(1-0.015)=92.59). Use a price
+	// between the two thresholds to prove which trigger actually governs.
+	if !sr.matrixRelativeSafeZoneBlocks(2, 93.0) {
+		t.Error("must use the most recent SL trigger (94.0, threshold ~92.59) — price 93.0 must still be blocked")
+	}
+	if sr.matrixRelativeSafeZoneBlocks(2, 92.0) {
+		t.Error("price 92.0 has recovered past the most recent trigger's threshold (~92.59) — must not block")
+	}
+}
+
 func TestMatrixStepMul(t *testing.T) {
 	if matrixStepMul(DirectionShort) != -1.0 {
 		t.Fatalf("matrixStepMul(short) = %v, want -1", matrixStepMul(DirectionShort))
