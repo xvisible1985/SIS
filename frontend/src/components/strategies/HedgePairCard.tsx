@@ -24,6 +24,8 @@ export interface HedgePairCardProps {
   onEdit: (s: Strategy, filledCount: number) => void
   onChanged: () => void
   onSelect?: (s: Strategy) => void
+  // Mobile list: tapping the pair header / a leg row opens the strategy detail page.
+  onOpenDetail?: (s: Strategy) => void
   onPairTargetUpdate?: (target: number | null) => void
   onSimpleDetach?: () => Promise<void>
   isOpen?: boolean
@@ -243,7 +245,7 @@ function PairTradeSummaryPanel({ summary }: { summary: PairTradeSummary }) {
 // ── StrategyRow ───────────────────────────────────────────────────────────────
 
 function StrategyRow({
-  strategy, isMain, positions, tickerPrices, selectedStrategyId, onEdit, onChanged, onSelect,
+  strategy, isMain, positions, tickerPrices, selectedStrategyId, onEdit, onChanged, onSelect, onOpenDetail,
 }: {
   strategy: Strategy
   isMain: boolean
@@ -253,6 +255,7 @@ function StrategyRow({
   onEdit: (s: Strategy, filledCount: number) => void
   onChanged: () => void
   onSelect?: (s: Strategy) => void
+  onOpenDetail?: (s: Strategy) => void
 }) {
   const [acting, setActing] = useState(false)
 
@@ -284,7 +287,7 @@ function StrategyRow({
       {/* Clickable left: open chart */}
       <button
         type="button"
-        onClick={() => onSelect?.(strategy)}
+        onClick={() => { onSelect?.(strategy); onOpenDetail?.(strategy) }}
         className="flex items-center gap-2 flex-1 min-w-0 text-left cursor-pointer hover:opacity-80 transition-opacity"
       >
         <span
@@ -370,7 +373,7 @@ function StrategyRow({
 
 export function HedgePairCard({
   main, hedge, positions, tickerPrices, selectedStrategyId,
-  hedgeBot, onEdit, onChanged, onSelect, onPairTargetUpdate, onSimpleDetach,
+  hedgeBot, onEdit, onChanged, onSelect, onOpenDetail, onPairTargetUpdate, onSimpleDetach,
   isOpen, onToggleOpen, isMatrixPair, pairedClose,
 }: HedgePairCardProps) {
   const mainPos  = findPosition(main,  positions)
@@ -620,7 +623,10 @@ export function HedgePairCard({
       }}
     >
       {/* ── Header ── */}
-      <div className="flex items-center gap-2 px-3 py-2.5">
+      <div
+        className={`flex items-center gap-2 px-3 py-2.5${onOpenDetail ? ' cursor-pointer' : ''}`}
+        onClick={onOpenDetail ? () => { onSelect?.(main); onOpenDetail(main) } : undefined}
+      >
         <CoinIcon symbol={symbol} className="w-5 h-5 shrink-0" />
         <span className="font-display font-bold text-[15px] tracking-[-0.2px] leading-none text-[#f2f5fb]">
           {symbol}
@@ -646,7 +652,7 @@ export function HedgePairCard({
           </span>
 
           {/* Hamburger menu */}
-          <div className="relative ml-1" ref={menuRef}>
+          <div className="relative ml-1" ref={menuRef} onClick={e => e.stopPropagation()}>
             <button
               type="button"
               onClick={() => setMenuOpen(v => !v)}
@@ -769,14 +775,14 @@ export function HedgePairCard({
         strategy={main} isMain={true}
         positions={positions} tickerPrices={tickerPrices}
         selectedStrategyId={selectedStrategyId}
-        onEdit={onEdit} onChanged={onChanged} onSelect={onSelect}
+        onEdit={onEdit} onChanged={onChanged} onSelect={onSelect} onOpenDetail={onOpenDetail}
       />
       <div className="h-px mx-3 bg-white/[.04]" />
       <StrategyRow
         strategy={hedge} isMain={false}
         positions={positions} tickerPrices={tickerPrices}
         selectedStrategyId={selectedStrategyId}
-        onEdit={onEdit} onChanged={onChanged} onSelect={onSelect}
+        onEdit={onEdit} onChanged={onChanged} onSelect={onSelect} onOpenDetail={onOpenDetail}
       />
 
       {/* ── Expanded panel ── */}

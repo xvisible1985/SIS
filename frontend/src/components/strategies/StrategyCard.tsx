@@ -41,6 +41,8 @@ interface Props {
   hedgeWatcherCount?: number
   hasActiveHedge?: boolean
   isHedgeItself?: boolean
+  // Mobile list: tapping the card header opens the strategy detail page instead of just selecting.
+  onOpenDetail?: (s: Strategy) => void
 }
 
 interface CardState {
@@ -383,7 +385,7 @@ function logLvlStyle(lvl: string) {
 }
 
 // ── main component ─────────────────────────────────────────────────────────────
-export function StrategyCard({ strategy: s, accounts, orders, positions, tickerPrices, onEdit, onChanged, selected, onSelect, bulkMode, selectedCount, onBulkStatus, onBulkDelete, onBulkClose, isOpen, onToggleOpen, liveSignal, hedgeWatcherCount, hasActiveHedge, isHedgeItself }: Props) {
+export function StrategyCard({ strategy: s, accounts, orders, positions, tickerPrices, onEdit, onChanged, selected, onSelect, bulkMode, selectedCount, onBulkStatus, onBulkDelete, onBulkClose, isOpen, onToggleOpen, liveSignal, hedgeWatcherCount, hasActiveHedge, isHedgeItself, onOpenDetail }: Props) {
   const navigate = useNavigate()
   const [cs, setCs] = useState<CardState>({ state: null, events: [], eventTotal: 0, loading: false, acting: false, actionError: null })
   const [localEvents, setLocalEvents] = useState<StrategyEvent[] | null>(null)
@@ -664,6 +666,7 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
   function handleHeaderClick(e: React.MouseEvent) {
     if (e.shiftKey || e.ctrlKey || e.metaKey) e.preventDefault()
     onSelect?.(s, e)
+    if (onOpenDetail && !bulkMode) onOpenDetail(s)
   }
 
   const displayEvents = localEvents ?? cs.events

@@ -23,6 +23,13 @@ import { HelpPage } from './pages/HelpPage'
 import { WelcomePage } from './pages/WelcomePage'
 import { QuickStartPage } from './pages/QuickStartPage'
 
+// Landing route: phones (below Tailwind's md breakpoint) open the terminal, desktop keeps
+// the dashboard. The dashboard stays reachable at /dashboard (bottom nav / sidebar link).
+function HomeRoute() {
+  const isMobile = window.matchMedia('(max-width: 767px)').matches
+  return isMobile ? <Navigate to="/terminal" replace /> : <DashboardPage />
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -38,7 +45,8 @@ export default function App() {
               <ProtectedRoute>
                 <Layout>
                   <Routes>
-                    <Route path="" element={<DashboardPage />} />
+                    <Route path="" element={<HomeRoute />} />
+                    <Route path="dashboard" element={<DashboardPage />} />
                     <Route path="welcome" element={<WelcomePage />} />
                     <Route path="quick-start" element={<QuickStartPage />} />
                     <Route path="signals/new" element={<SignalBuilderPage />} />

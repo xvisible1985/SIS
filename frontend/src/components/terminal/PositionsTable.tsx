@@ -17,6 +17,8 @@ interface Props {
   // as its position's owner within the parent's poll interval, instead of only ever
   // reflecting whatever was live at this component's mount time.
   strategies: Strategy[]
+  // Narrow (phone strategy-detail) layout: no entry/mark price columns, smaller font, fits without horizontal scroll.
+  compact?: boolean
 }
 
 function coinIcon(s: string) {
@@ -70,7 +72,8 @@ function getPositionOwner(
   return { name: `${name} (удал.)`, botKind: null, fromLog: true }
 }
 
-export function PositionsTable({ accountId, positions, onSelect, loading, tickerPrices, strategies }: Props) {
+export function PositionsTable({ accountId, positions, onSelect, loading, tickerPrices, strategies, compact }: Props) {
+  const cell = compact ? 'px-0.5 py-1.5' : 'px-3 py-2'
   const [closing, setClosing] = useState(false)
   const [confirm, setConfirm] = useState<CloseConfirm | null>(null)
   const [contextMenu, setContextMenu] = useState<{ pos: Position; x: number; y: number } | null>(null)
@@ -256,11 +259,11 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
       })()}
 
       <div className="relative overflow-x-auto">
-      <table className="w-full text-xs min-w-[700px]">
+      <table className={compact ? 'w-full text-[9px]' : 'w-full text-xs min-w-[700px]'}>
         <thead className="sticky top-0 z-10 bg-white dark:bg-gray-900">
           <tr className="text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
-            {['Символ', 'Сторона', 'Размер', 'Цена входа', 'Mark Price', 'PnL', 'Плечо', 'Владелец', ''].map(h => (
-              <th key={h} className="px-3 py-2 font-medium text-left">{h}</th>
+            {['Символ', 'Сторона', 'Размер', ...(compact ? [] : ['Цена входа', 'Mark Price']), 'PnL', 'Плечо', 'Владелец', ''].map(h => (
+              <th key={h} className={`${cell} font-medium text-left`}>{h}</th>
             ))}
           </tr>
         </thead>
@@ -284,31 +287,31 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
                 onContextMenu={e => { e.preventDefault(); setContextMenu({ pos, x: e.clientX, y: e.clientY }) }}
                 className="border-b border-gray-200 dark:border-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-800/60 transition-colors cursor-pointer"
               >
-                <td className="px-3 py-2 font-mono font-medium">
+                <td className={`${cell} font-mono font-medium`}>
                   <div className="flex items-center gap-1.5">
-                    <img src={coinIcon(pos.symbol)} className="w-4 h-4 rounded-full shrink-0" onError={e => (e.currentTarget.style.display = 'none')} />
+                    {!compact && <img src={coinIcon(pos.symbol)} className="w-4 h-4 rounded-full shrink-0" onError={e => (e.currentTarget.style.display = 'none')} />}
                     {pos.symbol}
                   </div>
                 </td>
-                <td className="px-3 py-2">
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded ${pos.side === 'Buy' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                <td className={cell}>
+                  <span className={`${compact ? 'text-[9px] px-1' : 'text-[10px] px-1.5'} py-0.5 rounded ${pos.side === 'Buy' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
                     {pos.side === 'Buy' ? 'Long' : 'Short'}
                   </span>
                 </td>
-                <td className="px-3 py-2 text-left font-mono">{pos.sizeUsdt.toFixed(2)} <span className="text-gray-500 dark:text-gray-400 text-[10px]">USDT</span></td>
-                <td className="px-3 py-2 text-left font-mono">{entry.toFixed(2)}</td>
-                <td className="px-3 py-2 text-left font-mono">{mark.toFixed(2)}</td>
-                <td className={`px-3 py-2 text-left font-mono font-medium ${pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                  {pnl >= 0 ? '+' : ''}{pnl.toFixed(4)} <span className="text-gray-500 dark:text-gray-400 font-normal">({pnlPct.toFixed(2)}%)</span>
+                <td className={`${cell} text-left font-mono`}>{pos.sizeUsdt.toFixed(2)} <span className={`text-gray-500 dark:text-gray-400 ${compact ? 'text-[8px] block' : 'text-[10px]'}`}>USDT</span></td>
+                {!compact && <td className={`${cell} text-left font-mono`}>{entry.toFixed(2)}</td>}
+                {!compact && <td className={`${cell} text-left font-mono`}>{mark.toFixed(2)}</td>}
+                <td className={`${cell} text-left font-mono font-medium ${pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                  {pnl >= 0 ? '+' : ''}{pnl.toFixed(compact ? 2 : 4)} <span className={`text-gray-500 dark:text-gray-400 font-normal${compact ? ' block' : ''}`}>({pnlPct.toFixed(2)}%)</span>
                 </td>
-                <td className="px-3 py-2 text-left font-mono">{pos.leverage}x</td>
-                <td className="px-3 py-2 text-left">
+                <td className={`${cell} text-left font-mono`}>{pos.leverage}x</td>
+                <td className={`${cell} text-left`}>
                   {creatingFor === posKey ? (
                     <span className="text-[10px] text-blue-400 animate-pulse">создаём...</span>
                   ) : owner ? (
                     ownerMeta ? (
                       <span
-                        className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                        className={`${compact ? 'text-[9px] px-1 whitespace-nowrap' : 'text-[10px] px-1.5'} py-0.5 rounded font-medium`}
                         style={{
                           color: ownerMeta.color,
                           background: ownerMeta.bg,
@@ -318,16 +321,16 @@ export function PositionsTable({ accountId, positions, onSelect, loading, ticker
                         {owner.name}
                       </span>
                     ) : (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-500/15 text-gray-400 border border-gray-500/20">
+                      <span className={`${compact ? 'text-[9px] px-1 whitespace-nowrap' : 'text-[10px] px-1.5'} py-0.5 rounded bg-gray-500/15 text-gray-400 border border-gray-500/20`}>
                         {owner.name}
                       </span>
                     )
                   ) : null}
                 </td>
-                <td className="px-3 py-2 text-right" onClick={e => e.stopPropagation()}>
+                <td className={`${cell} text-right`} onClick={e => e.stopPropagation()}>
                   <button
                     onClick={() => handleCloseClick(pos)}
-                    className="text-[10px] px-2 py-0.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
+                    className={`${compact ? 'text-[9px] px-1' : 'text-[10px] px-2'} py-0.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors`}
                   >
                     Закрыть
                   </button>

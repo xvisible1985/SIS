@@ -40,7 +40,6 @@ import { TrendingUp, Search, Shield, Layers, GitMerge } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { Bot, BotKind, BotAction } from '../features/bots/types'
 import type { Strategy, ExchangeAccount, ActiveOrder, Position, ChartExecution, StrategyLevel, MatrixRelativePreview, WsMsg } from '../types'
-import { HedgeBotOverlay } from '../components/terminal/HedgeBotOverlay'
 import { RecentEventsModal } from '../components/terminal/RecentEventsModal'
 
 const KIND_ICONS: Record<BotKind, LucideIcon> = {
@@ -755,7 +754,7 @@ function countHedgeWatchers(strategy: Strategy, hedgeBots: Bot[]): number {
 // ── Strategies tab ───────────────────────────────────────────────────────────
 type LiveSignal = { signal_state: string; signal_values: Record<string, number> }
 
-function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices, accountId, asAccountId, onStrategySelect, onCycleNumUpdate, onStrategiesChange, onPairTargetUpdate, freeMargin, hedgeBots, isMobile, pairedClose }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[]; positions: Position[]; tickerPrices?: Map<string, number>; accountId: string | null; asAccountId?: string; onStrategySelect?: (s: Strategy | null) => void; onCycleNumUpdate?: (id: string, cycleNum: number) => void; onStrategiesChange?: (strategies: Strategy[]) => void; onPairTargetUpdate?: (target: number | null) => void; freeMargin?: number | null; hedgeBots: Bot[]; isMobile?: boolean; pairedClose: Map<string, WsMsg & { type: 'paired_close' }> }) {
+function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices, accountId, asAccountId, onStrategySelect, onCycleNumUpdate, onStrategiesChange, onPairTargetUpdate, freeMargin, hedgeBots, isMobile, pairedClose, onOpenDetail, focusId }: { onSymbolChange: (sym: string) => void; orders: ActiveOrder[]; positions: Position[]; tickerPrices?: Map<string, number>; accountId: string | null; asAccountId?: string; onStrategySelect?: (s: Strategy | null) => void; onCycleNumUpdate?: (id: string, cycleNum: number) => void; onStrategiesChange?: (strategies: Strategy[]) => void; onPairTargetUpdate?: (target: number | null) => void; freeMargin?: number | null; hedgeBots: Bot[]; isMobile?: boolean; pairedClose: Map<string, WsMsg & { type: 'paired_close' }>; onOpenDetail?: (s: Strategy) => void; focusId?: string }) {
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
   const [loading, setLoading] = useState(true)
@@ -777,7 +776,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
   const strategiesRef = useRef<Strategy[]>([])
   useEffect(() => { strategiesRef.current = strategies }, [strategies])
 
-  // Bubble strategies up to TerminalPage so HedgeBotOverlay always has fresh data
+  // Bubble strategies up to TerminalPage so the positions table always has fresh data
   useEffect(() => { onStrategiesChange?.(strategies) }, [strategies, onStrategiesChange])
 
   async function load() {
@@ -1108,9 +1107,16 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
     load()
   }
 
+  // Detail page (mobile): show only the card (or hedge pair) that contains focusId, expanded.
+  const shownItems = focusId
+    ? renderItems.filter(i => i.type === 'pair' ? (i.main.id === focusId || i.hedge.id === focusId) : i.strategy.id === focusId)
+    : renderItems
+  const focusKey = shownItems[0] ? (shownItems[0].type === 'pair' ? `pair-${shownItems[0].main.id}` : shownItems[0].strategy.id) : null
+  useEffect(() => { if (focusId && focusKey) setExpandedId(focusKey) }, [focusId, focusKey])
+
   return (
     <div className="flex flex-col h-full">
-      <div className="flex-shrink-0">
+      {!focusId && <div className="flex-shrink-0">
         <div className="px-3 py-2 flex items-center justify-between">
           <span className="text-xs text-gray-500 dark:text-gray-400">{visibleStrategies.length} стратегий</span>
           <button
@@ -1126,13 +1132,13 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
             {freeMargin == null ? '—' : `${freeMargin.toFixed(2)}$`}
           </span>
         </div>
-      </div>
-      <div className={`flex-1 overflow-y-auto p-2 strategies-scroll ${isMobile ? 'space-y-3' : 'space-y-1.5'}`}>
-        {loading && visibleStrategies.length === 0 && <div className="p-8 text-center text-sm text-gray-400">Загрузка…</div>}
-        {!loading && visibleStrategies.length === 0 && (
+      </div>}
+      <div className={`${focusId ? '' : 'flex-1 overflow-y-auto '}p-2 strategies-scroll ${isMobile ? 'space-y-3' : 'space-y-1.5'}`}>
+        {loading && shownItems.length === 0 && <div className="p-8 text-center text-sm text-gray-400">Загрузка…</div>}
+        {!loading && shownItems.length === 0 && (
           <div className="p-8 text-center text-sm text-gray-400">Нет стратегий</div>
         )}
-        {renderItems.map(item => {
+        {shownItems.map(item => {
           if (item.type === 'pair') {
             return (
               <div key={`pair-${item.main.id}`} style={isMobile ? { zoom: '0.82' } : undefined} className={isMobile ? '' : 'origin-top-left scale-[0.96]'}>
@@ -1148,6 +1154,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
                   onEdit={s => { setEditTarget(s); setModalOpen(true) }}
                   onChanged={load}
                   onSelect={handleSelect}
+                  onOpenDetail={focusId ? undefined : onOpenDetail}
                   onPairTargetUpdate={onPairTargetUpdate}
                   pairedClose={pairedClose}
                   isOpen={expandedId === `pair-${item.main.id}`}
@@ -1188,6 +1195,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
                 onChanged={load}
                 selected={selectedIds.size > 0 ? selectedIds.has(s.id) : s.id === selectedId}
                 onSelect={handleSelect}
+                onOpenDetail={focusId ? undefined : onOpenDetail}
                 bulkMode={selectedIds.size > 0}
                 selectedCount={selectedIds.size}
                 onBulkStatus={handleBulkStatus}
@@ -1343,7 +1351,7 @@ export function TerminalPage() {
   const [tf, setTf] = useState(() => searchParams.get('tf') ?? _cachedTf)
   const [bottomTab, setBottomTab] = useState<BottomTab>(() => (localStorage.getItem('t_bottom') as BottomTab) ?? 'positions')
   const [rightTab, setRightTab] = useState<RightTab>(() => (localStorage.getItem('t_right') as RightTab) ?? 'manual')
-  const [mobileTab, setMobileTab] = useState<MobileTab>(() => (localStorage.getItem('t_mob') as MobileTab) ?? 'strategies')
+  const [mobileTab, setMobileTab] = useState<MobileTab>('strategies')
   const [chartVisible, setChartVisible] = useState(true)
 
   function handleBottomTab(tab: BottomTab) { setBottomTab(tab); localStorage.setItem('t_bottom', tab) }
@@ -1355,6 +1363,19 @@ export function TerminalPage() {
     setColSplit(parseFloat(localStorage.getItem(key) ?? '68'))
   }
   function handleMobileTab(tab: MobileTab) { setMobileTab(tab); localStorage.setItem('t_mob', tab) }
+
+  // Mobile strategy detail page: /terminal?strategy=<id>. Opening pushes a history entry so the
+  // browser Back button returns to the list; the on-page Back button mirrors that.
+  const detailId = searchParams.get('strategy')
+  const detailPushedRef = useRef(false)
+  function openStrategyDetail(st: Strategy) {
+    detailPushedRef.current = true
+    setSearchParams(prev => { const n = new URLSearchParams(prev); n.set('strategy', st.id); return n })
+  }
+  function closeStrategyDetail() {
+    if (detailPushedRef.current) { detailPushedRef.current = false; window.history.back(); return }
+    setSearchParams(prev => { const n = new URLSearchParams(prev); n.delete('strategy'); return n }, { replace: true })
+  }
 
   const [chartSettings, setChartSettings] = useState<ChartOverlaySettings>(() => {
     try {
@@ -1394,6 +1415,14 @@ export function TerminalPage() {
   const stratMatchesSymbol = selectedStrategy?.symbol === symbol
   const currentCycleNum = stratMatchesSymbol ? (strategyCycleNums[selectedStrategy!.id] ?? null) : null
   const stratIdShort = stratMatchesSymbol ? selectedStrategy!.id.slice(0, 8) : null
+
+  const detailStrategy = detailId ? (strategies.find(x => x.id === detailId) ?? null) : null
+  useEffect(() => {
+    if (!detailStrategy) return
+    setSelectedStrategy(detailStrategy)
+    setSymbol(detailStrategy.symbol)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailStrategy?.id])
 
   const [rowSplit, setRowSplit] = useState(() => parseFloat(localStorage.getItem('t_row') ?? '65'))
   const containerRef = useRef<HTMLDivElement>(null)
@@ -1506,6 +1535,18 @@ export function TerminalPage() {
   const positionSymbols = useMemo(() => [...new Set(positions.map(p => p.symbol))], [positions])
   const tickerPrices = useTickerPrices(positionSymbols)
 
+  // Positions belonging to this strategy: its own direction, plus the paired leg for hedge pairs.
+  const detailLegs = detailStrategy
+    ? strategies.filter(x =>
+        x.id === detailStrategy.id ||
+        x.id === detailStrategy.hedged_strategy_id ||
+        x.hedged_strategy_id === detailStrategy.id ||
+        (!!x.bot_id && x.bot_id === detailStrategy.bot_id && x.symbol === detailStrategy.symbol && x.account_id === detailStrategy.account_id))
+    : []
+  const detailPositions = detailStrategy
+    ? positions.filter(pp => pp.symbol === detailStrategy.symbol && detailLegs.some(l => (l.direction === 'long') === (pp.side === 'Buy')))
+    : []
+
   // Hedge mode (shared across right panel)
   const hedgeModeFromPositions = positions.some(p => p.symbol === symbol && p.positionIdx !== 0)
   const [hedgeModeOverride, setHedgeModeOverride] = useState<boolean | null>(null)
@@ -1568,7 +1609,7 @@ export function TerminalPage() {
 
   const chartToolbar = (
     <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-200 dark:border-gray-700 flex-shrink-0 overflow-x-auto">
-      <CoinPicker value={symbol} onChange={setSymbol} />
+      <div className="hidden md:block flex-shrink-0"><CoinPicker value={symbol} onChange={setSymbol} /></div>
       <div className="flex gap-1 flex-shrink-0">
         {TIMEFRAMES.map(t => (
           <button key={t.value} onClick={() => setTf(t.value)}
@@ -1578,6 +1619,7 @@ export function TerminalPage() {
         ))}
       </div>
       <div className="ml-auto flex items-center gap-2 flex-shrink-0">
+        <div className="hidden md:flex items-center gap-2">
         {lastPrice && (
           <>
             <span className="font-mono font-bold text-base text-gray-900 dark:text-white">{lastPrice}</span>
@@ -1587,10 +1629,11 @@ export function TerminalPage() {
           </>
         )}
         {turnover24h && (
-          <span className="text-[11px] text-slate-400 hidden sm:inline">
+          <span className="text-[11px] text-slate-400">
             Vol {formatVolume(turnover24h)}
           </span>
         )}
+        </div>
         <ChartSettingsPopup
           settings={chartSettings}
           onChange={s => { setChartSettings(s); localStorage.setItem('t_chart_settings', JSON.stringify(s)) }}
@@ -1618,6 +1661,12 @@ export function TerminalPage() {
     </div>
   )
 
+  const chartNode = (
+    <>
+      <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} relativeSlots={stratMatchesSymbol ? (selectedStrategy?.relative_slots ?? false) : false} relativePreviewAccum={stratMatchesSymbol ? relativePreviewAccum : null} relativePreviewCounter={stratMatchesSymbol ? relativePreviewCounter : null} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} hedgePairTarget={hedgePairTarget} />
+    </>
+  )
+
   const mobileTabs: { key: MobileTab; label: string; count?: number }[] = [
     { key: 'strategies', label: 'Стратегии' },
     { key: 'bots', label: 'Боты' },
@@ -1635,8 +1684,47 @@ export function TerminalPage() {
         style={{ display: 'flex', flex: 1, minHeight: 0, padding: 10 }}
       >
       {/* ── Mobile layout ───────────────────────────────────────── */}
+      {detailId ? (
+      <div className="flex md:hidden flex-col w-full h-full gap-2 overflow-y-auto pb-20">
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            type="button"
+            onClick={closeStrategyDetail}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-white/[.08] bg-white/[.04] text-xs font-medium text-slate-300"
+          >
+            <span aria-hidden>←</span> Назад
+          </button>
+          <span className="text-sm font-semibold text-slate-200">{detailStrategy?.symbol ?? ''}</span>
+        </div>
+        {!detailStrategy ? (
+          <div className="p-8 text-center text-sm text-gray-400">Загрузка…</div>
+        ) : (
+          <>
+            <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex-shrink-0">
+              <TerminalStrategiesTab focusId={detailStrategy.id} onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} asAccountId={undefined} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} isMobile pairedClose={pairedClose} />
+            </div>
+            <div
+              className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden flex-shrink-0"
+              style={{ height: '55vh' }}
+            >
+              {chartToolbar}
+              <div className="flex-1 min-h-0 relative">
+                {chartNode}
+              </div>
+            </div>
+            <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl overflow-hidden flex-shrink-0">
+              <div className="px-3 py-2 text-xs font-semibold text-slate-400 border-b border-white/[.06]">Позиции стратегии</div>
+              <div>
+                <PositionsTable compact accountId={accountId ?? ''} positions={detailPositions} onSelect={setSymbol} loading={loading} tickerPrices={tickerPrices} strategies={strategies} />
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+      ) : (
       <div className="flex md:hidden flex-col w-full h-full gap-2">
-        {/* Chart */}
+        {/* Chart (hidden on the strategies tab — the list gets the whole screen) */}
+        {mobileTab !== 'strategies' && (
         <div
           className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden flex-shrink-0"
           style={{ height: chartVisible ? '25vh' : 'auto' }}
@@ -1644,11 +1732,11 @@ export function TerminalPage() {
           {chartToolbar}
           {chartVisible && (
             <div className="flex-1 min-h-0 relative">
-              <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} relativeSlots={stratMatchesSymbol ? (selectedStrategy?.relative_slots ?? false) : false} relativePreviewAccum={stratMatchesSymbol ? relativePreviewAccum : null} relativePreviewCounter={stratMatchesSymbol ? relativePreviewCounter : null} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} hedgePairTarget={hedgePairTarget} />
-              <HedgeBotOverlay symbol={symbol} positions={positions} bots={myBots} accountId={accountId} tickerPrices={tickerPrices} strategies={strategies} />
+              {chartNode}
             </div>
           )}
         </div>
+        )}
         {/* Mobile tabs */}
         <div className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden flex-1 min-h-0">
           <div className="flex items-center border-b border-gray-200 dark:border-gray-700 flex-shrink-0 px-2 overflow-x-auto">
@@ -1671,7 +1759,7 @@ export function TerminalPage() {
           <div className="flex-1 overflow-auto">
             {mobileTab === 'positions' && <PositionsTable accountId={accountId ?? ''} positions={positions} onSelect={setSymbol} loading={loading} tickerPrices={tickerPrices} strategies={strategies} />}
             {mobileTab === 'orders' && <OrdersTable accountId={accountId ?? ''} orders={orders} loading={loading} onSelect={setSymbol} onRemoveOrder={removeOrder} strategyLevels={strategyLevels} />}
-            {mobileTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} asAccountId={undefined} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} isMobile pairedClose={pairedClose} />}
+            {mobileTab === 'strategies' && <TerminalStrategiesTab onSymbolChange={setSymbol} orders={orders} positions={positions} tickerPrices={tickerPrices} accountId={accountId} asAccountId={undefined} onStrategySelect={setSelectedStrategy} onCycleNumUpdate={(id, num) => setStrategyCycleNums(prev => ({ ...prev, [id]: num }))} onStrategiesChange={setStrategies} onPairTargetUpdate={setHedgePairTarget} freeMargin={freeMargin} hedgeBots={myBots} isMobile pairedClose={pairedClose} onOpenDetail={openStrategyDetail} />}
             {mobileTab === 'bots' && <TerminalBotsTab onSymbolChange={setSymbol} mine={myBots} loading={botsLoading} action={botAction} onRefresh={refreshBots} />}
             {mobileTab === 'trade' && (
               <div className="flex flex-col gap-2 p-2 overflow-y-auto">
@@ -1691,7 +1779,8 @@ export function TerminalPage() {
             )}
           </div>
         </div>
-      </div>{/* /Mobile layout */}
+      </div>
+      )}{/* /Mobile layout */}
 
       {/* ── Desktop layout ──────────────────────────────────────── */}
       <div className="hidden md:flex w-full h-full gap-2">
@@ -1733,7 +1822,6 @@ export function TerminalPage() {
           </div>
           <div className="flex-1 min-h-0 relative">
             <Chart candles={candles} candleSymbol={candleSymbol} positions={positions} orders={orders} executions={allExecutions} symbol={symbol} lastPrice={lastPrice} onLoadMore={loadMore} overlaySettings={chartSettings} strategyDir={stratMatchesSymbol ? selectedStrategy?.direction as 'long' | 'short' | null ?? null : null} stratIdShort={stratIdShort} currentCycleNum={currentCycleNum} strategyLevels={stratMatchesSymbol ? strategyLevels : []} relativeSlots={stratMatchesSymbol ? (selectedStrategy?.relative_slots ?? false) : false} relativePreviewAccum={stratMatchesSymbol ? relativePreviewAccum : null} relativePreviewCounter={stratMatchesSymbol ? relativePreviewCounter : null} tickerPrices={tickerPrices} safeZone={stratMatchesSymbol ? strategySafeZone : null} hedgePairTarget={hedgePairTarget} />
-            <HedgeBotOverlay symbol={symbol} positions={positions} bots={myBots} accountId={accountId} tickerPrices={tickerPrices} strategies={strategies} />
           </div>
         </div>
 

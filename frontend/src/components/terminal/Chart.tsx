@@ -153,6 +153,8 @@ export function isCycleLive(
 
 export function Chart({ candles, candleSymbol, positions, orders, executions, symbol, lastPrice, onLoadMore, overlaySettings, strategyDir, stratIdShort, currentCycleNum, strategyLevels, relativeSlots, relativePreviewAccum, relativePreviewCounter, tickerPrices, safeZone, hedgePairTarget }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
+  // Width of the right price axis (px). Used on phones to lay a scroll-through overlay over it.
+  const [priceAxisW, setPriceAxisW] = useState(0)
   const overlayRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
@@ -246,6 +248,46 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       },
     })
     chartRef.current = chart
+    const syncAxisWidth = () => {
+      const w = chart.priceScale('right').width()
+      setPriceAxisW(prev => (prev === w ? prev : w))
+    }
+
+    // Phones: a vertical one-finger drag on the chart body changes the time scale (zoom, anchored
+    // at the latest candle) instead of LWC's default vertical price-pan; horizontal drag still
+    // pans and two-finger pinch still zooms. Swipe up = zoom in.
+    const isPhone = window.matchMedia('(max-width: 767px)').matches
+    let touchCleanup: (() => void) | null = null
+    if (isPhone && containerRef.current) {
+      chart.applyOptions({ handleScroll: { vertTouchDrag: false } })
+      const el = containerRef.current
+      let mode: 'none' | 'v' | 'h' = 'none'
+      let sx = 0, sy = 0, ly = 0
+      const onStart = (e: TouchEvent) => {
+        if (e.touches.length !== 1) { mode = 'none'; return }
+        sx = e.touches[0].clientX; sy = ly = e.touches[0].clientY; mode = 'none'
+      }
+      const onMove = (e: TouchEvent) => {
+        if (e.touches.length !== 1) return
+        const x = e.touches[0].clientX, y = e.touches[0].clientY
+        if (mode === 'none') {
+          const dx = Math.abs(x - sx), dy = Math.abs(y - sy)
+          if (dx < 6 && dy < 6) return
+          mode = dy > dx ? 'v' : 'h'
+        }
+        if (mode !== 'v') return
+        const range = chart.timeScale().getVisibleLogicalRange()
+        if (range) {
+          const span = range.to - range.from
+          const nextSpan = Math.min(2000, Math.max(8, span * Math.exp(-(ly - y) * 0.01)))
+          chart.timeScale().setVisibleLogicalRange({ from: range.to - nextSpan, to: range.to })
+        }
+        ly = y
+      }
+      el.addEventListener('touchstart', onStart, { passive: true })
+      el.addEventListener('touchmove', onMove, { passive: true })
+      touchCleanup = () => { el.removeEventListener('touchstart', onStart); el.removeEventListener('touchmove', onMove) }
+    }
 
     const series = chart.addSeries(CandlestickSeries, {
       upColor: '#00DC82', downColor: '#ef4444',
@@ -259,6 +301,7 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
 
     // Subscribe to visible range changes to load historical data
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      syncAxisWidth()
       if (!range || loadingMoreRef.current) return
       if (Date.now() - lastLoadMoreRef.current < 1500) return
       if (range.from < 10 && oldestTimeRef.current) {
@@ -293,11 +336,13 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
           width: containerRef.current.clientWidth,
           height: containerRef.current.clientHeight,
         })
+        syncAxisWidth()
       }
     })
     ro.observe(containerRef.current)
 
     return () => {
+      touchCleanup?.()
       ro.disconnect()
       themeObserver.disconnect()
       markersPluginRef.current = null
@@ -1163,10 +1208,19 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
 
   return (
     <div className="relative w-full h-full">
-      <div ref={containerRef} className="absolute inset-0" style={{ zIndex: 1 }} />
+      <style>{`@media (max-width: 767px) { .sis-chart-touch, .sis-chart-touch * { touch-action: none !important } }`}</style>
+      <div ref={containerRef} className="absolute inset-0 sis-chart-touch" style={{ zIndex: 1 }} />
       <div ref={safeZoneOverlayRef} className="absolute inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 8 }} />
       <div ref={priceLabelOverlayRef} className="absolute inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 9 }} />
       <div ref={overlayRef} className="absolute inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 10 }} />
+      {/* Phones: a gesture that starts on the price axis scrolls the page instead of rescaling
+          the chart; the chart itself (left of the axis) keeps pan/zoom. */}
+      {priceAxisW > 0 && window.matchMedia('(max-width: 767px)').matches && (
+        <div
+          className="absolute"
+          style={{ top: 0, right: 0, bottom: 28, width: priceAxisW, zIndex: 12, touchAction: 'pan-y' }}
+        />
+      )}
       {timeBadge && (
         <div
           className="absolute pointer-events-none"
