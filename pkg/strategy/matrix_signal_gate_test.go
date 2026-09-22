@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -138,5 +139,48 @@ func TestMatrixPlaceRelativeVirtualOrder_SignalAbsent_DoesNotReachExchange(t *te
 	}
 	if placed.ExchangeOrderID != "" {
 		t.Error("ExchangeOrderID must stay empty — signalGateAllows()=false must prevent ever reaching PlaceOrder")
+	}
+}
+
+// TestMatrixNextRelativeSlot_AccumSide_UseSignalConfig_ForcesVirtual is the regression for
+// the whole-branch-review Fix 2: matrixNextRelativeSlot's synthetic probe GridLevel used to
+// build &GridLevel{Slot: &s} without threading UseSignal through from the resolved config,
+// so a relative-slots accum-side slot gated purely by UseSignal=true (no order_type=virtual
+// configured) incorrectly reported virtual=false — wrong for both the chart preview's [V]
+// indicator and matrixRelativeExpand's own placement routing. Mirrors
+// TestMatrixNextRelativeSlot_AccumSide_ExchangeByDefault's exact setup (same accum-side
+// slot, same shortStrategyWithLevels fixture) except the config sets UseSignal instead of
+// OrderType — proving UseSignal alone, not OrderType, is what now correctly forces virtual.
+func TestMatrixNextRelativeSlot_AccumSide_UseSignalConfig_ForcesVirtual(t *testing.T) {
+	sr := &StrategyRunner{
+		strategy: Strategy{
+			Direction:     DirectionShort,
+			RelativeSlots: true,
+			MatrixLevels: []MatrixLevel{
+				{Direction: "below", PriceStepPct: -2, SizePct: 10},                 // counter side for short
+				{Direction: "above", PriceStepPct: 2, SizePct: 10, UseSignal: true}, // accum side, signal-gated only
+			},
+		},
+		cycle:  &Cycle{StartPrice: 100.0},
+		levels: []GridLevel{lvl(0, 100.0, LevelFilled)},
+	}
+	idx, slot, target, cfg, virtual, ok := sr.matrixNextRelativeSlot("above")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if idx != 1 || slot != 1 {
+		t.Fatalf("idx/slot = %d/%d, want 1/1", idx, slot)
+	}
+	if math.Abs(target-98.0) > 1e-9 {
+		t.Fatalf("target = %.6f, want 98.0", target)
+	}
+	if cfg.OrderType == "virtual" {
+		t.Fatal("test setup error: cfg.OrderType must NOT be virtual, so UseSignal alone is what's under test")
+	}
+	if !cfg.UseSignal {
+		t.Fatal("test setup error: cfg.UseSignal must be true")
+	}
+	if !virtual {
+		t.Fatal("virtual = false, want true — a UseSignal=true accum-side config must force the probe GridLevel virtual even without order_type=virtual")
 	}
 }

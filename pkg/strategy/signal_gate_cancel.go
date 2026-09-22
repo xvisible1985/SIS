@@ -18,6 +18,20 @@ import (
 // Deliberately does NOT touch LevelFilled levels — signal loss withholds/removes only
 // not-yet-filled orders, never closes an already-open position.
 //
+// Every UseSignal=true level places as a Market order exclusively (gridVirtualPriceTick,
+// matrixTriggerVirtualLevel, matrixPlaceRelativeVirtualOrder all use OrderType: "Market"),
+// which fills essentially instantly — there is no meaningful "resting on the book" phase.
+// So a still-LevelPlaced level here more often means "the WS fill confirmation just hasn't
+// arrived yet" than "genuinely still open," and an isOrderGone (Bybit retCode=110001)
+// response to our cancel is therefore ambiguous: it's at least as likely to mean "already
+// filled" as "genuinely cancelled." Only a genuine err==nil cancel success is treated as
+// confirmation the order is gone-and-untraded; on isOrderGone the level is left exactly as
+// it was (still LevelPlaced, still registered) so the normal WS fill-handling path — which
+// needs the order to still be registered to find it — resolves it correctly if it really
+// filled. Reverting to Pending and dropping tracking on an ambiguous "gone" would risk
+// silently abandoning a real, untracked open position (and later re-triggering the level,
+// doubling it).
+//
 // Must be called with sr.mu held (same requirement as its callers in the price-tick paths).
 func (sr *StrategyRunner) cancelSignalLostLevels(ctx context.Context) {
 	if sr.cycle == nil {
@@ -31,27 +45,23 @@ func (sr *StrategyRunner) cancelSignalLostLevels(ctx context.Context) {
 		if sr.signalGateAllows() {
 			continue // signal still agrees — leave the resting order in place
 		}
-		// Unregister BEFORE sending cancel so the incoming WS cancel event does not
-		// trigger any fill/cancel handler for our own intentional cancel.
-		oldOrderID := l.ExchangeOrderID
-		oldLinkID := l.ExchangeLinkID
-		sr.runner.UnregisterOrder(oldOrderID)
-		if oldLinkID != "" {
-			sr.runner.UnregisterOrder(oldLinkID)
-		}
 		if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
 			Symbol:   sr.strategy.Symbol,
 			Category: sr.strategy.Category,
-			OrderId:  oldOrderID,
-		}); err != nil && !isOrderGone(err) {
-			// Cancel failed — restore registration so reconcile/fill handling still
-			// recognizes this order, and retry on the next price tick.
-			sr.runner.RegisterOrder(oldOrderID, orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"})
-			if oldLinkID != "" {
-				sr.runner.RegisterOrder(oldLinkID, orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"})
+			OrderId:  l.ExchangeOrderID,
+		}); err != nil {
+			if isOrderGone(err) {
+				// Ambiguous for a Market order — see doc comment above. Leave the level
+				// tracked as-is; don't touch DB, don't log a "removed" message.
+				continue
 			}
 			sr.warn(ctx, fmt.Sprintf("Signal-gated L%d: отмена ордера не удалась: %v", l.LevelIdx, err))
 			continue
+		}
+		// Only reaches here on a genuine, unambiguous cancel success.
+		sr.runner.UnregisterOrder(l.ExchangeOrderID)
+		if l.ExchangeLinkID != "" {
+			sr.runner.UnregisterOrder(l.ExchangeLinkID)
 		}
 		l.Status = LevelPending
 		l.ExchangeOrderID = ""

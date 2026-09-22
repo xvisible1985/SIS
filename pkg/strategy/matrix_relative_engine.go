@@ -351,7 +351,7 @@ func (sr *StrategyRunner) matrixNextRelativeSlot(side string) (idx, slot int, ta
 		slot = -idx
 	}
 	s := slot
-	virtual = sr.matrixIsVirtual(&GridLevel{Slot: &s})
+	virtual = sr.matrixIsVirtual(&GridLevel{Slot: &s, UseSignal: cfg.UseSignal})
 	return idx, slot, target, cfg, virtual, true
 }
 

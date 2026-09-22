@@ -2,16 +2,22 @@ package strategy
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"sis/pkg/signal"
 )
 
-// TestCancelSignalLostLevels_PlacedUseSignalLevel_SignalGone_Cancels is the core new
-// behavior this task adds: a resting, unfilled, signal-gated order must be pulled once the
-// signal no longer agrees. Proven by reaching CancelOrder on a nil sr.runner.Exchange()
-// (panics), the same proof technique used throughout this plan and this codebase's existing
-// matrix tests.
+// TestCancelSignalLostLevels_PlacedUseSignalLevel_SignalGone_Cancels proves the gate is
+// genuinely reached and evaluated for a LevelPlaced/UseSignal=true level once the signal no
+// longer agrees. Proven by reaching CancelOrder on a nil sr.runner.Exchange() (panics) — this
+// only proves the CALL is reached, not which response branch runs afterward; that distinction
+// (ambiguous isOrderGone vs. genuine success) is covered separately by
+// TestCancelSignalLostLevels_CancelReturnsOrderGone_LeavesLevelTrackedAsPlaced and
+// TestCancelSignalLostLevels_CancelSucceeds_RevertsToPending below, which use a fakeExchange
+// to distinguish the two outcomes. The panic happens at the CancelOrder call itself (nil
+// interface dispatch), before any response is even available, so it holds regardless of how
+// this function's response-handling was rewritten.
 //
 // Uses the established real-signal.Engine technique from grid_signal_gate_test.go: a genuine
 // *signal.Engine is constructed and Subscribed to the exact (symbol, interval, configs) tuple
@@ -98,5 +104,113 @@ func TestCancelSignalLostLevels_NonSignalLevel_NeverTouched(t *testing.T) {
 	sr.cancelSignalLostLevels(context.Background())
 	if sr.levels[0].Status != LevelPlaced || sr.levels[0].ExchangeOrderID == "" {
 		t.Error("non-signal-gated placed level must be untouched")
+	}
+}
+
+// newSignalGateCancelTestRunner builds a StrategyRunner wired to fake for
+// cancelSignalLostLevels tests that need to distinguish CancelOrder response branches (as
+// opposed to the panic-proof technique above, which can't tell them apart). Forces
+// signalGateAllows() to genuinely evaluate false via the same real-signal.Engine technique
+// as TestCancelSignalLostLevels_PlacedUseSignalLevel_SignalGone_Cancels above: Direction
+// Long wants signal.Buy, and the engine's Neutral default (no confirmed kline-close has
+// arrived) never satisfies that.
+func newSignalGateCancelTestRunner(t *testing.T, fake *fakeExchange, level GridLevel) (*StrategyRunner, func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	se := signal.NewEngine(ctx, nil)
+	ar := newTestAccountRunner(t, fake)
+	ar.signalEngine = se
+
+	sigConfigs := []SignalConfig{{Name: "rsi-os"}}
+	goCfgs := ar.resolveSignalConfigs(sigConfigs)
+	if err := se.Subscribe("test-sub-cancel-gone", "TESTUSDT", "1h", goCfgs, func(signal.State) {}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	sr := &StrategyRunner{
+		strategy: Strategy{
+			ID:            "11111111-2222-3333-4444-555555555555",
+			Direction:     DirectionLong,
+			Symbol:        "TESTUSDT",
+			SignalConfigs: sigConfigs,
+		},
+		runner: ar,
+		cycle:  &Cycle{ID: "cycle-1", CycleNum: 1, StartPrice: 100.0},
+		levels: []GridLevel{level},
+	}
+
+	if sr.signalGateAllows() {
+		t.Fatal("test setup invalid: signalGateAllows() = true, want false (engine should still be reporting the Neutral default)")
+	}
+
+	return sr, func() { se.Unsubscribe("test-sub-cancel-gone"); cancel() }
+}
+
+// TestCancelSignalLostLevels_CancelReturnsOrderGone_LeavesLevelTrackedAsPlaced is the fix
+// for the significant bug found in whole-branch review: every UseSignal=true level places
+// as a Market order exclusively, which fills essentially instantly — there is no real
+// resting phase for it to sit in. So when CancelOrder comes back with a Bybit "order not
+// found" (isOrderGone, retCode=110001), that is at least as likely to mean "already filled"
+// as "genuinely cancelled." Treating it as a confirmed cancel (the original, buggy
+// behavior) would revert the level to Pending and drop its order-index registration —
+// silently abandoning a real, untracked open position if it actually filled, and risking a
+// doubled position when the level re-triggers. The fix must leave the level exactly as it
+// was: still LevelPlaced, still carrying its ExchangeOrderID, so the normal WS
+// fill-handling path (which needs the order to still be registered) can resolve it
+// correctly if it really filled.
+func TestCancelSignalLostLevels_CancelReturnsOrderGone_LeavesLevelTrackedAsPlaced(t *testing.T) {
+	fake := &fakeExchange{}
+	fake.cancelOrderQ.push(struct{}{}, errors.New("bybit error: retCode=110001, retMsg=order not exists"))
+
+	sr, done := newSignalGateCancelTestRunner(t, fake, GridLevel{
+		ID: "level-1", LevelIdx: 1, Side: "Buy", Status: LevelPlaced, UseSignal: true, ExchangeOrderID: "order-abc",
+	})
+	defer done()
+	// Register the order first, mirroring how the order was actually registered at
+	// placement time — so the assertion below can prove the ambiguous-gone path leaves it
+	// registered, rather than merely observing an empty map that was never populated.
+	sr.runner.RegisterOrder("order-abc", orderRef{strategyID: sr.strategy.ID, levelID: "level-1", refType: "level"})
+
+	sr.cancelSignalLostLevels(context.Background())
+
+	if sr.levels[0].Status != LevelPlaced {
+		t.Errorf("level status = %v, want unchanged LevelPlaced — an ambiguous isOrderGone must not be treated as a confirmed cancel", sr.levels[0].Status)
+	}
+	if sr.levels[0].ExchangeOrderID != "order-abc" {
+		t.Errorf("ExchangeOrderID = %q, want unchanged %q — tracking must not be dropped on an ambiguous gone response", sr.levels[0].ExchangeOrderID, "order-abc")
+	}
+	if _, tracked := sr.runner.orderIndex["order-abc"]; !tracked {
+		t.Error("order-abc must remain registered in orderIndex so a real WS fill event can still be matched to it")
+	}
+}
+
+// TestCancelSignalLostLevels_CancelSucceeds_RevertsToPending is the positive-path
+// counterpart: a genuine, unambiguous cancel success (err == nil) must still revert the
+// level to Pending, clear its ExchangeOrderID, and drop its order-index registration — the
+// behavior the ambiguous-isOrderGone fix above must not have broken.
+func TestCancelSignalLostLevels_CancelSucceeds_RevertsToPending(t *testing.T) {
+	fake := &fakeExchange{}
+	fake.cancelOrderQ.push(struct{}{}, nil)
+
+	sr, done := newSignalGateCancelTestRunner(t, fake, GridLevel{
+		ID: "level-1", LevelIdx: 1, Side: "Buy", Status: LevelPlaced, UseSignal: true, ExchangeOrderID: "order-abc",
+	})
+	defer done()
+	sr.runner.RegisterOrder("order-abc", orderRef{strategyID: sr.strategy.ID, levelID: "level-1", refType: "level"})
+
+	sr.cancelSignalLostLevels(context.Background())
+
+	if sr.levels[0].Status != LevelPending {
+		t.Errorf("level status = %v, want LevelPending — a genuine cancel success must revert the level", sr.levels[0].Status)
+	}
+	if sr.levels[0].ExchangeOrderID != "" {
+		t.Error("ExchangeOrderID must be cleared on a genuine cancel success")
+	}
+	if _, tracked := sr.runner.orderIndex["order-abc"]; tracked {
+		t.Error("order-abc must be unregistered after a genuine cancel success")
+	}
+	if len(fake.cancelOrderCalls) != 1 || fake.cancelOrderCalls[0].OrderId != "order-abc" {
+		t.Errorf("cancelOrderCalls = %+v, want exactly one call for order-abc", fake.cancelOrderCalls)
 	}
 }
