@@ -1469,7 +1469,8 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 	rows, err := sr.runner.pool.Query(ctx,
 		`SELECT id, level_idx, side, target_price, size_usdt, qty, status,
 		        COALESCE(exchange_order_id,''), COALESCE(filled_price,0), COALESCE(exchange_link_id,''),
-		        COALESCE(sl_order_id,''), COALESCE(sl_price,0), COALESCE(sl_replaced,false), slot, COALESCE(force_virtual,false)
+		        COALESCE(sl_order_id,''), COALESCE(sl_price,0), COALESCE(sl_replaced,false), slot, COALESCE(force_virtual,false),
+		        COALESCE(use_signal,false)
 		 FROM strategy_levels WHERE cycle_id=$1 ORDER BY level_idx ASC`,
 		c.ID,
 	)
@@ -1483,7 +1484,7 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 		var slotVal *int16
 		if err := rows.Scan(&l.ID, &l.LevelIdx, &l.Side, &l.TargetPrice, &l.SizeUSDT,
 			&l.Qty, &stat, &l.ExchangeOrderID, &l.FilledPrice, &l.ExchangeLinkID,
-			&l.SLOrderID, &l.SLPrice, &l.SLReplaced, &slotVal, &l.ForceVirtual); err != nil {
+			&l.SLOrderID, &l.SLPrice, &l.SLReplaced, &slotVal, &l.ForceVirtual, &l.UseSignal); err != nil {
 			continue
 		}
 		if slotVal != nil {
@@ -1796,7 +1797,7 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 				qty := trader.FormatQty(sizeUSDT/priceForQty, sr.instr.QtyStep, sr.instr.MinQty)
 				// Positive price_move_pct = with direction = virtual (tracks momentum)
 				// Negative price_move_pct = against direction = exchange limit (passive, waits for price)
-				forceVirtual := step.OrderType == "virtual" || step.PriceMovePct > 0
+				forceVirtual := gridStepForceVirtual(step)
 
 				// Adopt path: absorb existing exchange position as pre-filled L1.
 				// Works for both market-entry (targetPrice==0) and limit-entry grids:
@@ -1837,9 +1838,9 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 
 				var levelID string
 				if err := sr.runner.pool.QueryRow(ctx,
-					`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, force_virtual)
-					 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-					sr.strategy.ID, cycleID, levelIdx, side, targetPrice, sizeUSDT, qty, forceVirtual,
+					`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, force_virtual, use_signal)
+					 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+					sr.strategy.ID, cycleID, levelIdx, side, targetPrice, sizeUSDT, qty, forceVirtual, step.UseSignal,
 				).Scan(&levelID); err != nil {
 					log.Printf("strategy %s: insert level %d: %v", sr.strategy.ID, levelIdx, err)
 					levelIdx++
@@ -1848,7 +1849,7 @@ func (sr *StrategyRunner) startCycle(ctx context.Context) error {
 				sr.levels = append(sr.levels, GridLevel{
 					ID: levelID, LevelIdx: levelIdx, Side: side,
 					TargetPrice: targetPrice, SizeUSDT: sizeUSDT, Qty: qty,
-					Status: LevelPending, ForceVirtual: forceVirtual,
+					Status: LevelPending, ForceVirtual: forceVirtual, UseSignal: step.UseSignal,
 				})
 				levelIdx++
 			}
@@ -4388,13 +4389,13 @@ func (sr *StrategyRunner) repriceRemainingFromFills(ctx context.Context) {
 				}
 				sizeUSDT := sizePct / 100 * sr.strategy.GridSizeUSDT
 				qty := trader.FormatQty(sizeUSDT/target, sr.instr.QtyStep, sr.instr.MinQty)
-				forceVirtual := step.OrderType == "virtual" || step.PriceMovePct > 0
+				forceVirtual := gridStepForceVirtual(step)
 				maxIdx++
 				var levelID string
 				if err := sr.runner.pool.QueryRow(ctx,
-					`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, force_virtual)
-					 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-					sr.strategy.ID, sr.cycle.ID, maxIdx, side, target, sizeUSDT, qty, forceVirtual,
+					`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, force_virtual, use_signal)
+					 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+					sr.strategy.ID, sr.cycle.ID, maxIdx, side, target, sizeUSDT, qty, forceVirtual, step.UseSignal,
 				).Scan(&levelID); err != nil {
 					sr.errlog(ctx, fmt.Sprintf("Создание нового уровня L%d: %v", maxIdx, err))
 					break
@@ -4408,6 +4409,7 @@ func (sr *StrategyRunner) repriceRemainingFromFills(ctx context.Context) {
 					Qty:          qty,
 					Status:       LevelPending,
 					ForceVirtual: forceVirtual,
+					UseSignal:    step.UseSignal,
 				})
 				if target > 0 {
 					prevPrice = target
@@ -5697,6 +5699,65 @@ func (sr *StrategyRunner) launchGridVirtualMonitor() {
 	}()
 }
 
+// gridStepForceVirtual reports whether a grid step must be software-monitored
+// (gridVirtualPriceTick) instead of resting as a real order on the exchange from cycle
+// start. Positive PriceMovePct = with-direction momentum tracking (already virtual);
+// OrderType=="virtual" is an explicit override; UseSignal is the third case — a
+// signal-gated level can never be a blind resting order placed unconditionally, since
+// nothing would ever re-check the signal once it's sitting live on the exchange.
+func gridStepForceVirtual(step GridStep) bool {
+	return step.OrderType == "virtual" || step.PriceMovePct > 0 || step.UseSignal
+}
+
+// currentSignalMatchesDirection reports whether the strategy's own configured signal
+// (SignalConfigs, at its own timeframe) currently agrees with the strategy's direction —
+// Buy for long, Sell for short. Used to gate individual UseSignal levels/steps, reusing the
+// exact same signal source already used to gate a cycle's first entry (see awaitSignal /
+// resumeGridCycle).
+//
+// Returns true (i.e. "gate does not block") whenever there's nothing to actually evaluate:
+// no signal engine, no configs, or the signal isn't known yet — mirroring
+// resumeGridCycle's existing `if known { ... }` fallthrough, which already treats an
+// unknown/absent signal as non-blocking rather than as a hard stop. A UseSignal flag must
+// never block a bot's trading indefinitely just because nothing can be evaluated.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) currentSignalMatchesDirection() bool {
+	if sr.runner.signalEngine == nil || len(sr.strategy.SignalConfigs) == 0 {
+		return true
+	}
+	tf := "1h"
+	if v, ok := sr.strategy.SignalConfigs[0].Params["tf"]; ok {
+		if s, ok2 := v.(string); ok2 && s != "" {
+			tf = s
+		}
+	}
+	goCfgs := sr.runner.resolveSignalConfigs(sr.strategy.SignalConfigs)
+	curState, known := sr.runner.signalEngine.QueryState(sr.strategy.Symbol, tf, goCfgs)
+	if !known {
+		return true
+	}
+	want, ok := signalWantsDirection(sr.strategy.Direction)
+	if !ok {
+		return true
+	}
+	return curState == want
+}
+
+// signalWantsDirection maps a strategy direction to the signal.State a UseSignal-gated
+// level requires before it's allowed to place — Buy for long, Sell for short. Pure and
+// separated out from currentSignalMatchesDirection purely so it's unit-testable without a
+// live *signal.Engine (which has no exported way to seed a known cached state in tests).
+func signalWantsDirection(dir Direction) (want signal.State, ok bool) {
+	switch dir {
+	case DirectionLong:
+		return signal.Buy, true
+	case DirectionShort:
+		return signal.Sell, true
+	default:
+		return signal.Neutral, false
+	}
+}
+
 // gridVirtualPriceTick checks if any pending virtual grid level's target has been crossed
 // and executes a market order for each crossed level. Must be called with sr.mu held.
 //
@@ -5707,6 +5768,7 @@ func (sr *StrategyRunner) gridVirtualPriceTick(ctx context.Context, price float6
 	if sr.cycle == nil {
 		return
 	}
+	sr.gridCancelSignalLostLevels(ctx)
 	last := sr.lastVirtualPrice
 	for i := range sr.levels {
 		l := &sr.levels[i]
@@ -5724,6 +5786,9 @@ func (sr *StrategyRunner) gridVirtualPriceTick(ctx context.Context, price float6
 			crossed = price >= l.TargetPrice || (last > 0 && last >= l.TargetPrice)
 		}
 		if !crossed {
+			continue
+		}
+		if l.UseSignal && !sr.currentSignalMatchesDirection() {
 			continue
 		}
 		// Execute at market price
@@ -5753,6 +5818,37 @@ func (sr *StrategyRunner) gridVirtualPriceTick(ctx context.Context, price float6
 		sr.info(ctx, fmt.Sprintf("Виртуальный L%d %s: маркет @ %.4f (цена достигла %.4f)", l.LevelIdx, l.Side, price, l.TargetPrice))
 	}
 	sr.lastVirtualPrice = price
+}
+
+// gridCancelSignalLostLevels cancels the resting order of any UseSignal grid level whose
+// signal no longer matches the strategy's direction, reverting it to Pending (order id
+// cleared) so it silently re-places automatically once the signal returns and the price
+// condition still holds — same shape as a level that was never placed. Filled levels are
+// never touched; only Placed-but-unfilled ones. Called at the top of every gridVirtualPriceTick
+// so it shares that same already-firing tick, no new ticker. Must be called with sr.mu held.
+func (sr *StrategyRunner) gridCancelSignalLostLevels(ctx context.Context) {
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Status != LevelPlaced || !l.UseSignal || l.ExchangeOrderID == "" {
+			continue
+		}
+		if sr.currentSignalMatchesDirection() {
+			continue
+		}
+		orderID := l.ExchangeOrderID
+		if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
+			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category, OrderId: orderID,
+		}); err != nil && !isOrderGone(err) {
+			sr.warn(ctx, fmt.Sprintf("gridCancelSignalLostLevels: отмена L%d: %v", l.LevelIdx, err))
+			continue
+		}
+		sr.runner.UnregisterOrder(orderID)
+		l.Status = LevelPending
+		l.ExchangeOrderID = ""
+		sr.runner.pool.Exec(ctx, //nolint:errcheck
+			`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL WHERE id=$1`, l.ID)
+		sr.info(ctx, fmt.Sprintf("L%d: сигнал больше не совпадает — ордер отменён, уровень снова ожидает", l.LevelIdx))
+	}
 }
 
 // checkPositionAfterTPCircuitBreaker runs after the TP circuit breaker fires.

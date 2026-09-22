@@ -3,18 +3,30 @@
 ## Problem
 
 `GridStep.UseSignal`, `MatrixLevel.UseSignal`, and `MatrixEntryLevel.UseSignal` are boolean
-fields that already exist in `pkg/strategy/types.go`, are stored in the DB (`steps`/
-`matrix_levels`/`matrix_entry_level` JSONB columns), and already have working toggle UI in
-`BotForm.tsx`, `HedgeBotForm.tsx`, and `MatrixBotForm.tsx` (a "Signal"/"No" button per level).
-The comment on each field says "gate this level on signal before placing" — but nothing in
-`pkg/strategy`'s placement logic ever reads `.UseSignal`. The toggle is fully wired on the
-frontend and in the data model, and completely inert on the backend: every level, regardless
-of this flag, gets placed exactly the same way it always has.
+fields that already exist in `pkg/strategy/types.go` and are stored in the DB (`steps`/
+`matrix_levels`/`matrix_entry_level` JSONB columns). The comment on each field says "gate
+this level on signal before placing" — but nothing in `pkg/strategy`'s placement logic ever
+reads `.UseSignal`, on either strategy type. Every level, regardless of this flag, gets
+placed exactly the same way it always has.
 
-Found live (2026-09-21, PTBUSDT/Semera account, grid strategy): the strategy has a real
-signal configured (`signal_configs: [{"name": "st-flip", ...}]`) and `use_signal=true` set on
-grid steps in the UI, but every level's order was placed on the exchange immediately at
-cycle start, exactly as if no signal gating existed at all.
+**Correction (2026-09-22):** this doc originally also claimed `GridStep.UseSignal` already
+had working toggle UI in `BotForm.tsx`/`HedgeBotForm.tsx`/`MatrixBotForm.tsx`. That's true
+only for `MatrixLevel`/`MatrixEntryLevel` (all three forms render a per-level "Signal"/"No"
+button for matrix levels via `updateMatrixLevel`/`updateEntryLevel`). The grid step editor
+(the "Шаги усреднения" table, `BotForm.tsx` ~line 1036) has no such control anywhere, and the
+frontend `GridStep` type (`frontend/src/features/bots/types.ts`) doesn't even declare
+`use_signal` — there is currently no way to set it on a grid step from the UI at all. Found
+live 2026-09-22 (Мультибот "Мэйн позиция" tab, a grid strategy — same embedded `BotForm` as
+any signal-kind bot): the user could not find any way to gate a grid step on signal, because
+the control genuinely doesn't exist. This plan now includes building that missing frontend
+control (Task 0) alongside the originally-scoped backend enforcement (Tasks 1+).
+
+Separately found live (2026-09-21, PTBUSDT/Semera account, grid strategy — a case where
+`use_signal` presumably WAS set directly via the DB/API, bypassing the missing UI): the
+strategy has a real signal configured (`signal_configs: [{"name": "st-flip", ...}]`) and
+`use_signal=true` on grid steps, but every level's order was placed on the exchange
+immediately at cycle start, exactly as if no signal gating existed at all — confirming the
+backend enforcement gap independently of the frontend gap.
 
 ## Goal
 
@@ -87,6 +99,16 @@ feature is purely backend enforcement of a flag that already round-trips through
 UI correctly.
 
 ## Frontend
+
+**New: grid step toggle.** Add a per-step "Signal"/"No" button to the grid step editor
+("Шаги усреднения" table, `BotForm.tsx` ~line 1036), mirroring the existing matrix-level
+button exactly (same `text-[8px]` pill button, same emerald-when-on styling, same column
+added to the header row). Requires: (1) `use_signal?: boolean` added to the `GridStep` type
+in `frontend/src/features/bots/types.ts` (currently `{ price_move_pct, lots?, size_pct? }`),
+(2) a `patchStep`-equivalent setter wired the same way `updateMatrixLevel` is. `HedgeBotForm.tsx`
+and `MatrixBotForm.tsx` don't have a grid step editor (hedge/matrix-only bot kinds) — only
+`BotForm.tsx`'s grid tab needs this, which covers every signal-kind bot, including a
+Мультибот's "Мэйн позиция" tab (it embeds this same `BotForm`).
 
 `Chart.tsx` already renders three tiers for a level's price line, using real colors already
 in the codebase:

@@ -285,6 +285,13 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
     patch({ steps });
   }
 
+  function toggleStepUseSignal(i: number) {
+    const steps = (config.steps ?? []).map((s, idx) =>
+      idx === i ? { ...s, use_signal: !s.use_signal } : s
+    );
+    patch({ steps });
+  }
+
   function addStep() {
     patch({ steps: [...(config.steps ?? []), { price_move_pct: 1.0, size_pct: 50 }] });
   }
@@ -1038,18 +1045,19 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
                     <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 pb-1 border-b border-gray-800 mb-2">
                       Шаги усреднения
                     </div>
-                    <div className="grid grid-cols-[28px_1fr_1fr_1fr_28px] gap-2 text-[10px] text-gray-600 mb-1 px-0.5">
+                    <div className="grid grid-cols-[28px_1fr_1fr_1fr_44px_28px] gap-2 text-[10px] text-gray-600 mb-1 px-0.5">
                       <div className="text-center">#</div>
                       <div className="text-center">Движение %</div>
                       <div className="text-center">% от депозита</div>
                       <div className="text-center">USDT</div>
+                      <div className="text-center">Сигнал</div>
                       <div />
                     </div>
                     <div className="max-h-[200px] overflow-y-auto">
                       {(config.steps ?? []).map((step, i) => (
                         <div
                           key={i}
-                          className="grid grid-cols-[28px_1fr_1fr_1fr_28px] gap-2 items-center py-1.5 border-b border-gray-800/60 last:border-0"
+                          className="grid grid-cols-[28px_1fr_1fr_1fr_44px_28px] gap-2 items-center py-1.5 border-b border-gray-800/60 last:border-0"
                         >
                           <div className="text-center text-[10px] text-gray-600">{i + 1}</div>
                           <MxNum
@@ -1071,6 +1079,16 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
                             }}
                             cls="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-[11px] text-gray-100 text-center w-full"
                           />
+                          <button
+                            type="button"
+                            onClick={() => toggleStepUseSignal(i)}
+                            title="Выставлять ордер этого шага только когда сигнал совпадает с направлением стратегии"
+                            className={`text-[8px] leading-4 font-bold rounded w-full py-1 transition-colors ${
+                              step.use_signal
+                                ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/50 hover:bg-emerald-900/60'
+                                : 'bg-gray-800 text-gray-600 border border-gray-700 hover:text-gray-400'
+                            }`}
+                          >{step.use_signal ? 'Signal' : 'No'}</button>
                           <button
                             type="button"
                             onClick={() => removeStep(i)}

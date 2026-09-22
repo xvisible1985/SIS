@@ -184,6 +184,7 @@ type GridLevel struct {
 	SLReplaced   bool
 	Slot         *int      // nil = grid; matrix slot index: -N…0…+N
 	ForceVirtual bool      // set at runtime when exchange rejected placement (e.g. 110007)
+	UseSignal    bool      // from GridStep/MatrixLevel.UseSignal — gate this level's order on signal
 	PlacedAt     time.Time // in-memory: when order was last placed (for interference detection)
 }
 

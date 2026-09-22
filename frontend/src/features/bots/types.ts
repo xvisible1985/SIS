@@ -34,7 +34,7 @@ export type StrategyConfig = {
   max_stop_active?: number;
   grid_step_pct?: number;
   grid_size_usdt?: number;
-  steps?: { price_move_pct: number; lots?: number; size_pct?: number }[];
+  steps?: { price_move_pct: number; lots?: number; size_pct?: number; use_signal?: boolean }[];
   signal_configs?: { name: string; params?: Record<string, unknown> }[];
   activation_signals?: { name: string; params?: Record<string, unknown> }[];
   tp_mode?: 'per_level' | 'total';

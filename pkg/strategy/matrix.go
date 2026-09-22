@@ -240,14 +240,14 @@ func (sr *StrategyRunner) matrixIsVirtual(l *GridLevel) bool {
 	slot := *l.Slot
 	if slot == 0 {
 		e := sr.strategy.MatrixEntryLevel
-		return e != nil && e.OrderType == "virtual"
+		return e != nil && (e.OrderType == "virtual" || e.UseSignal)
 	}
 	if sr.strategy.Direction == DirectionShort {
 		if slot > 0 {
 			// Short: positive slots are in-direction (below entry) — respect order_type config.
 			above := filterMatrixLevels(sr.strategy.MatrixLevels, "above")
 			idx := slot - 1
-			return idx < len(above) && above[idx].OrderType == "virtual"
+			return idx < len(above) && (above[idx].OrderType == "virtual" || above[idx].UseSignal)
 		}
 		// Short: negative slots land above entry (against direction) — always virtual.
 		return true
@@ -257,7 +257,34 @@ func (sr *StrategyRunner) matrixIsVirtual(l *GridLevel) bool {
 	}
 	below := filterMatrixLevels(sr.strategy.MatrixLevels, "below")
 	idx := -slot - 1
-	return idx < len(below) && below[idx].OrderType == "virtual"
+	return idx < len(below) && (below[idx].OrderType == "virtual" || below[idx].UseSignal)
+}
+
+// matrixLevelUseSignal reports whether the matrix level at the given slot is configured to
+// gate its order on signal (MatrixLevel.UseSignal for slot!=0, MatrixEntryLevel.UseSignal
+// for slot==0). Only meaningful for the slots that map to a real config-array entry — the
+// same branches matrixIsVirtual checks OrderType=="virtual" against — the
+// counter-direction slots that are unconditionally virtual regardless of config (see
+// matrixIsVirtual) have no config entry of their own to carry a UseSignal flag. Looked up
+// live from config rather than cached on the runtime GridLevel, matching how
+// matrixLevelConfig already resolves tp/stop settings by slot rather than storing them
+// per-level. Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixLevelUseSignal(slot int) bool {
+	if slot == 0 {
+		e := sr.strategy.MatrixEntryLevel
+		return e != nil && e.UseSignal
+	}
+	if sr.strategy.Direction == DirectionShort && slot > 0 {
+		above := filterMatrixLevels(sr.strategy.MatrixLevels, "above")
+		idx := slot - 1
+		return idx < len(above) && above[idx].UseSignal
+	}
+	if sr.strategy.Direction == DirectionLong && slot < 0 {
+		below := filterMatrixLevels(sr.strategy.MatrixLevels, "below")
+		idx := -slot - 1
+		return idx < len(below) && below[idx].UseSignal
+	}
+	return false
 }
 
 // matrixEntryOrderType decides the order type and trigger direction based on
@@ -480,6 +507,16 @@ func (sr *StrategyRunner) startMatrixCycle(ctx context.Context) error {
 		}
 		slot := *l.Slot
 		if slot == 0 {
+			// If entry is signal-gated and the signal doesn't match yet, leave it Pending —
+			// the ongoing matrixPriceTick loop re-evaluates it on every subsequent tick
+			// (L0's TargetPrice==0 makes its price condition trivially always "crossed"). Skip
+			// entirely rather than falling into the non-virtual placement branches below.
+			// Never gates AdoptPositionData: that path absorbs a position that already exists
+			// on the exchange — withholding it on a signal mismatch would leave a real
+			// position untracked (no TP/SL), the exact class of bug UseSignal must not cause.
+			if sr.strategy.AdoptPositionData == nil && sr.matrixLevelUseSignal(0) && !sr.currentSignalMatchesDirection() {
+				continue
+			}
 			if sr.matrixIsVirtual(l) {
 				sr.matrixTriggerVirtualLevel(ctx, l)
 			} else if sr.strategy.AdoptPositionData != nil {
@@ -736,6 +773,9 @@ func (sr *StrategyRunner) loadMatrixCycle(ctx context.Context) error {
 	for i := range sr.levels {
 		l := &sr.levels[i]
 		if l.Slot != nil && *l.Slot == 0 && l.Status == LevelPending && sr.matrixIsVirtual(l) {
+			if sr.matrixLevelUseSignal(0) && !sr.currentSignalMatchesDirection() {
+				break // leave Pending — matrixPriceTick's ongoing loop re-evaluates every tick
+			}
 			sr.matrixTriggerVirtualLevel(ctx, l)
 			break
 		}
@@ -964,6 +1004,42 @@ func (sr *StrategyRunner) matrixApplyStopCondSLs(ctx context.Context, currentPri
 	}
 }
 
+// matrixCancelSignalLostLevels cancels the resting order of any signal-gated matrix level
+// (MatrixLevel.UseSignal / MatrixEntryLevel.UseSignal) whose signal no longer matches the
+// strategy's direction, reverting it to Pending (order id cleared) so it silently re-places
+// automatically once the signal returns and the price condition still holds — the matrix
+// counterpart of gridCancelSignalLostLevels (see its doc comment for the full rationale).
+// Filled levels are never touched — only Placed-but-unfilled ones. Runs for both relative
+// and absolute matrix modes (called unconditionally at the top of matrixPriceTick), same as
+// the existing stop-cond/missing-SL passes below it. Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixCancelSignalLostLevels(ctx context.Context) {
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Status != LevelPlaced || l.ExchangeOrderID == "" || l.Slot == nil {
+			continue
+		}
+		if !sr.matrixLevelUseSignal(*l.Slot) {
+			continue
+		}
+		if sr.currentSignalMatchesDirection() {
+			continue
+		}
+		orderID := l.ExchangeOrderID
+		if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
+			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category, OrderId: orderID,
+		}); err != nil && !isOrderGone(err) {
+			sr.warn(ctx, fmt.Sprintf("matrixCancelSignalLostLevels: отмена %s: %v", slotLabel(l.Slot), err))
+			continue
+		}
+		sr.runner.UnregisterOrder(orderID)
+		l.Status = LevelPending
+		l.ExchangeOrderID = ""
+		sr.runner.pool.Exec(ctx, //nolint:errcheck
+			`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL WHERE id=$1`, l.ID)
+		sr.info(ctx, fmt.Sprintf("%s: сигнал больше не совпадает — ордер отменён, уровень снова ожидает", slotLabel(l.Slot)))
+	}
+}
+
 // matrixPriceTick is called on each mark price update from TickerHub or the REST fallback poll.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice float64) {
@@ -971,6 +1047,7 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 		return
 	}
 	sr.lastMatrixPrice = currentPrice
+	sr.matrixCancelSignalLostLevels(ctx)
 
 	// Relative-slots mode: progressive expansion replaces the absolute waiting/virtual
 	// logic in steps 1-2 below. See matrixRelativeExpand and the design doc. Expand both
@@ -1036,6 +1113,9 @@ func (sr *StrategyRunner) matrixPriceTick(ctx context.Context, currentPrice floa
 					if prevSlot > 0 && !sr.matrixSlotCovered(prevSlot) {
 						continue // previous slot not yet covered by a stop
 					}
+				}
+				if l.Slot != nil && sr.matrixLevelUseSignal(*l.Slot) && !sr.currentSignalMatchesDirection() {
+					continue
 				}
 				sr.matrixTriggerVirtualLevel(ctx, l)
 			}
