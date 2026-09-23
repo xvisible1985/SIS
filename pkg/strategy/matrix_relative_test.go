@@ -31,13 +31,55 @@ func TestRelativeRanks_BelowSide(t *testing.T) {
 	}
 }
 
-func TestNextConfigIndex_RecycleAfterClose(t *testing.T) {
+// TestNextConfigIndex_RecycleAfterClose_ReturnsTheFreedSlot is the corrected version of
+// this test (previously asserted idx=2, the exact bug below — see its regression test).
+// Slot 1 is closed and genuinely free; slot 2 is still open. The freed slot (1) must be
+// the one reused, not slot 2 (which nextConfigIndex must never hand out a second time
+// while it's still live).
+func TestNextConfigIndex_RecycleAfterClose_ReturnsTheFreedSlot(t *testing.T) {
 	levels := []GridLevel{
 		lvl(-1, 98, LevelSLClosed),
 		lvl(-2, 95, LevelFilled),
 	}
-	if idx := nextConfigIndex(levels, "below", 5); idx != 2 {
-		t.Fatalf("nextConfigIndex = %d, want 2", idx)
+	if idx := nextConfigIndex(levels, "below", 5); idx != 1 {
+		t.Fatalf("nextConfigIndex = %d, want 1 (the freed slot, not the still-open slot 2)", idx)
+	}
+}
+
+// TestNextConfigIndex_LowerSlotClosedWhileHigherStillOpen_NeverDuplicatesTheOpenSlot is the
+// regression for the incident found live 2026-09-23 (Gonchar 2.0 hedge, MUBARAKUSDT, pol
+// account): slot 1 closed before slot 2 did (independent per-slot stop-conditions), and the
+// old count-based nextConfigIndex ("1 open → next is #2") returned 2 — the index the still-
+// open slot 2 already occupied — running two concurrent slot-2 positions for over a minute
+// until the original finally stopped out. This pins the fix directly against that exact
+// shape: one closed low slot, one open high slot, with a config cap large enough that
+// "count+1" and "lowest free index" would disagree.
+func TestNextConfigIndex_LowerSlotClosedWhileHigherStillOpen_NeverDuplicatesTheOpenSlot(t *testing.T) {
+	levels := []GridLevel{
+		lvl(1, 0.0569, LevelSLClosed), // slot 1: closed
+		lvl(2, 0.0532, LevelFilled),   // slot 2: still open
+	}
+	got := nextConfigIndex(levels, "above", 4)
+	if got == 2 {
+		t.Fatal("nextConfigIndex = 2, but slot 2 is still open — must never hand out an already-occupied slot")
+	}
+	if got != 1 {
+		t.Errorf("nextConfigIndex = %d, want 1 (the freed slot 1, not advancing past the still-open slot 2)", got)
+	}
+}
+
+// TestNextConfigIndex_PlacedAndPendingAlsoCountAsOccupied pins that the occupancy check
+// isn't limited to Filled — a resting (Placed) or not-yet-placed (Pending) live order must
+// also block that index from being handed out again, same as matrixNextRelativeSlot's own
+// separate in-flight guard already assumes elsewhere.
+func TestNextConfigIndex_PlacedAndPendingAlsoCountAsOccupied(t *testing.T) {
+	levels := []GridLevel{lvl(1, 0.0569, LevelPlaced)}
+	if idx := nextConfigIndex(levels, "above", 3); idx != 2 {
+		t.Errorf("nextConfigIndex = %d, want 2 — a Placed (resting, unfilled) level must still occupy its slot", idx)
+	}
+	levels = []GridLevel{lvl(1, 0.0569, LevelPending)}
+	if idx := nextConfigIndex(levels, "above", 3); idx != 2 {
+		t.Errorf("nextConfigIndex = %d, want 2 — a Pending level must still occupy its slot", idx)
 	}
 }
 

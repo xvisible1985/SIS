@@ -63,14 +63,49 @@ func relativeRanks(levels []GridLevel, entry float64, side string) []int {
 	return out
 }
 
-// nextConfigIndex = (open slots on side) + 1, or 0 if the concurrency cap n is reached.
+// nextConfigIndex returns the lowest 1-based config-array index (1..n) on this side that
+// isn't currently occupied by a live level (Filled, Placed, or Pending), or 0 if all n are
+// occupied.
+//
+// This must be a positional lookup, not a count — "how many are open" and "which specific
+// index is free" only coincide when open slots always happen to be exactly {1..count}, and
+// that isn't guaranteed: each slot's SL fires independently (its own stop-condition/price),
+// so a LOWER-numbered slot can close while a HIGHER-numbered one is still open. Found live
+// 2026-09-23 (Gonchar 2.0 hedge, MUBARAKUSDT, pol account): slot 1 closed before slot 2
+// did, dropping the open count to 1; the old count+1 formula then returned 2 — the exact
+// index the still-open slot 2 already occupied — briefly running two concurrent slot-2
+// positions and adding size beyond what the configured n tiers intend, instead of
+// reopening the genuinely free slot 1.
 func nextConfigIndex(levels []GridLevel, side string, n int) int {
-	count := len(openAccumLevels(levels, 0, side))
-	next := count + 1
-	if next > n {
-		return 0
+	occupied := make(map[int]bool, n)
+	for i := range levels {
+		l := &levels[i]
+		if l.Slot == nil || *l.Slot == 0 {
+			continue
+		}
+		if side == "below" && *l.Slot > 0 {
+			continue
+		}
+		if side == "above" && *l.Slot < 0 {
+			continue
+		}
+		switch l.Status {
+		case LevelFilled, LevelPlaced, LevelPending:
+		default:
+			continue
+		}
+		idx := *l.Slot
+		if idx < 0 {
+			idx = -idx
+		}
+		occupied[idx] = true
 	}
-	return next
+	for idx := 1; idx <= n; idx++ {
+		if !occupied[idx] {
+			return idx
+		}
+	}
+	return 0
 }
 
 // nextSlotPrice = deepest open slot's fill price stepped by stepPct%, or entry stepped
