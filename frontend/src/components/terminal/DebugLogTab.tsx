@@ -24,8 +24,8 @@ const DIR_LABEL: Record<string, string> = {
   short: 'S',
 }
 
-export function DebugLogTab() {
-  const { events, clear } = useDebugEventsWs(true)
+export function DebugLogTab({ accountId }: { accountId: string | null }) {
+  const { events, clear } = useDebugEventsWs(true, accountId)
 
   const [levelFilter, setLevelFilter] = useState<'' | 'info' | 'warn' | 'error'>('')
   const [sourceFilter, setSourceFilter] = useState<'' | 'strategy' | 'bot'>('')

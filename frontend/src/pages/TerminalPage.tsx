@@ -1871,7 +1871,7 @@ export function TerminalPage() {
             {bottomTab === 'executions' && <ExecutionsTable accountId={accountId ?? undefined} />}
             {bottomTab === 'log' && <TradeLog log={log} />}
             {bottomTab === 'pnl' && <PnlTable accountId={accountId ?? undefined} />}
-            {bottomTab === 'debug' && <DebugLogTab />}
+            {bottomTab === 'debug' && <DebugLogTab accountId={accountId} />}
           </div>
         </div>
 

@@ -11,16 +11,106 @@ import (
 	"sis/pkg/auth"
 )
 
-// DebugEventsStream streams aggregated strategy + bot events for the current user.
-// GET /ws/debug-events?token=<jwt>&since=<rfc3339nano>
+// debugEventsFirstConnectQuery / debugEventsPollQuery: hoisted to package level (rather
+// than inline consts in DebugEventsStream) so tests can run the exact production SQL
+// directly against a real pool instead of driving a full websocket handshake.
+const debugEventsFirstConnectQuery = `
+	SELECT source, source_id, symbol, direction, bot_name, category, message, level, created_at
+	FROM (
+		SELECT
+			'strategy'::text            AS source,
+			LEFT(se.strategy_id::text, 8) AS source_id,
+			st.symbol,
+			st.direction,
+			COALESCE(b.name, '')        AS bot_name,
+			''::text                    AS category,
+			se.message,
+			se.level,
+			se.created_at
+		FROM strategy_events se
+		JOIN strategies st ON st.id = se.strategy_id
+		LEFT JOIN bots b ON b.id = st.bot_id
+		WHERE st.owner_id = $1
+		  AND ($2::uuid IS NULL OR st.account_id = $2::uuid)
+		  AND se.created_at > NOW() - INTERVAL '6 hours'
+		UNION ALL
+		SELECT
+			'bot'::text,
+			LEFT(be.bot_id::text, 8),
+			''::text,
+			''::text,
+			b.name,
+			be.category,
+			be.message,
+			be.level,
+			be.created_at
+		FROM bot_events be
+		JOIN bots b ON b.id = be.bot_id
+		WHERE b.owner_id = $1
+		  AND ($2::uuid IS NULL OR b.account_id = $2::uuid)
+		  AND be.created_at > NOW() - INTERVAL '6 hours'
+	) t
+	ORDER BY created_at DESC LIMIT 100`
+
+const debugEventsPollQuery = `
+	SELECT source, source_id, symbol, direction, bot_name, category, message, level, created_at
+	FROM (
+		SELECT
+			'strategy'::text              AS source,
+			LEFT(se.strategy_id::text, 8) AS source_id,
+			st.symbol,
+			st.direction,
+			COALESCE(b.name, '')          AS bot_name,
+			''::text                      AS category,
+			se.message,
+			se.level,
+			se.created_at
+		FROM strategy_events se
+		JOIN strategies st ON st.id = se.strategy_id
+		LEFT JOIN bots b ON b.id = st.bot_id
+		WHERE st.owner_id = $1 AND se.created_at > $2
+		  AND ($3::uuid IS NULL OR st.account_id = $3::uuid)
+		UNION ALL
+		SELECT
+			'bot'::text,
+			LEFT(be.bot_id::text, 8),
+			''::text,
+			''::text,
+			b.name,
+			be.category,
+			be.message,
+			be.level,
+			be.created_at
+		FROM bot_events be
+		JOIN bots b ON b.id = be.bot_id
+		WHERE b.owner_id = $1 AND be.created_at > $2
+		  AND ($3::uuid IS NULL OR b.account_id = $3::uuid)
+	) t
+	ORDER BY created_at ASC LIMIT 200`
+
+// DebugEventsStream streams aggregated strategy + bot events for the current user, scoped
+// to one exchange account. GET /ws/debug-events?token=<jwt>&account_id=<uuid>&since=<rfc3339nano>
 // On first connect (no since): sends last 100 events from the past 6 hours.
 // On reconnect: sends only new events since given timestamp.
+//
+// account_id is required in practice (the frontend always sends the terminal's currently
+// selected account) but treated as optional here — an empty value falls back to the
+// pre-existing owner-only (all accounts) behavior rather than erroring, so an old cached
+// frontend build or a manual reconnect mid-transition degrades gracefully instead of
+// breaking. Found live 2026-09-23: with no account filter at all, a user with bots on
+// multiple accounts (e.g. two same-named "Gonchar 2.0" pairs, one per account) saw every
+// account's events mixed together regardless of which account was selected in the terminal.
 func (s *Server) DebugEventsStream(w http.ResponseWriter, r *http.Request) {
 	tokenStr := r.URL.Query().Get("token")
 	userID, err := auth.ValidateToken(tokenStr, string(s.jwtSecret))
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
+	}
+
+	var accountID *string
+	if v := r.URL.Query().Get("account_id"); v != "" {
+		accountID = &v
 	}
 
 	sinceStr := r.URL.Query().Get("since")
@@ -73,43 +163,7 @@ func (s *Server) DebugEventsStream(w http.ResponseWriter, r *http.Request) {
 
 	// On first connect: load last 100 events from past 6 hours (DESC), reverse to ASC.
 	if firstConnect {
-		const q = `
-			SELECT source, source_id, symbol, direction, bot_name, category, message, level, created_at
-			FROM (
-				SELECT
-					'strategy'::text            AS source,
-					LEFT(se.strategy_id::text, 8) AS source_id,
-					st.symbol,
-					st.direction,
-					COALESCE(b.name, '')        AS bot_name,
-					''::text                    AS category,
-					se.message,
-					se.level,
-					se.created_at
-				FROM strategy_events se
-				JOIN strategies st ON st.id = se.strategy_id
-				LEFT JOIN bots b ON b.id = st.bot_id
-				WHERE st.owner_id = $1
-				  AND se.created_at > NOW() - INTERVAL '6 hours'
-				UNION ALL
-				SELECT
-					'bot'::text,
-					LEFT(be.bot_id::text, 8),
-					''::text,
-					''::text,
-					b.name,
-					be.category,
-					be.message,
-					be.level,
-					be.created_at
-				FROM bot_events be
-				JOIN bots b ON b.id = be.bot_id
-				WHERE b.owner_id = $1
-				  AND be.created_at > NOW() - INTERVAL '6 hours'
-			) t
-			ORDER BY created_at DESC LIMIT 100`
-
-		rows, qErr := s.pool.Query(r.Context(), q, userID)
+		rows, qErr := s.pool.Query(r.Context(), debugEventsFirstConnectQuery, userID, accountID)
 		since = time.Now()
 		if qErr == nil {
 			events := scan(rows)
@@ -126,40 +180,6 @@ func (s *Server) DebugEventsStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	const pollQ = `
-		SELECT source, source_id, symbol, direction, bot_name, category, message, level, created_at
-		FROM (
-			SELECT
-				'strategy'::text              AS source,
-				LEFT(se.strategy_id::text, 8) AS source_id,
-				st.symbol,
-				st.direction,
-				COALESCE(b.name, '')          AS bot_name,
-				''::text                      AS category,
-				se.message,
-				se.level,
-				se.created_at
-			FROM strategy_events se
-			JOIN strategies st ON st.id = se.strategy_id
-			LEFT JOIN bots b ON b.id = st.bot_id
-			WHERE st.owner_id = $1 AND se.created_at > $2
-			UNION ALL
-			SELECT
-				'bot'::text,
-				LEFT(be.bot_id::text, 8),
-				''::text,
-				''::text,
-				b.name,
-				be.category,
-				be.message,
-				be.level,
-				be.created_at
-			FROM bot_events be
-			JOIN bots b ON b.id = be.bot_id
-			WHERE b.owner_id = $1 AND be.created_at > $2
-		) t
-		ORDER BY created_at ASC LIMIT 200`
-
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -168,7 +188,7 @@ func (s *Server) DebugEventsStream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			rows, qErr := s.pool.Query(r.Context(), pollQ, userID, since)
+			rows, qErr := s.pool.Query(r.Context(), debugEventsPollQuery, userID, since, accountID)
 			if qErr != nil {
 				continue
 			}

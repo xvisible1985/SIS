@@ -14,13 +14,19 @@ export type DebugEvent = {
 
 const MAX_EVENTS = 500
 
-export function useDebugEventsWs(open: boolean) {
+// accountId scopes the feed to one exchange account (the terminal's currently selected
+// one) — omitting it falls back to the pre-fix "all of the user's accounts" behavior,
+// which mixed events across accounts when a user owns more than one (found live
+// 2026-09-23: two same-named "Gonchar 2.0" bot pairs, one per account, showed each
+// other's events regardless of which account was selected).
+export function useDebugEventsWs(open: boolean, accountId: string | null) {
   const [events, setEvents] = useState<DebugEvent[]>([])
   const sinceRef = useRef('')
 
   useEffect(() => {
     if (!open) return
     sinceRef.current = ''
+    setEvents([])
 
     let destroyed = false
     let ws: WebSocket | null = null
@@ -31,7 +37,8 @@ export function useDebugEventsWs(open: boolean) {
       const token = localStorage.getItem('token') ?? ''
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const since = sinceRef.current ? `&since=${encodeURIComponent(sinceRef.current)}` : ''
-      ws = new WebSocket(`${proto}//${window.location.host}/ws/debug-events?token=${encodeURIComponent(token)}${since}`)
+      const acct = accountId ? `&account_id=${encodeURIComponent(accountId)}` : ''
+      ws = new WebSocket(`${proto}//${window.location.host}/ws/debug-events?token=${encodeURIComponent(token)}${since}${acct}`)
 
       ws.onmessage = (evt) => {
         try {
@@ -59,7 +66,7 @@ export function useDebugEventsWs(open: boolean) {
       if (reconnectTimer) clearTimeout(reconnectTimer)
       if (ws) { ws.onclose = null; ws.close() }
     }
-  }, [open])
+  }, [open, accountId])
 
   function clear() {
     setEvents([])
