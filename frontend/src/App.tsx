@@ -5,6 +5,7 @@ import { ProtectedRoute, AdminRoute } from './components/ProtectedRoute'
 import { Layout } from './components/Layout'
 import { AuthPage } from './pages/AuthPage'
 import { DashboardPage } from './pages/DashboardPage'
+import { RecentTradesPage } from './pages/RecentTradesPage'
 import { SignalBuilderPage } from './pages/SignalBuilderPage'
 import { BacktestPage } from './pages/BacktestPage'
 import { OptimizerPage } from './pages/OptimizerPage'
@@ -47,6 +48,7 @@ export default function App() {
                   <Routes>
                     <Route path="" element={<HomeRoute />} />
                     <Route path="dashboard" element={<DashboardPage />} />
+                    <Route path="dashboard/trades" element={<RecentTradesPage />} />
                     <Route path="welcome" element={<WelcomePage />} />
                     <Route path="quick-start" element={<QuickStartPage />} />
                     <Route path="signals/new" element={<SignalBuilderPage />} />

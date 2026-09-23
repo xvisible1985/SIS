@@ -2,9 +2,12 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type dashboardDayPnL struct {
@@ -64,6 +67,68 @@ type dashboardResponse struct {
 	Granularity  string                 `json:"granularity"` // "day" | "hour"
 }
 
+// dashboardPeriodSince maps a dashboard period preset to its start time ("all"/"" → nil,
+// meaning no lower bound). Shared by GetDashboard and GetDashboardRecentTrades so the two
+// endpoints always agree on what counts as "in the current period".
+func dashboardPeriodSince(period string, now time.Time) *time.Time {
+	switch period {
+	case "1d":
+		t := now.Add(-24 * time.Hour)
+		return &t
+	case "7d":
+		t := now.AddDate(0, 0, -7)
+		return &t
+	case "30d":
+		t := now.AddDate(0, 0, -30)
+		return &t
+	case "90d":
+		t := now.AddDate(0, 0, -90)
+		return &t
+	case "1y":
+		t := now.AddDate(-1, 0, 0)
+		return &t
+	default:
+		return nil
+	}
+}
+
+// buildDashboardBaseFilter builds the WHERE clause + args shared by every dashboard query:
+// scoped to the owner, optionally to one account, and optionally to trades closed on/after
+// since. When accountID is set, it also folds in that account's "Очистить статистику" marker
+// (exchange_accounts.stats_cleared_at) — a non-destructive per-account cutoff, not a DELETE:
+// trade_history rows before it stay intact for every other consumer (accounting,
+// hedge_sessions accumulation, ...), only dashboard-scoped queries hide them. Returns the
+// (possibly raised) since alongside the filter, since callers with their own since-dependent
+// logic (equity series bucketing) need the final value too.
+func buildDashboardBaseFilter(ctx context.Context, pool *pgxpool.Pool, userID, accountID string, since *time.Time) (where string, args []any, effectiveSince *time.Time) {
+	if accountID != "" {
+		var clearedAt *time.Time
+		pool.QueryRow(ctx, //nolint:errcheck
+			`SELECT stats_cleared_at FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
+			accountID, userID,
+		).Scan(&clearedAt)
+		if clearedAt != nil && (since == nil || clearedAt.After(*since)) {
+			since = clearedAt
+		}
+	}
+
+	where = "WHERE th.owner_id = $1"
+	args = []any{userID}
+	n := 2
+	addFilter := func(cond string, val any) {
+		where += " AND " + cond + " $" + strconv.Itoa(n)
+		args = append(args, val)
+		n++
+	}
+	if accountID != "" {
+		addFilter("th.account_id =", accountID)
+	}
+	if since != nil {
+		addFilter("th.closed_at >=", *since)
+	}
+	return where, args, since
+}
+
 // GetDashboard returns aggregated trade stats, daily PnL, bot leaderboard, and recent trades.
 // GET /dashboard?period=1d|7d|30d|90d|1y|all&account_id=
 func (s *Server) GetDashboard(w http.ResponseWriter, r *http.Request) {
@@ -78,58 +143,11 @@ func (s *Server) GetDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC()
-	var since *time.Time
-	switch period {
-	case "1d":
-		t := now.Add(-24 * time.Hour)
-		since = &t
-	case "7d":
-		t := now.AddDate(0, 0, -7)
-		since = &t
-	case "30d":
-		t := now.AddDate(0, 0, -30)
-		since = &t
-	case "90d":
-		t := now.AddDate(0, 0, -90)
-		since = &t
-	case "1y":
-		t := now.AddDate(-1, 0, 0)
-		since = &t
-	}
+	since := dashboardPeriodSince(period, now)
 
 	ctx := r.Context()
 
-	// "Очистить статистику" — a non-destructive per-account marker (exchange_accounts.
-	// stats_cleared_at), not a DELETE: trade_history rows before it stay intact for every
-	// other consumer (accounting, hedge_sessions accumulation, ...), only this dashboard
-	// query hides them. Only meaningful when a specific account is selected — an aggregate
-	// "all accounts" view has no single cleared_at to apply.
-	if accountID != "" {
-		var clearedAt *time.Time
-		s.pool.QueryRow(ctx, //nolint:errcheck
-			`SELECT stats_cleared_at FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
-			accountID, userID,
-		).Scan(&clearedAt)
-		if clearedAt != nil && (since == nil || clearedAt.After(*since)) {
-			since = clearedAt
-		}
-	}
-
-	// Build reusable base filter.
-	baseWhere := "WHERE th.owner_id = $1"
-	baseArgs := []any{userID}
-	n := 2
-	addFilter := func(cond string, val any) {
-		baseWhere += " AND " + cond + " $" + strconv.Itoa(n)
-		baseArgs = append(baseArgs, val)
-		n++
-	}
-	if accountID != "" {
-		addFilter("th.account_id =", accountID)
-	}
-	if since != nil {
-		addFilter("th.closed_at >=", *since)
-	}
+	baseWhere, baseArgs, since := buildDashboardBaseFilter(ctx, s.pool, userID, accountID, since)
 
 	// ── 1. Period stats ───────────────────────────────────────────────────────
 	var stats dashboardPeriodStats
@@ -307,5 +325,76 @@ func (s *Server) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		RecentTrades: recentTrades,
 		EquitySeries: equitySeries,
 		Granularity:  granularity,
+	})
+}
+
+type dashboardRecentTradesResponse struct {
+	Trades  []dashboardRecentTrade `json:"trades"`
+	HasMore bool                   `json:"has_more"`
+}
+
+// GetDashboardRecentTrades powers the "Все последние сделки" page reached by expanding the
+// dashboard's "Последние сделки" widget: the same trades that widget shows (same account +
+// period scope, via dashboardPeriodSince/buildDashboardBaseFilter — the exact filter GetDashboard
+// applies to its own LIMIT-10 query), but paginated via limit/offset for infinite scroll instead
+// of hard-capped at 10.
+// GET /dashboard/recent-trades?period=1d|7d|30d|90d|1y|all&account_id=&limit=&offset=
+func (s *Server) GetDashboardRecentTrades(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromCtx(r.Context())
+	q := r.URL.Query()
+	period := q.Get("period")
+	accountID := q.Get("account_id")
+
+	limit := 30
+	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= 100 {
+		limit = v
+	}
+	offset := 0
+	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v >= 0 {
+		offset = v
+	}
+
+	ctx := r.Context()
+	now := time.Now().UTC()
+	since := dashboardPeriodSince(period, now)
+	baseWhere, baseArgs, _ := buildDashboardBaseFilter(ctx, s.pool, userID, accountID, since)
+
+	// Fetch one extra row to know whether another page exists without a separate COUNT(*).
+	args := append(append([]any{}, baseArgs...), limit+1, offset)
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			th.id, th.symbol, th.direction, th.result,
+			b.name,
+			th.net_pnl,
+			th.pnl_pct,
+			th.closed_at
+		FROM trade_history th
+		LEFT JOIN bots b ON b.id = th.bot_id `+baseWhere+`
+		ORDER BY th.closed_at DESC
+		LIMIT $`+strconv.Itoa(len(baseArgs)+1)+` OFFSET $`+strconv.Itoa(len(baseArgs)+2),
+		args...,
+	)
+	trades := []dashboardRecentTrade{}
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var rt dashboardRecentTrade
+			var closedAt time.Time
+			if rows.Scan(&rt.ID, &rt.Symbol, &rt.Direction, &rt.Result,
+				&rt.BotName, &rt.PnL, &rt.PnLPct, &closedAt) == nil {
+				rt.ClosedAt = closedAt.Format(time.RFC3339)
+				trades = append(trades, rt)
+			}
+		}
+	}
+
+	hasMore := len(trades) > limit
+	if hasMore {
+		trades = trades[:limit]
+	}
+
+	writeJSON(w, http.StatusOK, dashboardRecentTradesResponse{
+		Trades:  trades,
+		HasMore: hasMore,
 	})
 }

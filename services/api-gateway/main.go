@@ -347,6 +347,7 @@ func main() {
 
 		// Dashboard
 		r.Get("/dashboard", s.GetDashboard)
+		r.Get("/dashboard/recent-trades", s.GetDashboardRecentTrades)
 
 		// Admin
 		r.Get("/admin/metrics", s.GetAdminMetrics)

@@ -1,42 +1,13 @@
 import { useState, useEffect, useMemo, useCallback, useRef, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getDashboard, type DashboardData, type DailyPnL, type EquityPoint } from '../api/dashboard'
+import { getDashboard, type DashboardData, type DailyPnL, type EquityPoint, type DashboardPeriod } from '../api/dashboard'
 import { getAccountBalance, getAccountPositions, listAccounts, clearAccountStats } from '../api/accounts'
 import { useSelectedAccount } from '../contexts/AccountContext'
 import type { Position, ExchangeAccount } from '../types'
-
-// ─── Colour tokens ────────────────────────────────────────────────────────────
-const T = {
-  panel: '#0c1018',
-  border: 'rgba(255,255,255,.06)',
-  borderHi: 'rgba(255,255,255,.10)',
-  text: '#f2f5fb',
-  body: '#dde3ef',
-  dim: '#7b8aa6',
-  faint: '#5b6479',
-  blue: '#5b8cff',
-  green: '#5be0a0',
-  greenSoft: 'rgba(65,210,139,.14)',
-  greenBd: 'rgba(65,210,139,.28)',
-  orange: '#f7a600',
-  red: '#fca5a5',
-  redSoft: 'rgba(248,113,113,.14)',
-  redBd: 'rgba(248,113,113,.30)',
-}
-
-const mono: CSSProperties = { fontFamily: "'JetBrains Mono', monospace" }
-const grotesk: CSSProperties = { fontFamily: "'Space Grotesk', sans-serif" }
+import { T, mono, grotesk, fmt$, fmtPct, Card, NoData, useIsMobile } from '../components/dashboard/shared'
+import { TradeRowHeader, TradeRow } from '../components/dashboard/TradeRow'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function fmt$(n: number | null | undefined, d = 2): string {
-  if (n == null) return '—'
-  return (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US', {
-    minimumFractionDigits: d, maximumFractionDigits: d,
-  })
-}
-function fmtPct(n: number, d = 1): string {
-  return (n >= 0 ? '+' : '') + n.toFixed(d) + '%'
-}
 function fmtPrice(v: number): string {
   return v < 10 ? v.toFixed(4) : v < 1000 ? v.toFixed(2) : v.toLocaleString('en-US')
 }
@@ -61,19 +32,6 @@ function periodFullLabel(day: string, granularity: 'day' | 'hour'): string {
 }
 
 // ─── Mobile hook (CSS matchMedia — same breakpoint as Tailwind md:768px) ─────
-function useIsMobile() {
-  const [val, setVal] = useState(() =>
-    typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false
-  )
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 767px)')
-    const h = (e: MediaQueryListEvent) => setVal(e.matches)
-    mq.addEventListener('change', h)
-    return () => mq.removeEventListener('change', h)
-  }, [])
-  return val
-}
-
 // ─── Catmull-Rom → cubic Bezier ───────────────────────────────────────────────
 function smoothPath(pts: [number, number][]): string {
   if (pts.length < 2) return ''
@@ -426,14 +384,6 @@ function DonutChart({ segs, size = 130, thick = 15 }: {
 }
 
 // ─── Primitives ───────────────────────────────────────────────────────────────
-function Card({ children, pad = '16px 18px', style }: { children: React.ReactNode; pad?: string; style?: CSSProperties }) {
-  return (
-    <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 14, padding: pad, ...style }}>
-      {children}
-    </div>
-  )
-}
-
 function Lbl({ children }: { children: React.ReactNode }) {
   return <div style={{ fontSize: 10, color: T.dim, textTransform: 'uppercase', letterSpacing: '1.3px', fontWeight: 600 }}>{children}</div>
 }
@@ -497,16 +447,8 @@ function SmRow({ label, value, c = T.body }: { label: string; value: string; c?:
   )
 }
 
-function NoData({ text = 'Нет данных', height = 200 }: { text?: string; height?: number }) {
-  return (
-    <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.dim, fontSize: 13, fontFamily: 'Inter, sans-serif' }}>
-      {text}
-    </div>
-  )
-}
-
 // ─── Period tabs ──────────────────────────────────────────────────────────────
-type Period = '1d' | '7d' | '30d' | '90d' | '1y' | 'all'
+type Period = DashboardPeriod
 const PERIODS: { id: Period; label: string }[] = [
   { id: '1d',  label: '1 день'  },
   { id: '7d',  label: '7 дней'  },
@@ -582,21 +524,6 @@ function HeroCard({ data, period, equity, equityChange, isMobile = false }: {
         {/* Key P&L rows */}
         <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 5, paddingBottom: 12, borderBottom: `1px solid rgba(255,255,255,.06)` }}>
           <SmRow label="Реализованный P&L" value={fmt$(stats.total_pnl)} c={stats.total_pnl >= 0 ? T.green : T.red} />
-          <SmRow label="Лучшая сделка" value={fmt$(stats.best_trade)} c={T.green} />
-          <SmRow label="Худшая сделка" value={fmt$(stats.worst_trade)} c={T.red} />
-        </div>
-        {/* Stat boxes 3×2 */}
-        <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-          <StatBox label="Win Rate" value={`${stats.win_rate.toFixed(1)}%`}
-            good={stats.win_rate >= 60} warn={stats.win_rate >= 45 && stats.win_rate < 60}
-            bad={stats.win_rate < 45 && stats.total > 0} />
-          <StatBox label="Profit F." value={stats.profit_factor >= 999 ? '∞' : stats.profit_factor.toFixed(2)}
-            good={stats.profit_factor >= 1.5} warn={stats.profit_factor >= 1 && stats.profit_factor < 1.5}
-            bad={stats.profit_factor < 1 && stats.total > 0} />
-          <StatBox label="R:R" value={rr != null ? rr.toFixed(2) : '—'} good={rr != null && rr >= 1.5} warn={rr != null && rr >= 1 && rr < 1.5} bad={rr != null && rr < 1} />
-          <StatBox label="Сделок" value={String(stats.total)} />
-          <StatBox label="Ср. P&L" value={fmt$(stats.avg_pnl)} good={stats.avg_pnl > 0} bad={stats.avg_pnl < 0} />
-          <StatBox label="Побед" value={`${stats.wins}/${stats.losses}`} />
         </div>
       </div>
     )
@@ -1058,16 +985,31 @@ function AssetAllocationCard({ positions }: { positions: Position[] }) {
 }
 
 // ─── Recent Trades card (standalone) ─────────────────────────────────────────
-function RecentTradesCard({ data, isMobile = false }: { data: DashboardData; isMobile?: boolean }) {
+function RecentTradesCard({ data, period, isMobile = false }: { data: DashboardData; period: Period; isMobile?: boolean }) {
   const { recent_trades } = data
-  const colsFull = '78px minmax(0,1.2fr) 40px minmax(0,1fr) 80px 58px'
-  const colsMob  = 'minmax(0,1fr) 36px 76px'
-  const cols = isMobile ? colsMob : colsFull
+  const navigate = useNavigate()
   return (
     <Card pad="0" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <div style={{ padding: '12px 14px 10px', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
         <h2 style={{ margin: 0, ...grotesk, fontSize: 13, fontWeight: 700, color: T.text }}>Последние сделки</h2>
         <span style={{ fontSize: 10, color: T.dim }}>{recent_trades.length}</span>
+        <div style={{ flex: 1 }} />
+        <button
+          type="button"
+          onClick={() => navigate(`/dashboard/trades?period=${period}`)}
+          title="Показать все сделки"
+          aria-label="Показать все сделки"
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            width: 24, height: 24, padding: 0, borderRadius: 7,
+            background: 'rgba(255,255,255,.04)', border: `1px solid ${T.border}`,
+            color: T.dim, cursor: 'pointer',
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+          </svg>
+        </button>
       </div>
       {recent_trades.length === 0 ? (
         <div style={{ borderTop: `1px solid ${T.border}` }}>
@@ -1075,71 +1017,10 @@ function RecentTradesCard({ data, isMobile = false }: { data: DashboardData; isM
         </div>
       ) : (
         <div style={{ borderTop: `1px solid ${T.border}`, flex: 1, overflowY: 'auto' }}>
-          <div style={{
-            display: 'grid', gridTemplateColumns: cols,
-            padding: '8px 12px', fontSize: 10, color: T.dim, textTransform: 'uppercase',
-            letterSpacing: '1.2px', fontWeight: 600, borderBottom: `1px solid ${T.border}`,
-            position: 'sticky', top: 0, background: T.panel, zIndex: 1,
-          }}>
-            {!isMobile && <div>Дата</div>}
-            <div>Символ</div>
-            <div></div>
-            {!isMobile && <div>Бот</div>}
-            <div style={{ textAlign: 'right' }}>P&L</div>
-            {!isMobile && <div style={{ textAlign: 'right' }}>%</div>}
-          </div>
-          {recent_trades.map((t, i) => {
-            const isLong = t.direction === 'long'
-            const isTP = t.result === 'tp'
-            const d = new Date(t.closed_at)
-            const ds = `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-            return (
-              <div key={t.id} style={{
-                display: 'grid', gridTemplateColumns: cols,
-                padding: isMobile ? '9px 12px' : '9px 16px', alignItems: 'center', fontSize: 12,
-                borderBottom: i === recent_trades.length - 1 ? 'none' : `1px solid ${T.border}`,
-              }}>
-                {!isMobile && <div style={{ ...mono, color: T.dim, fontSize: 11 }}>{ds}</div>}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
-                  <span style={{ ...mono, fontWeight: 700, color: T.text, fontSize: isMobile ? 11 : 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {isMobile ? t.symbol.replace('USDT','') : t.symbol}
-                  </span>
-                  <span style={{
-                    padding: '1px 4px', borderRadius: 3, fontSize: 9, fontWeight: 700,
-                    background: isTP ? T.greenSoft : T.redSoft,
-                    border: `1px solid ${isTP ? T.greenBd : T.redBd}`,
-                    color: isTP ? T.green : T.red, textTransform: 'uppercase', flexShrink: 0,
-                  }}>{t.result.toUpperCase()}</span>
-                </div>
-                <div>
-                  <span style={{
-                    padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 700,
-                    background: isLong ? T.greenSoft : T.redSoft,
-                    border: `1px solid ${isLong ? T.greenBd : T.redBd}`,
-                    color: isLong ? T.green : T.red, textTransform: 'uppercase',
-                  }}>{isLong ? 'L' : 'S'}</span>
-                </div>
-                {!isMobile && (
-                  <div style={{ fontSize: 11, color: T.body, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {t.bot_name ?? '—'}
-                  </div>
-                )}
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ ...mono, fontSize: isMobile ? 11 : 13, fontWeight: 700, color: (t.pnl ?? 0) >= 0 ? T.green : T.red }}>
-                    {t.pnl != null ? ((t.pnl >= 0 ? '+' : '') + fmt$(t.pnl)) : '—'}
-                  </div>
-                  {isMobile && t.pnl_pct != null && (
-                    <div style={{ ...mono, fontSize: 10, color: (t.pnl_pct ?? 0) >= 0 ? T.green : T.red }}>{fmtPct(t.pnl_pct)}</div>
-                  )}
-                </div>
-                {!isMobile && (
-                  <div style={{ textAlign: 'right', ...mono, fontSize: 11, color: (t.pnl_pct ?? 0) >= 0 ? T.green : T.red }}>
-                    {t.pnl_pct != null ? fmtPct(t.pnl_pct) : '—'}
-                  </div>
-                )}
-              </div>
-            )
-          })}
+          <TradeRowHeader isMobile={isMobile} />
+          {recent_trades.map((t, i) => (
+            <TradeRow key={t.id} t={t} isMobile={isMobile} isLast={i === recent_trades.length - 1} />
+          ))}
         </div>
       )}
     </Card>
@@ -1404,8 +1285,7 @@ export function DashboardPage() {
             /* ── Mobile layout: single column ── */
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <HeroCard data={data} period={period} equity={equity} equityChange={equityChange} isMobile />
-              <DailyStatsStrip data={data} isMobile />
-              <RecentTradesCard data={data} isMobile />
+              <RecentTradesCard data={data} period={period} isMobile />
               <PnLCurveCard data={data} period={period} />
               <OpenPositionsCard positions={positions} accountLabel={accLabel} isMobile />
               <DailyBarsCard data={data} />
@@ -1420,7 +1300,7 @@ export function DashboardPage() {
                   <HeroCard data={data} period={period} equity={equity} equityChange={equityChange} />
                   <DailyStatsStrip data={data} />
                 </div>
-                <RecentTradesCard data={data} />
+                <RecentTradesCard data={data} period={period} />
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gridAutoRows: '360px', gap: 14, marginBottom: 18 }}>
                 <PnLCurveCard data={data} period={period} />

@@ -54,8 +54,15 @@ export interface DashboardData {
   granularity: 'day' | 'hour'
 }
 
+export type DashboardPeriod = '1d' | '7d' | '30d' | '90d' | '1y' | 'all'
+
+export interface DashboardRecentTradesPage {
+  trades: RecentTrade[]
+  has_more: boolean
+}
+
 export async function getDashboard(
-  period: '1d' | '7d' | '30d' | '90d' | '1y' | 'all' = '30d',
+  period: DashboardPeriod = '30d',
   accountId?: string,
 ): Promise<DashboardData> {
   // account_id is optional server-side (falls back to aggregating across every account the
@@ -68,5 +75,21 @@ export async function getDashboard(
   const params: Record<string, string> = { period }
   if (accountId) params.account_id = accountId
   const res = await apiClient.get<DashboardData>('/dashboard', { params })
+  return res.data
+}
+
+// getDashboardRecentTrades powers the "Все последние сделки" page reached by expanding the
+// dashboard's "Последние сделки" widget — same account + period scope as getDashboard (see
+// its own comment on why account_id must always be passed when one is selected), paginated
+// via limit/offset for infinite scroll instead of the widget's hard LIMIT 10.
+export async function getDashboardRecentTrades(
+  period: DashboardPeriod,
+  accountId: string | undefined,
+  limit: number,
+  offset: number,
+): Promise<DashboardRecentTradesPage> {
+  const params: Record<string, string | number> = { period, limit, offset }
+  if (accountId) params.account_id = accountId
+  const res = await apiClient.get<DashboardRecentTradesPage>('/dashboard/recent-trades', { params })
   return res.data
 }
