@@ -481,6 +481,14 @@ func (e *Engine) GetSignalState(strategyID string) string {
 // By design at most one slot can be in the waiting-for-reentry state at a time,
 // so we take the first slot with a valid SL trigger price. Returns nil if no slot
 // is waiting or safe_zone_pct is zero.
+//
+// Relative-slots strategies never populate matrixWaitingSlots at all (matrixAfterSLClose's
+// relative-slots branch skips that absolute-mode bookkeeping entirely — see its own doc
+// comment), so this used to always return nil for them even after matrixRelativeSafeZoneBlocks
+// started actually enforcing a cooldown — the protection existed with no way to see it on
+// the chart. Found live 2026-09-23/24 (Gonchar 2.0 hedge, poligonorigin33 account,
+// MUBARAKUSDT). For relative-slots strategies this branches to
+// mostRecentSLClosedSlot + matrixRelativeSafeZoneInfo instead.
 func (e *Engine) GetMatrixSafeZone(strategyID string) *MatrixSafeZone {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -492,11 +500,27 @@ func (e *Engine) GetMatrixSafeZone(strategyID string) *MatrixSafeZone {
 			continue
 		}
 		sr.mu.RLock()
+		defer sr.mu.RUnlock()
+
+		if sr.strategy.RelativeSlots {
+			slot, ok := mostRecentSLClosedSlot(sr.levels)
+			if !ok {
+				return nil
+			}
+			slTrigger, threshold, active := sr.matrixRelativeSafeZoneInfo(slot)
+			if !active {
+				return nil
+			}
+			if sr.strategy.Direction == DirectionLong {
+				return &MatrixSafeZone{Low: slTrigger, High: threshold}
+			}
+			return &MatrixSafeZone{Low: threshold, High: slTrigger}
+		}
+
 		szPct := sr.strategy.SafeZonePct
 		dir := sr.strategy.Direction
 		slots := sr.matrixWaitingSlots
 		lastSlot := sr.matrixLastSLSlot
-		sr.mu.RUnlock()
 
 		if szPct <= 0 || len(slots) == 0 {
 			return nil

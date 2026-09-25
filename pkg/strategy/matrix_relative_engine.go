@@ -351,11 +351,36 @@ func (sr *StrategyRunner) matrixNextRelativeSlot(side string) (idx, slot int, ta
 // in advance — mirroring how absolute-mode virtual levels are pre-inserted and visible
 // before they trigger. Returns ok=false when the strategy isn't in relative-slots mode
 // or no preview is currently available. Must be called with sr.mu held.
+//
+// The returned price is clamped to the slot's Safe Zone threshold when that threshold is
+// the more restrictive (harder to reach) of the two — i.e. exactly the price
+// matrixRelativeExpand will actually wait for, not just the raw config-step target.
+// Without this, the preview showed the config target even while matrixRelativeSafeZoneBlocks
+// was silently holding the real expansion back for a much larger price move, drawing the
+// chart's "next order" line at a price current price had already crossed — with nothing on
+// the chart explaining why no order appeared there. Found live 2026-09-23/24 (Gonchar 2.0
+// hedge, poligonorigin33 account, MUBARAKUSDT).
 func (sr *StrategyRunner) matrixNextRelativeSlotPreview(side string) (slot int, price float64, virtual bool, ok bool) {
 	if !sr.strategy.RelativeSlots {
 		return 0, 0, false, false
 	}
-	_, slot, price, _, virtual, ok = sr.matrixNextRelativeSlot(side)
+	var cfg MatrixLevel
+	_, slot, price, cfg, virtual, ok = sr.matrixNextRelativeSlot(side)
+	if !ok {
+		return
+	}
+	if _, threshold, active := sr.matrixRelativeSafeZoneInfo(slot); active {
+		effectiveStep := matrixStepMul(sr.strategy.Direction) * cfg.PriceStepPct
+		if effectiveStep <= 0 {
+			if threshold < price {
+				price = threshold
+			}
+		} else {
+			if threshold > price {
+				price = threshold
+			}
+		}
+	}
 	return
 }
 

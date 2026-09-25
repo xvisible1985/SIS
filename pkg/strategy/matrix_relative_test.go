@@ -591,3 +591,131 @@ func TestMatrixPlaceRelativeVirtualOrder_AllowedByRiskGate_ReachesExchange(t *te
 	// through to PlaceOrder.
 	sr.matrixPlaceRelativeVirtualOrder(context.Background(), placed, 1000.0)
 }
+
+// --- matrixNextRelativeSlotPreview: Safe Zone clamping ---
+//
+// Regression for the incident found live 2026-09-23/24 (Gonchar 2.0 hedge,
+// poligonorigin33 account, MUBARAKUSDT): the preview showed the raw config-step target
+// even when matrixRelativeSafeZoneBlocks was silently holding the real expansion back for
+// a much larger price move — the chart's "next order" line sat at a price already crossed
+// by the market, with nothing explaining why no order had fired there.
+
+func TestMatrixNextRelativeSlotPreview_SafeZoneMoreRestrictive_ClampsToThreshold(t *testing.T) {
+	sr := shortStrategyWithLevels(lvl(0, 100.0, LevelFilled))
+	sr.strategy.SafeZonePct = 1.5
+	one := 1
+	// Slot 1 (config step 2%, target would be 100*0.98=98.0) closed by SL at 96.04.
+	// Threshold = 96.04*(1-1.5/100) = 94.5994 — well past (lower than) the raw target 98.0.
+	sr.levels = append(sr.levels, GridLevel{Slot: &one, Status: LevelSLClosed, SLPrice: 96.04})
+
+	slot, price, _, ok := sr.matrixNextRelativeSlotPreview("above")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if slot != 1 {
+		t.Fatalf("slot = %d, want 1 (the freed slot)", slot)
+	}
+	wantThreshold := 96.04 * (1 - 1.5/100)
+	if math.Abs(price-wantThreshold) > 1e-6 {
+		t.Errorf("price = %.6f, want %.6f (the Safe Zone threshold, not the raw target 98.0) — the chart's next-order line must sit right past the safe zone, not at an already-crossed target", price, wantThreshold)
+	}
+}
+
+func TestMatrixNextRelativeSlotPreview_NoSafeZone_UsesRawTarget(t *testing.T) {
+	// No SafeZonePct configured — matches TestMatrixNextRelativeSlotPreview_MatchesLiveComputation,
+	// pinned again here specifically as the "clamping had no effect" counterpart to the test above.
+	sr := shortStrategyWithLevels(lvl(0, 100.0, LevelFilled))
+	_, _, wantTarget, _, _, _ := sr.matrixNextRelativeSlot("above")
+	_, price, _, ok := sr.matrixNextRelativeSlotPreview("above")
+	if !ok || price != wantTarget {
+		t.Errorf("price = %v (ok=%v), want %v unclamped", price, ok, wantTarget)
+	}
+}
+
+func TestMatrixNextRelativeSlotPreview_TargetMoreRestrictiveThanSafeZone_UsesTarget(t *testing.T) {
+	// The reverse case: the SL trigger sat close to entry (99.0) and SafeZonePct is small, so
+	// the safe zone clears (98.505) before the raw config target (98.0) does — the config
+	// target is the actually-binding constraint here. The preview must show 98.0, not clamp
+	// down to the less-restrictive, already-cleared safe zone threshold.
+	sr := shortStrategyWithLevels(lvl(0, 100.0, LevelFilled))
+	sr.strategy.SafeZonePct = 0.5 // threshold = 99.0*(1-0.5/100) = 98.505
+	one := 1
+	sr.levels = append(sr.levels, GridLevel{Slot: &one, Status: LevelSLClosed, SLPrice: 99.0})
+
+	_, price, _, ok := sr.matrixNextRelativeSlotPreview("above")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if math.Abs(price-98.0) > 1e-6 {
+		t.Errorf("price = %.6f, want 98.0 (the raw target is more restrictive than the already-cleared safe zone) — must not clamp to a less restrictive safe zone", price)
+	}
+}
+
+// --- GetMatrixSafeZone: relative-slots branch ---
+
+func newTestEngineWithStrategy(strategyID string, sr *StrategyRunner) *Engine {
+	ar := &AccountRunner{strategies: map[string]*StrategyRunner{strategyID: sr}}
+	return &Engine{runners: map[string]*AccountRunner{"acc1": ar}}
+}
+
+// TestGetMatrixSafeZone_RelativeSlots_ReturnsZoneForMostRecentSLClose is the regression for
+// the visualization gap found live 2026-09-23/24: relative-slots strategies never populated
+// matrixWaitingSlots (matrixAfterSLClose's relative-slots branch skips that bookkeeping), so
+// GetMatrixSafeZone always returned nil for them even once matrixRelativeSafeZoneBlocks was
+// actively enforcing a cooldown — the protection existed with nothing to show for it on the
+// chart.
+func TestGetMatrixSafeZone_RelativeSlots_ReturnsZoneForMostRecentSLClose(t *testing.T) {
+	two := 2
+	sr := &StrategyRunner{
+		strategy: Strategy{ID: "strat-1", Direction: DirectionShort, RelativeSlots: true, SafeZonePct: 1.5},
+		levels:   []GridLevel{{Slot: &two, Status: LevelSLClosed, SLPrice: 0.052680}},
+	}
+	e := newTestEngineWithStrategy("strat-1", sr)
+
+	sz := e.GetMatrixSafeZone("strat-1")
+	if sz == nil {
+		t.Fatal("expected non-nil SafeZone for a relative-slots strategy with a recent SL close")
+	}
+	wantHigh := 0.052680
+	wantLow := 0.052680 * (1 - 1.5/100)
+	if math.Abs(sz.High-wantHigh) > 1e-9 || math.Abs(sz.Low-wantLow) > 1e-9 {
+		t.Errorf("SafeZone = {Low:%.6f High:%.6f}, want {Low:%.6f High:%.6f}", sz.Low, sz.High, wantLow, wantHigh)
+	}
+}
+
+func TestGetMatrixSafeZone_RelativeSlots_Long_LowIsTriggerHighIsThreshold(t *testing.T) {
+	// Long mirrors short with low/high swapped: the SL trigger is the lower bound, the
+	// recovery threshold (price must rise past it) is the upper bound.
+	one := 1
+	sr := &StrategyRunner{
+		strategy: Strategy{ID: "strat-2", Direction: DirectionLong, RelativeSlots: true, SafeZonePct: 2.0},
+		levels:   []GridLevel{{Slot: &one, Status: LevelSLClosed, SLPrice: 100.0}},
+	}
+	e := newTestEngineWithStrategy("strat-2", sr)
+
+	sz := e.GetMatrixSafeZone("strat-2")
+	if sz == nil {
+		t.Fatal("expected non-nil SafeZone")
+	}
+	if sz.Low != 100.0 {
+		t.Errorf("Low = %v, want 100.0 (the SL trigger)", sz.Low)
+	}
+	wantHigh := 100.0 * 1.02
+	if math.Abs(sz.High-wantHigh) > 1e-9 {
+		t.Errorf("High = %.6f, want %.6f (trigger + SafeZonePct)", sz.High, wantHigh)
+	}
+}
+
+func TestGetMatrixSafeZone_RelativeSlots_NoSLCloseYet_ReturnsNil(t *testing.T) {
+	sr := &StrategyRunner{
+		strategy: Strategy{ID: "strat-3", Direction: DirectionShort, RelativeSlots: true, SafeZonePct: 1.5},
+		levels:   []GridLevel{{Slot: intPtr(0), Status: LevelFilled, FilledPrice: 0.05}},
+	}
+	e := newTestEngineWithStrategy("strat-3", sr)
+
+	if sz := e.GetMatrixSafeZone("strat-3"); sz != nil {
+		t.Errorf("SafeZone = %+v, want nil — nothing has ever SL-closed on this strategy yet", sz)
+	}
+}
+
+func intPtr(v int) *int { return &v }
