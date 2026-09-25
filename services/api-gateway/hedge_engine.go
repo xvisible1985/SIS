@@ -1206,11 +1206,12 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 					if mainStrategyID != "" {
 						mainStratIDPtr = &mainStrategyID
 					}
+					carriedPnl := s.carryForwardHedgeAccumulatedPnl(ctx, botID, pos.Symbol, hedgeDir)
 					if _, sessErr := s.pool.Exec(ctx,
-						`INSERT INTO hedge_sessions (bot_id, main_strategy_id, hedge_strategy_id, main_entry_at_start)
-						 VALUES ($1, $2, $3, $4)
+						`INSERT INTO hedge_sessions (bot_id, main_strategy_id, hedge_strategy_id, main_entry_at_start, accumulated_pnl)
+						 VALUES ($1, $2, $3, $4, $5)
 						 ON CONFLICT (hedge_strategy_id) WHERE ended_at IS NULL DO NOTHING`,
-						botID, mainStratIDPtr, hedgeStrategyID, mainEntryAtStart,
+						botID, mainStratIDPtr, hedgeStrategyID, mainEntryAtStart, carriedPnl,
 					); sessErr != nil {
 						s.logBotEvent(ctx, botID,
 							fmt.Sprintf("Хедж: ошибка записи сессии: %v", sessErr),
@@ -1281,11 +1282,12 @@ func (s *Server) checkHedgeForceStandaloneActivation(ctx context.Context, botID,
 			"info", "hedge")
 
 		if hedgeStrategyID != "" {
+			carriedPnl := s.carryForwardHedgeAccumulatedPnl(ctx, botID, symbol, hedgeDir)
 			if _, sessErr := s.pool.Exec(ctx,
-				`INSERT INTO hedge_sessions (bot_id, main_strategy_id, hedge_strategy_id, main_entry_at_start)
-				 VALUES ($1, NULL, $2, NULL)
+				`INSERT INTO hedge_sessions (bot_id, main_strategy_id, hedge_strategy_id, main_entry_at_start, accumulated_pnl)
+				 VALUES ($1, NULL, $2, NULL, $3)
 				 ON CONFLICT (hedge_strategy_id) WHERE ended_at IS NULL DO NOTHING`,
-				botID, hedgeStrategyID,
+				botID, hedgeStrategyID, carriedPnl,
 			); sessErr != nil {
 				s.logBotEvent(ctx, botID,
 					fmt.Sprintf("Хедж: ошибка записи сессии принуд. активации: %v", sessErr),
@@ -2104,6 +2106,45 @@ func (s *Server) handleMainTpFlip(ctx context.Context, mainStrategyID string) {
 	s.pool.Exec(ctx, //nolint:errcheck
 		`UPDATE strategies SET flip_origin_bot_id=$1 WHERE id=$2`,
 		botID, hedgeID)
+}
+
+// carryForwardHedgeAccumulatedPnl returns the accumulated_pnl a brand-new hedge_sessions
+// row should start from, so a manual/intermediate hedge close doesn't silently lose PnL
+// that was already accumulated.
+//
+// stopHedgeStrategy already takes care to only end a session on a genuine "paired_close"
+// (see its own doc comment) — every other stop (manual close via "Закрыть Хедж", ordinary
+// drawdown deactivation, main closing, etc.) leaves the OLD session open specifically so
+// reactivation keeps summing into it. But hedge reactivation always calls
+// createBotStrategy, which creates a BRAND NEW strategy row (a new hedge_strategy_id) —
+// never reuses the old stopped one — so the new hedge_sessions INSERT's
+// `ON CONFLICT (hedge_strategy_id) WHERE ended_at IS NULL` can never actually match the
+// old (still-open) session, since it's keyed to a different, now-orphaned hedge_strategy_id.
+// The old session's accumulated_pnl became invisible to GetHedgeSession (which only looks
+// at the CURRENT strategy's own id) the moment the new row was created — defeating
+// stopHedgeStrategy's whole "leave it open" protection in practice. Found live 2026-09-23:
+// clicking "Закрыть Хедж" (a manual close, endReason ends up "position_gone" — never
+// "paired_close") still showed "Накоплено хеджем" reset to 0 on the next activation.
+//
+// This looks up the most recent NOT-genuinely-closed (end_reason IS NULL or != 'paired_close')
+// session for the same bot+symbol+direction, by symbol/direction rather than strategy id
+// (which just changed), and returns its accumulated_pnl to seed the new session with —
+// continuing the same running total instead of resetting to 0. Returns 0 if none found
+// (first-ever activation for this bot+symbol+direction, or the last one was a genuine
+// paired close).
+func (s *Server) carryForwardHedgeAccumulatedPnl(ctx context.Context, botID, symbol, direction string) float64 {
+	var pnl float64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT hs.accumulated_pnl FROM hedge_sessions hs
+		 JOIN strategies st ON st.id = hs.hedge_strategy_id
+		 WHERE hs.bot_id = $1 AND st.symbol = $2 AND st.direction = $3
+		   AND (hs.end_reason IS NULL OR hs.end_reason != 'paired_close')
+		 ORDER BY hs.started_at DESC LIMIT 1`,
+		botID, symbol, direction,
+	).Scan(&pnl); err != nil {
+		return 0
+	}
+	return pnl
 }
 
 // stopHedgeStrategy sets a hedge strategy to 'stopped' and notifies the engine.
