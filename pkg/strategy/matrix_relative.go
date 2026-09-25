@@ -63,21 +63,36 @@ func relativeRanks(levels []GridLevel, entry float64, side string) []int {
 	return out
 }
 
-// nextConfigIndex returns the lowest 1-based config-array index (1..n) on this side that
-// isn't currently occupied by a live level (Filled, Placed, or Pending), or 0 if all n are
-// occupied.
+// nextConfigIndex = (open slots on side) + 1, or 0 if the concurrency cap n is reached.
 //
-// This must be a positional lookup, not a count — "how many are open" and "which specific
-// index is free" only coincide when open slots always happen to be exactly {1..count}, and
-// that isn't guaranteed: each slot's SL fires independently (its own stop-condition/price),
-// so a LOWER-numbered slot can close while a HIGHER-numbered one is still open. Found live
-// 2026-09-23 (Gonchar 2.0 hedge, MUBARAKUSDT, pol account): slot 1 closed before slot 2
-// did, dropping the open count to 1; the old count+1 formula then returned 2 — the exact
-// index the still-open slot 2 already occupied — briefly running two concurrent slot-2
-// positions and adding size beyond what the configured n tiers intend, instead of
-// reopening the genuinely free slot 1.
+// This is the "Novabot" emergent-renumbering rule from the original design
+// (docs/superpowers/specs/2026-07-05-matrix-relative-slots-design.md): a slot's raw config
+// index is never explicitly renumbered in the DB — "renumbering toward entry" is purely a
+// side effect of counting how many are currently open. When an inner slot closes and a
+// deeper one survives, the survivor is emergently "renumbered" to a lower rank, and the
+// *next new* slot recycles the deeper config index the survivor still holds — reusing that
+// tier's step/size a second time in the same cycle is intended, not a bug, as long as
+// concurrently-open count never exceeds n (still enforced by the cap check below).
+//
+// 2026-09-23/24 history: this was briefly replaced with a "lowest free index" positional
+// lookup after an incident (Gonchar 2.0 hedge, MUBARAKUSDT, pol account) where a closed
+// inner slot's recycle briefly ran two concurrent same-tier positions. That replacement
+// was a misdiagnosis — it matched the design's explicitly *rejected* alternative
+// ("explicit renumber", see the design doc) and caused a new, worse symptom: after a slot
+// closed, the engine reopened the SAME shallow tier that had just stopped out (near the
+// same price) instead of progressing deeper, visible live 2026-09-24 (Gonchar 2.0 hedge,
+// MUBARAKUSDT, semera account) as "L(1) reappears after L(2) already filled" — a rank
+// regression the emergent count-based rule never produces (next is always
+// count(open)+1, which only holds steady or advances, never goes backward). Reverted to
+// the original count-based rule; the concurrency-cap check (next > n → 0) already prevents
+// open count from ever exceeding n, which is the actual invariant that matters.
+//
+// Placed/Pending are counted alongside Filled for robustness (matching
+// matrixNextRelativeSlot's own separate in-flight guard, which already refuses to call this
+// at all while any Placed/Pending exists on the side) even though in practice that guard
+// means this function never sees them.
 func nextConfigIndex(levels []GridLevel, side string, n int) int {
-	occupied := make(map[int]bool, n)
+	count := 0
 	for i := range levels {
 		l := &levels[i]
 		if l.Slot == nil || *l.Slot == 0 {
@@ -91,21 +106,14 @@ func nextConfigIndex(levels []GridLevel, side string, n int) int {
 		}
 		switch l.Status {
 		case LevelFilled, LevelPlaced, LevelPending:
-		default:
-			continue
-		}
-		idx := *l.Slot
-		if idx < 0 {
-			idx = -idx
-		}
-		occupied[idx] = true
-	}
-	for idx := 1; idx <= n; idx++ {
-		if !occupied[idx] {
-			return idx
+			count++
 		}
 	}
-	return 0
+	next := count + 1
+	if next > n {
+		return 0
+	}
+	return next
 }
 
 // nextSlotPrice = deepest open slot's fill price stepped by stepPct%, or entry stepped

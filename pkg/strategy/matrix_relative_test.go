@@ -31,40 +31,37 @@ func TestRelativeRanks_BelowSide(t *testing.T) {
 	}
 }
 
-// TestNextConfigIndex_RecycleAfterClose_ReturnsTheFreedSlot is the corrected version of
-// this test (previously asserted idx=2, the exact bug below — see its regression test).
-// Slot 1 is closed and genuinely free; slot 2 is still open. The freed slot (1) must be
-// the one reused, not slot 2 (which nextConfigIndex must never hand out a second time
-// while it's still live).
-func TestNextConfigIndex_RecycleAfterClose_ReturnsTheFreedSlot(t *testing.T) {
+// TestNextConfigIndex_RecycleAfterClose_AdvancesByCount is the count-based (Novabot
+// "emergent renumbering") behavior from the original design: slot -1 is closed, slot -2
+// survives as the sole open slot (count=1), so the next new slot recycles config index 2 —
+// the deeper tier the survivor still holds — not the freed index 1. See nextConfigIndex's
+// doc comment for why a "lowest free index" reading (which would return 1 here) is wrong.
+func TestNextConfigIndex_RecycleAfterClose_AdvancesByCount(t *testing.T) {
 	levels := []GridLevel{
 		lvl(-1, 98, LevelSLClosed),
 		lvl(-2, 95, LevelFilled),
 	}
-	if idx := nextConfigIndex(levels, "below", 5); idx != 1 {
-		t.Fatalf("nextConfigIndex = %d, want 1 (the freed slot, not the still-open slot 2)", idx)
+	if idx := nextConfigIndex(levels, "below", 5); idx != 2 {
+		t.Fatalf("nextConfigIndex = %d, want 2 (count-based: 1 open -> recycle tier 2)", idx)
 	}
 }
 
-// TestNextConfigIndex_LowerSlotClosedWhileHigherStillOpen_NeverDuplicatesTheOpenSlot is the
-// regression for the incident found live 2026-09-23 (Gonchar 2.0 hedge, MUBARAKUSDT, pol
-// account): slot 1 closed before slot 2 did (independent per-slot stop-conditions), and the
-// old count-based nextConfigIndex ("1 open → next is #2") returned 2 — the index the still-
-// open slot 2 already occupied — running two concurrent slot-2 positions for over a minute
-// until the original finally stopped out. This pins the fix directly against that exact
-// shape: one closed low slot, one open high slot, with a config cap large enough that
-// "count+1" and "lowest free index" would disagree.
-func TestNextConfigIndex_LowerSlotClosedWhileHigherStillOpen_NeverDuplicatesTheOpenSlot(t *testing.T) {
+// TestNextConfigIndex_LowerSlotClosedWhileHigherStillOpen_RecyclesDeeperTier is the
+// corrected version of this test (previously named "...NeverDuplicatesTheOpenSlot" and
+// asserting idx=1 — see nextConfigIndex's doc comment for why that reading was a
+// misdiagnosis of the 2026-09-23 incident, and caused a worse regression live on
+// 2026-09-24 semera/MUBARAKUSDT: a closed slot's rank going *backward* to a shallower tier
+// instead of progressing). Slot 1 closed before slot 2 did; count-based correctly returns
+// 2 — recycling the deeper tier the still-open slot 2 already holds, exactly as the
+// original design's worked example describes.
+func TestNextConfigIndex_LowerSlotClosedWhileHigherStillOpen_RecyclesDeeperTier(t *testing.T) {
 	levels := []GridLevel{
 		lvl(1, 0.0569, LevelSLClosed), // slot 1: closed
 		lvl(2, 0.0532, LevelFilled),   // slot 2: still open
 	}
 	got := nextConfigIndex(levels, "above", 4)
-	if got == 2 {
-		t.Fatal("nextConfigIndex = 2, but slot 2 is still open — must never hand out an already-occupied slot")
-	}
-	if got != 1 {
-		t.Errorf("nextConfigIndex = %d, want 1 (the freed slot 1, not advancing past the still-open slot 2)", got)
+	if got != 2 {
+		t.Errorf("nextConfigIndex = %d, want 2 (count-based: 1 open -> recycle tier 2)", got)
 	}
 }
 
