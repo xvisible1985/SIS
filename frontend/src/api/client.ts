@@ -13,8 +13,11 @@ apiClient.interceptors.request.use((config) => {
   if (isLoggingOut) {
     return new Promise<never>(() => {}) // never resolves → request is silently cancelled
   }
+  // An explicit Authorization header set by the caller (e.g. switching directly
+  // between impersonated accounts, which must authenticate as the real admin,
+  // not whichever user is currently impersonated) takes precedence.
   const token = localStorage.getItem('token') ?? sessionStorage.getItem('token')
-  if (token) {
+  if (token && !config.headers?.Authorization) {
     config.headers = config.headers ?? {}
     config.headers.Authorization = `Bearer ${token}`
   }
