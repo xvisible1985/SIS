@@ -3,6 +3,7 @@ import { Search, Shield, LogOut, ChevronDown } from 'lucide-react'
 import type { AdminUser } from '../features/admin-users/types'
 import { useAdminUsers } from '../features/admin-users/api'
 import { useSystemHealth } from '../hooks/useSystemHealth'
+import { useAuth } from '../hooks/useAuth'
 import { apiClient } from '../api/client'
 import {
   getAdminToken,
@@ -32,6 +33,10 @@ function SystemMetricChip({ label, pct }: { label: string; pct: number }) {
 export function AdminUserPickerBar() {
   const impersonating = isImpersonating()
   const impAs = getImpersonatingAs()
+  // email/userId come from useAuth(), which reads 'email'/'userId' in storage —
+  // startImpersonation() only ever swaps 'token', so these stay the REAL admin's
+  // own identity throughout impersonation, unlike 'token' itself.
+  const { userId: myUserId, email: myEmail } = useAuth()
 
   const { users, loading } = useAdminUsers()
   const [search, setSearch] = useState('')
@@ -50,9 +55,13 @@ export function AdminUserPickerBar() {
   }, [open])
 
   const filtered = useMemo(() => {
-    // Selecting the already-impersonated user again would be a no-op round trip —
-    // leave them out of the list.
-    const pool = impersonating && impAs ? users.filter((u: AdminUser) => u.id !== impAs.id) : users
+    // Selecting the already-impersonated user again would be a no-op round trip,
+    // and the admin's own account has its own pinned row below — leave both out
+    // of the regular searchable list.
+    const excludeIds = new Set<string>(
+      [myUserId, impersonating && impAs ? impAs.id : null].filter((id): id is string => !!id),
+    )
+    const pool = users.filter((u: AdminUser) => !excludeIds.has(u.id))
     const q = search.toLowerCase().trim()
     if (!q) return pool.slice(0, 15)
     return pool
@@ -62,7 +71,7 @@ export function AdminUserPickerBar() {
         u.id.toLowerCase().includes(q),
       )
       .slice(0, 15)
-  }, [users, search, impersonating, impAs])
+  }, [users, search, impersonating, impAs, myUserId])
 
   async function handleSelectUser(u: AdminUser) {
     setOpen(false)
@@ -167,16 +176,22 @@ export function AdminUserPickerBar() {
               />
             </div>
             <div className="max-h-[260px] overflow-y-auto py-1">
-              {impersonating && (
+              {/* Own (admin) account — always offered as a regular pick, not just
+                  a special "exit" action, so it's reachable from the same list
+                  as every other account instead of being hunted for in search. */}
+              {myEmail && (
                 <button
                   type="button"
-                  onClick={handleReturn}
-                  className="flex w-full items-center gap-2.5 border-b border-white/[.07] px-3 py-2 text-left text-rose-300 transition-colors hover:bg-rose-500/[.10]"
+                  onClick={() => { setOpen(false); setSearch(''); if (impersonating) handleReturn() }}
+                  className="flex w-full items-center gap-2.5 border-b border-white/[.07] px-3 py-2 text-left transition-colors hover:bg-white/[.04]"
                 >
-                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-rose-500/[.15]">
+                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-amber-400/[.15] text-amber-200">
                     <LogOut size={12} />
                   </div>
-                  <span className="text-[12px] font-semibold">Выход из режима</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[12px] font-semibold text-slate-200">{myEmail}</div>
+                    <div className="truncate text-[10px] text-slate-500">Мой аккаунт{impersonating ? ' — вернуться' : ''}</div>
+                  </div>
                 </button>
               )}
               {loading && <div className="py-4 text-center text-[11px] text-slate-600">Загрузка...</div>}

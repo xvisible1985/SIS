@@ -1,6 +1,19 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiClient } from '../../api/client';
+import { getAdminToken, isImpersonating } from '../../contexts/ImpersonationContext';
 import type { AdminAction, AdminUser, ApiAccount, NovaBotTransaction } from './types';
+
+// All /admin/* endpoints are gated by the backend's RequireAdmin middleware, which
+// checks the ROLE OF THE BEARER TOKEN'S OWN USER — while impersonating, apiClient's
+// default token is the impersonated (non-admin) user's, so these calls must
+// authenticate explicitly as the real admin instead. Found live: AdminUserPickerBar's
+// account list came back empty (403, silently swallowed) while impersonating, because
+// this hook's /admin/users GET used the impersonated user's token.
+function adminAuthConfig() {
+  if (!isImpersonating()) return undefined;
+  const adminToken = getAdminToken();
+  return adminToken ? { headers: { Authorization: `Bearer ${adminToken}` } } : undefined;
+}
 
 type RawAccount = Record<string, unknown>;
 type RawUser   = Record<string, unknown>;
@@ -53,7 +66,7 @@ export function useAdminUsers() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await apiClient.get<RawUser[]>('/admin/users');
+      const res = await apiClient.get<RawUser[]>('/admin/users', adminAuthConfig());
       setUsers(res.data.map(parseUser));
     } finally {
       setLoading(false);
@@ -63,37 +76,38 @@ export function useAdminUsers() {
   useEffect(() => { load(); }, [load]);
 
   const action = useCallback(async (a: AdminAction) => {
+    const cfg = adminAuthConfig();
     switch (a.type) {
       case 'role/set':
-        await apiClient.patch(`/admin/users/${a.userId}`, { role: a.role }); break;
+        await apiClient.patch(`/admin/users/${a.userId}`, { role: a.role }, cfg); break;
       case 'curator/set':
-        await apiClient.patch(`/admin/users/${a.userId}`, { curator: a.curator }); break;
+        await apiClient.patch(`/admin/users/${a.userId}`, { curator: a.curator }, cfg); break;
       case 'referer/set':
-        await apiClient.patch(`/admin/users/${a.userId}`, { refererId: a.refererId }); break;
+        await apiClient.patch(`/admin/users/${a.userId}`, { refererId: a.refererId }, cfg); break;
       case 'email/verify':
-        await apiClient.post(`/admin/users/${a.userId}/email/verify`); break;
+        await apiClient.post(`/admin/users/${a.userId}/email/verify`, undefined, cfg); break;
       case 'email/resend':
-        await apiClient.post(`/admin/users/${a.userId}/email/resend`); break;
+        await apiClient.post(`/admin/users/${a.userId}/email/resend`, undefined, cfg); break;
       case 'email/reset':
-        await apiClient.post(`/admin/users/${a.userId}/email/reset`); break;
+        await apiClient.post(`/admin/users/${a.userId}/email/reset`, undefined, cfg); break;
       case 'password/set':
         await apiClient.post(`/admin/users/${a.userId}/password`, {
           password: a.password, requireChange: a.requireChange,
-        }); break;
+        }, cfg); break;
       case 'balance/adjust':
         await apiClient.post(`/admin/users/${a.userId}/balance/adjust`, {
           amount: a.amount, note: a.note,
-        }); break;
+        }, cfg); break;
       case 'block':
-        await apiClient.post(`/admin/users/${a.userId}/block`, { reason: a.reason }); break;
+        await apiClient.post(`/admin/users/${a.userId}/block`, { reason: a.reason }, cfg); break;
       case 'unblock':
-        await apiClient.post(`/admin/users/${a.userId}/unblock`); break;
+        await apiClient.post(`/admin/users/${a.userId}/unblock`, undefined, cfg); break;
       case 'account/remove':
-        await apiClient.delete(`/admin/users/${a.userId}/accounts/${a.accountId}`); break;
+        await apiClient.delete(`/admin/users/${a.userId}/accounts/${a.accountId}`, cfg); break;
       case 'account/sign-agreement':
         await apiClient.post(`/admin/accounts/${a.accountId}/sign-agreement`, {
           categoryV2: a.categoryV2,
-        }); break;
+        }, cfg); break;
     }
     await load();
   }, [load]);
@@ -109,6 +123,7 @@ export function useAdminUsers() {
     const qs = p.toString();
     const res = await apiClient.get<Record<string, unknown>[]>(
       `/admin/users/${userId}/transactions${qs ? '?' + qs : ''}`,
+      adminAuthConfig(),
     );
     return res.data.map(parseTx);
   }, []);
