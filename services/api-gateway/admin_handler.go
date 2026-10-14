@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -165,6 +166,37 @@ func (s *Server) GetServices(w http.ResponseWriter, r *http.Request) {
 		out = append(out, info)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// watchdogServiceStat is one entry of scripts/watchdog-stats.json — the restart
+// counters service-watchdog.ps1 maintains for a service it supervises.
+type watchdogServiceStat struct {
+	Restarts    int        `json:"restarts"`
+	LastRestart *time.Time `json:"last_restart"`
+	LastCheck   *time.Time `json:"last_check"`
+	Status      string     `json:"status"`
+}
+
+// GetWatchdogStats returns the local service-watchdog's restart counters, read from the
+// JSON stats file it maintains (scripts/service-watchdog.ps1, registered as the
+// "SIS-Service-Watchdog" scheduled task). A missing or unparsable file isn't an error —
+// the watchdog may simply not have run yet, or this may be a machine it doesn't run on —
+// so the response is an empty map rather than a failure the frontend panel would need to
+// show as a red error banner.
+// GET /admin/watchdog-stats
+func (s *Server) GetWatchdogStats(w http.ResponseWriter, r *http.Request) {
+	path := getEnv("WATCHDOG_STATS_PATH", "scripts/watchdog-stats.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]watchdogServiceStat{})
+		return
+	}
+	var stats map[string]watchdogServiceStat
+	if err := json.Unmarshal(data, &stats); err != nil {
+		writeJSON(w, http.StatusOK, map[string]watchdogServiceStat{})
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
 }
 
 /*

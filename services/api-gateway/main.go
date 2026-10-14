@@ -420,6 +420,7 @@ func main() {
 			r.Get("/admin/system-health", s.GetSystemHealth)
 			// Admin: services status
 			r.Get("/admin/services", s.GetServices)
+			r.Get("/admin/watchdog-stats", s.GetWatchdogStats)
 
 			// Admin: whale parser
 			r.Get("/admin/whale/addresses", s.ListWhaleAddresses)

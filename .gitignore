@@ -16,3 +16,4 @@ __pycache__/
 .venv/
 venv/
 scripts/watchdog.log
+scripts/watchdog-stats.json

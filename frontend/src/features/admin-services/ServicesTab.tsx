@@ -36,6 +36,94 @@ function useServices() {
   return { services, error }
 }
 
+interface WatchdogStat {
+  restarts:     number
+  last_restart: string | null
+  last_check:   string | null
+  status:       string
+}
+
+type WatchdogStats = Record<string, WatchdogStat>
+
+const WATCHDOG_LABELS: Record<string, string> = {
+  'docker':          'Docker',
+  'sis-frontend':    'Frontend',
+  'sis-api-gateway': 'API-Gateway',
+}
+
+function useWatchdogStats() {
+  const [stats, setStats] = useState<WatchdogStats>({})
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function load() {
+      try {
+        const res = await apiClient.get<WatchdogStats>('/admin/watchdog-stats')
+        if (!cancelled) setStats(res.data)
+      } catch {
+        // Silently ignore — panel just stays empty, same as useSystemHealth
+      }
+    }
+
+    load()
+    const iv = setInterval(load, 15_000)
+    return () => { cancelled = true; clearInterval(iv) }
+  }, [])
+
+  return stats
+}
+
+function timeAgo(iso: string | null): string {
+  if (!iso) return 'ни разу'
+  const diffMs = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diffMs / 60_000)
+  if (mins < 1) return 'только что'
+  if (mins < 60) return `${mins} мин назад`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours} ч назад`
+  return `${Math.floor(hours / 24)} дн назад`
+}
+
+function WatchdogPanel() {
+  const stats = useWatchdogStats()
+  const keys = Object.keys(WATCHDOG_LABELS).filter(k => stats[k])
+  if (keys.length === 0) return null
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Вотчдог — перезапуски</h3>
+        <span className="text-[10px] text-slate-600">проверка каждые 5 мин</span>
+      </div>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        {keys.map(key => {
+          const s = stats[key]
+          const hasRestarts = s.restarts > 0
+          return (
+            <div
+              key={key}
+              className={`rounded-lg border px-3 py-2 ${
+                hasRestarts ? 'border-amber-500/20 bg-amber-500/[.05]' : 'border-white/[.06] bg-white/[.02]'
+              }`}
+            >
+              <div className="flex items-baseline justify-between">
+                <span className="text-[11px] font-medium text-slate-300">{WATCHDOG_LABELS[key]}</span>
+                <span className={`text-[13px] font-semibold tabular-nums ${hasRestarts ? 'text-amber-400' : 'text-slate-500'}`}>
+                  {s.restarts}
+                </span>
+              </div>
+              <div className="mt-0.5 text-[10px] text-slate-600">
+                последний: {timeAgo(s.last_restart)}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 const SOURCE_COLORS: Record<string, string> = {
   'strategy-runner': 'bg-[#5b8cff]/10 text-[#a0b8ff] border-[#5b8cff]/20',
   'hedge-engine':    'bg-violet-500/10 text-violet-300 border-violet-400/20',
@@ -56,6 +144,8 @@ export function ServicesTab() {
         <h2 className="text-sm font-semibold text-slate-200">Go-сервисы</h2>
         <span className="text-[10px] text-slate-500">обновляется каждые 15 с · heartbeat TTL 30 с</span>
       </div>
+
+      <WatchdogPanel />
 
       {error && (
         <div className="rounded-lg border border-rose-500/20 bg-rose-500/10 px-4 py-2 text-xs text-rose-400">
