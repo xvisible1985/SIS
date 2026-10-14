@@ -108,6 +108,35 @@ func TestGetWatchdogStats_ValidFile_ReturnsParsedStats(t *testing.T) {
 	}
 }
 
+// Regression: Set-Content -Encoding UTF8 on Windows PowerShell 5.1 writes a UTF-8 BOM,
+// which json.Unmarshal doesn't skip — found live, the watchdog panel stayed empty on the
+// frontend even though the stats file existed and had valid-looking content.
+func TestGetWatchdogStats_FileWithUtf8Bom_StillParses(t *testing.T) {
+	bom := []byte{0xEF, 0xBB, 0xBF}
+	body := []byte(`{"docker":{"restarts":1,"last_restart":"2026-10-14T04:11:00Z","last_check":"2026-10-14T15:30:00Z","status":"ok"}}`)
+	path := filepath.Join(t.TempDir(), "stats.json")
+	if err := os.WriteFile(path, append(bom, body...), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	t.Setenv("WATCHDOG_STATS_PATH", path)
+
+	s := &Server{}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/admin/watchdog-stats", nil)
+	s.GetWatchdogStats(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]watchdogServiceStat
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body not valid JSON: %v (%s)", err, rec.Body.String())
+	}
+	if len(got) != 1 || got["docker"].Restarts != 1 {
+		t.Errorf("got %+v, want docker.restarts=1 (BOM must not make this look like an empty/malformed file)", got)
+	}
+}
+
 func TestGetWatchdogStats_DefaultPath_WhenEnvUnset(t *testing.T) {
 	// Default path is relative ("scripts/watchdog-stats.json") and almost certainly
 	// doesn't resolve from the test binary's working directory — just pins that an

@@ -63,7 +63,11 @@ function Update-WatchdogStat($name, [bool]$restarted, $status) {
         status       = $status
     }
 
-    ($stats | ConvertTo-Json -Depth 5) | Set-Content -Path $statsFile -Encoding UTF8
+    # Set-Content -Encoding UTF8 writes a BOM on Windows PowerShell 5.1, which Go's
+    # encoding/json does not skip -- json.Unmarshal would silently fail on it and the
+    # API would keep returning an empty map. Write via .NET directly with no BOM.
+    $json = $stats | ConvertTo-Json -Depth 5
+    [System.IO.File]::WriteAllText($statsFile, $json, (New-Object System.Text.UTF8Encoding $false))
 }
 
 function Test-DockerUp {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -191,6 +192,12 @@ func (s *Server) GetWatchdogStats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]watchdogServiceStat{})
 		return
 	}
+	// A UTF-8 BOM (written by some PowerShell encodings) isn't valid JSON and
+	// json.Unmarshal doesn't skip it — strip it defensively regardless of how the
+	// file was produced. Found live: service-watchdog.ps1's old `Set-Content
+	// -Encoding UTF8` wrote one on Windows PowerShell 5.1, silently emptying every
+	// response.
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
 	var stats map[string]watchdogServiceStat
 	if err := json.Unmarshal(data, &stats); err != nil {
 		writeJSON(w, http.StatusOK, map[string]watchdogServiceStat{})
