@@ -1500,6 +1500,7 @@ export function AccountsPage() {
   const [testing, setTesting]       = useState<string | null>(null)
   const [modal, setModal]           = useState<null | { type: 'delete' | 'rotate'; acc: ExchangeAccount }>(null)
   const [toast, setToast]           = useState<ToastData | null>(null)
+  const [addKeyOpen, setAddKeyOpen] = useState(false)
 
   const showToast = useCallback((t: ToastData) => { setToast(t) }, [])
 
@@ -1552,6 +1553,7 @@ export function AccountsPage() {
       })
       setAccounts(prev => [newAcc, ...prev])
       setExpandedId(newAcc.id)
+      setAddKeyOpen(false)
       window.dispatchEvent(new Event('accounts-changed'))
       showToast({
         kind: 'success',
@@ -1647,57 +1649,49 @@ export function AccountsPage() {
         </div>
       ) : (
         <>
-          <div style={{
-            display: 'grid', gridTemplateColumns: '420px minmax(0, 1fr)', gap: 24, alignItems: 'flex-start',
-          }}>
-            {/* left — add */}
-            <div style={{ position: 'sticky', top: 24 }}>
-              <AddKeyPanel onSubmit={handleAddKey} />
-            </div>
-
-            {/* right — stats + list */}
-            <div>
-              {accounts.length > 0 && (
-                <StatsStrip accounts={accounts} balances={balances} verifyData={verifyData} />
-              )}
-              {accounts.length === 0 ? (
-                <EmptyState />
-              ) : (
-                <>
-                  <Toolbar search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} counts={counts} />
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {visible.map(acc => (
-                      <KeyCard
-                        key={acc.id}
-                        acc={acc}
-                        balance={balances[acc.id] ?? null}
-                        verify={verifyData[acc.id] ?? null}
-                        latency={latencies[acc.id] ?? null}
-                        expanded={expandedId === acc.id}
-                        testing={testing === acc.id}
-                        onToggle={() => setExpandedId(expandedId === acc.id ? null : acc.id)}
-                        onTest={() => handleTest(acc)}
-                        onDelete={() => setModal({ type: 'delete', acc })}
-                        onRotate={() => setModal({ type: 'rotate', acc })}
-                        onPause={() => handleToggle(acc)}
-                        onSaveRisk={(values) => handleSaveRiskSettings(acc, values)}
-                      />
-                    ))}
-                    {visible.length === 0 && (
-                      <div style={{
-                        padding: '40px 20px', textAlign: 'center', color: T.dim, fontSize: 13,
-                        background: T.card, border: `1px dashed ${T.border}`, borderRadius: 12,
-                      }}>
-                        По фильтру ничего не найдено.
-                      </div>
-                    )}
+          {accounts.length > 0 && (
+            <StatsStrip accounts={accounts} balances={balances} verifyData={verifyData} />
+          )}
+          {accounts.length === 0 ? (
+            <EmptyState onAddKey={() => setAddKeyOpen(true)} />
+          ) : (
+            <>
+              <Toolbar search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} counts={counts} onAddKey={() => setAddKeyOpen(true)} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {visible.map(acc => (
+                  <KeyCard
+                    key={acc.id}
+                    acc={acc}
+                    balance={balances[acc.id] ?? null}
+                    verify={verifyData[acc.id] ?? null}
+                    latency={latencies[acc.id] ?? null}
+                    expanded={expandedId === acc.id}
+                    testing={testing === acc.id}
+                    onToggle={() => setExpandedId(expandedId === acc.id ? null : acc.id)}
+                    onTest={() => handleTest(acc)}
+                    onDelete={() => setModal({ type: 'delete', acc })}
+                    onRotate={() => setModal({ type: 'rotate', acc })}
+                    onPause={() => handleToggle(acc)}
+                    onSaveRisk={(values) => handleSaveRiskSettings(acc, values)}
+                  />
+                ))}
+                {visible.length === 0 && (
+                  <div style={{
+                    padding: '40px 20px', textAlign: 'center', color: T.dim, fontSize: 13,
+                    background: T.card, border: `1px dashed ${T.border}`, borderRadius: 12,
+                  }}>
+                    По фильтру ничего не найдено.
                   </div>
-                </>
-              )}
-            </div>
-          </div>
+                )}
+              </div>
+            </>
+          )}
         </>
       )}
+
+      <Modal open={addKeyOpen} onClose={() => setAddKeyOpen(false)} width={600}>
+        <AddKeyPanel onSubmit={handleAddKey} />
+      </Modal>
 
       <Modal open={!!modal} onClose={() => setModal(null)}>
         {modal?.type === 'delete' && (
@@ -1718,9 +1712,6 @@ export function AccountsPage() {
         @keyframes modalIn { from{opacity:0;transform:scale(.96) translateY(8px)} to{opacity:1;transform:none} }
         .fadein { animation: fadeIn .18s ease-out; }
         input::placeholder { color: #5b6479; }
-        @media (max-width: 1100px) {
-          .ak-layout { grid-template-columns: 1fr !important; }
-        }
       `}</style>
     </div>
   )
