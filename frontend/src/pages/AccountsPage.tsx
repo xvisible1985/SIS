@@ -903,10 +903,10 @@ function AddKeyPanel({ onSubmit }: {
                 <button key={id} onClick={() => handleExchange(id)} style={{
                   display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
                   padding: '10px 4px',
-                  background: sel ? 'linear-gradient(180deg, rgba(91,140,255,.18), rgba(91,140,255,.04))' : 'rgba(255,255,255,.02)',
-                  border: `1px solid ${sel ? T.borderActv : T.border}`,
+                  background: sel ? `linear-gradient(180deg, ${e.color}2e, ${e.color}0a)` : 'rgba(255,255,255,.02)',
+                  border: `1px solid ${sel ? e.color + '4d' : T.border}`,
                   borderRadius: 10, cursor: 'pointer', color: sel ? T.text : T.body,
-                  boxShadow: sel ? 'inset 0 1px 0 rgba(255,255,255,.08), 0 6px 14px -10px rgba(91,140,255,.5)' : 'none',
+                  boxShadow: sel ? `inset 0 1px 0 rgba(255,255,255,.08), 0 6px 14px -10px ${e.color}80` : 'none',
                   transition: 'all .12s',
                 }}>
                   <ExBadge id={id} size={22} />
