@@ -7,9 +7,183 @@ import (
 	"reflect"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// fakeSyncExchangeCall records one FetchAccountExecutions/FetchAccountOrderHistory call.
+type fakeSyncExchangeCall struct {
+	category string
+	since    time.Time
+}
+
+// fakeSyncExchange is a minimal, call-recording Exchange for syncer.go's dispatch tests
+// below — every method besides the ones under test is a trivial stub, mirroring
+// services/api-gateway's fakeReconcileExchange convention.
+type fakeSyncExchange struct {
+	execCalls []fakeSyncExchangeCall
+	histCalls []fakeSyncExchangeCall
+
+	whitelistIPs []string
+	whitelistErr error
+}
+
+func (f *fakeSyncExchange) PlaceOrder(ctx context.Context, req OrderRequest) (OrderResult, error) {
+	return OrderResult{}, nil
+}
+func (f *fakeSyncExchange) PlaceOrderBatch(ctx context.Context, req BatchPlaceRequest) ([]BatchPlaceResult, error) {
+	return nil, nil
+}
+func (f *fakeSyncExchange) CancelOrder(ctx context.Context, req CancelRequest) error { return nil }
+func (f *fakeSyncExchange) CancelOrderBatch(ctx context.Context, req BatchCancelRequest) error {
+	return nil
+}
+func (f *fakeSyncExchange) PlaceOrderREST(ctx context.Context, req OrderRequest) (OrderResult, error) {
+	return OrderResult{}, nil
+}
+func (f *fakeSyncExchange) CancelOrderREST(ctx context.Context, req CancelRequest) error { return nil }
+func (f *fakeSyncExchange) CancelAllOrders(ctx context.Context, req CancelAllRequest) error {
+	return nil
+}
+func (f *fakeSyncExchange) FetchPositions(ctx context.Context) ([]Position, error) { return nil, nil }
+func (f *fakeSyncExchange) FetchOpenOrdersForSymbolAll(ctx context.Context, category, symbol string) ([]Order, error) {
+	return nil, nil
+}
+func (f *fakeSyncExchange) FetchClosedPnlForSymbol(ctx context.Context, category, symbol string, limit int) ([]ClosedPnl, error) {
+	return nil, nil
+}
+func (f *fakeSyncExchange) FetchRecentClosedPnl(ctx context.Context, category string, since time.Time) ([]ClosedPnl, error) {
+	return nil, nil
+}
+func (f *fakeSyncExchange) GetWalletBalance(ctx context.Context) (float64, float64, error) {
+	return 0, 0, nil
+}
+func (f *fakeSyncExchange) SetLeverage(ctx context.Context, req LeverageRequest) error { return nil }
+func (f *fakeSyncExchange) SwitchPositionMode(ctx context.Context, category, symbol string, mode int) error {
+	return nil
+}
+func (f *fakeSyncExchange) GetMarkPrice(ctx context.Context, category, symbol string) (float64, error) {
+	return 0, nil
+}
+func (f *fakeSyncExchange) GetInstrumentInfo(ctx context.Context, category, symbol string) (InstrumentInfo, error) {
+	return InstrumentInfo{}, nil
+}
+func (f *fakeSyncExchange) FetchOrderByLinkId(ctx context.Context, category, symbol, orderLinkId string) (Order, bool, error) {
+	return Order{}, false, nil
+}
+func (f *fakeSyncExchange) FetchOrderById(ctx context.Context, category, symbol, orderId string) (Order, bool, error) {
+	return Order{}, false, nil
+}
+func (f *fakeSyncExchange) FetchOpenOrders(ctx context.Context) ([]Order, error) { return nil, nil }
+func (f *fakeSyncExchange) GetAccountMarginInfo(ctx context.Context) (float64, float64, float64, error) {
+	return 0, 0, 0, nil
+}
+func (f *fakeSyncExchange) SetTrailingStop(ctx context.Context, req TrailingStopRequest) error {
+	return nil
+}
+
+func (f *fakeSyncExchange) FetchAccountExecutions(ctx context.Context, category string, since time.Time) ([]Execution, error) {
+	f.execCalls = append(f.execCalls, fakeSyncExchangeCall{category: category, since: since})
+	return nil, nil
+}
+
+func (f *fakeSyncExchange) FetchAccountOrderHistory(ctx context.Context, category string, since time.Time) ([]Order, error) {
+	f.histCalls = append(f.histCalls, fakeSyncExchangeCall{category: category, since: since})
+	return nil, nil
+}
+
+func (f *fakeSyncExchange) FetchWhitelistedIPs(ctx context.Context) ([]string, error) {
+	return f.whitelistIPs, f.whitelistErr
+}
+
+var _ Exchange = (*fakeSyncExchange)(nil)
+
+// Regression (2026-10-17): account fd7d407b ("N2 Binance")'s logs showed
+// "syncer: fetch executions account=fd7d407b... category=linear/inverse/spot: bybit:
+// parse response: unexpected end of JSON input" / "retCode=10003: You are not
+// authorized" — syncExecutions used to call Bybit-only free functions directly for every
+// account regardless of exchange. These tests pin the fixed dispatch: Bybit still
+// queries all 3 categories (unchanged), Binance (USDⓈ-M futures only) queries exactly
+// one, and the account's own `since` cutoff (derived from syncDays) is what's passed to
+// the Exchange, not re-derived or ignored.
+func TestSyncExecutions_BybitQueriesAllThreeCategories(t *testing.T) {
+	fake := &fakeSyncExchange{}
+	s := &Syncer{syncDays: 7}
+	s.syncExecutions(context.Background(), accountRow{id: "a1", exchange: "bybit"}, fake)
+
+	if len(fake.execCalls) != 3 {
+		t.Fatalf("got %d FetchAccountExecutions calls, want 3 (linear/inverse/spot)", len(fake.execCalls))
+	}
+	got := []string{fake.execCalls[0].category, fake.execCalls[1].category, fake.execCalls[2].category}
+	want := []string{"linear", "inverse", "spot"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("categories = %v, want %v", got, want)
+	}
+}
+
+func TestSyncExecutions_BinanceQueriesOnlyOneCategory(t *testing.T) {
+	fake := &fakeSyncExchange{}
+	s := &Syncer{syncDays: 7}
+	s.syncExecutions(context.Background(), accountRow{id: "a1", exchange: "binance"}, fake)
+
+	if len(fake.execCalls) != 1 {
+		t.Fatalf("got %d FetchAccountExecutions calls, want 1 (Binance has no inverse/spot split)", len(fake.execCalls))
+	}
+	if fake.execCalls[0].category != "linear" {
+		t.Errorf("category = %q, want %q", fake.execCalls[0].category, "linear")
+	}
+}
+
+func TestSyncOrderHistory_BinanceQueriesOnlyOneCategory(t *testing.T) {
+	fake := &fakeSyncExchange{}
+	s := &Syncer{syncDays: 7}
+	s.syncOrderHistory(context.Background(), accountRow{id: "a1", exchange: "binance"}, fake)
+
+	if len(fake.histCalls) != 1 {
+		t.Fatalf("got %d FetchAccountOrderHistory calls, want 1", len(fake.histCalls))
+	}
+	if fake.histCalls[0].category != "linear" {
+		t.Errorf("category = %q, want %q", fake.histCalls[0].category, "linear")
+	}
+}
+
+func TestSyncExecutions_SinceReflectsSyncDays(t *testing.T) {
+	fake := &fakeSyncExchange{}
+	s := &Syncer{syncDays: 5}
+	before := time.Now()
+	s.syncExecutions(context.Background(), accountRow{id: "a1", exchange: "bybit"}, fake)
+
+	wantSince := before.AddDate(0, 0, -5)
+	for _, c := range fake.execCalls {
+		if c.since.Before(wantSince.Add(-time.Second)) || c.since.After(wantSince.Add(time.Second)) {
+			t.Errorf("since = %v, want ~%v (5 days back)", c.since, wantSince)
+		}
+	}
+}
+
+// Regression (2026-10-17): refreshWhitelistedIPs used to call Bybit's QueryAPI directly
+// for every account regardless of exchange — for a Binance account that produced exactly
+// the "syncer: refresh whitelist account=... bybit: retCode=10003: You are not
+// authorized" warning seen live in production. A Binance account's FetchWhitelistedIPs
+// now returns ErrWhitelistNotSupported (Binance's API has no endpoint exposing the
+// actual IP list — see that error's doc comment), which must be treated as an expected,
+// quiet no-op: no DB write attempted, no error logged, no Bybit endpoint ever touched.
+func TestRefreshWhitelistedIPs_BinanceAccount_NoOpsWithoutError(t *testing.T) {
+	a := &accountRow{id: "acct-binance", exchange: "binance"}
+	creds := &Credentials{APIKey: "key", SecretKey: "secret", AccountID: "acct-binance"}
+
+	s := &Syncer{pool: nil, factory: func(exchangeName string, creds Credentials) Exchange {
+		return &fakeSyncExchange{whitelistErr: ErrWhitelistNotSupported}
+	}}
+	changed := s.refreshWhitelistedIPs(context.Background(), a, creds)
+	if changed {
+		t.Error("expected no change for an exchange with no whitelist endpoint")
+	}
+	if a.whitelistedIPs != nil {
+		t.Errorf("a.whitelistedIPs = %v, want unchanged (nil)", a.whitelistedIPs)
+	}
+}
 
 // withMockBybitBase points bybitBase at srv for the duration of the test and restores
 // the real value on cleanup. Tests in this package are not run in parallel with each
@@ -19,6 +193,14 @@ func withMockBybitBase(t *testing.T, srv *httptest.Server) {
 	orig := bybitBase
 	bybitBase = srv.URL
 	t.Cleanup(func() { bybitBase = orig })
+}
+
+// bybitExchangeFactory is the ExchangeFactory tests use — equivalent to what
+// strategy.ResolveExchange would build for exchangeName=="bybit" (the only exchange this
+// package can construct without importing pkg/trader/binance, which would be a cycle).
+// ws is nil since none of these tests exercise WS-backed order placement.
+func bybitExchangeFactory(exchangeName string, creds Credentials) Exchange {
+	return NewBybitExchange(creds, nil)
 }
 
 // unreachablePool returns a *pgxpool.Pool that constructs successfully (pgxpool.New is
@@ -63,7 +245,7 @@ func TestRefreshWhitelistedIPs_DoesNotSelfLock(t *testing.T) {
 	defer srv.Close()
 	withMockBybitBase(t, srv)
 
-	a := &accountRow{id: "acct-1", whitelistedIPs: []string{"9.9.9.9"}}
+	a := &accountRow{id: "acct-1", exchange: "bybit", whitelistedIPs: []string{"9.9.9.9"}}
 	creds := &Credentials{
 		APIKey:         "key",
 		SecretKey:      "secret",
@@ -71,7 +253,7 @@ func TestRefreshWhitelistedIPs_DoesNotSelfLock(t *testing.T) {
 		WhitelistedIPs: []string{"9.9.9.9"}, // stale/narrow whitelist from a previous refresh
 	}
 
-	s := &Syncer{pool: unreachablePool(t)}
+	s := &Syncer{pool: unreachablePool(t), factory: bybitExchangeFactory}
 	s.refreshWhitelistedIPs(context.Background(), a, creds)
 
 	if got := atomic.LoadInt32(&hits); got != 1 {
@@ -100,7 +282,7 @@ func TestRefreshWhitelistedIPs_QueryAPIError_LeavesFieldsUnchanged(t *testing.T)
 	defer srv.Close()
 	withMockBybitBase(t, srv)
 
-	a := &accountRow{id: "acct-2", whitelistedIPs: []string{"5.5.5.5"}}
+	a := &accountRow{id: "acct-2", exchange: "bybit", whitelistedIPs: []string{"5.5.5.5"}}
 	creds := &Credentials{
 		APIKey:         "bad-key",
 		SecretKey:      "bad-secret",
@@ -110,7 +292,7 @@ func TestRefreshWhitelistedIPs_QueryAPIError_LeavesFieldsUnchanged(t *testing.T)
 
 	// pool intentionally nil: if refreshWhitelistedIPs reached the persist step on this
 	// error path, the test would panic on the nil pool dereference, failing loudly.
-	s := &Syncer{pool: nil}
+	s := &Syncer{pool: nil, factory: bybitExchangeFactory}
 	s.refreshWhitelistedIPs(context.Background(), a, creds)
 
 	if !reflect.DeepEqual(a.whitelistedIPs, []string{"5.5.5.5"}) {
@@ -131,7 +313,7 @@ func TestRefreshWhitelistedIPs_ParseError_LeavesFieldsUnchanged(t *testing.T) {
 	defer srv.Close()
 	withMockBybitBase(t, srv)
 
-	a := &accountRow{id: "acct-3", whitelistedIPs: []string{"6.6.6.6"}}
+	a := &accountRow{id: "acct-3", exchange: "bybit", whitelistedIPs: []string{"6.6.6.6"}}
 	creds := &Credentials{
 		APIKey:         "key",
 		SecretKey:      "secret",
@@ -139,7 +321,7 @@ func TestRefreshWhitelistedIPs_ParseError_LeavesFieldsUnchanged(t *testing.T) {
 		WhitelistedIPs: []string{"6.6.6.6"},
 	}
 
-	s := &Syncer{pool: nil}
+	s := &Syncer{pool: nil, factory: bybitExchangeFactory}
 	s.refreshWhitelistedIPs(context.Background(), a, creds)
 
 	if !reflect.DeepEqual(a.whitelistedIPs, []string{"6.6.6.6"}) {

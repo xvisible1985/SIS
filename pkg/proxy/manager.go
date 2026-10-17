@@ -36,6 +36,20 @@ func NewManager(ctx context.Context, db *pgxpool.Pool, encKey string) (*Manager,
 	if err := m.reload(ctx); err != nil {
 		return nil, fmt.Errorf("proxy manager init: %w", err)
 	}
+	// Run one health-check pass synchronously before returning, bounded by
+	// healthCheckTimeout (10s, checks run concurrently). Without this, every proxy sits
+	// in "unknown" (= unavailable to Pick/PickForIPs) until healthCheckLoop's ticker fires
+	// its FIRST tick — time.NewTicker does not fire immediately, so that's a guaranteed
+	// ~healthCheckInterval (30s) window after every single process restart during which
+	// every exchange request for every account found Pick() returning nil. Combined with
+	// the pre-2026-10-16 direct-connection fallback that used to live in transport.go, this
+	// is how a Binance request ended up going out via this server's own bare egress IP
+	// instead of either configured proxy — surfaced as a confusing "-2015 invalid API-key,
+	// IP..." error that looked Binance-side but was actually ours. See transport.go's
+	// ErrNoHealthyProxy: that fallback no longer exists when proxies are configured, so
+	// this synchronous pass is now load-bearing, not just a latency nicety — skipping it
+	// would turn every restart into ~30s of hard request failures instead of a brief leak.
+	m.runHealthChecksSync(ctx)
 	go m.healthCheckLoop(ctx)
 	return m, nil
 }
@@ -104,6 +118,18 @@ func (m *Manager) buildProxyURL(p *DBProxy) (*url.URL, error) {
 // direct connection or an unlisted proxy (the account's exchange API key would very
 // likely reject the request with the same IP-mismatch error anyway).
 var ErrNoWhitelistedProxy = errors.New("proxy: no proxy matches account's IP whitelist")
+
+// ErrNoHealthyProxy is returned by BalancedTransport.RoundTrip, filteredTransport.RoundTrip
+// and WSDialerFor when the pool has 1+ proxies configured but Pick()/PickForIPs currently
+// finds none healthy. Unlike the genuinely-no-proxy-configured case (manager nil or
+// Count()==0, which still falls back to a direct connection — see HTTPClient()/WSDialer()),
+// this must NOT fall back to direct: that would silently send exchange-account traffic out
+// via this server's own unproxied IP instead of either configured proxy, which is exactly
+// what happened on 2026-10-16 (a Binance FetchPositions call surfaced as a confusing
+// "-2015 invalid API-key, IP..." error whose IP matched neither configured proxy — it was
+// this server's bare egress IP, reached during the startup blackout NewManager's new
+// synchronous initial health-check pass now closes; see NewManager's comment).
+var ErrNoHealthyProxy = errors.New("proxy: no healthy proxy available (proxies configured but all unhealthy)")
 
 // pickFrom applies least-connections (primary) + round-robin (tie-break) scoring to
 // candidates and returns the winner, or nil if candidates is empty. Records the pick as

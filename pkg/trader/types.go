@@ -43,12 +43,25 @@ type CancelAllRequest struct {
 // TrailingStop is the callback distance in price units (e.g. "0.0003").
 // ActivePrice is the trigger price at which trailing begins (empty = activate immediately).
 // Pass TrailingStop="0" to remove an existing trailing stop.
-type TradingStopRequest struct {
+type TradingStopRequest = TrailingStopRequest
+
+// TrailingStopRequest configures (or clears) a trailing stop — see trader.Exchange's
+// SetTrailingStop doc comment for why Bybit and Binance need such different fields from
+// the same request. Bybit (position attribute) reads Category/Symbol/TrailingStop/
+// ActivePrice/PositionIdx. Binance (TRAILING_STOP_MARKET order) additionally needs
+// Side/Qty/CallbackRatePct/ClientOrderID.
+type TrailingStopRequest struct {
 	Category     string `json:"category"`
 	Symbol       string `json:"symbol"`
-	TrailingStop string `json:"trailingStop"`          // price distance; "0" to clear
+	TrailingStop string `json:"trailingStop"`          // Bybit: price distance; "0" to clear
 	ActivePrice  string `json:"activePrice,omitempty"` // activation price; omit to activate immediately
 	PositionIdx  int    `json:"positionIdx"`
+
+	// Binance-only fields — ignored by BybitExchange.SetTrailingStop.
+	Side            string  // closing side: "Buy" or "Sell" — which way the trailing-stop order itself trades
+	Qty             string  // position size to protect; Binance needs an explicit order quantity
+	CallbackRatePct float64 // Binance's percentage callback rate (0.1–5.0), vs Bybit's absolute price distance
+	ClientOrderID   string  // stable ID so Binance can find and cancel its OWN prior trailing-stop order before replacing it — Binance can't amend one in place the way Bybit's position attribute updates implicitly
 }
 
 // BatchOrderItem is a single order in a batch place request.
@@ -150,6 +163,13 @@ type ClosedPnl struct {
 	CreatedTime   string `json:"createdTime"`
 	UpdatedTime   string `json:"updatedTime"`
 	Category      string `json:"category"`
+	// Fee is the exchange-reported commission for this closing order, when the exchange
+	// gives it to us directly (currently: Binance only, from userTrades' own
+	// `commission` field — see pkg/trader/binance/exchange.go). Left empty for Bybit,
+	// whose own closed-pnl record doesn't include commission as a separate field; the
+	// frontend (PnlTable.tsx) falls back to its existing gross-minus-closedPnl estimate
+	// whenever Fee is empty, preserving Bybit's exact prior behavior.
+	Fee string `json:"fee,omitempty"`
 }
 
 type Execution struct {

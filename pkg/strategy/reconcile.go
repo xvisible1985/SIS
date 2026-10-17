@@ -86,6 +86,62 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 		}
 	}
 
+	// --- 0b. Revive split-brain cycles — an external process (e.g. closed_pnl_syncer's
+	// zombie-cycle heuristic) force-closed a cycle in strategy_cycles directly in the DB
+	// while this runner was still alive and actively managing it — a "false ghost close"
+	// that bypassed closeCycle/maybeRestart entirely, so the runner's in-memory sr.cycle
+	// never got cleared and status never moved to 'stopped'. Found live (2026-09-24,
+	// MUBARAKUSDT/pol): the runner kept placing/replacing per-level SL orders for 14+ hours
+	// after strategy_cycles.ended_at was set from outside, leaving the exchange position
+	// and its orders completely unmanaged afterward for over a week once the runner itself
+	// eventually gave up.
+	//
+	// This complements services/api-gateway's checkMatrixZombieStrategies/
+	// reviveMatrixSplitBrain, which only scans bot-attached strategy_type='matrix' rows —
+	// this check instead covers every live runner for this account regardless of
+	// strategy_type or bot attachment, since the invariant it protects ("the DB must not
+	// disagree with a runner that's still alive and in charge") has nothing to do with bots.
+	//
+	// No race with a genuine closeCycle: closeCycle holds sr.mu for its entire body
+	// (DB update through sr.cycle=nil), so by the time this RLock below is acquired, a
+	// legitimately-just-ended cycle has already had sr.cycle cleared — cycleID comes back
+	// empty and is skipped. Only an external DB write (never touching sr.mu) can produce
+	// "sr.cycle still set" alongside "DB says ended".
+	ar.mu.RLock()
+	liveRunners := make([]*StrategyRunner, 0, len(ar.strategies))
+	for _, sr := range ar.strategies {
+		liveRunners = append(liveRunners, sr)
+	}
+	ar.mu.RUnlock()
+	for _, sr := range liveRunners {
+		sr.mu.RLock()
+		cycleID, cycleNum, stratID := "", 0, sr.strategy.ID
+		if sr.cycle != nil {
+			cycleID, cycleNum = sr.cycle.ID, sr.cycle.CycleNum
+		}
+		sr.mu.RUnlock()
+		if cycleID == "" {
+			continue
+		}
+		var endedAt *time.Time
+		var hasFilled bool
+		if err := ar.pool.QueryRow(ctx,
+			`SELECT c.ended_at, EXISTS(SELECT 1 FROM strategy_levels WHERE cycle_id=c.id AND status='filled')
+			 FROM strategy_cycles c WHERE c.id=$1`, cycleID,
+		).Scan(&endedAt, &hasFilled); err != nil || endedAt == nil || !hasFilled {
+			continue // not ended externally, query failed, or nothing worth preserving
+		}
+		if _, err := ar.pool.Exec(ctx,
+			`UPDATE strategy_cycles SET ended_at=NULL, result=NULL WHERE id=$1`, cycleID,
+		); err != nil {
+			continue
+		}
+		ar.pool.Exec(ctx, //nolint:errcheck
+			`DELETE FROM trade_history WHERE strategy_id=$1 AND cycle_num=$2 AND result='ghost_close'`,
+			stratID, cycleNum)
+		sr.warn(ctx, "Цикл оживлён: был закрыт извне (ghost_close), пока я продолжал им управлять — ложное закрытие")
+	}
+
 	// --- 1. Query placed grid levels ---
 	rows, err := ar.pool.Query(ctx,
 		`SELECT sl.id, sl.exchange_order_id, sl.strategy_id, s.symbol, s.category
@@ -245,7 +301,7 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 	}
 
 	// --- 5. Fetch exchange orders once (reused for all checks) ---
-	exchangeOrders, err := trader.FetchOpenOrders(ctx, ar.creds)
+	exchangeOrders, err := ar.exchange.FetchOpenOrders(ctx)
 	if err != nil {
 		log.Printf("strategy reconcile %s: fetch exchange orders: %v", ar.accountID, err)
 		return
@@ -262,7 +318,7 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 		}
 		// Before resetting to pending, check if the order was actually filled on the exchange.
 		// Filled orders disappear from open orders just like cancelled ones.
-		if hist, _, err := trader.FetchOrderById(ctx, ar.creds, p.category, p.symbol, p.orderID); err == nil && hist.OrderStatus == "Filled" {
+		if hist, _, err := ar.exchange.FetchOrderById(ctx, p.category, p.symbol, p.orderID); err == nil && hist.OrderStatus == "Filled" {
 			filledPrice, _ := strconv.ParseFloat(hist.AvgPrice, 64)
 			filledQty, _ := strconv.ParseFloat(hist.CumExecQty, 64)
 			log.Printf("strategy reconcile: level %s order %s was Filled @ %.4f qty=%.6f — recording fill", p.levelID, p.orderID, filledPrice, filledQty)
@@ -362,7 +418,7 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 		}
 
 		// Was it actually Filled? Filled orders vanish from open orders like cancelled ones.
-		if hist, _, err := trader.FetchOrderById(ctx, ar.creds, p.category, p.symbol, p.orderID); err == nil && hist.OrderStatus == "Filled" {
+		if hist, _, err := ar.exchange.FetchOrderById(ctx, p.category, p.symbol, p.orderID); err == nil && hist.OrderStatus == "Filled" {
 			filledPrice, _ := strconv.ParseFloat(hist.AvgPrice, 64)
 			filledQty, _ := strconv.ParseFloat(hist.CumExecQty, 64)
 			log.Printf("strategy reconcile: matrix level %s order %s was Filled @ %.4f qty=%.6f — recording fill", p.levelID, p.orderID, filledPrice, filledQty)
@@ -612,7 +668,48 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 		})
 	}
 
-	// --- 8b. Matrix pending entry health-check ---
+	// --- 8b. Matrix per-level SL ghost-fill detection ---
+	// Block 8 above only catches SLOrderID=="" (never placed). This catches the opposite:
+	// SLOrderID is set, but the order is no longer on the exchange — it already filled —
+	// while the level is still marked 'filled' and SLOrderID still looks "live" to us.
+	// handleMatrixSLFill is normally driven by the live WS order-Filled event
+	// (engine.go OnOrderEvent), which requires the runner to be running at the exact moment
+	// the fill happens; if the process was down or mid-restart then, the fill is missed
+	// entirely by that path. Found live (2026-10-02, COTIUSDT/pol): L(1)'s stop-cond SL
+	// fired for real (confirmed via its own exec_id/price already sitting in
+	// trader_executions — the WS execution stream itself was fine) while api-gateway was
+	// restarting, so the live handler never ran; the level stayed 'filled' and the exchange
+	// position silently ended up smaller than every "filled" level's qty summed together.
+	// Reuses the exact real fill-price from trader_executions (already populated by the
+	// account's WS/execution ingestion, independent of this reconcile loop) and replays it
+	// through the same handleMatrixSLFill the live WS path would have called — not a
+	// hand-rolled substitute, so realized_pnl/hedge accounting/re-entry logic all run
+	// exactly as they would have at the time. Never happens on symmetric "just gone"
+	// ambiguity: if no execution record exists, this leaves the level untouched rather than
+	// guessing (same caution as isOrderGone elsewhere in this codebase).
+	for stratID, sr := range strategyRefs {
+		if sr.strategy.StrategyType != "matrix" {
+			continue
+		}
+		sr.mu.RLock()
+		ghosts := matrixGhostSLCandidates(sr.levels, live)
+		sr.mu.RUnlock()
+		for _, g := range ghosts {
+			var fillPrice float64
+			if err := ar.pool.QueryRow(ctx,
+				`SELECT price FROM trader_executions WHERE account_id=$1 AND order_id=$2 ORDER BY exec_time DESC LIMIT 1`,
+				ar.accountID, g.slOrderID,
+			).Scan(&fillPrice); err != nil {
+				log.Printf("strategy reconcile: matrix level SL %s (strategy %s) missing from exchange with no matching execution found — leaving level as-is",
+					g.slOrderID, stratID[:8])
+				continue
+			}
+			levelID := g.levelID
+			sr.submit(func(ctx context.Context) { sr.handleMatrixSLFill(ctx, levelID, fillPrice) })
+		}
+	}
+
+	// --- 8c. Matrix pending entry health-check ---
 	// For each active matrix runner, retries placing non-virtual pending entry levels
 	// with no exchange_order_id. Covers placement failures during rebuild (transient
 	// exchange errors, service restart race) that leave levels permanently stuck.
@@ -641,12 +738,30 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 				if sr.matrixIsVirtual(l) {
 					continue
 				}
+				retryPrice := matrix8cRetryPrice(l, price)
 				log.Printf("strategy reconcile: matrix L%d (strategy %s) — pending без ордера, повтор placeMatrixLevel",
 					l.LevelIdx, sr.strategy.ID[:8])
-				if err := sr.placeMatrixLevel(ctx, l, price); err != nil {
+				if err := sr.placeMatrixLevel(ctx, l, retryPrice); err != nil {
 					log.Printf("strategy reconcile: matrix L%d place error: %v", l.LevelIdx, err)
 				}
 			}
+		})
+	}
+
+	// --- 8d. Relative-slots numbering catch-up ---
+	// Runs matrixCatchUpRelativeSlotNumbering for every live relative-slots runner — the
+	// periodic self-heal counterpart to matrixAfterSLClose's reactive per-close renumbering.
+	// That reactive half only fixes numbering going forward from the SL close that triggers
+	// it; a strategy whose numbering had already drifted stale before this feature existed
+	// (or for any other reason) needs an independent recheck to ever get corrected. Not
+	// scoped to strategy_type='matrix' like block 8/8b/8c — relative_slots is also used by
+	// grid-typed strategies that run matrix mechanics internally (e.g. UseSignal-gated grid
+	// legs), and matrixCatchUpRelativeSlotNumbering itself already no-ops for anything that
+	// isn't actually RelativeSlots, so every runner can be submitted unconditionally.
+	for _, sr := range strategyRefs {
+		sr := sr // capture
+		sr.submit(func(ctx context.Context) {
+			sr.matrixCatchUpRelativeSlotNumbering(ctx)
 		})
 	}
 
@@ -801,4 +916,46 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 			}
 		})
 	}
+}
+
+// ghostSL identifies a per-level matrix SL order that looks "live" to our own bookkeeping
+// (level still LevelFilled, SLOrderID still set) but is no longer actually resting on the
+// exchange — see matrixGhostSLCandidates.
+type ghostSL struct{ levelID, slOrderID string }
+
+// matrixGhostSLCandidates returns every level whose per-level SL order has vanished from the
+// exchange's live order list while the level itself is still bookkept as filled-and-protected.
+// Pure and DB/network-free so it can be tested directly — the caller (reconcile's block 8b)
+// does the actual trader_executions lookup and handleMatrixSLFill replay.
+func matrixGhostSLCandidates(levels []GridLevel, live map[string]bool) []ghostSL {
+	var ghosts []ghostSL
+	for i := range levels {
+		l := &levels[i]
+		if l.Status != LevelFilled || l.Slot == nil || l.SLOrderID == "" {
+			continue
+		}
+		if live[l.SLOrderID] {
+			continue // still genuinely resting on the exchange
+		}
+		ghosts = append(ghosts, ghostSL{l.ID, l.SLOrderID})
+	}
+	return ghosts
+}
+
+// matrix8cRetryPrice picks the price block 8c's health-check passes into placeMatrixLevel
+// when retrying a stuck pending level. Relative-slots levels (l.Slot != nil) are only ever
+// inserted after price has already reached/passed their TargetPrice (matrixRelativeExpand
+// gates on matrixSlotReached before calling matrixPlaceRelativeSlot) — so retrying with the
+// real live price here, instead of TargetPrice, hits matrixEntryOrderType's price-comparison
+// branch and places a resting Limit at the stale target instead of a Market order, exactly
+// like the bug already fixed in matrixPlaceRelativeSlot/matrixRetryStuckRelativeSlot (see
+// their comments — found live 2026-07-21, HEMIUSDT). Found again live 2026-10-11
+// (JCTUSDT/stepanovsa): this block's retry raced the tick-driven matrixRetryStuckRelativeSlot,
+// won, and left a Limit Sell resting far above a falling market, unreachable without a
+// reversal. Absolute-mode levels (l.Slot == nil) keep using the live price, as before.
+func matrix8cRetryPrice(l *GridLevel, livePrice float64) float64 {
+	if l.Slot != nil {
+		return l.TargetPrice
+	}
+	return livePrice
 }

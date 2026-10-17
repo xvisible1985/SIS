@@ -613,13 +613,17 @@ func (s *Server) botEngineTick(ctx context.Context) {
 			}
 		}
 
+		// Expand any custom-signal-combo entries into their real component configs before
+		// validating — a custom signal's Name is just its display badge, not a registered
+		// pkg/signal type, so it must never reach signal.Build directly.
+		resolved := s.resolveBotSignalConfigs(ctx, cfg.ActivationSignals)
+
 		// Build signal.Config slice for activation check.
 		// Skip bots whose signals are not registered in the signal engine
 		// (e.g. "bybit-news") — they are handled by dedicated tickers.
-		sigCfgs := make([]signal.Config, 0, len(cfg.ActivationSignals))
+		sigCfgs := make([]signal.Config, 0, len(resolved))
 		skipBot := false
-		for _, a := range cfg.ActivationSignals {
-			sc := signal.Config{Name: a.Name, Params: a.Params}
+		for _, sc := range resolved {
 			if _, err := signal.Build(sc); err != nil {
 				skipBot = true
 				break
@@ -928,6 +932,64 @@ func (s *Server) botEngineTick(ctx context.Context) {
 	globalBotMetrics.mu.Unlock()
 }
 
+// botSignalRef is one entry of a bot's activation_signals/signal_configs array: either a
+// bare catalog reference (Name is a registered pkg/signal name, e.g. "rsi", "leverage") or a
+// saved custom-signal combo (CustomSignalID set — see migrations/091_custom_signals.sql).
+// Mirrors pkg/strategy.SignalConfig's shape so the two stay resolvable the same way.
+type botSignalRef struct {
+	Name           string                 `json:"name"`
+	Params         map[string]interface{} `json:"params"`
+	CustomSignalID string                 `json:"custom_signal_id,omitempty"`
+}
+
+// resolveBotSignalConfigs expands a bot's activation/signal entries into the []signal.Config
+// the signal engine actually evaluates. A bare catalog reference (CustomSignalID empty) maps
+// 1:1 onto signal.Config{Name, Params} — unchanged from before this existed. A saved combo
+// reference (CustomSignalID set) expands into its saved component legs, each with its own
+// saved params, exactly mirroring pkg/strategy's AccountRunner.resolveSignalConfigs (same
+// custom_signal_components table, same query).
+//
+// Without this, a bot whose activation signal is a custom combo passed Name="<custom signal's
+// display name>" straight to signal.Build/ComputeMultiTFState — not a registered signal type,
+// so it either fails signal.Build outright (botEngineTick silently skips the whole bot, no
+// log) or never resolves to a real state (ScanBot always reports zero matches) — found live
+// (2026-10-06, "ST_Bot v.1.0"/custom signal "123213"): the bot had never once opened a trade
+// since creation, with zero bot_events, because every tick's signal.Build("123213", ...)
+// errored and silently excluded the bot from the tick entirely.
+//
+// Fail-open per entry (same posture as pkg/strategy's version): a custom signal that fails to
+// resolve (deleted, DB hiccup) is dropped rather than erroring the whole call, since an
+// activation check with one fewer leg is preferable to every bot referencing that combo going
+// permanently unable to evaluate its activation signal at all.
+func (s *Server) resolveBotSignalConfigs(ctx context.Context, refs []botSignalRef) []signal.Config {
+	out := make([]signal.Config, 0, len(refs))
+	for _, ref := range refs {
+		if ref.CustomSignalID == "" {
+			out = append(out, signal.Config{Name: ref.Name, Params: ref.Params})
+			continue
+		}
+		rows, err := s.pool.Query(ctx,
+			`SELECT component_signal_id, params FROM custom_signal_components
+			 WHERE custom_signal_id=$1 ORDER BY position`, ref.CustomSignalID)
+		if err != nil {
+			log.Printf("resolveBotSignalConfigs: load custom signal %s: %v", ref.CustomSignalID, err)
+			continue
+		}
+		for rows.Next() {
+			var id string
+			var raw []byte
+			if rows.Scan(&id, &raw) != nil {
+				continue
+			}
+			var p map[string]any
+			_ = json.Unmarshal(raw, &p)
+			out = append(out, signal.Config{Name: id, Params: p})
+		}
+		rows.Close()
+	}
+	return out
+}
+
 // botCfgJSON mirrors the strategy_config JSONB for bot automation.
 type botCfgJSON struct {
 	Direction         string   `json:"direction"`
@@ -950,16 +1012,10 @@ type botCfgJSON struct {
 	TrailingActPct    float64  `json:"trailing_activation_pct"`
 	TrailingCallPct   float64  `json:"trailing_callback_pct"`
 	AfterStopMode     string   `json:"after_stop_mode"`
-	MaxCycles         int      `json:"max_cycles"`
-	PrioritySignal    string   `json:"priority_signal"`
-	ActivationSignals []struct {
-		Name   string                 `json:"name"`
-		Params map[string]interface{} `json:"params"`
-	} `json:"activation_signals"`
-	SignalConfigs []struct {
-		Name   string                 `json:"name"`
-		Params map[string]interface{} `json:"params"`
-	} `json:"signal_configs"`
+	MaxCycles         int           `json:"max_cycles"`
+	PrioritySignal    string        `json:"priority_signal"`
+	ActivationSignals []botSignalRef `json:"activation_signals"`
+	SignalConfigs     []botSignalRef `json:"signal_configs"`
 	Steps []struct {
 		PriceMovePct float64 `json:"price_move_pct"`
 		SizePct      float64 `json:"size_pct"`
@@ -1111,7 +1167,12 @@ type botStrategyCols struct {
 // computeBotStrategyCols applies defaults (same as strategyPayload.applyDefaults), raises
 // grid_size_usdt to the exchange minimum for sym, and derives every other config column
 // from cfg. Shared by createBotStrategy's INSERT/reuse paths and the bind endpoint.
-func (s *Server) computeBotStrategyCols(ctx context.Context, cfg botCfgJSON, sym string, leverageOverride int) botStrategyCols {
+//
+// accountID picks which exchange's public instrument-info is consulted for the
+// grid_size_usdt auto-raise (Plan #4b/#4c) — Binance and Bybit enforce different
+// minimum order values, so raising a Binance bot's grid size using Bybit's minimum
+// (or vice versa) could under- or over-shoot the real exchange minimum.
+func (s *Server) computeBotStrategyCols(ctx context.Context, cfg botCfgJSON, sym, accountID string, leverageOverride int) botStrategyCols {
 	// Apply defaults (same as strategyPayload.applyDefaults)
 	category := cfg.Category
 	if category == "" {
@@ -1161,7 +1222,12 @@ func (s *Server) computeBotStrategyCols(ctx context.Context, cfg botCfgJSON, sym
 		gridSize = 100
 	}
 	// Auto-raise grid_size_usdt to exchange minimum for this specific symbol.
-	if pubInfo, perr := trader.GetPublicInstrumentInfo(ctx, category, sym); perr != nil {
+	exchangeName, exErr := s.loadAccountExchangeName(ctx, accountID)
+	if exErr != nil {
+		log.Printf("createBotStrategy %s/%s: loadAccountExchangeName error: %v (defaulting to bybit)", sym, category, exErr)
+		exchangeName = "bybit"
+	}
+	if pubInfo, perr := getPublicInstrumentInfoFor(ctx, exchangeName, category, sym); perr != nil {
 		log.Printf("createBotStrategy %s/%s: GetPublicInstrumentInfo error: %v (gridSize=%.4f)", sym, category, perr, gridSize)
 	} else {
 		log.Printf("createBotStrategy %s/%s: MinOrderUSDT=%.4f MinQty=%.6f gridSize=%.4f", sym, category, pubInfo.MinOrderUSDT, pubInfo.MinQty, gridSize)
@@ -1306,7 +1372,7 @@ func (s *Server) applyBotConfigToStrategy(ctx context.Context, db pgxExec, strat
 // covers. A unique partial index on hedged_strategy_id prevents two bots from hedging
 // the same main position; if the slot is already taken the INSERT is silently skipped.
 func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botCfgJSON, sym, dir string, leverageOverride int, hedgedStrategyID string, adoptJSON *string) (string, error) {
-	cols := s.computeBotStrategyCols(ctx, cfg, sym, leverageOverride)
+	cols := s.computeBotStrategyCols(ctx, cfg, sym, b.accountID, leverageOverride)
 
 	// NULLIF converts empty hedgedStrategyID to NULL so the unique partial index
 	// only fires when a real main-strategy ID is provided.
@@ -1452,6 +1518,20 @@ func (s *Server) loadBotAccountCreds(ctx context.Context, accountID string) (tra
 		return trader.Credentials{}, err
 	}
 	return trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: accountID, WhitelistedIPs: whitelistedIPs}, nil
+}
+
+// loadAccountExchangeName returns just the "bybit"/"binance" column for an account —
+// a cheap indexed-PK lookup for call sites (computeBotStrategyCols's auto-raise logic)
+// that only need to pick the right public-instrument-info function and don't need
+// decrypted credentials or a full trader.Exchange.
+func (s *Server) loadAccountExchangeName(ctx context.Context, accountID string) (string, error) {
+	var exchangeName string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT exchange FROM exchange_accounts WHERE id=$1`, accountID,
+	).Scan(&exchangeName); err != nil {
+		return "", err
+	}
+	return exchangeName, nil
 }
 
 // loadBotAccountExchange resolves an exchange account's trader.Exchange (Bybit or
@@ -2122,10 +2202,11 @@ func (s *Server) processBotSymbol(ctx context.Context, symbol, interval, hash st
 		// NOTE: HashConfigs includes the symbol in the digest, so we must pass
 		// the actual symbol here — NOT "" (which would produce a different hash
 		// and never match the hash emitted by the compute unit).
-		sigCfgs := make([]signal.Config, len(cfg.ActivationSignals))
-		for i, a := range cfg.ActivationSignals {
-			sigCfgs[i] = signal.Config{Name: a.Name, Params: a.Params}
-		}
+		// Must resolve custom-signal-combo entries the same way botEngineTick's
+		// subscription side does (STEP 3b) — otherwise this hash is computed over the
+		// raw unresolved entries while the subscription was keyed by the resolved ones,
+		// and the two never match for any bot using a custom signal.
+		sigCfgs := s.resolveBotSignalConfigs(ctx, cfg.ActivationSignals)
 		botHash := signal.HashConfigs(symbol, interval, sigCfgs)
 		if botHash != hash {
 			continue

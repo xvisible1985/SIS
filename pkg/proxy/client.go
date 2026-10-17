@@ -77,21 +77,36 @@ func WSDialer() *websocket.Dialer {
 }
 
 // WSDialerFor returns a *websocket.Dialer restricted to proxies whose host is in
-// allowedIPs (empty allowedIPs = no restriction, same as WSDialer()). Returns
-// ErrNoWhitelistedProxy if allowedIPs is non-empty and no proxy matches — the caller
-// must not dial in that case (a direct/unlisted-IP connection would likely be rejected
-// by the exchange's own IP whitelist anyway).
+// allowedIPs (empty allowedIPs = no restriction). Returns ErrNoWhitelistedProxy if
+// allowedIPs is non-empty and no proxy matches, or ErrNoHealthyProxy if proxies are
+// configured but none are currently healthy — the caller must not dial in either case (a
+// direct/unlisted-IP connection could be rejected by the exchange's own IP whitelist, or
+// simply isn't the IP this account's traffic is supposed to go out on).
+//
+// Deliberately does NOT delegate the empty-allowedIPs case to WSDialer(): WSDialer()
+// always falls back to a direct dial when Pick() finds nothing healthy, which is correct
+// for its actual callers (public, keyless market-data streams in pkg/signal, where load
+// distribution — not IP control — is the only goal) but wrong here, since WSDialerFor is
+// used exclusively for private/authenticated account streams (pkg/trader's WS/REST
+// clients) where a silent unproxied leak is the same operational risk ErrNoHealthyProxy
+// guards against in transport.go.
 func WSDialerFor(allowedIPs []string) (*websocket.Dialer, error) {
-	if len(allowedIPs) == 0 {
-		return WSDialer(), nil
-	}
 	m := globalManager
-	if m == nil {
-		m = &Manager{}
+	if m == nil || m.Count() == 0 {
+		if len(allowedIPs) == 0 {
+			// Proxy feature not in use at all — direct connection (backward-compatible).
+			return websocket.DefaultDialer, nil
+		}
+		return nil, ErrNoWhitelistedProxy
 	}
 	p, err := m.PickForIPs(allowedIPs)
 	if err != nil {
 		return nil, err
+	}
+	if p == nil {
+		// Only reachable when allowedIPs is empty (see PickForIPs/Pick) — proxies are
+		// configured but none are currently healthy.
+		return nil, ErrNoHealthyProxy
 	}
 	return &websocket.Dialer{Proxy: http.ProxyURL(p.URL), HandshakeTimeout: 45 * time.Second}, nil
 }

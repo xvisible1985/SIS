@@ -180,6 +180,7 @@ type GridLevel struct {
 	FilledPrice     float64
 	// Matrix-only fields (nil/zero for grid strategies)
 	SLOrderID    string
+	SLLinkID     string // our own orderLinkId for SLOrderID — lets matrixSLSeq be restored across restarts
 	SLPrice      float64
 	SLReplaced   bool
 	Slot         *int      // nil = grid; matrix slot index: -N…0…+N

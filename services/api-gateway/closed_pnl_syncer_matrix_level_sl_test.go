@@ -80,7 +80,7 @@ func TestClosedPnlSyncer_MatrixLevelSL_OrderLinkIdMissing_StillNotGhostClosed(t 
 	acc := closedPnlAccount{id: accID, ownerID: userID}
 
 	syncer := NewClosedPnlSyncer(s.pool, "test-enc-key")
-	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, p, closeTime)
+	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, &fakeReconcileExchange{}, p, closeTime)
 
 	var endedAt *time.Time
 	var result *string

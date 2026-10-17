@@ -58,7 +58,7 @@ func TestClosedPnlSyncer_ZombieMatch_NeverMatchesCycleThatStartedAfterClose(t *t
 	acc := closedPnlAccount{id: accID, ownerID: userID}
 
 	syncer := NewClosedPnlSyncer(s.pool, "test-enc-key")
-	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, p, staleCloseTime)
+	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, &fakeReconcileExchange{}, p, staleCloseTime)
 
 	// 1. The cycle must remain OPEN — this is the actual bug: it must never be
 	// ghost-closed by an order that predates its own start.
@@ -130,7 +130,7 @@ func TestClosedPnlSyncer_ZombieMatch_StillClosesGenuineZombie(t *testing.T) {
 	acc := closedPnlAccount{id: accID, ownerID: userID}
 
 	syncer := NewClosedPnlSyncer(s.pool, "test-enc-key")
-	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, p, closeTime)
+	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, &fakeReconcileExchange{}, p, closeTime)
 
 	var endedAt *time.Time
 	var result *string

@@ -39,7 +39,7 @@ type MatrixTPRecordInput struct {
 // re-arms in place (same cycle) rather than ending the cycle, so this profit is never
 // captured by closeCycle — which records only the single final close event. Must be
 // called as a goroutine: it waits for Bybit to finalize before reading the closed PnL.
-func RecordMatrixTPProfit(pool *pgxpool.Pool, creds trader.Credentials, in MatrixTPRecordInput) {
+func RecordMatrixTPProfit(pool *pgxpool.Pool, ex trader.Exchange, in MatrixTPRecordInput) {
 	time.Sleep(8 * time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -51,7 +51,7 @@ func RecordMatrixTPProfit(pool *pgxpool.Pool, creds trader.Credentials, in Matri
 		if attempt > 0 {
 			time.Sleep(10 * time.Second)
 		}
-		pnls, err := trader.FetchClosedPnlForSymbol(ctx, creds, in.Strategy.Category, in.Strategy.Symbol, 20)
+		pnls, err := ex.FetchClosedPnlForSymbol(ctx, in.Strategy.Category, in.Strategy.Symbol, 20)
 		if err != nil {
 			log.Printf("matrix tp recorder [%s cy%d]: fetch closed pnl (attempt %d): %v",
 				in.Strategy.Symbol, in.CycleNum, attempt+1, err)
@@ -341,10 +341,16 @@ func FeesAndFundingInRange(ctx context.Context, pool *pgxpool.Pool, accountID, s
 }
 
 // RecordStrategyTrade writes a trade_history row for a closed strategy cycle.
-// Must be called as a goroutine — it waits for Bybit to process the close
+// Must be called as a goroutine — it waits for the exchange to process the close
 // before querying the authoritative PnL.
-func RecordStrategyTrade(pool *pgxpool.Pool, creds trader.Credentials, in TradeRecordInput) {
-	// Give Bybit time to finalize the closed position.
+//
+// Takes ex trader.Exchange (not raw Credentials) — Plan #4d: this used to call
+// trader.FetchClosedPnlForSymbol (Bybit's own free function) directly regardless of the
+// account's actual exchange. All three call sites (cycle.go, startup_reconcile.go,
+// services/api-gateway/closed_pnl_syncer.go) already had a resolved Exchange sitting
+// right next to the Credentials they were passing in instead.
+func RecordStrategyTrade(pool *pgxpool.Pool, ex trader.Exchange, in TradeRecordInput) {
+	// Give the exchange time to finalize the closed position.
 	time.Sleep(8 * time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -392,7 +398,7 @@ func RecordStrategyTrade(pool *pgxpool.Pool, creds trader.Credentials, in TradeR
 		if attempt > 0 {
 			time.Sleep(10 * time.Second)
 		}
-		pnls, err := trader.FetchClosedPnlForSymbol(ctx, creds, in.Strategy.Category, in.Strategy.Symbol, 10)
+		pnls, err := ex.FetchClosedPnlForSymbol(ctx, in.Strategy.Category, in.Strategy.Symbol, 10)
 		if err != nil {
 			log.Printf("trade recorder [%s cy%d]: fetch closed pnl (attempt %d): %v",
 				in.Strategy.Symbol, in.CycleNum, attempt+1, err)

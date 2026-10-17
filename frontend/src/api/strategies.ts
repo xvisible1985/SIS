@@ -102,11 +102,17 @@ export interface InstrumentConstraints {
 
 const instrConstraintsCache = new Map<string, { data: InstrumentConstraints; ts: number }>()
 
-export async function getInstrumentConstraints(symbol: string, category = 'linear'): Promise<InstrumentConstraints> {
-  const key = `${category}:${symbol}`
+// exchange picks which exchange's own precision rules (tick/step/minimums) the backend
+// looks up — defaults to "bybit" for callers that don't pass an account's exchange
+// (matches the /instrument-info endpoint's own default). Pass the account's actual
+// exchange whenever this is used to size/round a real order: rounding a Binance order
+// against Bybit's rules (or vice versa) is exactly what caused the live Binance
+// "-1111 Precision is over the maximum defined for this asset" rejection (Plan #4b/#4c).
+export async function getInstrumentConstraints(symbol: string, category = 'linear', exchange = 'bybit'): Promise<InstrumentConstraints> {
+  const key = `${exchange}:${category}:${symbol}`
   const cached = instrConstraintsCache.get(key)
   if (cached && Date.now() - cached.ts < 5 * 60_000) return cached.data
-  const res = await apiClient.get<InstrumentConstraints>(`/instrument-info?symbol=${symbol}&category=${category}`)
+  const res = await apiClient.get<InstrumentConstraints>(`/instrument-info?symbol=${symbol}&category=${category}&exchange=${exchange}`)
   instrConstraintsCache.set(key, { data: res.data, ts: Date.now() })
   return res.data
 }

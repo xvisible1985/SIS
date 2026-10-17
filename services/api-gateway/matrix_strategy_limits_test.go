@@ -160,10 +160,7 @@ func TestEnsureMatrixStrategies_RepairsOneSidedPairBeforeNewOnes(t *testing.T) {
 
 	cfg := botCfgJSON{
 		StrategyType: "matrix",
-		ActivationSignals: []struct {
-			Name   string                 `json:"name"`
-			Params map[string]interface{} `json:"params"`
-		}{
+		ActivationSignals: []botSignalRef{
 			{Name: "price-change", Params: map[string]interface{}{"tf": "1D", "mode": "counter", "periodHours": 24.0, "thresholdPct": 20.0}},
 		},
 	}

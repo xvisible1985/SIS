@@ -6,18 +6,18 @@ import { T, mono, fmt$, fmtPct } from './shared'
 // (RecentTradesPage.tsx) so the two stay pixel-identical.
 
 export function tradeRowCols(isMobile: boolean): string {
-  return isMobile ? 'minmax(0,1fr) 36px 76px' : '78px minmax(0,1.2fr) 40px minmax(0,1fr) 80px 58px'
+  return isMobile ? '54px minmax(0,1fr) 34px 70px' : '78px minmax(0,1.2fr) 40px minmax(0,1fr) 80px 58px'
 }
 
 export function TradeRowHeader({ isMobile }: { isMobile: boolean }) {
   return (
     <div style={{
-      display: 'grid', gridTemplateColumns: tradeRowCols(isMobile),
+      display: 'grid', gridTemplateColumns: tradeRowCols(isMobile), columnGap: 8,
       padding: '8px 12px', fontSize: 10, color: T.dim, textTransform: 'uppercase',
       letterSpacing: '1.2px', fontWeight: 600, borderBottom: `1px solid ${T.border}`,
       position: 'sticky', top: 0, background: T.panel, zIndex: 1,
     }}>
-      {!isMobile && <div>Дата</div>}
+      <div>Дата</div>
       <div>Символ</div>
       <div></div>
       {!isMobile && <div>Бот</div>}
@@ -31,14 +31,22 @@ export function TradeRow({ t, isMobile, isLast }: { t: RecentTrade; isMobile: bo
   const isLong = t.direction === 'long'
   const isTP = t.result === 'tp'
   const d = new Date(t.closed_at)
-  const ds = `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  const dateOnly = `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getFullYear() % 100).padStart(2, '0')}`
+  const timeOnly = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
   return (
     <div style={{
-      display: 'grid', gridTemplateColumns: tradeRowCols(isMobile),
+      display: 'grid', gridTemplateColumns: tradeRowCols(isMobile), columnGap: 8,
       padding: isMobile ? '9px 12px' : '9px 16px', alignItems: 'center', fontSize: 12,
       borderBottom: isLast ? 'none' : `1px solid ${T.border}`,
     }}>
-      {!isMobile && <div style={{ ...mono, color: T.dim, fontSize: 11 }}>{ds}</div>}
+      {isMobile ? (
+        <div style={{ ...mono, color: T.dim, fontSize: 11, lineHeight: 1.35, fontWeight: 600 }}>
+          <div>{dateOnly}</div>
+          <div>{timeOnly}</div>
+        </div>
+      ) : (
+        <div style={{ ...mono, color: T.dim, fontSize: 11 }}>{dateOnly} {timeOnly}</div>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
         <span style={{ ...mono, fontWeight: 700, color: T.text, fontSize: isMobile ? 11 : 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {isMobile ? t.symbol.replace('USDT', '') : t.symbol}

@@ -2,7 +2,7 @@ package trader
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -21,21 +21,36 @@ type accountRow struct {
 	whitelistedIPs []string
 }
 
-// Syncer periodically pulls execution history from Bybit and upserts into trader_executions.
+// ExchangeFactory builds the Exchange implementation for one account — injected rather
+// than called directly, since pkg/trader (this package) cannot import
+// pkg/trader/binance (which itself imports pkg/trader — a direct cycle). The real
+// factory passed in by services/api-gateway/main.go is strategy.ResolveExchange; see its
+// doc comment for the exchangeName dispatch rule this must match.
+type ExchangeFactory func(exchangeName string, creds Credentials) Exchange
+
+// Syncer periodically pulls execution/order history from each account's own exchange
+// (via ExchangeFactory, not Bybit-only free functions — fixed 2026-10-17: this used to
+// call FetchExecutions/FetchOrderHistory/QueryAPI directly regardless of the account's
+// actual exchange, exactly the bug class Plan #4d fixed elsewhere in pkg/strategy and
+// services/api-gateway, just not caught by that earlier pass since this is a separate
+// package with its own account-sync loop) and upserts into trader_executions/trader_orders.
 type Syncer struct {
 	pool     *pgxpool.Pool
 	encKey   string
 	syncDays int
+	factory  ExchangeFactory
 	mu       sync.Mutex
 	running  map[string]context.CancelFunc
 }
 
-// NewSyncer creates a Syncer. encKey is the hex encryption key. syncDays is backfill depth.
-func NewSyncer(pool *pgxpool.Pool, encKey string, syncDays int) *Syncer {
+// NewSyncer creates a Syncer. encKey is the hex encryption key. syncDays is backfill
+// depth. factory resolves each account's Exchange — pass strategy.ResolveExchange.
+func NewSyncer(pool *pgxpool.Pool, encKey string, syncDays int, factory ExchangeFactory) *Syncer {
 	return &Syncer{
 		pool:     pool,
 		encKey:   encKey,
 		syncDays: syncDays,
+		factory:  factory,
 		running:  make(map[string]context.CancelFunc),
 	}
 }
@@ -109,8 +124,9 @@ func (s *Syncer) runAccount(ctx context.Context, a accountRow) {
 		return
 	}
 	creds := Credentials{APIKey: apiKey, SecretKey: secret, AccountID: a.id, WhitelistedIPs: a.whitelistedIPs}
+	ex := s.factory(a.exchange, creds)
 
-	s.syncExecutions(ctx, a, creds)
+	s.syncExecutions(ctx, a, ex)
 
 	execTicker := time.NewTicker(60 * time.Second)
 	histTicker := time.NewTicker(5 * time.Minute)
@@ -124,49 +140,51 @@ func (s *Syncer) runAccount(ctx context.Context, a accountRow) {
 		case <-ctx.Done():
 			return
 		case <-execTicker.C:
-			s.syncExecutions(ctx, a, creds)
+			s.syncExecutions(ctx, a, ex)
 		case <-histTicker.C:
-			s.syncOrderHistory(ctx, a, creds)
+			s.syncOrderHistory(ctx, a, ex)
 		case <-whitelistTicker.C:
-			s.refreshWhitelistedIPs(ctx, &a, &creds)
+			// refreshWhitelistedIPs may narrow creds.WhitelistedIPs, which changes which
+			// proxy ex's underlying HTTP calls are allowed to use (see
+			// proxy.HTTPClientFor) — ex must be rebuilt afterward to pick that up,
+			// exactly like the pre-2026-10-17 code mutated creds in place so the NEXT
+			// tick's direct free-function calls would see it.
+			if s.refreshWhitelistedIPs(ctx, &a, &creds) {
+				ex = s.factory(a.exchange, creds)
+			}
 		}
 	}
 }
 
-// refreshWhitelistedIPs re-fetches the account's Bybit API key IP whitelist via
-// QueryAPI and persists it to exchange_accounts.whitelisted_ips, also updating creds
-// in place so subsequent calls in this same runAccount cycle use the fresh value.
-func (s *Syncer) refreshWhitelistedIPs(ctx context.Context, a *accountRow, creds *Credentials) {
-	// Deliberately unrestricted: this call exists to DISCOVER the whitelist, so it must
-	// not itself be constrained by creds.WhitelistedIPs (which, from the 2nd refresh
-	// onward, holds the PREVIOUS result). Reusing it here would self-lock the account
-	// forever the moment the whitelist ever narrows to IPs our proxy pool can't match.
-	unrestricted := Credentials{APIKey: creds.APIKey, SecretKey: creds.SecretKey}
-	raw, err := QueryAPI(ctx, unrestricted)
+// refreshWhitelistedIPs re-fetches the account's exchange-API-key IP whitelist (if the
+// exchange's API exposes it at all — see trader.ErrWhitelistNotSupported) and persists
+// it to exchange_accounts.whitelisted_ips, also updating creds in place. Returns whether
+// creds.WhitelistedIPs actually changed, so the caller knows whether it needs to rebuild
+// its Exchange instance (ex was built with a COPY of creds, so mutating this creds value
+// alone does not change what ex's own HTTP calls use).
+func (s *Syncer) refreshWhitelistedIPs(ctx context.Context, a *accountRow, creds *Credentials) bool {
+	// Built fresh (not reused from runAccount's `ex`) so this call is unrestricted by
+	// creds.WhitelistedIPs — which, from the 2nd refresh onward, holds the PREVIOUS
+	// result; reusing it here would self-lock the account forever the moment the
+	// whitelist ever narrows to IPs our proxy pool can't match.
+	unrestricted := s.factory(a.exchange, Credentials{APIKey: creds.APIKey, SecretKey: creds.SecretKey})
+	ips, err := unrestricted.FetchWhitelistedIPs(ctx)
 	if err != nil {
-		log.Printf("syncer: refresh whitelist account=%s: %v", a.id, err)
-		return
+		if !errors.Is(err, ErrWhitelistNotSupported) {
+			log.Printf("syncer: refresh whitelist account=%s: %v", a.id, err)
+		}
+		return false
 	}
-	var parsed struct {
-		IPs []string `json:"ips"`
-	}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		log.Printf("syncer: parse whitelist account=%s: %v", a.id, err)
-		return
-	}
-	// Bybit returns ["*"] (not []) for a key with no IP restriction — normalize both to
-	// nil/NULL so PickForIPs treats them identically as "no restriction", instead of
-	// searching for a proxy whose host is literally "*" and never finding one.
-	ips := NormalizeWhitelistedIPs(parsed.IPs)
 	if _, err := s.pool.Exec(ctx,
 		`UPDATE exchange_accounts SET whitelisted_ips=$1 WHERE id=$2`,
 		ips, a.id,
 	); err != nil {
 		log.Printf("syncer: persist whitelist account=%s: %v", a.id, err)
-		return
+		return false
 	}
 	a.whitelistedIPs = ips
 	creds.WhitelistedIPs = ips
+	return true
 }
 
 // UpsertExecution inserts one execution row into trader_executions, matching by
@@ -194,62 +212,53 @@ func UpsertExecution(ctx context.Context, pool *pgxpool.Pool, ownerID, accountID
 	return err
 }
 
-func (s *Syncer) syncExecutions(ctx context.Context, a accountRow, creds Credentials) {
+// bybitCategories is every category Bybit splits account-wide history into. Binance
+// (USDⓈ-M futures only, no inverse/spot split) only ever needs one pass — its
+// Exchange.FetchAccountExecutions/FetchAccountOrderHistory implementations ignore the
+// category argument entirely, but syncExecutions/syncOrderHistory still only call once
+// for it instead of uselessly repeating the exact same account-wide fetch 3x.
+func bybitCategories(exchangeName string) []string {
+	if exchangeName == "binance" {
+		return []string{"linear"}
+	}
+	return []string{"linear", "inverse", "spot"}
+}
+
+func (s *Syncer) syncExecutions(ctx context.Context, a accountRow, ex Exchange) {
 	since := time.Now().AddDate(0, 0, -s.syncDays)
-	for _, category := range []string{"linear", "inverse", "spot"} {
-		cursor := ""
-		for {
-			execs, next, err := FetchExecutions(ctx, creds, category, cursor)
-			if err != nil {
-				log.Printf("syncer: fetch executions account=%s category=%s: %v", a.id, category, err)
-				break
+	for _, category := range bybitCategories(a.exchange) {
+		execs, err := ex.FetchAccountExecutions(ctx, category, since)
+		if err != nil {
+			log.Printf("syncer: fetch executions account=%s category=%s: %v", a.id, category, err)
+		}
+		for _, e := range execs {
+			if err := UpsertExecution(ctx, s.pool, a.ownerID, a.id, a.exchange, category, e); err != nil {
+				log.Printf("syncer: upsert exec %s: %v", e.ExecId, err)
 			}
-			for _, e := range execs {
-				var execTimeMs int64
-				fmt.Sscanf(e.ExecTimeMs, "%d", &execTimeMs)
-				execTime := time.UnixMilli(execTimeMs)
-				if execTime.Before(since) {
-					next = ""
-					break
-				}
-				if err := UpsertExecution(ctx, s.pool, a.ownerID, a.id, a.exchange, category, e); err != nil {
-					log.Printf("syncer: upsert exec %s: %v", e.ExecId, err)
-				}
-			}
-			if next == "" {
-				break
-			}
-			cursor = next
 		}
 	}
 }
 
-func (s *Syncer) syncOrderHistory(ctx context.Context, a accountRow, creds Credentials) {
-	for _, category := range []string{"linear", "inverse", "spot"} {
-		cursor := ""
-		for {
-			orders, next, err := FetchOrderHistory(ctx, creds, category, cursor)
+func (s *Syncer) syncOrderHistory(ctx context.Context, a accountRow, ex Exchange) {
+	since := time.Now().AddDate(0, 0, -s.syncDays)
+	for _, category := range bybitCategories(a.exchange) {
+		orders, err := ex.FetchAccountOrderHistory(ctx, category, since)
+		if err != nil {
+			log.Printf("syncer: fetch order history account=%s category=%s: %v", a.id, category, err)
+		}
+		for _, o := range orders {
+			if o.OrderLinkId == "" || len(o.OrderLinkId) < 3 || o.OrderLinkId[:3] != "sis" {
+				continue
+			}
+			_, err := s.pool.Exec(ctx, `
+				UPDATE trader_orders
+				SET status=$1, cum_exec_qty=$2, cum_exec_fee=$3, order_id=COALESCE(NULLIF($4,''), order_id), updated_at=NOW()
+				WHERE order_link_id=$5`,
+				o.OrderStatus, nullNum(o.CumExecQty), nullNum(o.CumExecFee), o.OrderId, o.OrderLinkId,
+			)
 			if err != nil {
-				break
+				log.Printf("syncer: update order %s: %v", o.OrderLinkId, err)
 			}
-			for _, o := range orders {
-				if o.OrderLinkId == "" || len(o.OrderLinkId) < 3 || o.OrderLinkId[:3] != "sis" {
-					continue
-				}
-				_, err := s.pool.Exec(ctx, `
-					UPDATE trader_orders
-					SET status=$1, cum_exec_qty=$2, cum_exec_fee=$3, order_id=COALESCE(NULLIF($4,''), order_id), updated_at=NOW()
-					WHERE order_link_id=$5`,
-					o.OrderStatus, nullNum(o.CumExecQty), nullNum(o.CumExecFee), o.OrderId, o.OrderLinkId,
-				)
-				if err != nil {
-					log.Printf("syncer: update order %s: %v", o.OrderLinkId, err)
-				}
-			}
-			if next == "" {
-				break
-			}
-			cursor = next
 		}
 	}
 }

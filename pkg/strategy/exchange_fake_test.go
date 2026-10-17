@@ -69,6 +69,31 @@ type markPriceReq struct {
 	Symbol   string
 }
 
+type instrumentInfoReq struct {
+	Category string
+	Symbol   string
+}
+
+type orderLookupReq struct {
+	Category string
+	Symbol   string
+	ID       string // orderLinkId or orderId, depending on which method was called
+}
+
+type orderLookupResp struct {
+	order     trader.Order
+	stillOpen bool
+}
+
+type marginInfoResp struct {
+	equity, available, mmRatePct float64
+}
+
+type accountHistoryReq struct {
+	Category string
+	Since    time.Time
+}
+
 // fakeExchange is a hand-written stand-in for trader.Exchange, used only by pkg/strategy
 // tests (no live network/WS). Modeled on pkg/trader/exchange_test.go's fakeWSOrderClient,
 // but extended with a call LOG (slice, not just the last call) and a response QUEUE (not
@@ -123,6 +148,33 @@ type fakeExchange struct {
 
 	getMarkPriceCalls []markPriceReq
 	getMarkPriceQ     respQueue[float64]
+
+	getInstrumentInfoCalls []instrumentInfoReq
+	getInstrumentInfoQ     respQueue[trader.InstrumentInfo]
+
+	fetchOrderByLinkIdCalls []orderLookupReq
+	fetchOrderByLinkIdQ     respQueue[orderLookupResp]
+
+	fetchOrderByIdCalls []orderLookupReq
+	fetchOrderByIdQ     respQueue[orderLookupResp]
+
+	fetchOpenOrdersAccountCalls int
+	fetchOpenOrdersAccountQ     respQueue[[]trader.Order]
+
+	getAccountMarginInfoCalls int
+	getAccountMarginInfoQ     respQueue[marginInfoResp]
+
+	setTrailingStopCalls []trader.TrailingStopRequest
+	setTrailingStopQ     respQueue[struct{}]
+
+	fetchAccountExecutionsCalls []accountHistoryReq
+	fetchAccountExecutionsQ     respQueue[[]trader.Execution]
+
+	fetchAccountOrderHistoryCalls []accountHistoryReq
+	fetchAccountOrderHistoryQ     respQueue[[]trader.Order]
+
+	fetchWhitelistedIPsCalls int
+	fetchWhitelistedIPsQ     respQueue[[]string]
 }
 
 var _ trader.Exchange = (*fakeExchange)(nil)
@@ -237,4 +289,71 @@ func (f *fakeExchange) GetMarkPrice(ctx context.Context, category, symbol string
 	defer f.mu.Unlock()
 	f.getMarkPriceCalls = append(f.getMarkPriceCalls, markPriceReq{Category: category, Symbol: symbol})
 	return f.getMarkPriceQ.take()
+}
+
+func (f *fakeExchange) GetInstrumentInfo(ctx context.Context, category, symbol string) (trader.InstrumentInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.getInstrumentInfoCalls = append(f.getInstrumentInfoCalls, instrumentInfoReq{Category: category, Symbol: symbol})
+	return f.getInstrumentInfoQ.take()
+}
+
+func (f *fakeExchange) FetchOrderByLinkId(ctx context.Context, category, symbol, orderLinkId string) (trader.Order, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fetchOrderByLinkIdCalls = append(f.fetchOrderByLinkIdCalls, orderLookupReq{Category: category, Symbol: symbol, ID: orderLinkId})
+	resp, err := f.fetchOrderByLinkIdQ.take()
+	return resp.order, resp.stillOpen, err
+}
+
+func (f *fakeExchange) FetchOrderById(ctx context.Context, category, symbol, orderId string) (trader.Order, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fetchOrderByIdCalls = append(f.fetchOrderByIdCalls, orderLookupReq{Category: category, Symbol: symbol, ID: orderId})
+	resp, err := f.fetchOrderByIdQ.take()
+	return resp.order, resp.stillOpen, err
+}
+
+func (f *fakeExchange) FetchOpenOrders(ctx context.Context) ([]trader.Order, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fetchOpenOrdersAccountCalls++
+	return f.fetchOpenOrdersAccountQ.take()
+}
+
+func (f *fakeExchange) GetAccountMarginInfo(ctx context.Context) (equity, available, mmRatePct float64, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.getAccountMarginInfoCalls++
+	resp, err := f.getAccountMarginInfoQ.take()
+	return resp.equity, resp.available, resp.mmRatePct, err
+}
+
+func (f *fakeExchange) SetTrailingStop(ctx context.Context, req trader.TrailingStopRequest) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setTrailingStopCalls = append(f.setTrailingStopCalls, req)
+	_, err := f.setTrailingStopQ.take()
+	return err
+}
+
+func (f *fakeExchange) FetchAccountExecutions(ctx context.Context, category string, since time.Time) ([]trader.Execution, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fetchAccountExecutionsCalls = append(f.fetchAccountExecutionsCalls, accountHistoryReq{Category: category, Since: since})
+	return f.fetchAccountExecutionsQ.take()
+}
+
+func (f *fakeExchange) FetchAccountOrderHistory(ctx context.Context, category string, since time.Time) ([]trader.Order, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fetchAccountOrderHistoryCalls = append(f.fetchAccountOrderHistoryCalls, accountHistoryReq{Category: category, Since: since})
+	return f.fetchAccountOrderHistoryQ.take()
+}
+
+func (f *fakeExchange) FetchWhitelistedIPs(ctx context.Context) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fetchWhitelistedIPsCalls++
+	return f.fetchWhitelistedIPsQ.take()
 }

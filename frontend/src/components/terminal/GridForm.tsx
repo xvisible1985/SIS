@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { placeOrder } from '../../api/trader'
+import { listAccounts } from '../../api/accounts'
+import { getInstrumentConstraints } from '../../api/strategies'
 import { CoinPicker } from '../common/CoinPicker'
 
 interface Props {
@@ -24,24 +26,49 @@ export function GridForm({ accountId, symbol, onSymbolChange, hedgeMode, lastPri
   const [result, setResult] = useState<string | null>(null)
   const [errors, setErrors] = useState<string[]>([])
   const [qtyStep, setQtyStep] = useState('1')
+  const [tickSize, setTickSize] = useState('0.01')
+  // Defaults to "bybit" (matches the backend's /instrument-info default) until the
+  // account lookup below resolves — see OrderForm.tsx's identical pattern.
+  const [accountExchange, setAccountExchange] = useState('bybit')
 
   const category = symbol.endsWith('USDT') || symbol.endsWith('USDC') ? 'linear' : 'inverse'
 
   useEffect(() => {
-    fetch(`https://api.bybit.com/v5/market/instruments-info?category=${category}&symbol=${symbol}`)
-      .then(r => r.json())
-      .then(j => {
-        const s = j.result?.list?.[0]?.lotSizeFilter?.qtyStep
-        if (s) setQtyStep(s)
+    let cancelled = false
+    listAccounts()
+      .then(accs => {
+        if (cancelled) return
+        const acc = accs.find(a => a.id === accountId)
+        setAccountExchange(acc?.exchange || 'bybit')
       })
       .catch(() => {})
-  }, [symbol, category])
+    return () => { cancelled = true }
+  }, [accountId])
+
+  useEffect(() => {
+    // Plan #4b/#4c: was always a direct, hardcoded fetch to Bybit's public API,
+    // regardless of which exchange accountId actually trades on — fixed the same way as
+    // OrderForm.tsx's identical precision bug.
+    getInstrumentConstraints(symbol, category, accountExchange)
+      .then(info => {
+        if (info.qty_step) setQtyStep(String(info.qty_step))
+        if (info.tick_size) setTickSize(String(info.tick_size))
+      })
+      .catch(() => {})
+  }, [symbol, category, accountExchange])
 
   function roundQty(val: number): string {
     const s = parseFloat(qtyStep)
     if (!s) return val.toFixed(4)
     const dec = qtyStep.includes('.') ? qtyStep.split('.')[1].length : 0
     return (Math.round(val / s) * s).toFixed(dec)
+  }
+
+  function roundPrice(val: number): string {
+    const t = parseFloat(tickSize)
+    if (!t) return val.toFixed(2)
+    const dec = tickSize.includes('.') ? tickSize.split('.')[1].length : 0
+    return (Math.round(val / t) * t).toFixed(dec)
   }
 
   const base = parseFloat(basePrice) || parseFloat(lastPrice ?? '0') || 0
@@ -80,7 +107,10 @@ export function GridForm({ accountId, symbol, onSymbolChange, hedgeMode, lastPri
           side: o.side,
           order_type: 'Market',
           qty,
-          trigger_price: o.price.toFixed(2),
+          // Rounded to the account's exchange tick size (Plan #4b/#4c) — was hardcoded
+          // .toFixed(2) regardless of exchange or symbol, which is wrong for both the
+          // many Bybit symbols priced below $0.01 and for Binance's own, different ticks.
+          trigger_price: roundPrice(o.price),
           trigger_by: 'MarkPrice',
           trigger_direction: o.triggerDir,
           order_filter: 'StopOrder',

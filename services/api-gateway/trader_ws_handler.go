@@ -9,9 +9,12 @@ import (
 	"sis/pkg/auth"
 	"sis/pkg/crypto"
 	"sis/pkg/trader"
+	"sis/pkg/trader/binance"
 )
 
-// PositionsStream streams Bybit private positions and orders to the client.
+// PositionsStream streams private positions and orders to the client, over the
+// account's own exchange's user-data/private WebSocket (Bybit or Binance — see
+// trader.RunPositionStream vs binance.RunPositionStream below).
 // GET /ws/trader/positions?token=<JWT>&account_id=<UUID>
 func (s *Server) PositionsStream(w http.ResponseWriter, r *http.Request) {
 	tokenStr := r.URL.Query().Get("token")
@@ -31,12 +34,12 @@ func (s *Server) PositionsStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var apiKeyEnc, secretEnc, label string
+	var apiKeyEnc, secretEnc, label, exchangeName string
 	var whitelistedIPs []string
 	err = s.pool.QueryRow(r.Context(),
-		`SELECT api_key_enc, secret_enc, label, whitelisted_ips FROM exchange_accounts WHERE id=$1 AND owner_id=$2 AND is_active=TRUE`,
+		`SELECT api_key_enc, secret_enc, label, whitelisted_ips, exchange FROM exchange_accounts WHERE id=$1 AND owner_id=$2 AND is_active=TRUE`,
 		accountID, userID,
-	).Scan(&apiKeyEnc, &secretEnc, &label, &whitelistedIPs)
+	).Scan(&apiKeyEnc, &secretEnc, &label, &whitelistedIPs, &exchangeName)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			log.Printf("trader ws: query account %s: %v", accountID, err)
@@ -49,9 +52,9 @@ func (s *Server) PositionsStream(w http.ResponseWriter, r *http.Request) {
 		}
 		// Admin fallback: allow streaming any account regardless of ownership.
 		err = s.pool.QueryRow(r.Context(),
-			`SELECT api_key_enc, secret_enc, label, whitelisted_ips FROM exchange_accounts WHERE id=$1 AND is_active=TRUE`,
+			`SELECT api_key_enc, secret_enc, label, whitelisted_ips, exchange FROM exchange_accounts WHERE id=$1 AND is_active=TRUE`,
 			accountID,
-		).Scan(&apiKeyEnc, &secretEnc, &label, &whitelistedIPs)
+		).Scan(&apiKeyEnc, &secretEnc, &label, &whitelistedIPs, &exchangeName)
 		if err != nil {
 			if !errors.Is(err, pgx.ErrNoRows) {
 				log.Printf("trader ws: query account %s (admin): %v", accountID, err)
@@ -84,6 +87,10 @@ func (s *Server) PositionsStream(w http.ResponseWriter, r *http.Request) {
 	creds := trader.Credentials{APIKey: apiKey, SecretKey: secretKey, AccountID: accountID, WhitelistedIPs: whitelistedIPs}
 	broadcastCh, unsub := s.subscribeBroadcast(accountID)
 	defer unsub()
-	trader.RunPositionStream(r.Context(), conn, creds, label, broadcastCh)
+	if exchangeName == "binance" {
+		binance.RunPositionStream(r.Context(), conn, creds, label, broadcastCh)
+	} else {
+		trader.RunPositionStream(r.Context(), conn, creds, label, broadcastCh)
+	}
 }
 

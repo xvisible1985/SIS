@@ -993,12 +993,13 @@ func (sr *StrategyRunner) matrixApplyStopCondSLs(ctx context.Context, currentPri
 			continue
 		}
 		l.SLOrderID = result.OrderId
+		l.SLLinkID = linkID
 		l.SLPrice = newTrigger
 		l.SLReplaced = true
 		sr.runner.RegisterOrder(result.OrderId, ref)
 		sr.runner.pool.Exec(ctx, //nolint:errcheck
-			`UPDATE strategy_levels SET sl_order_id=$1, sl_price=$2, sl_replaced=true WHERE id=$3`,
-			result.OrderId, newTrigger, l.ID,
+			`UPDATE strategy_levels SET sl_order_id=$1, sl_link_id=$2, sl_price=$3, sl_replaced=true WHERE id=$4`,
+			result.OrderId, linkID, newTrigger, l.ID,
 		)
 		sr.info(ctx, fmt.Sprintf("Matrix SL %s переставлен → %.4f (stop cond сработал)", slotLabel(l.Slot), newTrigger))
 	}
@@ -1556,11 +1557,12 @@ func (sr *StrategyRunner) matrixPlacePerLevelSL(ctx context.Context, l *GridLeve
 	}
 
 	l.SLOrderID = result.OrderId
+	l.SLLinkID = linkID
 	l.SLPrice = trigger
 	sr.runner.RegisterOrder(result.OrderId, ref)
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
-		`UPDATE strategy_levels SET sl_order_id=$1, sl_price=$2 WHERE id=$3`,
-		result.OrderId, trigger, l.ID,
+		`UPDATE strategy_levels SET sl_order_id=$1, sl_link_id=$2, sl_price=$3 WHERE id=$4`,
+		result.OrderId, linkID, trigger, l.ID,
 	)
 	sr.info(ctx, fmt.Sprintf("Matrix SL для %s @ %.4f выставлен", slotLabel(l.Slot), trigger))
 }
@@ -1585,7 +1587,7 @@ func (sr *StrategyRunner) matrixUpdateTP(ctx context.Context) {
 		// A brand-new runner (e.g. just created by the matrix repair path) may not have
 		// its instrument cache populated yet when the first level fill arrives — try to
 		// load it now instead of silently giving up, same as grid's updateTP already does.
-		if instr, err := trader.GetInstrumentInfo(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol); err == nil {
+		if instr, err := sr.runner.exchange.GetInstrumentInfo(ctx, sr.strategy.Category, sr.strategy.Symbol); err == nil {
 			sr.instr = instr
 			sr.instrFetchedAt = time.Now()
 		}
@@ -1950,6 +1952,11 @@ func (sr *StrategyRunner) matrixAfterSLClose(ctx context.Context, closed *GridLe
 	// TP for it afterward would be meaningless (matrixUpdateTP would immediately bail out
 	// on avgEntryPrice==0 anyway), so it's skipped once sr.cycle is nil.
 	if sr.strategy.RelativeSlots {
+		// Renumber BEFORE the flatten-check/TP recompute below — mirrors novabot-backend's
+		// own ordering (always re-rank first, then make decisions from the fresh numbering).
+		// Flatten-check itself doesn't depend on slot numbers (matrixActiveQty sums qty
+		// regardless of slot), so this reordering doesn't change its own behavior.
+		sr.matrixRenumberRelativeSlots(ctx, closed)
 		sr.matrixHandleSLFlattenOrContinue(ctx)
 		if sr.cycle == nil {
 			return // cycle just closed — nothing left to recompute TP for
@@ -2020,6 +2027,118 @@ func (sr *StrategyRunner) matrixAfterSLClose(ctx context.Context, closed *GridLe
 	}
 
 	sr.matrixHandleSLFlattenOrContinue(ctx)
+}
+
+// matrixRenumberRelativeSlots re-ranks every currently-filled level on the same side as the
+// just-closed one, by distance from the entry price, and reassigns slot numbers to match —
+// mirroring novabot-backend's SafeModeLine (Kotlin): on every check it re-sorts the
+// currently-open orders on a side by distance from the entry fill and rewrites each one's
+// line number to its rank (closest=1, next=2, ...), so a level's line config (stop/TP/step)
+// always reflects "which position in the currently-open chain is this", not "which position
+// was it when first opened". Without this, SIS kept a level's slot fixed forever: if L1
+// closed by SL while L2 stayed open, L2 stayed "L2" (still using line2's settings) instead of
+// becoming the new L1 — and the next newly-opened slot would independently recompute down to
+// the same freed-up number via nextConfigIndex's count-based rule, colliding with L2's
+// still-current number instead of L2 having already moved into it.
+//
+// Scoped to "only right after an SL fires" (not every price tick, unlike novabot-backend) —
+// per 2026-10-11 design discussion, the closed slot's own removal is the only event that can
+// shift the remaining same-side levels' ranks, so there is nothing to recompute on a tick
+// that didn't just close a level.
+//
+// Does NOT touch the renumbered level's existing SL order (sl_order_id/sl_price/sl_replaced)
+// — same as novabot-backend, which only rewrites the order's line NUMBER and leaves its
+// already-placed stop order alone; the new line's stop/TP config takes effect the next time
+// that level's own conditions are evaluated (matrixApplyStopCondSLs, matrixUpdateTP), exactly
+// like reassigning lineOrders.stepN in SafeModeLine without cancelling the existing order.
+//
+// Must be called with sr.mu held (same as matrixAfterSLClose, its only caller).
+func (sr *StrategyRunner) matrixRenumberRelativeSlots(ctx context.Context, closed *GridLevel) {
+	if closed.Slot == nil || *closed.Slot == 0 {
+		return // L0 isn't ranked within either side's array — nothing to renumber
+	}
+	side := "above"
+	if *closed.Slot < 0 {
+		side = "below"
+	}
+	sr.matrixRenumberRelativeSlotSide(ctx, side)
+}
+
+// matrixRenumberRelativeSlotSide is matrixRenumberRelativeSlots' shared core: re-ranks every
+// currently-filled level on the given side ("above"/"below") by distance from entry and
+// reassigns slot numbers to match. Split out so the exact same ranking logic also powers
+// reconcile.go's catch-up pass (matrixCatchUpRelativeSlotNumbering), which re-derives both
+// sides unconditionally rather than reacting to a specific closed level — needed because this
+// feature's reactive half only fixes numbering going forward from the SL close that triggers
+// it; any strategy whose numbering had already drifted stale BEFORE this feature existed (or
+// drifted for any other reason) stays stale forever without a periodic independent recheck.
+// Found live (2026-10-11, FUSDT/pol, GONCHAR 2.0): L1 had closed days before this feature
+// shipped, so L2 never got promoted to L1 — and the next relative-slot preview, computed by
+// the same count-based rule independently, also landed on "L2", showing two separate L(2)
+// lines on the chart at once (the stale real one and the fresh preview).
+//
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) matrixRenumberRelativeSlotSide(ctx context.Context, side string) {
+	entry := sr.matrixEntryPrice()
+
+	type ranked struct {
+		i    int
+		dist float64
+	}
+	var open []ranked
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Status != LevelFilled || l.Slot == nil || *l.Slot == 0 || l.FilledPrice <= 0 {
+			continue
+		}
+		if side == "above" && *l.Slot < 0 {
+			continue
+		}
+		if side == "below" && *l.Slot > 0 {
+			continue
+		}
+		d := l.FilledPrice - entry
+		if d < 0 {
+			d = -d
+		}
+		open = append(open, ranked{i, d})
+	}
+	sort.Slice(open, func(a, b int) bool { return open[a].dist < open[b].dist })
+
+	for rank, o := range open {
+		newSlot := rank + 1
+		if side == "below" {
+			newSlot = -newSlot
+		}
+		l := &sr.levels[o.i]
+		if l.Slot != nil && *l.Slot == newSlot {
+			continue // already correctly numbered
+		}
+		oldSlot := *l.Slot
+		s := newSlot
+		l.Slot = &s
+		sr.runner.pool.Exec(ctx, //nolint:errcheck
+			`UPDATE strategy_levels SET slot=$1 WHERE id=$2`, newSlot, l.ID)
+		sr.info(ctx, fmt.Sprintf("Matrix: уровень L%d перенумерован L(%d) → L(%d)",
+			l.LevelIdx, oldSlot, newSlot))
+	}
+}
+
+// matrixCatchUpRelativeSlotNumbering runs matrixRenumberRelativeSlotSide for both sides
+// unconditionally — the periodic self-heal counterpart to the reactive per-close renumbering
+// in matrixAfterSLClose. See matrixRenumberRelativeSlotSide's doc comment for why this exists
+// as a separate entry point. Idempotent and cheap when nothing is stale: each side's loop is
+// a pure in-memory comparison, touching the DB only for a level whose slot actually changes.
+// Self-locking (unlike the reactive half) since its caller, reconcile.go, does not already
+// hold sr.mu.
+func (sr *StrategyRunner) matrixCatchUpRelativeSlotNumbering(ctx context.Context) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	if sr.cycle == nil || !sr.strategy.RelativeSlots {
+		return
+	}
+	sr.matrixRenumberRelativeSlotSide(ctx, "above")
+	sr.matrixRenumberRelativeSlotSide(ctx, "below")
 }
 
 // matrixHandleSLFlattenOrContinue decides what happens after a per-level SL close: if no

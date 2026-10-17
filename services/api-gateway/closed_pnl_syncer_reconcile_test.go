@@ -71,6 +71,34 @@ func (f *fakeReconcileExchange) GetMarkPrice(ctx context.Context, category, symb
 	return 0, nil
 }
 
+func (f *fakeReconcileExchange) GetInstrumentInfo(ctx context.Context, category, symbol string) (trader.InstrumentInfo, error) {
+	return trader.InstrumentInfo{}, nil
+}
+func (f *fakeReconcileExchange) FetchOrderByLinkId(ctx context.Context, category, symbol, orderLinkId string) (trader.Order, bool, error) {
+	return trader.Order{}, false, nil
+}
+func (f *fakeReconcileExchange) FetchOrderById(ctx context.Context, category, symbol, orderId string) (trader.Order, bool, error) {
+	return trader.Order{}, false, nil
+}
+func (f *fakeReconcileExchange) FetchOpenOrders(ctx context.Context) ([]trader.Order, error) {
+	return nil, nil
+}
+func (f *fakeReconcileExchange) GetAccountMarginInfo(ctx context.Context) (equity, available, mmRatePct float64, err error) {
+	return 0, 0, 0, nil
+}
+func (f *fakeReconcileExchange) SetTrailingStop(ctx context.Context, req trader.TrailingStopRequest) error {
+	return nil
+}
+func (f *fakeReconcileExchange) FetchAccountExecutions(ctx context.Context, category string, since time.Time) ([]trader.Execution, error) {
+	return nil, nil
+}
+func (f *fakeReconcileExchange) FetchAccountOrderHistory(ctx context.Context, category string, since time.Time) ([]trader.Order, error) {
+	return nil, nil
+}
+func (f *fakeReconcileExchange) FetchWhitelistedIPs(ctx context.Context) ([]string, error) {
+	return nil, nil
+}
+
 var _ trader.Exchange = (*fakeReconcileExchange)(nil)
 
 // TestClosedPnlSyncer_FullReconcile_RecordsOldMissedManualClose: an order that closed 10

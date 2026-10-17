@@ -751,6 +751,92 @@ func FetchExecutions(ctx context.Context, creds Credentials, category, cursor st
 	return resp.Result.List, resp.Result.NextPageCursor, nil
 }
 
+// FetchAccountExecutionsSince walks FetchExecutions' cursor from the most recent page
+// backward until an execution older than `since` is reached (or pages run out),
+// returning every execution in [since, now] in one call instead of a cursor the caller
+// must walk itself. Used by BybitExchange.FetchAccountExecutions — this is exactly the
+// loop pkg/trader.Syncer.syncExecutions used to run itself, moved behind the Exchange
+// interface (2026-10-17) so Binance, whose pagination model is completely different,
+// could satisfy the same interface method with its own logic instead of being forced
+// through Bybit's cursor shape.
+func FetchAccountExecutionsSince(ctx context.Context, creds Credentials, category string, since time.Time) ([]Execution, error) {
+	var all []Execution
+	cursor := ""
+	for {
+		execs, next, err := FetchExecutions(ctx, creds, category, cursor)
+		if err != nil {
+			return all, err
+		}
+		done := false
+		for _, e := range execs {
+			var ms int64
+			fmt.Sscanf(e.ExecTimeMs, "%d", &ms)
+			if time.UnixMilli(ms).Before(since) {
+				done = true
+				break
+			}
+			all = append(all, e)
+		}
+		if done || next == "" {
+			break
+		}
+		cursor = next
+	}
+	return all, nil
+}
+
+// FetchAccountOrderHistorySince is FetchAccountExecutionsSince's counterpart for order
+// history. Unlike the pre-2026-10-17 Syncer.syncOrderHistory (which walked every single
+// page with no time cutoff at all, however old), this stops once CreatedTime falls
+// before `since` — bounding an old account's order-history walk to the same syncDays
+// window syncExecutions already respects, instead of leaving order history as the one
+// unbounded full-history walk.
+func FetchAccountOrderHistorySince(ctx context.Context, creds Credentials, category string, since time.Time) ([]Order, error) {
+	var all []Order
+	cursor := ""
+	for {
+		orders, next, err := FetchOrderHistory(ctx, creds, category, cursor)
+		if err != nil {
+			return all, err
+		}
+		done := false
+		for _, o := range orders {
+			var ms int64
+			fmt.Sscanf(o.CreatedTime, "%d", &ms)
+			if ms > 0 && time.UnixMilli(ms).Before(since) {
+				done = true
+				break
+			}
+			all = append(all, o)
+		}
+		if done || next == "" {
+			break
+		}
+		cursor = next
+	}
+	return all, nil
+}
+
+// FetchAccountWhitelistedIPs queries Bybit's query-api endpoint (the same call
+// Syncer.refreshWhitelistedIPs used to make directly) using an API-key/secret-only
+// Credentials — deliberately NOT creds.WhitelistedIPs, which (from the 2nd refresh
+// onward) holds the PREVIOUS result; reusing it here would self-lock the account forever
+// the moment the whitelist ever narrows to IPs our proxy pool can't match.
+func FetchAccountWhitelistedIPs(ctx context.Context, creds Credentials) ([]string, error) {
+	unrestricted := Credentials{APIKey: creds.APIKey, SecretKey: creds.SecretKey}
+	raw, err := QueryAPI(ctx, unrestricted)
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		IPs []string `json:"ips"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, err
+	}
+	return NormalizeWhitelistedIPs(parsed.IPs), nil
+}
+
 func FetchClosedPnl(ctx context.Context, creds Credentials, category, cursor string) ([]ClosedPnl, string, error) {
 	q := "category=" + category + "&limit=50"
 	if cursor != "" {

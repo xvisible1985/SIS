@@ -1903,7 +1903,7 @@ func (s *Server) BindStrategiesToBot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "не удалось прочитать конфиг бота")
 		return
 	}
-	cols := s.computeBotStrategyCols(ctx, cfg, a.symbol, 0)
+	cols := s.computeBotStrategyCols(ctx, cfg, a.symbol, a.accountID, 0)
 
 	// Fetch open positions once — used both to decide hedge roles by notional AND to adopt
 	// any live position on bind, so a bound leg re-configures its existing position instead

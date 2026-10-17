@@ -22,6 +22,7 @@ import (
 	"sis/pkg/heartbeat"
 	"sis/pkg/proxy"
 	tfsignal "sis/pkg/signal"
+	"sis/pkg/strategy"
 	traderPkg "sis/pkg/trader"
 )
 
@@ -132,8 +133,13 @@ func main() {
 	// Start coin icon cache refresher
 	s.coinIcons.StartRefresher(ctx)
 
-	// Start background syncer (executions + order history)
-	syncer := traderPkg.NewSyncer(pool, encKey, syncDays)
+	// Start background syncer (executions + order history). The factory dispatches each
+	// account to its actual exchange (see strategy.ResolveExchange's own doc comment) —
+	// fixed 2026-10-17: this syncer used to call Bybit-only free functions directly for
+	// every account regardless of exchange.
+	syncer := traderPkg.NewSyncer(pool, encKey, syncDays, func(exchangeName string, creds traderPkg.Credentials) traderPkg.Exchange {
+		return strategy.ResolveExchange(exchangeName, creds, traderPkg.NewTradeStream(creds))
+	})
 	syncer.Start(ctx)
 
 	// Start closed PnL syncer (manual trade attribution to trade_history)

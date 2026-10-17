@@ -1825,10 +1825,10 @@ func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	sigCfgs := make([]signal.Config, len(cfg.ActivationSignals))
-	for i, a := range cfg.ActivationSignals {
-		sigCfgs[i] = signal.Config{Name: a.Name, Params: a.Params}
-	}
+	// Expand any custom-signal-combo entries into their real component configs — a custom
+	// signal's Name is just its display badge, not a registered pkg/signal type (see
+	// resolveBotSignalConfigs's doc comment for the live incident this fixes).
+	sigCfgs := s.resolveBotSignalConfigs(ctx, cfg.ActivationSignals)
 
 	allSymbols, _ := trader.FetchAllLinearSymbols(ctx)
 	delistSymbols := s.GetDelistingSymbols()

@@ -2,8 +2,16 @@ package trader
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrWhitelistNotSupported is returned by Exchange.FetchWhitelistedIPs when the
+// exchange's own API has no endpoint exposing its API key's actual IP whitelist —
+// currently Binance: GET /sapi/v1/account/apiRestrictions only reports WHETHER IP
+// restriction is enabled (ipRestrict bool), never which IPs, so there is nothing to
+// persist into exchange_accounts.whitelisted_ips for a Binance account via any API call.
+var ErrWhitelistNotSupported = errors.New("trader: exchange does not expose its API key's IP whitelist via its API")
 
 // Exchange is every trading operation pkg/strategy and services/api-gateway perform
 // against an account, resolved once per account (via account.Exchange) instead of the
@@ -36,6 +44,70 @@ type Exchange interface {
 	SwitchPositionMode(ctx context.Context, category, symbol string, mode int) error
 
 	GetMarkPrice(ctx context.Context, category, symbol string) (float64, error)
+
+	// GetInstrumentInfo returns the exchange-enforced tick/step/minimum-order rules for
+	// a symbol — used throughout pkg/strategy (cycle.go) to round every qty/price it
+	// sends before placing an order. Added by Plan #4b/#4c: GetInstrumentInfo (the free
+	// function below, Bybit-only) used to be called directly by every strategy-engine
+	// call site regardless of the account's actual exchange — on a Binance account that
+	// meant either an outright failed call (Bybit rejecting a signature made with a
+	// Binance key) or, worse, silently falling through to an unrounded qty/price and a
+	// live "Precision is over the maximum defined for this asset" order rejection.
+	GetInstrumentInfo(ctx context.Context, category, symbol string) (InstrumentInfo, error)
+
+	// --- Added by Plan #4d: a full audit (2026-10-16) found several more strategy-
+	// engine/reconcile call sites still calling bybit.go's free functions directly with
+	// an account's creds, regardless of its actual exchange — the exact same class of
+	// bug GetInstrumentInfo above was added to fix, just not caught by that earlier
+	// pass. Every method below closes one of those gaps.
+
+	// FetchOrderByLinkId/FetchOrderById look up a single order by our own clientOrderId
+	// or the exchange's orderId — used to idempotently check "did this order we placed
+	// actually fill" without re-placing it. Checks active orders first, falls back to
+	// history; returns (order, stillOpen, error).
+	FetchOrderByLinkId(ctx context.Context, category, symbol, orderLinkId string) (Order, bool, error)
+	FetchOrderById(ctx context.Context, category, symbol, orderId string) (Order, bool, error)
+
+	// FetchOpenOrders returns every open order across the whole account (not scoped to
+	// one symbol) — reconcile.go's safety sweep uses this once per tick to check every
+	// strategy's expected orders against exchange reality in one call.
+	FetchOpenOrders(ctx context.Context) ([]Order, error)
+
+	// GetAccountMarginInfo returns account-wide equity/available balance/maintenance-
+	// margin-rate — risk.go's risk-gate monitor polls this to detect an account getting
+	// close to liquidation across ALL of its positions combined, not just one strategy's.
+	GetAccountMarginInfo(ctx context.Context) (equity, available, mmRatePct float64, err error)
+
+	// SetTrailingStop configures (or clears, TrailingStop="0") a trailing stop for the
+	// current position. The two exchanges model this completely differently: Bybit
+	// exposes it as a position-level attribute (price-distance based, set via
+	// /v5/position/set-trading-stop — no order object involved at all); Binance has no
+	// such position attribute, only a genuine TRAILING_STOP_MARKET order (percentage-
+	// based callback rate) that must be cancelled and re-placed to "update". The request
+	// carries both shapes — TrailingStop/ActivePrice for Bybit, CallbackRatePct/Side/Qty/
+	// ClientOrderID for Binance — each implementation reads only what it needs.
+	SetTrailingStop(ctx context.Context, req TrailingStopRequest) error
+
+	// --- Added 2026-10-17: pkg/trader.Syncer (a background executions/order-history
+	// backfill, entirely separate from pkg/strategy/services/api-gateway's Plan #4d
+	// audit) was still calling Bybit-only free functions directly for every account
+	// regardless of exchange — found live via a Binance account's logs showing
+	// "syncer: ... bybit: retCode=10003: You are not authorized...".
+
+	// FetchAccountExecutions returns every execution/fill across the account in
+	// [since, now] in one call (pagination/windowing handled internally) — used by
+	// pkg/trader.Syncer to backfill trader_executions. category selects Bybit's
+	// linear/inverse/spot; Binance (USDⓈ-M futures only) ignores it.
+	FetchAccountExecutions(ctx context.Context, category string, since time.Time) ([]Execution, error)
+
+	// FetchAccountOrderHistory is FetchAccountExecutions' counterpart for order history
+	// (refreshing trader_orders' status/fill fields for our own orders).
+	FetchAccountOrderHistory(ctx context.Context, category string, since time.Time) ([]Order, error)
+
+	// FetchWhitelistedIPs returns the account's exchange-API-key IP whitelist, for
+	// persisting into exchange_accounts.whitelisted_ips — or ErrWhitelistNotSupported
+	// if the exchange's API has no endpoint exposing it at all (see that error's doc).
+	FetchWhitelistedIPs(ctx context.Context) ([]string, error)
 }
 
 // wsOrderClient is the subset of *TradeStream's methods BybitExchange needs for the
@@ -112,6 +184,10 @@ func (e *BybitExchange) GetMarkPrice(ctx context.Context, category, symbol strin
 	return FetchMarkPrice(ctx, e.creds, category, symbol)
 }
 
+func (e *BybitExchange) GetInstrumentInfo(ctx context.Context, category, symbol string) (InstrumentInfo, error) {
+	return GetInstrumentInfo(ctx, e.creds, category, symbol)
+}
+
 func (e *BybitExchange) PlaceOrderREST(ctx context.Context, req OrderRequest) (OrderResult, error) {
 	return PlaceOrder(ctx, e.creds, req)
 }
@@ -122,6 +198,38 @@ func (e *BybitExchange) CancelOrderREST(ctx context.Context, req CancelRequest) 
 
 func (e *BybitExchange) CancelAllOrders(ctx context.Context, req CancelAllRequest) error {
 	return CancelAllOrders(ctx, e.creds, req)
+}
+
+func (e *BybitExchange) FetchOrderByLinkId(ctx context.Context, category, symbol, orderLinkId string) (Order, bool, error) {
+	return FetchOrderByLinkId(ctx, e.creds, category, symbol, orderLinkId)
+}
+
+func (e *BybitExchange) FetchOrderById(ctx context.Context, category, symbol, orderId string) (Order, bool, error) {
+	return FetchOrderById(ctx, e.creds, category, symbol, orderId)
+}
+
+func (e *BybitExchange) FetchOpenOrders(ctx context.Context) ([]Order, error) {
+	return FetchOpenOrders(ctx, e.creds)
+}
+
+func (e *BybitExchange) GetAccountMarginInfo(ctx context.Context) (equity, available, mmRatePct float64, err error) {
+	return GetAccountMarginInfo(ctx, e.creds)
+}
+
+func (e *BybitExchange) SetTrailingStop(ctx context.Context, req TrailingStopRequest) error {
+	return SetTradingStop(ctx, e.creds, req)
+}
+
+func (e *BybitExchange) FetchAccountExecutions(ctx context.Context, category string, since time.Time) ([]Execution, error) {
+	return FetchAccountExecutionsSince(ctx, e.creds, category, since)
+}
+
+func (e *BybitExchange) FetchAccountOrderHistory(ctx context.Context, category string, since time.Time) ([]Order, error) {
+	return FetchAccountOrderHistorySince(ctx, e.creds, category, since)
+}
+
+func (e *BybitExchange) FetchWhitelistedIPs(ctx context.Context) ([]string, error) {
+	return FetchAccountWhitelistedIPs(ctx, e.creds)
 }
 
 // var _ Exchange = (*BybitExchange)(nil) fails to compile if BybitExchange ever stops

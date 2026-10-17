@@ -10,6 +10,16 @@ import (
 	"sis/pkg/trader"
 )
 
+// Every processClosedPnl call below passes a bare &fakeReconcileExchange{} for the ex
+// parameter: this file only exercises the linkID-attribution paths
+// (processLinkIDAttributed) and the legacy "manual trade" fallback (step 4), neither of
+// which reads ex at all — only the zombie-cycle branch (step 3, which launches
+// RecordStrategyTrade as a goroutine) does, and these tests deliberately don't reach
+// it. A real fake (rather than nil) is used anyway so a future test change that DOES
+// reach that branch fails loudly in the test itself, rather than panicking in an
+// abandoned goroutine 8+ seconds later and potentially crashing a different,
+// unrelated test still running in the same process.
+
 // TestClosedPnlSyncer_MatrixTPLinkID_RecordsProfitNotZombie: a ClosedPnl entry whose
 // orderLinkId identifies a matrix-TP re-arm must be recorded into matrix_tp_profits and
 // must NOT touch the strategy's open cycle (no ghost_close/zombie force-end) — this is
@@ -48,7 +58,7 @@ func TestClosedPnlSyncer_MatrixTPLinkID_RecordsProfitNotZombie(t *testing.T) {
 	}
 	acc := closedPnlAccount{id: accID, ownerID: userID}
 
-	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, p, time.Now())
+	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, &fakeReconcileExchange{}, p, time.Now())
 
 	// 1. Recorded into matrix_tp_profits, keyed by the real Bybit order id.
 	var count int
@@ -109,7 +119,7 @@ func TestClosedPnlSyncer_MatrixLevelSLLinkID_NoTradeHistoryWrite(t *testing.T) {
 	}
 	acc := closedPnlAccount{id: accID, ownerID: userID}
 
-	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, p, time.Now())
+	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, &fakeReconcileExchange{}, p, time.Now())
 
 	var count int
 	s.pool.QueryRow(ctx, `SELECT count(*) FROM trade_history WHERE bybit_close_order_id=$1`, p.OrderId).Scan(&count)
@@ -136,7 +146,7 @@ func TestClosedPnlSyncer_UnrecognizedLinkID_FallsBackToLegacyManual(t *testing.T
 	acc := closedPnlAccount{id: accID, ownerID: userID}
 	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM trade_history WHERE bybit_close_order_id=$1", p.OrderId) })
 
-	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, p, time.Now())
+	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, &fakeReconcileExchange{}, p, time.Now())
 
 	var count int
 	var result string
@@ -176,7 +186,7 @@ func TestClosedPnlSyncer_RecognizedLinkIDNoMatchingStrategy_FallsBackToLegacyMan
 	acc := closedPnlAccount{id: accID, ownerID: userID}
 	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM trade_history WHERE bybit_close_order_id=$1", p.OrderId) })
 
-	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, p, time.Now())
+	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, &fakeReconcileExchange{}, p, time.Now())
 
 	var count int
 	var result string
@@ -248,7 +258,7 @@ func TestClosedPnlSyncer_MatrixTPLinkID_AlreadyInTradeHistory_SkipsDoubleCount(t
 	}
 	acc := closedPnlAccount{id: accID, ownerID: userID}
 
-	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, p, time.Now())
+	syncer.processClosedPnl(ctx, acc, trader.Credentials{}, &fakeReconcileExchange{}, p, time.Now())
 
 	var count int
 	if err := s.pool.QueryRow(ctx,

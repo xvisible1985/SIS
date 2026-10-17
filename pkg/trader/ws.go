@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -25,26 +26,45 @@ var bybitPrivateWS = "wss://stream.bybit.com/v5/private"
 // the 20s ping interval below to tolerate one slow round trip before declaring dead.
 var bybitReadTimeout = 45 * time.Second
 
-// safeSend sends JSON to a gorilla WebSocket connection, ignoring write errors.
-func safeSend(conn *websocket.Conn, v any) {
+// wsWriter serializes every write to the frontend-facing conn. gorilla/websocket
+// requires writes to be serialized — at most one goroutine may call WriteMessage at a
+// time — but RunPositionStream's main loop and its background REST-snapshot goroutine
+// (fetchAndSendSnapshot, launched via `go func()` right after auth succeeds) both write
+// to the same conn concurrently. Without this mutex, a WS delta arriving while the
+// snapshot goroutine is mid-write can interleave two WriteMessage calls into one
+// corrupted frame: the frontend's JSON.parse fails silently (usePositionsWs.ts's
+// `catch { /* ignore malformed */ }"), so no error is ever visible — the terminal just
+// never gets the next live update until the browser reconnects (e.g. on F5), even
+// though the WS connection itself looks perfectly healthy. Found live (2026-10-16): a
+// newly-opened Binance position (same unsynchronized-write pattern, see
+// pkg/trader/binance/ws.go) didn't appear until a hard refresh.
+type wsWriter struct {
+	mu   sync.Mutex
+	conn *websocket.Conn
+}
+
+func (w *wsWriter) send(v any) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return
 	}
-	conn.WriteMessage(websocket.TextMessage, data) //nolint:errcheck
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.conn.WriteMessage(websocket.TextMessage, data) //nolint:errcheck
 }
 
 // RunPositionStream opens a Bybit private WebSocket, authenticates, subscribes
 // to position and order topics, fetches a REST snapshot, then relays WS deltas
 // to the client conn until ctx is cancelled or conn closes.
 func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credentials, accountName string, broadcastCh <-chan any) {
+	w := &wsWriter{conn: conn}
 	type msg map[string]any
 	logMsg := func(m string, errFlag ...bool) {
 		isErr := len(errFlag) > 0 && errFlag[0]
-		safeSend(conn, msg{"type": "log", "message": m, "error": isErr})
+		w.send(msg{"type": "log", "message": m, "error": isErr})
 	}
 
-	safeSend(conn, msg{"type": "account", "accountName": accountName})
+	w.send(msg{"type": "account", "accountName": accountName})
 
 	ts := serverTimestamp()
 	var tsMs int64
@@ -112,7 +132,7 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 			return
 
 		case m := <-broadcastCh:
-			safeSend(conn, m)
+			w.send(m)
 
 		case data := <-bybitCh:
 			var raw map[string]any
@@ -130,7 +150,7 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 					bwsConn.WriteMessage(websocket.TextMessage, sub) //nolint:errcheck
 					logMsg("Авторизация OK, подписка на position, order, execution и wallet")
 					go func() {
-						if err := fetchAndSendSnapshot(ctx, conn, creds); err != nil {
+						if err := fetchAndSendSnapshot(ctx, w, creds); err != nil {
 							logMsg("[REST] Ошибка снапшота: "+err.Error(), true)
 						}
 					}()
@@ -144,7 +164,7 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 			default:
 				topic, _ := raw["topic"].(string)
 				if topic == "position" || topic == "order" || topic == "execution" {
-					safeSend(conn, map[string]any{
+					w.send(map[string]any{
 						"type":     topic,
 						"dataType": "delta",
 						"data":     raw["data"],
@@ -160,25 +180,25 @@ func RunPositionStream(ctx context.Context, conn *websocket.Conn, creds Credenti
 					if eq >= 0 {
 						msg["equity"] = eq
 					}
-					safeSend(conn, msg)
+					w.send(msg)
 				}
 			}
 		}
 	}
 }
 
-func fetchAndSendSnapshot(ctx context.Context, conn *websocket.Conn, creds Credentials) error {
+func fetchAndSendSnapshot(ctx context.Context, w *wsWriter, creds Credentials) error {
 	positions, err := FetchPositions(ctx, creds)
 	if err != nil {
 		return fmt.Errorf("positions: %w", err)
 	}
-	safeSend(conn, map[string]any{"type": "position", "dataType": "snapshot", "data": positions})
+	w.send(map[string]any{"type": "position", "dataType": "snapshot", "data": positions})
 
 	orders, err := FetchOpenOrders(ctx, creds)
 	if err != nil {
 		return fmt.Errorf("orders: %w", err)
 	}
-	safeSend(conn, map[string]any{"type": "order", "dataType": "snapshot", "data": orders})
+	w.send(map[string]any{"type": "order", "dataType": "snapshot", "data": orders})
 
 	eq, available, err := GetWalletBalance(ctx, creds)
 	if err == nil {
@@ -186,7 +206,7 @@ func fetchAndSendSnapshot(ctx context.Context, conn *websocket.Conn, creds Crede
 		if eq >= 0 {
 			msg["equity"] = eq
 		}
-		safeSend(conn, msg)
+		w.send(msg)
 	}
 	return nil
 }

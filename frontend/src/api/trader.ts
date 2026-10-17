@@ -81,6 +81,11 @@ export interface ClosedPnlItem {
   createdTime: string
   updatedTime: string
   category: string
+  // Real exchange-reported commission for this close — present for Binance rows
+  // (backend sums userTrades' own `commission` field), absent for Bybit (whose
+  // closed-pnl record has no separate fee field at all). PnlTable.tsx prefers this when
+  // present and only falls back to its own gross-minus-closedPnl estimate otherwise.
+  fee?: string
 }
 
 export async function getClosedPnl(params: {

@@ -70,10 +70,44 @@ function Update-WatchdogStat($name, [bool]$restarted, $status) {
     [System.IO.File]::WriteAllText($statsFile, $json, (New-Object System.Text.UTF8Encoding $false))
 }
 
+function Invoke-HiddenProcess($exe, $arguments) {
+    # Plain PowerShell `& $exe args` (or Start-Process -WindowStyle Hidden) does NOT
+    # reliably suppress the console flash for a .cmd target like pm2.cmd: pm2.cmd is
+    # itself a cmd.exe batch wrapper, and this task's own process has no console at all
+    # (S4U logon, non-interactive) -- when it spawns that nested cmd.exe, Windows
+    # allocates a BRAND NEW, briefly-visible console for it, because SW_HIDE (what
+    # -WindowStyle Hidden sets) only hides a window AFTER creation, it doesn't stop one
+    # from being allocated. CreateNoWindow (only reachable via System.Diagnostics.Process
+    # directly, not Start-Process) sets the real CREATE_NO_WINDOW flag, which prevents
+    # the console from being allocated in the first place -- this is the actual fix for
+    # the flash observed live (2026-10-16) even after the task's own LogonType was
+    # already S4U and its own Settings.Hidden was already True.
+    # Returns an object with both Output and ExitCode -- $LASTEXITCODE (PowerShell's
+    # usual way to check a native command's exit code) is only ever set by PowerShell's
+    # OWN invocation machinery (`&`, direct calls), never by a process started directly
+    # via System.Diagnostics.Process, so callers must use the returned ExitCode instead.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = $arguments
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $stdout = $proc.StandardOutput.ReadToEnd()
+    $proc.WaitForExit()
+    return [PSCustomObject]@{ Output = $stdout; ExitCode = $proc.ExitCode }
+}
+
 function Test-DockerUp {
     try {
-        docker ps *> $null
-        return $LASTEXITCODE -eq 0
+        # Plain `docker ps` has the exact same console-flash problem Invoke-HiddenProcess
+        # exists for (see its own comment) -- docker.exe is a console app and this run's
+        # own host process has no console, so Windows allocates a fresh, briefly-visible
+        # one for it every single cycle (this check runs unconditionally every 5 min,
+        # unlike the pm2 restart/resurrect calls which only fire on an actual problem).
+        $result = Invoke-HiddenProcess 'docker' 'ps'
+        return $result.ExitCode -eq 0
     } catch {
         return $false
     }
@@ -115,23 +149,23 @@ if (Test-DockerUp) {
 # refuses to parse that. Plain `pm2 list` + text matching sidesteps it.
 $pm2 = 'C:\Users\123\AppData\Roaming\npm\pm2.cmd'
 $knownApps = @('sis-frontend', 'sis-api-gateway')
-$list = & $pm2 list --no-color 2>$null
+$list = (Invoke-HiddenProcess $pm2 'list --no-color').Output
 
 if (-not $list) {
     Log 'pm2 not responding -- attempting resurrect'
     foreach ($name in $knownApps) { Update-WatchdogStat $name $true 'pm2 down' }
-    & $pm2 resurrect *> $null
+    Invoke-HiddenProcess $pm2 'resurrect' | Out-Null
 } else {
     foreach ($name in $knownApps) {
-        $row = $list | Select-String -SimpleMatch $name
+        $row = $list -split "`n" | Select-String -SimpleMatch $name
         if (-not $row) {
             Log "pm2 app '$name' not found in pm2 list -- attempting resurrect"
             Update-WatchdogStat $name $true 'not found'
-            & $pm2 resurrect *> $null
+            Invoke-HiddenProcess $pm2 'resurrect' | Out-Null
         } elseif ($row -notmatch 'online') {
             Log "pm2 app '$name' is not online -- restarting"
             Update-WatchdogStat $name $true 'restarted'
-            & $pm2 restart $name *> $null
+            Invoke-HiddenProcess $pm2 "restart $name" | Out-Null
         } else {
             Update-WatchdogStat $name $false 'online'
         }

@@ -88,11 +88,7 @@ func (e *Engine) reconcileStoppedCycles(ctx context.Context) {
 	log.Printf("startup reconcile: %d незакрытых циклов у остановленных стратегий", len(cycles))
 
 	// Cache resolved Exchange (per account) and fetched positions per account.
-	// credCache retains the raw trader.Credentials too — RecordStrategyTrade (below,
-	// deliberately out of scope for this migration, see the plan) still takes
-	// trader.Credentials rather than a trader.Exchange.
 	exCache := make(map[string]trader.Exchange)
-	credCache := make(map[string]trader.Credentials)
 	posCache := make(map[string][]trader.Position)
 
 	for _, c := range cycles {
@@ -111,7 +107,6 @@ func (e *Engine) reconcileStoppedCycles(ctx context.Context) {
 				continue
 			}
 			creds := trader.Credentials{APIKey: apiKey, SecretKey: secret, AccountID: c.accountID, WhitelistedIPs: c.whitelistedIPs}
-			credCache[c.accountID] = creds
 			exCache[c.accountID] = ResolveExchange(c.exchangeName, creds, trader.NewTradeStream(creds))
 		}
 		ex := exCache[c.accountID]
@@ -191,10 +186,7 @@ func (e *Engine) reconcileStoppedCycles(ctx context.Context) {
 			TPOrderID: c.tpOrderID,
 			SLOrderID: c.slOrderID,
 		}
-		// credCache is populated in lock-step with exCache above (RecordStrategyTrade still
-		// takes raw Credentials — migrating it is deferred to Plan #4c since it's also called
-		// from services/api-gateway).
-		go RecordStrategyTrade(e.pool, credCache[c.accountID], in)
+		go RecordStrategyTrade(e.pool, exCache[c.accountID], in)
 	}
 }
 

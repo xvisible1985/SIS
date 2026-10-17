@@ -810,6 +810,34 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
           title: '',
         }))
       }
+
+      // L(0) ghost marker: once the entry level's own stop has fired, nothing renumbers
+      // into slot 0 (it's the fixed reference matrixEntryPrice() measures every other slot
+      // from — see the 2026-10-11 design discussion) — it just disappears from the fill
+      // loop above (status moved to 'sl_closed', excluded by the 'filled' check). Rather
+      // than losing the line entirely, show where it was: muted color, dotted (matching the
+      // existing virtual/pending convention), size shown as the real current $0 — it no
+      // longer holds any position — not its original size_usdt.
+      for (const l of (strategyLevels ?? [])) {
+        if (l.status !== 'sl_closed' || l.slot !== 0 || !l.filled_price || l.filled_price <= 0) continue
+        const isBuy = l.side === 'Buy'
+        const color = isBuy ? '#05966955' : '#dc262655'
+        const pct = currentPrice > 0 ? ` ${pctFromPrice(l.filled_price, currentPrice, isBuy)}` : ''
+        priceLineTitlesRef.current.push({
+          price: l.filled_price,
+          color,
+          text: `L(0) 0$${pct}`,
+          filled: true,
+        })
+        priceLines.current.push(series.createPriceLine({
+          price: l.filled_price,
+          color,
+          lineWidth: 1,
+          lineStyle: 3,
+          axisLabelVisible: false,
+          title: '',
+        }))
+      }
     }
   }, [positions, orders, executions, symbol, lastPrice, afterSetData, overlaySettings, effectiveDir, stratIdShort, currentCycleNum, strategyLevels, relativePreviewAccum, relativePreviewCounter])
 

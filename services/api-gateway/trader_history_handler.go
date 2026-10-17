@@ -206,6 +206,12 @@ func (s *Server) ListTraderExecutions(w http.ResponseWriter, r *http.Request) {
 
 // GetClosedPnl fetches closed position P&L from Bybit.
 // GET /trader/pnl?account_id=&category=linear&cursor=
+// closedPnlTabLookback bounds the Binance branch below — Binance has no Bybit-style
+// cursor-paginated closed-pnl endpoint to mirror, so there's no natural "page size" to
+// ask for; a fixed lookback keeps a single request bounded instead of walking back
+// indefinitely.
+const closedPnlTabLookback = 30 * 24 * time.Hour
+
 func (s *Server) GetClosedPnl(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
 	accountID := r.URL.Query().Get("account_id")
@@ -214,6 +220,43 @@ func (s *Server) GetClosedPnl(w http.ResponseWriter, r *http.Request) {
 	if category == "" {
 		category = "linear"
 	}
+
+	var exchangeName string
+	if err := s.pool.QueryRow(r.Context(),
+		`SELECT exchange FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
+		accountID, userID,
+	).Scan(&exchangeName); err != nil {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+
+	// Plan #4b/#4c: this used to always call traderPkg.FetchClosedPnl (Bybit's
+	// /v5/position/closed-pnl, cursor-paginated), regardless of the account's actual
+	// exchange — on a Binance account that meant sending a Binance key to Bybit's own
+	// signed endpoint, which Bybit rejects outright (surfaced to the user as a flat
+	// "Ошибка загрузки", no further detail). Binance has no equivalent cursor-paginated,
+	// account-wide, symbol-agnostic endpoint to call instead, so this branch uses
+	// trader.Exchange's own FetchRecentClosedPnl (already fixed to discover fully-closed
+	// symbols via /fapi/v1/income, not just currently-open positions) over a fixed
+	// lookback window, and always returns an empty nextCursor — the frontend's "Load
+	// more" button simply never appears for a Binance account, a known, deliberate
+	// simplification rather than building out Binance-side pagination to match a model
+	// its own API doesn't share.
+	if exchangeName == "binance" {
+		ex, err := s.loadExchange(r, accountID, userID)
+		if err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		list, err := ex.FetchRecentClosedPnl(r.Context(), category, time.Now().Add(-closedPnlTabLookback))
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"list": list, "nextCursor": ""})
+		return
+	}
+
 	creds, err := s.loadCreds(r, accountID, userID)
 	if err != nil {
 		writeError(w, http.StatusForbidden, err.Error())

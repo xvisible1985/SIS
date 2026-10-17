@@ -917,6 +917,26 @@ func symbolPassesHedgeFilter(symbol string, whitelist, blacklist, delistSymbols 
 func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, ex trader.Exchange, posMap map[string]map[string]hedgePosInfo, watches map[string]hedgeWatchEntry) {
 	delistSymbols := s.GetDelistingSymbols()
 
+	// Resolve/validate activation signals once per bot call, not once per position below —
+	// cfg.ActivationSignals is the same for every position this bot checks, so re-expanding
+	// a custom-signal combo (a DB round-trip) on every posMap iteration was pure waste that
+	// could exhaust the pool under load. Found live (2026-10-07): hedgeEngineTick itself
+	// started timing out ("context deadline exceeded") on its own simple bots-listing query
+	// after this fix shipped, because checkHedgeActivation was re-resolving inside the
+	// per-position loop.
+	var activationSigCfgs []signal.Config
+	activationSignalsValid := true
+	if len(cfg.ActivationSignals) > 0 {
+		resolved := s.resolveBotSignalConfigs(ctx, cfg.ActivationSignals)
+		for _, sc := range resolved {
+			if _, err := signal.Build(sc); err != nil {
+				activationSignalsValid = false
+				break
+			}
+			activationSigCfgs = append(activationSigCfgs, sc)
+		}
+	}
+
 	for _, bySymbol := range posMap {
 		for side, pos := range bySymbol {
 			// Blacklists always block regardless of whitelist logic.
@@ -1106,19 +1126,10 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 
 			// Optional activation signal filter
 			if len(cfg.ActivationSignals) > 0 {
-				sigCfgs := make([]signal.Config, 0, len(cfg.ActivationSignals))
-				valid := true
-				for _, a := range cfg.ActivationSignals {
-					sc := signal.Config{Name: a.Name, Params: a.Params}
-					if _, err := signal.Build(sc); err != nil {
-						valid = false
-						break
-					}
-					sigCfgs = append(sigCfgs, sc)
-				}
-				if !valid {
+				if !activationSignalsValid {
 					continue
 				}
+				sigCfgs := activationSigCfgs
 
 				interval := "15"
 				for _, a := range cfg.ActivationSignals {

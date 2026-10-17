@@ -108,9 +108,12 @@ function HSplit({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void })
   )
 }
 
+type MobileTabKey = 'indicators' | 'signals'
+
 export function SignalsPage() {
   const navigate = useNavigate()
   const { isAdmin } = useAuth()
+  const [mobileTab, setMobileTab] = useState<MobileTabKey>('signals')
   const enabledSignals    = useEnabledContent('/signal-types',    '/admin/signal-types')
   const enabledIndicators = useEnabledContent('/indicator-types', '/admin/indicator-types')
 
@@ -130,12 +133,20 @@ export function SignalsPage() {
     ? INDICATORS.filter(i => enabledIndicators.find(x => x.id === i.id && x.panel === 'signal'))
     : []
 
+  const [constructorItems, setConstructorItems] = useState<ConstructorItem[]>([])
+
+  // Mobile only ever shows the available indicators/signals — the constructor and
+  // "Мой сигнал" admin tools stay desktop-only, even for admins.
+  const mobileTabs: { key: MobileTabKey; label: string; count: number }[] = [
+    { key: 'indicators', label: 'Индикаторы', count: indicatorPanelInds.length + indicatorPanelSigs.length },
+    { key: 'signals',    label: 'Сигналы',    count: signalPanelSigs.length + signalPanelInds.length },
+  ]
+
   const [selectedCoin, setSelectedCoin] = useState('BTCUSDT')
   const [selectedTf, setSelectedTf] = useState('1h')
   const { connected, indicatorMarkers, candles } = useMarketIndicators(selectedCoin, selectedTf)
 
   const [chartModal, setChartModal] = useState<ChartModal | null>(null)
-  const [constructorItems, setConstructorItems] = useState<ConstructorItem[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
   const [flyingCard, setFlyingCard] = useState<FlyingCard | null>(null)
   const [paramsMap, setParamsMap] = useState<Record<string, Record<string, unknown>>>({})
@@ -205,13 +216,15 @@ export function SignalsPage() {
     if ((e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) return
     setIsDragOver(false)
   }
+  function addConstructorItem(item: ConstructorItem) {
+    setConstructorItems(prev => prev.some(i => i.id === item.id) ? prev : [...prev, item])
+  }
   function onDrop(e: React.DragEvent) {
     e.preventDefault(); setIsDragOver(false)
     const raw = e.dataTransfer.getData(DRAG_KEY)
     if (!raw) return
     try {
-      const item: ConstructorItem = JSON.parse(raw)
-      setConstructorItems(prev => prev.some(i => i.id === item.id) ? prev : [...prev, item])
+      addConstructorItem(JSON.parse(raw))
     } catch {}
   }
   function removeItem(id: string) {
@@ -222,16 +235,16 @@ export function SignalsPage() {
     <div className="flex h-full flex-col overflow-hidden bg-[#0a0d14] text-slate-200">
 
       {/* Toolbar */}
-      <div className="flex h-11 flex-shrink-0 items-center gap-3 border-b border-white/[.06] px-5">
+      <div className="flex h-auto min-h-11 flex-shrink-0 flex-wrap items-center gap-2 border-b border-white/[.06] px-3 py-1.5 md:h-11 md:flex-nowrap md:gap-3 md:py-0 md:px-5">
         <span className="text-sm font-semibold text-slate-100">Сигналы</span>
         <select value={selectedCoin} onChange={e => setSelectedCoin(e.target.value)}
           className="rounded border border-white/[.08] bg-white/[.04] px-2 py-0.5 text-xs text-slate-200 focus:outline-none">
           {COINS.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
-        <div className="flex gap-0.5">
+        <div className="flex max-w-full gap-0.5 overflow-x-auto">
           {TIMEFRAMES.map(tf => (
             <button key={tf.value} onClick={() => setSelectedTf(tf.value)}
-              className={`rounded px-2 py-0.5 text-xs transition-colors ${selectedTf === tf.value ? 'bg-[#5b8cff]/30 text-[#b8c8ff]' : 'text-slate-500 hover:text-slate-300'}`}>
+              className={`flex-shrink-0 rounded px-2 py-0.5 text-xs transition-colors ${selectedTf === tf.value ? 'bg-[#5b8cff]/30 text-[#b8c8ff]' : 'text-slate-500 hover:text-slate-300'}`}>
               {tf.label}
             </button>
           ))}
@@ -242,8 +255,8 @@ export function SignalsPage() {
         </span>
       </div>
 
-      {/* Panel layout */}
-      <div ref={containerRef} className="flex flex-1 flex-col gap-0 overflow-hidden p-2.5 pb-2.5">
+      {/* Panel layout — desktop (resizable split panes, drag-and-drop) */}
+      <div ref={containerRef} className="hidden flex-1 flex-col gap-0 overflow-hidden p-2.5 pb-2.5 md:flex">
 
         {/* Top row */}
         <div className="flex flex-1 overflow-hidden" style={{ minHeight: 0 }}>
@@ -421,6 +434,76 @@ export function SignalsPage() {
 
         </div>
 
+      </div>
+
+      {/* Panel layout — mobile (tabs, single column, tap-to-add instead of drag) */}
+      <div className="flex flex-1 flex-col overflow-hidden md:hidden">
+        <div className="flex flex-shrink-0 items-center gap-1 overflow-x-auto border-b border-white/[.06] px-2 py-1.5">
+          {mobileTabs.map(t => (
+            <button key={t.key} type="button" onClick={() => setMobileTab(t.key)}
+              className={`flex flex-shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                mobileTab === t.key ? 'bg-[#5b8cff]/20 text-[#b8c8ff]' : 'text-slate-500 hover:text-slate-300'
+              }`}>
+              {t.label}
+              {t.count > 0 && <span className="rounded-full bg-white/[.08] px-1.5 text-[10px]">{t.count}</span>}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex-1 overflow-auto px-3 py-3">
+          {mobileTab === 'indicators' && (
+            <div className="flex flex-col gap-3">
+              {indicatorPanelInds.map(ind => (
+                <IndicatorCard
+                  key={ind.id}
+                  indicator={ind}
+                  candles={candles}
+                  value={getP(ind.id, ind.defaults as Record<string, unknown>) as BaseParams}
+                  onChange={p => setP(ind.id, p)}
+                  onSettingsClick={rect => setFlyingCard({ item: { type: 'indicator', def: ind as IndicatorDef<BaseParams> }, sourceRect: rect })}
+                />
+              ))}
+              {indicatorPanelSigs.map(sig => (
+                <SignalCard
+                  key={sig.id}
+                  signal={sig}
+                  candles={candles}
+                  value={getP(sig.id, sig.defaults)}
+                  onChange={p => setP(sig.id, p)}
+                  onSettingsClick={rect => setFlyingCard({ item: { type: 'signal', def: sig as SignalDef<Record<string, unknown>> }, sourceRect: rect })}
+                  onChartClick={() => openSignalChart(sig as SignalDef<Record<string,unknown>>, getP(sig.id, sig.defaults))}
+                />
+              ))}
+            </div>
+          )}
+
+          {mobileTab === 'signals' && (
+            <div className="flex flex-col gap-3">
+              {signalPanelSigs.map(sig => (
+                <SignalCard
+                  key={sig.id}
+                  signal={sig}
+                  candles={candles}
+                  value={getP(sig.id, sig.defaults)}
+                  onChange={p => setP(sig.id, p)}
+                  onSettingsClick={rect => setFlyingCard({ item: { type: 'signal', def: sig as SignalDef<Record<string, unknown>> }, sourceRect: rect })}
+                  onChartClick={() => openSignalChart(sig as SignalDef<Record<string,unknown>>, getP(sig.id, sig.defaults))}
+                />
+              ))}
+              {signalPanelInds.map(ind => (
+                <IndicatorCard
+                  key={ind.id}
+                  indicator={ind}
+                  candles={candles}
+                  value={getP(ind.id, ind.defaults as Record<string, unknown>) as BaseParams}
+                  onChange={p => setP(ind.id, p)}
+                  onSettingsClick={rect => setFlyingCard({ item: { type: 'indicator', def: ind as IndicatorDef<BaseParams> }, sourceRect: rect })}
+                />
+              ))}
+            </div>
+          )}
+
+        </div>
       </div>
 
       {/* Flying card settings overlay */}

@@ -19,10 +19,13 @@ interface Props {
   onClose: () => void;
 }
 
-const CARD_W = 400;
+const MAX_CARD_W = 400;
 
 export function FlyingCardOverlay({ item, sourceRect, candles, value, onChange, onClose }: Props) {
   const [phase, setPhase] = useState<Phase>('source');
+
+  // Card never exceeds the viewport width (phones narrower than 400px + 2*16px margin).
+  const CARD_W = Math.min(MAX_CARD_W, window.innerWidth - 32);
 
   // Fixed anchor point: center of screen
   const cx = Math.max(16, (window.innerWidth  - CARD_W) / 2);

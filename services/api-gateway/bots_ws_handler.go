@@ -107,20 +107,16 @@ func (s *Server) computeOneBotSignalCount(
 	allSymbols []string,
 ) (botSignalUpdate, bool) {
 	var cfg struct {
-		ActivationSignals []struct {
-			Name   string                 `json:"name"`
-			Params map[string]interface{} `json:"params"`
-		} `json:"activation_signals"`
-		Direction string `json:"direction"`
+		ActivationSignals []botSignalRef `json:"activation_signals"`
+		Direction         string         `json:"direction"`
 	}
 	if err := json.Unmarshal(strategyConfig, &cfg); err != nil || len(cfg.ActivationSignals) == 0 {
 		return botSignalUpdate{}, false
 	}
 
-	sigCfgs := make([]signal.Config, len(cfg.ActivationSignals))
-	for i, a := range cfg.ActivationSignals {
-		sigCfgs[i] = signal.Config{Name: a.Name, Params: a.Params}
-	}
+	// Expand any custom-signal-combo entries into their real component configs — see
+	// resolveBotSignalConfigs's doc comment.
+	sigCfgs := s.resolveBotSignalConfigs(ctx, cfg.ActivationSignals)
 	direction := cfg.Direction
 
 	globalBlacklist := s.GetDelistingSymbols()

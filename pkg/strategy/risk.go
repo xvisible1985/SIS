@@ -5,8 +5,6 @@ import (
 	"log"
 	"strconv"
 	"time"
-
-	"sis/pkg/trader"
 )
 
 const riskMonitorInterval = 20 * time.Second
@@ -79,7 +77,7 @@ func (ar *AccountRunner) checkRiskOnce(ctx context.Context) {
 		return
 	}
 
-	equity, _, mmRatePct, err := trader.GetAccountMarginInfo(ctx, ar.creds)
+	equity, _, mmRatePct, err := ar.exchange.GetAccountMarginInfo(ctx)
 	if err != nil {
 		log.Printf("strategy: riskMonitor account=%s: %v", ar.accountID, err)
 		return

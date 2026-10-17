@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { placeOrder, cancelOrder, setLeverage } from '../../api/trader'
+import { listAccounts } from '../../api/accounts'
+import { getInstrumentConstraints } from '../../api/strategies'
 import { CoinPicker } from '../common/CoinPicker'
 import type { ActiveOrder } from '../../types'
 
@@ -37,6 +39,12 @@ export function OrderForm({ accountId, symbol, onSymbolChange, lastPrice, orders
   const [loading, setLoading] = useState(false)
   const [log, setLog] = useState<LogEntry[]>([])
   const [qtyStep, setQtyStep] = useState('1')
+  const [tickSize, setTickSize] = useState('0.01')
+  // Which exchange accountId actually trades on — determines which exchange's precision
+  // rules (qty_step/tick_size) are fetched below. Defaults to "bybit" (matches the
+  // backend's /instrument-info default) until the account lookup resolves, so a slow
+  // network doesn't leave rounding using some other, wrong, hardcoded guess.
+  const [accountExchange, setAccountExchange] = useState('bybit')
 
   const effectivePrice = useCallback(() => {
     if (tab === 'Limit' || (tab === 'Conditional' && condType === 'Limit'))
@@ -45,20 +53,42 @@ export function OrderForm({ accountId, symbol, onSymbolChange, lastPrice, orders
   }, [tab, condType, price, lastPrice])
 
   useEffect(() => {
-    fetch(`https://api.bybit.com/v5/market/instruments-info?category=${category}&symbol=${symbol}`)
-      .then(r => r.json())
-      .then(j => {
-        const step = j.result?.list?.[0]?.lotSizeFilter?.qtyStep
-        if (step) setQtyStep(step)
+    let cancelled = false
+    listAccounts()
+      .then(accs => {
+        if (cancelled) return
+        const acc = accs.find(a => a.id === accountId)
+        setAccountExchange(acc?.exchange || 'bybit')
       })
       .catch(() => {})
-  }, [symbol, category])
+    return () => { cancelled = true }
+  }, [accountId])
+
+  useEffect(() => {
+    // Plan #4b/#4c: rounding against the right exchange's own tick/step is what fixes
+    // the live Binance "-1111 Precision is over the maximum defined for this asset"
+    // rejection — this used to always fetch Bybit's public API directly, regardless of
+    // which exchange accountId actually trades on, and never rounded price at all.
+    getInstrumentConstraints(symbol, category, accountExchange)
+      .then(info => {
+        if (info.qty_step) setQtyStep(String(info.qty_step))
+        if (info.tick_size) setTickSize(String(info.tick_size))
+      })
+      .catch(() => {})
+  }, [symbol, category, accountExchange])
 
   function applyStep(val: number): string {
     const step = parseFloat(qtyStep)
     if (!step || !val) return ''
     const decimals = qtyStep.includes('.') ? qtyStep.split('.')[1].length : 0
     return (Math.round(val / step) * step).toFixed(decimals)
+  }
+
+  function applyTick(val: number): string {
+    const tick = parseFloat(tickSize)
+    if (!tick || !val) return val ? val.toString() : ''
+    const decimals = tickSize.includes('.') ? tickSize.split('.')[1].length : 0
+    return (Math.round(val / tick) * tick).toFixed(decimals)
   }
 
   function onQtyChange(v: string) {
@@ -91,7 +121,16 @@ export function OrderForm({ accountId, symbol, onSymbolChange, lastPrice, orders
   }, [symbol])
 
   async function handleSubmit() {
-    const finalQty = qty || (qtyUsdt ? applyStep(parseFloat(qtyUsdt) / (effectivePrice() || 1)) : '')
+    // Always round through applyStep, regardless of which input the user actually typed
+    // into — qty was previously sent completely unrounded whenever it came from direct
+    // typing into the "Кол-во" field (only the qtyUsdt-derived branch was rounded), which
+    // is the much more common way to place a manual order. On a symbol with an integer
+    // qty_step (many Binance pairs, e.g. NEARUSDT/SUPERUSDT), typing anything with a
+    // decimal point there reproduces the exact live "-1111 Precision is over the maximum
+    // defined for this asset" rejection this migration is supposed to have fixed.
+    const finalQty = qty
+      ? applyStep(parseFloat(qty))
+      : (qtyUsdt ? applyStep(parseFloat(qtyUsdt) / (effectivePrice() || 1)) : '')
     if (!finalQty) { addLog('Укажите количество или объём в USDT', 'error'); return }
     if (tab === 'Limit' && !price) { addLog('Укажите цену', 'error'); return }
     if (tab === 'Conditional' && !triggerPrice) { addLog('Укажите цену триггера', 'error'); return }
@@ -104,6 +143,13 @@ export function OrderForm({ accountId, symbol, onSymbolChange, lastPrice, orders
       if (!levRes.ok) { resolveLog('error', `Плечо: ${levRes.message}`); setLoading(false); return }
     }
 
+    // Round price/trigger_price to the account's exchange tick size — sending an
+    // unrounded price is exactly how a manual order used to hit Binance's live
+    // "-1111 Precision is over the maximum defined for this asset" rejection (qty was
+    // already rounded above via applyStep/finalQty, but price never was, on any exchange).
+    const finalPrice = price ? applyTick(parseFloat(price)) : price
+    const finalTriggerPrice = triggerPrice ? applyTick(parseFloat(triggerPrice)) : triggerPrice
+
     const res = await placeOrder({
       account_id: accountId,
       symbol,
@@ -111,8 +157,8 @@ export function OrderForm({ accountId, symbol, onSymbolChange, lastPrice, orders
       side,
       order_type: tab === 'Market' ? 'Market' : tab === 'Conditional' ? condType : 'Limit',
       qty: finalQty,
-      price: (tab === 'Limit' || (tab === 'Conditional' && condType === 'Limit')) ? price : undefined,
-      trigger_price: tab === 'Conditional' ? triggerPrice : undefined,
+      price: (tab === 'Limit' || (tab === 'Conditional' && condType === 'Limit')) ? finalPrice : undefined,
+      trigger_price: tab === 'Conditional' ? finalTriggerPrice : undefined,
       trigger_by: tab === 'Conditional' ? triggerBy : undefined,
       trigger_direction: tab === 'Conditional' ? triggerDir : undefined,
       order_filter: tab === 'Conditional' ? 'StopOrder' : 'Order',
@@ -228,7 +274,7 @@ export function OrderForm({ accountId, symbol, onSymbolChange, lastPrice, orders
             {(tab === 'Limit' || (tab === 'Conditional' && condType === 'Limit')) && (
               <div>
                 <label className="text-gray-500 dark:text-gray-400 block mb-1">Цена ({quoteCoin})</label>
-                <input value={price} onChange={e => setPrice(e.target.value)} type="number" placeholder="0.00"
+                <input data-testid="order-price-input" value={price} onChange={e => setPrice(e.target.value)} type="number" placeholder="0.00"
                   className="w-full bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 font-mono text-xs focus:outline-none focus:border-blue-500" />
               </div>
             )}
@@ -236,7 +282,7 @@ export function OrderForm({ accountId, symbol, onSymbolChange, lastPrice, orders
             <div className="grid grid-cols-2 gap-1">
               <div>
                 <label className="text-gray-500 dark:text-gray-400 block mb-1">Кол-во ({baseCoin})</label>
-                <input value={qty} onChange={e => onQtyChange(e.target.value)} type="number" placeholder="0.00"
+                <input data-testid="order-qty-input" value={qty} onChange={e => onQtyChange(e.target.value)} type="number" placeholder="0.00"
                   className="w-full bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 font-mono text-xs focus:outline-none focus:border-blue-500" />
               </div>
               <div>
@@ -270,7 +316,7 @@ export function OrderForm({ accountId, symbol, onSymbolChange, lastPrice, orders
               <span className="text-gray-500 dark:text-gray-400">Только закрытие (Reduce Only)</span>
             </label>
 
-            <button onClick={handleSubmit} disabled={loading}
+            <button data-testid="order-submit-button" onClick={handleSubmit} disabled={loading}
               className={`w-full py-2 rounded font-semibold transition-all ${side === 'Buy' ? 'bg-green-500 hover:bg-green-600' : 'bg-red-500 hover:bg-red-600'} text-white ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}>
               {side === 'Buy' ? 'Купить / Long' : 'Продать / Short'}
             </button>

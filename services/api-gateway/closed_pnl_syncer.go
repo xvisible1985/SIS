@@ -195,7 +195,7 @@ func (s *ClosedPnlSyncer) fetchAndProcess(ctx context.Context, a closedPnlAccoun
 			if closeTime.After(newest) {
 				newest = closeTime
 			}
-			s.processClosedPnl(ctx, a, creds, p, closeTime)
+			s.processClosedPnl(ctx, a, creds, ex, p, closeTime)
 		}
 	}
 	return newest
@@ -412,7 +412,7 @@ func (s *ClosedPnlSyncer) writeGapTradeHistory(ctx context.Context, a closedPnlA
 	return err
 }
 
-func (s *ClosedPnlSyncer) processClosedPnl(ctx context.Context, a closedPnlAccount, creds trader.Credentials, p trader.ClosedPnl, closeTime time.Time) {
+func (s *ClosedPnlSyncer) processClosedPnl(ctx context.Context, a closedPnlAccount, creds trader.Credentials, ex trader.Exchange, p trader.ClosedPnl, closeTime time.Time) {
 	if p.OrderId == "" {
 		return
 	}
@@ -560,7 +560,7 @@ func (s *ClosedPnlSyncer) processClosedPnl(ctx context.Context, a closedPnlAccou
 				TPOrderID: zc.tpOrderID,
 				SLOrderID: zc.slOrderID,
 			}
-			go strategy.RecordStrategyTrade(s.pool, creds, in)
+			go strategy.RecordStrategyTrade(s.pool, ex, in)
 		}
 		return
 	}

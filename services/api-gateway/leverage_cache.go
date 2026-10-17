@@ -45,6 +45,14 @@ func upsertMaxLeverage(ctx context.Context, pool *pgxpool.Pool, symbol, category
 }
 
 // refreshLeverage fetches max_leverage from Bybit for one symbol and persists it.
+//
+// Deliberately Bybit-only (not dispatched by exchange — see getPublicInstrumentInfoFor
+// in instrument_handler.go, used elsewhere for Plan #4b/#4c): this whole refresher scans
+// Bybit's full symbol universe (trader.FetchAllLinearSymbols below) to warm the
+// "leverage" activation signal, and Binance's leverage is a per-notional-bracket
+// schedule, not the single scalar this cache stores — there is no Binance equivalent of
+// max_leverage to fetch here. Binance accounts simply don't get "leverage" signal
+// matches; that's the existing behavior, unchanged by this migration.
 func refreshLeverage(ctx context.Context, pool *pgxpool.Pool, symbol, category string) {
 	info, err := trader.GetPublicInstrumentInfo(ctx, category, symbol)
 	if err != nil {

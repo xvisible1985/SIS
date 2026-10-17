@@ -48,12 +48,19 @@ func (t *BalancedTransport) transportFor(proxyURL *url.URL) *http.Transport {
 }
 
 // RoundTrip selects a proxy, increments counters, and executes the request.
-// If no proxy is available it falls back to a direct connection.
+// If the proxy feature isn't in use at all (no proxies configured), it falls back to a
+// direct connection. If proxies ARE configured but none are currently healthy, it fails
+// closed with ErrNoHealthyProxy instead — see ErrNoHealthyProxy's doc comment for why a
+// silent direct-connection fallback in that case is a real operational risk, not just a
+// backward-compatible convenience.
 func (t *BalancedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	p := t.manager.Pick()
 	if p == nil {
-		// No proxy available — direct connection (backward-compatible)
-		return t.base.RoundTrip(req)
+		if t.manager.Count() == 0 {
+			// Proxy feature not in use at all — direct connection (backward-compatible).
+			return t.base.RoundTrip(req)
+		}
+		return nil, ErrNoHealthyProxy
 	}
 
 	p.IncPending()
@@ -83,9 +90,14 @@ func (t *filteredTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		return nil, err
 	}
 	if p == nil {
-		// allowedIPs empty and no proxy available — direct connection (matches
-		// BalancedTransport.RoundTrip's existing fallback behavior).
-		return t.shared.base.RoundTrip(req)
+		// Only reachable when allowedIPs is empty (a non-empty list with zero matches
+		// already returned ErrNoWhitelistedProxy above) — same two cases as
+		// BalancedTransport.RoundTrip: direct connection only if proxies aren't in use
+		// at all, otherwise fail closed rather than leak out unproxied.
+		if t.manager.Count() == 0 {
+			return t.shared.base.RoundTrip(req)
+		}
+		return nil, ErrNoHealthyProxy
 	}
 
 	p.IncPending()

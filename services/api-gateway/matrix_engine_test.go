@@ -8,15 +8,16 @@ import (
 // TestMatrixActivationSignalOK_EmptyAlwaysPasses pins backward compatibility: matrix
 // bots created before the activation-signal feature existed (or with the "Активация"
 // tab left empty) must keep opening both legs immediately, exactly as before. Only the
-// fast-path (len==0, no signalEngine/exchange access) is exercised here — the
+// fast-path (len(sigCfgs)==0, no signalEngine access) is exercised here — matrixBatchCheckActivation
+// resolves cfg.ActivationSignals into sigCfgs before calling this (see its own doc comment
+// for why that resolution was hoisted out of this per-symbol function); the
 // ComputeStateForce path mirrors hedge's existing "Optional activation signal filter"
 // (hedge_engine.go), which has no unit coverage in this package either, since it needs a
 // live signalEngine; that path is covered by manual/integration testing instead.
 func TestMatrixActivationSignalOK_EmptyAlwaysPasses(t *testing.T) {
 	s := &Server{}
-	cfg := botCfgJSON{}
-	if !s.matrixActivationSignalOK("BTCUSDT", cfg) {
-		t.Fatal("expected true — empty ActivationSignals must not block matrix bots (backward compatibility)")
+	if !s.matrixActivationSignalOK("BTCUSDT", "15", nil) {
+		t.Fatal("expected true — empty sigCfgs must not block matrix bots (backward compatibility)")
 	}
 }
 

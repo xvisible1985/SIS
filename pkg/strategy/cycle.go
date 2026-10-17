@@ -254,7 +254,7 @@ func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 				if hasTP || hasSL {
 					// Instrument info is only loaded for active strategies above; load it now.
 					if sr.instr.QtyStep == 0 {
-						if instr, err := trader.GetInstrumentInfo(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol); err == nil {
+						if instr, err := sr.runner.exchange.GetInstrumentInfo(ctx, sr.strategy.Category, sr.strategy.Symbol); err == nil {
 							sr.mu.Lock()
 							sr.instr = instr
 							sr.instrFetchedAt = time.Now()
@@ -289,7 +289,7 @@ func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 	needInstr := sr.instrFetchedAt.IsZero() || time.Since(sr.instrFetchedAt) > time.Hour
 	sr.mu.Unlock()
 	if needInstr {
-		instr, err := trader.GetInstrumentInfo(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+		instr, err := sr.runner.exchange.GetInstrumentInfo(ctx, sr.strategy.Category, sr.strategy.Symbol)
 		if err != nil {
 			log.Printf("strategy %s: instrument info: %v", sr.strategy.ID, err)
 		} else {
@@ -817,7 +817,7 @@ func (sr *StrategyRunner) adoptPositionIfOpen(ctx context.Context) {
 		// Instrument info is required by updateTP/updateSL (QtyStep, MinQty).
 		// For stopped strategies it's never loaded by loadOrStart, so load it here.
 		if sr.instr.QtyStep == 0 {
-			if instr, err2 := trader.GetInstrumentInfo(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol); err2 == nil {
+			if instr, err2 := sr.runner.exchange.GetInstrumentInfo(ctx, sr.strategy.Category, sr.strategy.Symbol); err2 == nil {
 				sr.mu.Lock()
 				sr.instr = instr
 				sr.instrFetchedAt = time.Now()
@@ -1091,7 +1091,7 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 	// Check order history for each passed level — no lock held during REST calls.
 	var stillMissing []*GridLevel
 	for _, s := range snaps {
-		existing, _, err := trader.FetchOrderByLinkId(ctx, sr.runner.creds, category, symbol, s.linkID)
+		existing, _, err := sr.runner.exchange.FetchOrderByLinkId(ctx, category, symbol, s.linkID)
 		if err == nil && existing.OrderStatus == "Filled" {
 			filledPrice, _ := strconv.ParseFloat(existing.Price, 64)
 			if filledPrice == 0 {
@@ -1469,7 +1469,7 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 	rows, err := sr.runner.pool.Query(ctx,
 		`SELECT id, level_idx, side, target_price, size_usdt, qty, status,
 		        COALESCE(exchange_order_id,''), COALESCE(filled_price,0), COALESCE(exchange_link_id,''),
-		        COALESCE(sl_order_id,''), COALESCE(sl_price,0), COALESCE(sl_replaced,false), slot, COALESCE(force_virtual,false),
+		        COALESCE(sl_order_id,''), COALESCE(sl_link_id,''), COALESCE(sl_price,0), COALESCE(sl_replaced,false), slot, COALESCE(force_virtual,false),
 		        COALESCE(use_signal,false)
 		 FROM strategy_levels WHERE cycle_id=$1 ORDER BY level_idx ASC`,
 		c.ID,
@@ -1484,7 +1484,7 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 		var slotVal *int16
 		if err := rows.Scan(&l.ID, &l.LevelIdx, &l.Side, &l.TargetPrice, &l.SizeUSDT,
 			&l.Qty, &stat, &l.ExchangeOrderID, &l.FilledPrice, &l.ExchangeLinkID,
-			&l.SLOrderID, &l.SLPrice, &l.SLReplaced, &slotVal, &l.ForceVirtual, &l.UseSignal); err != nil {
+			&l.SLOrderID, &l.SLLinkID, &l.SLPrice, &l.SLReplaced, &slotVal, &l.ForceVirtual, &l.UseSignal); err != nil {
 			continue
 		}
 		if slotVal != nil {
@@ -1514,6 +1514,20 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 			if len(parts) >= 5 {
 				if gen, err := strconv.Atoi(parts[len(parts)-1]); err == nil && gen > sr.repriceGen {
 					sr.repriceGen = gen
+				}
+			}
+		}
+		// Restore matrixSLSeq the same way (from the saved per-level-SL linkId, format
+		// "SIS_STR-<id8>-msl-<slot>-<seq>") — without this, a process restart resets the
+		// sequence to 0 and the next matrixPlacePerLevelSL/matrixApplyStopCondSLs call
+		// regenerates a linkId Bybit already has on record, failing with 110072. Found live
+		// (2026-09-24, MUBARAKUSDT): the restart left L(1) without a working SL because the
+		// replace attempt kept colliding, and the retries left extra orphaned orders behind.
+		if l.SLLinkID != "" {
+			parts := strings.Split(l.SLLinkID, "-")
+			if len(parts) >= 5 {
+				if seq, err := strconv.Atoi(parts[len(parts)-1]); err == nil && seq > sr.matrixSLSeq {
+					sr.matrixSLSeq = seq
 				}
 			}
 		}
@@ -2397,12 +2411,29 @@ func (sr *StrategyRunner) updateTrailingStop(ctx context.Context) error {
 	activePriceStr := trader.FormatPrice(activePrice, sr.instr.TickSize)
 	callbackStr := trader.FormatPrice(callbackDist, sr.instr.TickSize)
 
-	if err := trader.SetTradingStop(ctx, sr.runner.creds, trader.TradingStopRequest{
-		Category:     sr.strategy.Category,
-		Symbol:       sr.strategy.Symbol,
-		TrailingStop: callbackStr,
-		ActivePrice:  activePriceStr,
-		PositionIdx:  wantIdx,
+	// closeSide/qty/clientOrderID are only read by Binance's implementation (a genuine
+	// TRAILING_STOP_MARKET order, unlike Bybit's position-attribute call) — see
+	// trader.Exchange's SetTrailingStop doc comment. closeSide matches tpParams' own
+	// long→Sell/short→Buy convention; clientOrderID follows the same SIS_STR-<id8>-
+	// <kind>-<cycleNum> pattern updateTP/updateSL already use for their own link IDs, so
+	// Binance can find and cancel its own prior trailing-stop order before replacing it.
+	closeSide := "Sell"
+	if sr.strategy.Direction == DirectionShort {
+		closeSide = "Buy"
+	}
+	qtyStr := trader.FormatQty(totalQty, sr.instr.QtyStep, sr.instr.MinQty)
+	clientOrderID := fmt.Sprintf("SIS_STR-%s-trail-%d", sr.strategy.ID[:8], sr.cycle.CycleNum)
+
+	if err := sr.runner.exchange.SetTrailingStop(ctx, trader.TrailingStopRequest{
+		Category:        sr.strategy.Category,
+		Symbol:          sr.strategy.Symbol,
+		TrailingStop:    callbackStr,
+		ActivePrice:     activePriceStr,
+		PositionIdx:     wantIdx,
+		Side:            closeSide,
+		Qty:             qtyStr,
+		CallbackRatePct: sr.strategy.TrailingCallbackPct,
+		ClientOrderID:   clientOrderID,
 	}); err != nil {
 		return fmt.Errorf("updateTrailingStop: %w", err)
 	}
@@ -2499,7 +2530,7 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 	}
 
 	if sr.instr.QtyStep == 0 {
-		if instr, err := trader.GetInstrumentInfo(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol); err == nil {
+		if instr, err := sr.runner.exchange.GetInstrumentInfo(ctx, sr.strategy.Category, sr.strategy.Symbol); err == nil {
 			sr.instr = instr
 			sr.instrFetchedAt = time.Now()
 		}
@@ -2696,7 +2727,7 @@ func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 	}
 
 	if sr.instr.QtyStep == 0 {
-		if instr, err := trader.GetInstrumentInfo(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol); err == nil {
+		if instr, err := sr.runner.exchange.GetInstrumentInfo(ctx, sr.strategy.Category, sr.strategy.Symbol); err == nil {
 			sr.instr = instr
 			sr.instrFetchedAt = time.Now()
 		}
@@ -3113,7 +3144,7 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 		sr.exitSLSignalSubID = ""
 	}
 	// Async: write trade_history after Bybit processes the close.
-	go RecordStrategyTrade(sr.runner.pool, sr.runner.creds, recInput)
+	go RecordStrategyTrade(sr.runner.pool, sr.runner.exchange, recInput)
 
 	if result == "tp" && sr.runner.engine != nil && sr.runner.engine.OnMainTpClosed != nil {
 		sr.runner.engine.OnMainTpClosed(ctx, sr.strategy.ID)
@@ -4121,7 +4152,7 @@ func (sr *StrategyRunner) restartMatrixCycle(ctx context.Context) {
 	}
 	sr.mu.Unlock()
 
-	instr, err := trader.GetInstrumentInfo(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	instr, err := sr.runner.exchange.GetInstrumentInfo(ctx, sr.strategy.Category, sr.strategy.Symbol)
 	if err != nil {
 		log.Printf("strategy %s: instrument info: %v", sr.strategy.ID, err)
 	} else {
@@ -4264,7 +4295,7 @@ func (sr *StrategyRunner) restartGridCycle(ctx context.Context) {
 	}
 	sr.mu.Unlock()
 
-	instr, err := trader.GetInstrumentInfo(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	instr, err := sr.runner.exchange.GetInstrumentInfo(ctx, sr.strategy.Category, sr.strategy.Symbol)
 	if err != nil {
 		log.Printf("strategy %s: instrument info: %v", sr.strategy.ID, err)
 	} else {
@@ -4710,7 +4741,7 @@ func isTruncatedToZero(err error) bool {
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) recoverDuplicateLevel(ctx context.Context, idx int, linkID string) {
 	l := &sr.levels[idx]
-	existing, active, err := trader.FetchOrderByLinkId(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol, linkID)
+	existing, active, err := sr.runner.exchange.FetchOrderByLinkId(ctx, sr.strategy.Category, sr.strategy.Symbol, linkID)
 	if err != nil {
 		sr.warn(ctx, fmt.Sprintf("L%d recover linkId: %v", l.LevelIdx, err))
 		return
@@ -5027,7 +5058,7 @@ func (sr *StrategyRunner) resetCancelledLevels(ctx context.Context) {
 // its orderId so WS fill events are routed correctly.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) recoverDuplicateTP(ctx context.Context, linkID string) {
-	existing, active, err := trader.FetchOrderByLinkId(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol, linkID)
+	existing, active, err := sr.runner.exchange.FetchOrderByLinkId(ctx, sr.strategy.Category, sr.strategy.Symbol, linkID)
 	if err != nil {
 		sr.warn(ctx, fmt.Sprintf("recoverDuplicateTP: %v", err))
 		return
@@ -5062,7 +5093,13 @@ func (sr *StrategyRunner) recoverDuplicateTP(ctx context.Context, linkID string)
 // symbol, cancel any close-side limit orders we don't recognise, then retry TP placement.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) retryTPAfterCancelStale(ctx context.Context, tpSide, tpQty, linkID string, tpPrice, totalQty, avg float64) error {
-	openOrders, err := trader.FetchOpenOrdersForSymbol(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	// FetchOpenOrdersForSymbolAll (Order + StopOrder) instead of the Bybit-only, Order-
+	// only FetchOpenOrdersForSymbol (Plan #4d) — trader.Exchange only exposes the "All"
+	// variant, already used elsewhere for this exact kind of stale-order sweep; catching
+	// stale conditional orders too, not just plain ones, is a strict improvement here,
+	// not a behavior risk, since the loop below only cancels ones matching tpSide and
+	// not already tracked in `known`.
+	openOrders, err := sr.runner.Exchange().FetchOpenOrdersForSymbolAll(ctx, sr.strategy.Category, sr.strategy.Symbol)
 	if err != nil {
 		return fmt.Errorf("place TP (110017, fetch orders): %w", err)
 	}
@@ -5129,7 +5166,7 @@ func (sr *StrategyRunner) retryTPAfterCancelStale(ctx context.Context, tpSide, t
 // recoverDuplicateSL handles Bybit retCode=110072 for SL orders.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) recoverDuplicateSL(ctx context.Context, linkID string) {
-	existing, active, err := trader.FetchOrderByLinkId(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol, linkID)
+	existing, active, err := sr.runner.exchange.FetchOrderByLinkId(ctx, sr.strategy.Category, sr.strategy.Symbol, linkID)
 	if err != nil {
 		sr.warn(ctx, fmt.Sprintf("recoverDuplicateSL: %v", err))
 		return
@@ -5871,7 +5908,11 @@ func (sr *StrategyRunner) checkPositionAfterTPCircuitBreaker(ctx context.Context
 		return
 	}
 
-	positions, err := trader.FetchPositionBySymbol(ctx, sr.runner.creds, sr.strategy.Category, sr.strategy.Symbol)
+	// Account-wide FetchPositions + filter, rather than a Bybit-only symbol-filtered
+	// REST call (Plan #4d) — trader.Exchange has no FetchPositionBySymbol of its own,
+	// and this check only runs for one symbol at a time so the extra data transferred
+	// by fetching every position is negligible.
+	positions, err := sr.runner.exchange.FetchPositions(ctx)
 	if err != nil {
 		sr.errlog(ctx, fmt.Sprintf("TP circuit breaker: ошибка получения позиции: %v", err))
 		return
@@ -5884,7 +5925,7 @@ func (sr *StrategyRunner) checkPositionAfterTPCircuitBreaker(ctx context.Context
 
 	var exchangeSize float64
 	for _, p := range positions {
-		if p.Side == wantSide {
+		if p.Symbol == sr.strategy.Symbol && p.Side == wantSide {
 			exchangeSize, _ = strconv.ParseFloat(p.Size, 64)
 			break
 		}

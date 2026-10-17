@@ -17,8 +17,9 @@ import (
 // partial-close trigger. Name is the signal name (e.g. "st-flip"); Params are
 // passed to signal.ComputeStateForce as signal.Config.Params.
 type rescueSignalTrigger struct {
-	Name   string                 `json:"name"`
-	Params map[string]interface{} `json:"params,omitempty"`
+	Name           string                 `json:"name"`
+	Params         map[string]interface{} `json:"params,omitempty"`
+	CustomSignalID string                 `json:"custom_signal_id,omitempty"`
 }
 
 // rescuePriceMovePct returns the signed percentage move of a position relative to
@@ -287,22 +288,29 @@ func (s *Server) checkRescuePartialClose(ctx context.Context, botID, accountID s
 			want = signal.Buy
 		}
 		for _, trig := range cfg.RescueTriggerSignal {
-			sc := signal.Config{Name: trig.Name, Params: trig.Params}
+			// Expand a custom-signal-combo trigger into its real component configs —
+			// see resolveBotSignalConfigs's doc comment.
+			sigCfgs := s.resolveBotSignalConfigs(ctx, []botSignalRef{
+				{Name: trig.Name, Params: trig.Params, CustomSignalID: trig.CustomSignalID},
+			})
 			interval := "15"
 			if v, ok := trig.Params["tf"].(string); ok && v != "" {
 				interval = v
 			}
-			state := s.signalEngine.ComputeStateForce(sr.symbol, interval, []signal.Config{sc})
+			state := s.signalEngine.ComputeStateForce(sr.symbol, interval, sigCfgs)
 			if state != want {
 				signalMet = false
 				break
 			}
 		}
 
-		// Fetch instrument constraints (cached 5m by trader package).
-		pubInfo, err := trader.GetPublicInstrumentInfo(ctx, "linear", sr.symbol)
+		// Fetch instrument constraints via the account's own resolved exchange (Bybit or
+		// Binance — Plan #4b/#4c) rather than the Bybit-only public endpoint, since ex is
+		// already resolved for this account above. Cached internally by each exchange
+		// package (trader: 1h; binance: 5m).
+		pubInfo, err := ex.GetInstrumentInfo(ctx, "linear", sr.symbol)
 		if err != nil {
-			log.Printf("checkRescuePartialClose [%s %s]: GetPublicInstrumentInfo: %v", botID, sr.symbol, err)
+			log.Printf("checkRescuePartialClose [%s %s]: GetInstrumentInfo: %v", botID, sr.symbol, err)
 			continue
 		}
 

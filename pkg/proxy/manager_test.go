@@ -83,7 +83,8 @@ func TestPickNoHealthyReturnsNil(t *testing.T) {
 
 	m := &Manager{proxies: []*Proxy{p1, p2}}
 
-	// No healthy proxies — should return nil (direct connection fallback)
+	// No healthy proxies — should return nil. (What the caller does with that nil is up
+	// to BalancedTransport/filteredTransport/WSDialerFor — see ErrNoHealthyProxy.)
 	p := m.Pick()
 	if p != nil {
 		t.Errorf("expected nil for no healthy proxies, got %v", p)

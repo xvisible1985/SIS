@@ -829,19 +829,18 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 // Buy vs Sell under the hood, but matrix ignores which one fired, only that one did.
 // Empty ActivationSignals always passes — backward compatible with existing matrix bots,
 // which opened immediately before this gate existed.
-func (s *Server) matrixActivationSignalOK(symbol string, cfg botCfgJSON) bool {
-	if len(cfg.ActivationSignals) == 0 {
+// matrixActivationSignalOK takes already-resolved sigCfgs (see matrixBatchCheckActivation,
+// its only caller) rather than resolving cfg.ActivationSignals itself — this runs once per
+// symbol, potentially hundreds of times per tick, and cfg.ActivationSignals is identical
+// across all of them, so resolving per-call would mean one DB round-trip (custom-signal
+// expansion) per symbol instead of one per tick. Found live (2026-10-07): resolving here
+// exhausted the pool under load, and even hedgeEngineTick's own simple bots-listing query
+// started timing out ("context deadline exceeded") as a result.
+func (s *Server) matrixActivationSignalOK(symbol string, interval string, sigCfgs []signal.Config) bool {
+	if len(sigCfgs) == 0 {
 		return true
 	}
-	sigCfgs := make([]signal.Config, 0, len(cfg.ActivationSignals))
-	for _, a := range cfg.ActivationSignals {
-		sc := signal.Config{Name: a.Name, Params: a.Params}
-		if _, err := signal.Build(sc); err != nil {
-			return false
-		}
-		sigCfgs = append(sigCfgs, sc)
-	}
-	state := s.signalEngine.ComputeStateForce(symbol, matrixActivationInterval(cfg), sigCfgs)
+	state := s.signalEngine.ComputeStateForce(symbol, interval, sigCfgs)
 	return state != signal.Neutral
 }
 
@@ -885,7 +884,27 @@ func (s *Server) matrixBatchCheckActivation(ctx context.Context, symbols []strin
 		}
 		return result
 	}
-	s.globalWarmer.EnsureIntervals([]string{matrixActivationInterval(cfg)})
+
+	// Resolve/validate once for the whole batch, not once per symbol below — cfg is the
+	// same bot config for every symbol checked here, so re-expanding a custom-signal combo
+	// (a DB round-trip) per symbol was pure waste that could exhaust the pool under load
+	// with hundreds of symbols. See matrixActivationSignalOK's doc comment.
+	resolvedEntries := s.resolveBotSignalConfigs(ctx, cfg.ActivationSignals)
+	sigCfgs := make([]signal.Config, 0, len(resolvedEntries))
+	for _, sc := range resolvedEntries {
+		if _, err := signal.Build(sc); err != nil {
+			// Invalid config — every symbol fails identically, same as before this batch
+			// hoist (matrixActivationSignalOK used to return false for all of them too).
+			for _, sym := range symbols {
+				result[sym] = false
+			}
+			return result
+		}
+		sigCfgs = append(sigCfgs, sc)
+	}
+
+	interval := matrixActivationInterval(cfg)
+	s.globalWarmer.EnsureIntervals([]string{interval})
 	sem := make(chan struct{}, 20)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -900,7 +919,7 @@ func (s *Server) matrixBatchCheckActivation(ctx context.Context, symbols []strin
 			case sem <- struct{}{}:
 			}
 			defer func() { <-sem }()
-			ok := s.matrixActivationSignalOK(sym, cfg)
+			ok := s.matrixActivationSignalOK(sym, interval, sigCfgs)
 			mu.Lock()
 			result[sym] = ok
 			mu.Unlock()

@@ -1,9 +1,13 @@
 package trader
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // Regression for a live incident (2026-08-12): an expired Bybit API key kept every
@@ -78,5 +82,107 @@ func TestSign(t *testing.T) {
 	got3 := sign("1000", "APIKEY", "OTHER", "10000", "symbol=BTCUSDT")
 	if got == got3 {
 		t.Error("different secret must produce different signature")
+	}
+}
+
+// Regression (2026-10-17): this cursor-walk-until-since logic used to live inline in
+// pkg/trader.Syncer.syncExecutions with no direct test of its own (only exercised
+// end-to-end) — moved out behind BybitExchange.FetchAccountExecutions as part of giving
+// Binance an equivalent via the same trader.Exchange interface. Pins that the walk stops
+// the INSTANT an execution older than `since` is seen, never requesting a further page.
+func TestFetchAccountExecutionsSince_StopsAtSinceCutoff(t *testing.T) {
+	now := time.Now()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("cursor") {
+		case "":
+			fmt.Fprintf(w, `{"retCode":0,"retMsg":"OK","result":{"list":[{"execId":"e1","execTime":"%d"},{"execId":"e2","execTime":"%d"}],"nextPageCursor":"page2"}}`,
+				now.UnixMilli(), now.Add(-2*time.Hour).UnixMilli())
+		case "page2":
+			// e3 is within `since`, e4 is older — the walk must stop right after e4 and
+			// never request a hypothetical page3.
+			fmt.Fprintf(w, `{"retCode":0,"retMsg":"OK","result":{"list":[{"execId":"e3","execTime":"%d"},{"execId":"e4","execTime":"%d"}],"nextPageCursor":"page3"}}`,
+				now.Add(-4*time.Hour).UnixMilli(), now.Add(-10*time.Hour).UnixMilli())
+		default:
+			t.Error("requested a page beyond the one containing an execution older than since")
+			fmt.Fprint(w, `{"retCode":0,"retMsg":"OK","result":{"list":[],"nextPageCursor":""}}`)
+		}
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	since := now.Add(-6 * time.Hour)
+	got, err := FetchAccountExecutionsSince(context.Background(), Credentials{}, "linear", since)
+	if err != nil {
+		t.Fatalf("FetchAccountExecutionsSince: %v", err)
+	}
+	wantIDs := []string{"e1", "e2", "e3"}
+	if len(got) != len(wantIDs) {
+		t.Fatalf("got %d executions, want %d: %+v", len(got), len(wantIDs), got)
+	}
+	for i, id := range wantIDs {
+		if got[i].ExecId != id {
+			t.Errorf("got[%d].ExecId = %q, want %q", i, got[i].ExecId, id)
+		}
+	}
+}
+
+// Same cutoff behavior as FetchAccountExecutionsSince, but for order history — unlike
+// the pre-2026-10-17 syncOrderHistory (which walked every page with NO cutoff at all),
+// this now bounds the walk to `since` too.
+func TestFetchAccountOrderHistorySince_StopsAtSinceCutoff(t *testing.T) {
+	now := time.Now()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("cursor") {
+		case "":
+			fmt.Fprintf(w, `{"retCode":0,"retMsg":"OK","result":{"list":[{"orderId":"o1","createdTime":"%d"}],"nextPageCursor":"page2"}}`, now.UnixMilli())
+		case "page2":
+			fmt.Fprintf(w, `{"retCode":0,"retMsg":"OK","result":{"list":[{"orderId":"o2","createdTime":"%d"}],"nextPageCursor":"page3"}}`, now.Add(-10*time.Hour).UnixMilli())
+		default:
+			t.Error("requested a page beyond the one containing an order older than since")
+			fmt.Fprint(w, `{"retCode":0,"retMsg":"OK","result":{"list":[],"nextPageCursor":""}}`)
+		}
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	since := now.Add(-6 * time.Hour)
+	got, err := FetchAccountOrderHistorySince(context.Background(), Credentials{}, "linear", since)
+	if err != nil {
+		t.Fatalf("FetchAccountOrderHistorySince: %v", err)
+	}
+	if len(got) != 1 || got[0].OrderId != "o1" {
+		t.Fatalf("got %+v, want exactly one order (o1)", got)
+	}
+}
+
+// FetchAccountWhitelistedIPs must use unrestricted credentials (not creds.WhitelistedIPs
+// — see the self-lock regression this mirrors in syncer_test.go) and normalize Bybit's
+// wildcard ["*"] the same way the old inline refreshWhitelistedIPs code did.
+func TestFetchAccountWhitelistedIPs_NormalizesWildcard(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/v5/user/query-api" {
+			// e.g. /v5/market/time's timestamp-sync ping — not the call under test.
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		hits++
+		fmt.Fprint(w, `{"retCode":0,"retMsg":"OK","result":{"ips":["*"]}}`)
+	}))
+	defer srv.Close()
+	withMockBybitBase(t, srv)
+
+	got, err := FetchAccountWhitelistedIPs(context.Background(), Credentials{APIKey: "k", SecretKey: "s", WhitelistedIPs: []string{"1.2.3.4"}})
+	if err != nil {
+		t.Fatalf("FetchAccountWhitelistedIPs: %v", err)
+	}
+	if got != nil {
+		t.Errorf("got %v, want nil (wildcard \"*\" normalized to no-restriction)", got)
+	}
+	if hits != 1 {
+		t.Errorf("hits = %d, want 1", hits)
 	}
 }

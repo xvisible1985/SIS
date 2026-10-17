@@ -46,6 +46,14 @@ export function PnlTable({ accountId }: Props) {
   }
 
   function calcFee(item: ClosedPnlItem) {
+    // Prefer the real exchange-reported commission (Binance rows carry it directly —
+    // see api/trader.ts's ClosedPnlItem.fee). The gross-minus-closedPnl estimate below
+    // silently assumed avgEntryPrice was always exact, which only holds for Bybit (its
+    // own closed-pnl record) — for a reconstructed Binance entry price, any imprecision
+    // got amplified into a wildly wrong "fee" once multiplied by qty. Found live
+    // (2026-10-16): a SUPERUSDT close showed ~94 USDT "fee" on a ~719 USDT trade (13%),
+    // nowhere near Binance's real ~0.04-0.05% futures taker rate.
+    if (item.fee) return parseFloat(item.fee)
     // item.side = closing order side: Buy = Short position closed, Sell = Long position closed
     const gross = item.side === 'Buy'
       ? (parseFloat(item.avgEntryPrice) - parseFloat(item.avgExitPrice)) * parseFloat(item.qty)  // Short: profit when entry > exit
