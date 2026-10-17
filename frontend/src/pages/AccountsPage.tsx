@@ -1095,7 +1095,7 @@ function HowTo({ exchange, naked = false }: { exchange: string; naked?: boolean 
 }
 
 /* ─── EmptyState ─────────────────────────────────────────────────────────── */
-function EmptyState() {
+function EmptyState({ onAddKey }: { onAddKey: () => void }) {
   return (
     <div style={{
       background: 'linear-gradient(180deg, rgba(91,140,255,.04) 0%, rgba(255,255,255,.01) 100%)',
@@ -1120,6 +1120,14 @@ function EmptyState() {
           После подключения платформа сможет читать ваш баланс и выставлять ордера. Все секреты шифруются на нашей стороне.
         </p>
       </div>
+      <button onClick={onAddKey} style={{
+        display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 18px 10px 14px',
+        background: 'linear-gradient(180deg, #4a7dff 0%, #3a67e6 100%)',
+        color: '#fff', border: 0, borderRadius: 9, fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+        boxShadow: '0 10px 24px -10px rgba(74,125,255,.6)',
+      }}>
+        <IcPlus s={13} w={2.2} /> Добавить ключ
+      </button>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
         {Object.entries(EXCHANGES).slice(0, 6).map(([id, e]) => (
           <div key={id} style={{
