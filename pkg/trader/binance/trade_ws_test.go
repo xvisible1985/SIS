@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -275,5 +276,77 @@ func TestBinanceTradeStream_CancelOrder_UsesAlgoOrderCancelWhenOrderFilterIsStop
 	}
 	if gotMethod != "algoOrder.cancel" {
 		t.Errorf("method = %q, want algoOrder.cancel", gotMethod)
+	}
+}
+
+func TestBinanceTradeStream_PlaceOrderBatch_PreservesOriginalIndexOrder(t *testing.T) {
+	srv := wsEchoServer(t, func(method string, params map[string]any) (any, int, string) {
+		switch params["symbol"] {
+		case "ETHUSDT":
+			return map[string]any{"orderId": 10, "clientOrderId": "eth"}, 0, ""
+		case "BTCUSDT":
+			return map[string]any{"algoId": 99, "clientAlgoId": "btc-tp"}, 0, ""
+		}
+		return nil, -1102, "unexpected symbol"
+	})
+	ts := NewBinanceTradeStream(testCreds())
+	ts.dialURL = "ws" + strings.TrimPrefix(srv.URL, "http")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ts.Run(ctx)
+	waitConnected(t, ts)
+
+	got, err := ts.PlaceOrderBatch(ctx, trader.BatchPlaceRequest{Request: []trader.BatchOrderItem{
+		{Symbol: "BTCUSDT", Side: "Sell", OrderType: "Market", TriggerPrice: "58000", Qty: "1"}, // index 0: conditional
+		{Symbol: "ETHUSDT", Side: "Buy", OrderType: "Limit", Qty: "1", Price: "3000"},            // index 1: regular
+	}})
+	if err != nil {
+		t.Fatalf("PlaceOrderBatch: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d results, want 2", len(got))
+	}
+	if got[0].OrderId != "99" || got[0].OrderLinkId != "btc-tp" {
+		t.Errorf("result[0] (conditional BTCUSDT) = %+v, want OrderId=99 OrderLinkId=btc-tp", got[0])
+	}
+	if got[1].OrderId != "10" || got[1].OrderLinkId != "eth" {
+		t.Errorf("result[1] (regular ETHUSDT) = %+v, want OrderId=10 OrderLinkId=eth", got[1])
+	}
+}
+
+func TestBinanceTradeStream_CancelOrderBatch_SplitsRegularAndConditional(t *testing.T) {
+	var gotMethods []string
+	var mu sync.Mutex
+	srv := wsEchoServer(t, func(method string, params map[string]any) (any, int, string) {
+		mu.Lock()
+		gotMethods = append(gotMethods, method)
+		mu.Unlock()
+		return map[string]any{}, 0, ""
+	})
+	ts := NewBinanceTradeStream(testCreds())
+	ts.dialURL = "ws" + strings.TrimPrefix(srv.URL, "http")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ts.Run(ctx)
+	waitConnected(t, ts)
+
+	err := ts.CancelOrderBatch(ctx, trader.BatchCancelRequest{Request: []trader.BatchCancelItem{
+		{Symbol: "BTCUSDT", OrderId: "10"},
+		{Symbol: "BTCUSDT", OrderId: "99", OrderFilter: "StopOrder"},
+	}})
+	if err != nil {
+		t.Fatalf("CancelOrderBatch: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gotMethods) != 2 {
+		t.Fatalf("got %d WS calls, want 2", len(gotMethods))
+	}
+	wantSet := map[string]bool{"order.cancel": false, "algoOrder.cancel": false}
+	for _, m := range gotMethods {
+		wantSet[m] = true
+	}
+	if !wantSet["order.cancel"] || !wantSet["algoOrder.cancel"] {
+		t.Errorf("methods = %v, want both order.cancel and algoOrder.cancel", gotMethods)
 	}
 }

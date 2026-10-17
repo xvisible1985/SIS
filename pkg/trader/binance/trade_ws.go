@@ -426,3 +426,48 @@ func (ts *BinanceTradeStream) CancelOrder(ctx context.Context, req trader.Cancel
 	}
 	return nil
 }
+
+func (ts *BinanceTradeStream) PlaceOrderBatch(ctx context.Context, req trader.BatchPlaceRequest) ([]trader.BatchPlaceResult, error) {
+	out := make([]trader.BatchPlaceResult, len(req.Request))
+	var wg sync.WaitGroup
+	for i, it := range req.Request {
+		wg.Add(1)
+		go func(i int, it trader.BatchOrderItem) {
+			defer wg.Done()
+			res, err := ts.PlaceOrder(ctx, trader.OrderRequest{
+				Symbol: it.Symbol, Side: it.Side, OrderType: it.OrderType, Qty: it.Qty,
+				Price: it.Price, TriggerPrice: it.TriggerPrice, TimeInForce: it.TimeInForce,
+				OrderFilter: it.OrderFilter, ReduceOnly: it.ReduceOnly,
+				PositionIdx: it.PositionIdx, OrderLinkId: it.OrderLinkId,
+			})
+			if err != nil {
+				out[i] = trader.BatchPlaceResult{Code: -1, Msg: err.Error()}
+				return
+			}
+			out[i] = trader.BatchPlaceResult{OrderId: res.OrderId, OrderLinkId: res.OrderLinkId}
+		}(i, it)
+	}
+	wg.Wait()
+	return out, nil
+}
+
+func (ts *BinanceTradeStream) CancelOrderBatch(ctx context.Context, req trader.BatchCancelRequest) error {
+	var wg sync.WaitGroup
+	errs := make([]error, len(req.Request))
+	for i, it := range req.Request {
+		wg.Add(1)
+		go func(i int, it trader.BatchCancelItem) {
+			defer wg.Done()
+			errs[i] = ts.CancelOrder(ctx, trader.CancelRequest{
+				Symbol: it.Symbol, OrderId: it.OrderId, OrderFilter: it.OrderFilter,
+			})
+		}(i, it)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return err // first error wins, matching the existing REST CancelOrderBatch's reporting granularity
+		}
+	}
+	return nil
+}
