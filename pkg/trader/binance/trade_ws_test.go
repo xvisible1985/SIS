@@ -3,6 +3,7 @@ package binance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"sis/pkg/trader"
 )
 
 // Regression target: Binance's WS API rejects (or silently misbehaves on) INT-typed
@@ -163,5 +166,114 @@ func TestBinanceTradeStream_SendReq_SurfacesErrorResponse(t *testing.T) {
 	}
 	if resp.Error == nil || resp.Error.Code != -1102 {
 		t.Errorf("resp.Error = %+v, want code=-1102", resp.Error)
+	}
+}
+
+func TestBinanceTradeStream_PlaceOrder_RegularOrderUsesOrderPlaceMethod(t *testing.T) {
+	var gotMethod string
+	var gotSymbol, gotQuantity any
+	srv := wsEchoServer(t, func(method string, params map[string]any) (any, int, string) {
+		gotMethod = method
+		gotSymbol = params["symbol"]
+		gotQuantity = params["quantity"]
+		return map[string]any{"orderId": 500, "clientOrderId": "SIS_STR-abc"}, 0, ""
+	})
+	ts := NewBinanceTradeStream(testCreds())
+	ts.dialURL = "ws" + strings.TrimPrefix(srv.URL, "http")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ts.Run(ctx)
+	waitConnected(t, ts)
+
+	got, err := ts.PlaceOrder(ctx, trader.OrderRequest{
+		Symbol: "BTCUSDT", Side: "Buy", OrderType: "Market", Qty: "0.01",
+	})
+	if err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+	if gotMethod != "order.place" {
+		t.Errorf("method = %q, want order.place", gotMethod)
+	}
+	if gotSymbol != "BTCUSDT" || gotQuantity != "0.01" {
+		t.Errorf("symbol/quantity = %v/%v, want BTCUSDT/0.01", gotSymbol, gotQuantity)
+	}
+	if got.OrderId != "500" || got.OrderLinkId != "SIS_STR-abc" {
+		t.Errorf("got %+v, want OrderId=500 OrderLinkId=SIS_STR-abc", got)
+	}
+}
+
+func TestBinanceTradeStream_PlaceOrder_ConditionalOrderUsesAlgoOrderPlaceMethod(t *testing.T) {
+	var gotMethod string
+	srv := wsEchoServer(t, func(method string, params map[string]any) (any, int, string) {
+		gotMethod = method
+		return map[string]any{"algoId": 900, "clientAlgoId": "SIS_STR-tp"}, 0, ""
+	})
+	ts := NewBinanceTradeStream(testCreds())
+	ts.dialURL = "ws" + strings.TrimPrefix(srv.URL, "http")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ts.Run(ctx)
+	waitConnected(t, ts)
+
+	got, err := ts.PlaceOrder(ctx, trader.OrderRequest{
+		Symbol: "BTCUSDT", Side: "Sell", OrderType: "Market", TriggerPrice: "58000", Qty: "0.01",
+	})
+	if err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+	if gotMethod != "algoOrder.place" {
+		t.Errorf("method = %q, want algoOrder.place", gotMethod)
+	}
+	if got.OrderId != "900" || got.OrderLinkId != "SIS_STR-tp" {
+		t.Errorf("got %+v, want OrderId=900 OrderLinkId=SIS_STR-tp", got)
+	}
+}
+
+func TestBinanceTradeStream_PlaceOrder_NotConnectedReturnsErrWSUnavailable(t *testing.T) {
+	ts := NewBinanceTradeStream(testCreds()) // Run() never called — ts.conn stays nil
+	_, err := ts.PlaceOrder(context.Background(), trader.OrderRequest{Symbol: "BTCUSDT", OrderType: "Market", Qty: "1"})
+	if !errors.Is(err, ErrWSUnavailable) {
+		t.Errorf("err = %v, want ErrWSUnavailable", err)
+	}
+}
+
+func TestBinanceTradeStream_PlaceOrder_GenuineRejectionIsNotErrWSUnavailable(t *testing.T) {
+	srv := wsEchoServer(t, func(method string, params map[string]any) (any, int, string) {
+		return nil, -2019, "Margin is insufficient."
+	})
+	ts := NewBinanceTradeStream(testCreds())
+	ts.dialURL = "ws" + strings.TrimPrefix(srv.URL, "http")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ts.Run(ctx)
+	waitConnected(t, ts)
+
+	_, err := ts.PlaceOrder(ctx, trader.OrderRequest{Symbol: "BTCUSDT", OrderType: "Market", Qty: "1"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if errors.Is(err, ErrWSUnavailable) {
+		t.Error("a genuine order rejection must NOT be ErrWSUnavailable — the caller must not retry it on REST (duplicate-submission risk)")
+	}
+}
+
+func TestBinanceTradeStream_CancelOrder_UsesAlgoOrderCancelWhenOrderFilterIsStopOrder(t *testing.T) {
+	var gotMethod string
+	srv := wsEchoServer(t, func(method string, params map[string]any) (any, int, string) {
+		gotMethod = method
+		return map[string]any{}, 0, ""
+	})
+	ts := NewBinanceTradeStream(testCreds())
+	ts.dialURL = "ws" + strings.TrimPrefix(srv.URL, "http")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ts.Run(ctx)
+	waitConnected(t, ts)
+
+	if err := ts.CancelOrder(ctx, trader.CancelRequest{Symbol: "BTCUSDT", OrderId: "900", OrderFilter: "StopOrder"}); err != nil {
+		t.Fatalf("CancelOrder: %v", err)
+	}
+	if gotMethod != "algoOrder.cancel" {
+		t.Errorf("method = %q, want algoOrder.cancel", gotMethod)
 	}
 }

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -271,4 +273,156 @@ func (ts *BinanceTradeStream) sendReq(ctx context.Context, method string, params
 		ts.mu.Unlock()
 		return binanceWSResp{}, ctx.Err()
 	}
+}
+
+// binanceWSConnDenied reports whether code means the WS request never reached real
+// order validation at all — connection/auth/signature/clock-shaped, not a genuine order
+// outcome — so falling back to REST for THIS call is safe: nothing was placed or
+// rejected on Binance's side yet, so there is no duplicate-submission risk. -2015 is the
+// exact code from the 2026-10-16 incident ("Invalid API-key, IP, or permissions");
+// -1002 is "not authorized for this endpoint"; -1022/-1021 are a bad signature or a
+// timestamp outside recvWindow — Binance's equivalent of pkg/trader/trade_ws.go's
+// wsPermDenied (Bybit), just split further below for the permanent-disable decision.
+func binanceWSConnDenied(code int) bool {
+	switch code {
+	case -2015, -1002, -1022, -1021:
+		return true
+	}
+	return false
+}
+
+// binanceWSPermanentlyDenied is the narrower subset of binanceWSConnDenied that
+// indicates a real, persistent account/key misconfiguration (wrong IP, wrong key, a
+// permission the key genuinely lacks) rather than something that could be a one-off
+// blip — only -2015/-1002 set wsDisabled permanently. -1022 (bad signature) and -1021
+// (timestamp/recvWindow) do NOT: both fall back to REST for this one call via
+// binanceWSConnDenied, but get a fresh, un-disabled chance at WS on the very next
+// call — a transient clock-sync hiccup must not permanently strand the account on REST
+// for the rest of its runtime.
+func binanceWSPermanentlyDenied(code int) bool {
+	switch code {
+	case -2015, -1002:
+		return true
+	}
+	return false
+}
+
+func (ts *BinanceTradeStream) PlaceOrder(ctx context.Context, req trader.OrderRequest) (trader.OrderResult, error) {
+	ts.mu.Lock()
+	disabled := ts.wsDisabled
+	ts.mu.Unlock()
+	if disabled {
+		return trader.OrderResult{}, ErrWSUnavailable
+	}
+
+	orderType := binanceOrderType(req)
+	method := "order.place"
+	params := url.Values{
+		"symbol":       {req.Symbol},
+		"side":         {strings.ToUpper(req.Side)},
+		"type":         {orderType},
+		"positionSide": {binancePositionSide(req.PositionIdx)},
+	}
+	if isAlgoOrderType(orderType) {
+		method = "algoOrder.place"
+		params.Set("algoType", "CONDITIONAL")
+		if req.TriggerPrice != "" {
+			params.Set("triggerPrice", req.TriggerPrice)
+		}
+		if req.TriggerPrice != "" && req.TriggerBy == "MarkPrice" {
+			params.Set("workingType", "MARK_PRICE")
+		}
+	}
+	if req.Qty != "" {
+		params.Set("quantity", req.Qty)
+	}
+	if req.Price != "" {
+		params.Set("price", req.Price)
+	}
+	if req.ReduceOnly && req.PositionIdx == 0 {
+		params.Set("reduceOnly", "true")
+	}
+	if req.TimeInForce != "" && orderType == "LIMIT" {
+		params.Set("timeInForce", req.TimeInForce)
+	}
+	if req.OrderLinkId != "" {
+		idField := "newClientOrderId"
+		if method == "algoOrder.place" {
+			idField = "clientAlgoId"
+		}
+		params.Set(idField, truncateClientOrderID(req.OrderLinkId))
+	}
+
+	resp, err := ts.sendReq(ctx, method, params)
+	if err != nil {
+		return trader.OrderResult{}, err
+	}
+	if resp.Error != nil {
+		if binanceWSConnDenied(resp.Error.Code) {
+			if binanceWSPermanentlyDenied(resp.Error.Code) {
+				ts.mu.Lock()
+				ts.wsDisabled = true
+				ts.mu.Unlock()
+			}
+			return trader.OrderResult{}, ErrWSUnavailable
+		}
+		return trader.OrderResult{}, fmt.Errorf("binance: code=%d: %s", resp.Error.Code, resp.Error.Msg)
+	}
+	if method == "algoOrder.place" {
+		var r struct {
+			AlgoId       int64  `json:"algoId"`
+			ClientAlgoId string `json:"clientAlgoId"`
+		}
+		if err := json.Unmarshal(resp.Result, &r); err != nil {
+			return trader.OrderResult{}, fmt.Errorf("parse algoOrder.place response: %w", err)
+		}
+		return trader.OrderResult{OrderId: strconv.FormatInt(r.AlgoId, 10), OrderLinkId: r.ClientAlgoId}, nil
+	}
+	var r struct {
+		OrderId       int64  `json:"orderId"`
+		ClientOrderId string `json:"clientOrderId"`
+	}
+	if err := json.Unmarshal(resp.Result, &r); err != nil {
+		return trader.OrderResult{}, fmt.Errorf("parse order.place response: %w", err)
+	}
+	return trader.OrderResult{OrderId: strconv.FormatInt(r.OrderId, 10), OrderLinkId: r.ClientOrderId}, nil
+}
+
+func (ts *BinanceTradeStream) CancelOrder(ctx context.Context, req trader.CancelRequest) error {
+	ts.mu.Lock()
+	disabled := ts.wsDisabled
+	ts.mu.Unlock()
+	if disabled {
+		return ErrWSUnavailable
+	}
+
+	method := "order.cancel"
+	idField, origIdField := "orderId", "origClientOrderId"
+	if req.OrderFilter == "StopOrder" {
+		method = "algoOrder.cancel"
+		idField, origIdField = "algoId", "clientAlgoId"
+	}
+	params := url.Values{"symbol": {req.Symbol}}
+	if req.OrderId != "" {
+		params.Set(idField, req.OrderId)
+	} else if req.OrderLinkId != "" {
+		params.Set(origIdField, truncateClientOrderID(req.OrderLinkId))
+	}
+
+	resp, err := ts.sendReq(ctx, method, params)
+	if err != nil {
+		return err
+	}
+	if resp.Error != nil {
+		if binanceWSConnDenied(resp.Error.Code) {
+			if binanceWSPermanentlyDenied(resp.Error.Code) {
+				ts.mu.Lock()
+				ts.wsDisabled = true
+				ts.mu.Unlock()
+			}
+			return ErrWSUnavailable
+		}
+		return fmt.Errorf("binance: code=%d: %s", resp.Error.Code, resp.Error.Msg)
+	}
+	return nil
 }
