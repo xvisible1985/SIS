@@ -14,11 +14,13 @@ This is a scoped redesign driven by user feedback, not a ground-up visual overha
    - The existing `Modal` component hardcodes `maxWidth: 460`. Add a `width` prop (default 460, so the delete/rotate modals are untouched) and pass `560` (or similar, 560–600px range) for the add-key modal specifically.
    - On successful submit (`handleAddKey`), close the modal in addition to the existing behavior (reset form, expand new card, toast).
 4. **Add-key modal color treatment** — within the exchange-selection step only, the selected exchange chip is highlighted using that exchange's own brand color (`EXCHANGES[id].color`) instead of the generic blue highlight. Everything else in the modal (header icon, CTA buttons, field borders) keeps the current blue/dark palette unchanged.
+5. **Empty state** — the toolbar (and its new "Добавить ключ" button) only renders when `accounts.length > 0`; with zero accounts, `EmptyState` is shown instead and would otherwise leave no way to open the modal. `EmptyState` gets its own "Добавить ключ" button that opens the same modal.
 
 ## Out of scope
 
 - `KeyCard` (collapsed or expanded) — no changes.
-- `StatsStrip`, `PageHead`, `EmptyState`, delete/rotate modals, `Toast` — no changes.
+- `StatsStrip`, `PageHead`, delete/rotate modals, `Toast` — no changes.
+- `EmptyState` otherwise keeps its current copy/layout — only a button is added.
 - Mobile layout — handled in an earlier, separate change (Signals page); this page's mobile behavior is untouched here.
 
 ## Affected mechanics
