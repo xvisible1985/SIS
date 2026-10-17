@@ -1138,10 +1138,11 @@ function EmptyState() {
 }
 
 /* ─── Toolbar ────────────────────────────────────────────────────────────── */
-function Toolbar({ search, setSearch, filter, setFilter, counts }: {
+function Toolbar({ search, setSearch, filter, setFilter, counts, onAddKey }: {
   search: string; setSearch: (v: string) => void
   filter: string; setFilter: (v: string) => void
   counts: Record<string, number>
+  onAddKey: () => void
 }) {
   const filters = [
     { id: 'all',    label: 'Все',               c: undefined },
@@ -1183,12 +1184,13 @@ function Toolbar({ search, setSearch, filter, setFilter, counts }: {
         ))}
       </div>
       <div style={{ flex: 1 }} />
-      <button style={{
-        display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 11px',
-        background: 'rgba(255,255,255,.04)', border: `1px solid ${T.border}`,
-        color: T.body, borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+      <button onClick={onAddKey} style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px 8px 11px',
+        background: 'linear-gradient(180deg, #4a7dff 0%, #3a67e6 100%)',
+        color: '#fff', border: 0, borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+        boxShadow: '0 6px 16px -8px rgba(74,125,255,.6)',
       }}>
-        <IcFilter s={12} c={T.dim} /> Биржа: все
+        <IcPlus s={12} w={2.2} /> Добавить ключ
       </button>
     </div>
   )
