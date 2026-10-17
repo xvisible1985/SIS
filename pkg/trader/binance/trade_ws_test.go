@@ -1,8 +1,16 @@
 package binance
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // Regression target: Binance's WS API rejects (or silently misbehaves on) INT-typed
@@ -45,5 +53,115 @@ func TestWsParamsToJSON_ReduceOnlyBecomesBool(t *testing.T) {
 	v, ok := got["reduceOnly"].(bool)
 	if !ok || v != true {
 		t.Errorf("reduceOnly = %#v (%T), want bool(true)", got["reduceOnly"], got["reduceOnly"])
+	}
+}
+
+// wsEchoServer starts a local WS server that, for every request, decodes
+// {"id","method","params"} and replies with whatever handler returns for that method —
+// giving each test full control over the response without touching the real exchange.
+func wsEchoServer(t *testing.T, handler func(method string, params map[string]any) (result any, errCode int, errMsg string)) *httptest.Server {
+	t.Helper()
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var req struct {
+				Id     string         `json:"id"`
+				Method string         `json:"method"`
+				Params map[string]any `json:"params"`
+			}
+			if json.Unmarshal(data, &req) != nil {
+				continue
+			}
+			result, errCode, errMsg := handler(req.Method, req.Params)
+			resp := map[string]any{"id": req.Id, "status": 200}
+			if errCode != 0 {
+				resp["status"] = 400
+				resp["error"] = map[string]any{"code": errCode, "msg": errMsg}
+			} else {
+				resp["result"] = result
+			}
+			out, _ := json.Marshal(resp)
+			conn.WriteMessage(websocket.TextMessage, out) //nolint:errcheck
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// waitConnected polls ts.conn until non-nil or 2s elapse — shared by every WS test.
+func waitConnected(t *testing.T, ts *BinanceTradeStream) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		ts.mu.Lock()
+		connected := ts.conn != nil
+		ts.mu.Unlock()
+		if connected {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("BinanceTradeStream never connected")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestBinanceTradeStream_SendReq_CorrelatesResponseById(t *testing.T) {
+	srv := wsEchoServer(t, func(method string, params map[string]any) (any, int, string) {
+		return map[string]any{"echoedMethod": method, "echoedSymbol": params["symbol"]}, 0, ""
+	})
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ts := NewBinanceTradeStream(testCreds())
+	ts.dialURL = wsURL
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ts.Run(ctx)
+	waitConnected(t, ts)
+
+	resp, err := ts.sendReq(ctx, "test.echo", url.Values{"symbol": {"BTCUSDT"}})
+	if err != nil {
+		t.Fatalf("sendReq: %v", err)
+	}
+	var result struct {
+		EchoedMethod string `json:"echoedMethod"`
+		EchoedSymbol string `json:"echoedSymbol"`
+	}
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if result.EchoedMethod != "test.echo" || result.EchoedSymbol != "BTCUSDT" {
+		t.Errorf("got %+v, want method=test.echo symbol=BTCUSDT", result)
+	}
+}
+
+func TestBinanceTradeStream_SendReq_SurfacesErrorResponse(t *testing.T) {
+	srv := wsEchoServer(t, func(method string, params map[string]any) (any, int, string) {
+		return nil, -1102, "Mandatory parameter 'quantity' was not sent"
+	})
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ts := NewBinanceTradeStream(testCreds())
+	ts.dialURL = wsURL
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ts.Run(ctx)
+	waitConnected(t, ts)
+
+	resp, err := ts.sendReq(ctx, "test.fail", nil)
+	if err != nil {
+		t.Fatalf("sendReq transport error: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != -1102 {
+		t.Errorf("resp.Error = %+v, want code=-1102", resp.Error)
 	}
 }
