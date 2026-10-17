@@ -840,12 +840,17 @@ type AccountRunner struct {
 	mu            sync.RWMutex
 	strategies    map[string]*StrategyRunner
 	orderIndex    map[string]orderRef // exchangeOrderID → ref
-	tradeStream   *trader.TradeStream
+	tradeStream *trader.TradeStream
 	// exchange is the resolved Exchange implementation for this account (Bybit or
-	// Binance) — added by Plan #4a. Not yet read anywhere; existing code still calls
-	// Bybit-specific free functions and tradeStream directly. Later plans (#4b, #4c)
-	// migrate those call sites to use this instead.
-	exchange    trader.Exchange
+	// Binance) — added by Plan #4a, now read throughout pkg/strategy (Plan #4b-#4d
+	// migrated every remaining Bybit-only free-function call site onto it).
+	exchange trader.Exchange
+	// exchangeName is the raw "bybit"/"binance" value exchange was resolved from — kept
+	// alongside it because tradeStream and trader.RunPrivateStream (run(), below) are
+	// both Bybit-specific WS connections with no Binance equivalent yet; run() uses this
+	// to skip starting them for a non-Bybit account instead of spamming failed-auth
+	// reconnect attempts against the wrong exchange forever.
+	exchangeName string
 	cancel      context.CancelFunc
 	reconcileMu sync.Mutex
 
@@ -886,16 +891,35 @@ type AccountRunner struct {
 // way AccountRunner itself does, without duplicating this logic.
 //
 // ws backs Bybit's WS-order-placement path (BybitExchange wraps it directly, zero new
-// behavior vs. today's tradeStream field); Binance has no separate order-placement WS yet
-// (see Plan #2's design — PlaceOrder == PlaceOrderREST for Binance), so BinanceExchange
-// only needs creds. Unrecognized/empty exchangeName defaults to Bybit — defensive only,
-// exchange_accounts.exchange is NOT NULL with a CHECK constraint limiting it to
-// "bybit"/"binance", so this branch should be unreachable against real data.
+// behavior vs. today's tradeStream field). Binance's own WS order-placement path
+// (BinanceTradeStream, added 2026-10-17) is deliberately NOT wired here — ResolveExchange
+// is called from several short-lived/read-mostly places (closed_pnl_syncer.go,
+// bot_engine.go, trader_handler.go) that must not each open a persistent WS connection;
+// only AccountRunner's own long-lived per-account lifecycle does that, via
+// wireBinanceTradeStream (called from run(), below) after resolving the exchange here.
+// Unrecognized/empty exchangeName defaults to Bybit — defensive only, exchange_accounts.
+// exchange is NOT NULL with a CHECK constraint limiting it to "bybit"/"binance", so this
+// branch should be unreachable against real data.
 func ResolveExchange(exchangeName string, creds trader.Credentials, ws *trader.TradeStream) trader.Exchange {
 	if exchangeName == "binance" {
 		return binance.NewBinanceExchange(creds)
 	}
 	return trader.NewBybitExchange(creds, ws)
+}
+
+// wireBinanceTradeStream, if ex is a *binance.BinanceExchange, builds a
+// *binance.BinanceTradeStream, wires it in via SetTradeStream, and returns it (nil for
+// any other Exchange implementation). Split out of run() so this decision is unit-
+// testable without starting a goroutine or blocking on ctx.Done() — run() itself only
+// decides whether to start the returned stream's Run loop.
+func wireBinanceTradeStream(ex trader.Exchange, creds trader.Credentials) *binance.BinanceTradeStream {
+	be, ok := ex.(*binance.BinanceExchange)
+	if !ok {
+		return nil
+	}
+	stream := binance.NewBinanceTradeStream(creds)
+	be.SetTradeStream(stream)
+	return stream
 }
 
 func newAccountRunnerWithExchange(accountID, accountLabel, ownerUsername string, creds trader.Credentials, pool *pgxpool.Pool, signalEngine *signal.Engine, eng *Engine, cancel context.CancelFunc, exchangeName string) *AccountRunner {
@@ -912,6 +936,7 @@ func newAccountRunnerWithExchange(accountID, accountLabel, ownerUsername string,
 		orderIndex:          make(map[string]orderRef),
 		tradeStream:         tradeStream,
 		exchange:            ResolveExchange(exchangeName, creds, tradeStream),
+		exchangeName:        exchangeName,
 		cancel:              cancel,
 		positions:           make(map[string]float64),
 		posAvgEntry:         make(map[string]float64),
@@ -1023,9 +1048,37 @@ func (ar *AccountRunner) SnapshotOrderIndex() map[string]bool {
 }
 
 func (ar *AccountRunner) run(ctx context.Context) {
-	go safeLoop(ctx, "tradeStream/"+ar.accountID, ar.tradeStream.Run)
 	go safeLoop(ctx, "reconcile/"+ar.accountID, ar.startReconcileLoop)
 	go safeLoop(ctx, "riskMonitor/"+ar.accountID, ar.runRiskMonitorLoop)
+
+	// Binance (added 2026-10-17) now has its own low-latency order-placement WS
+	// (BinanceTradeStream) — wired in here, the one place with a long-lived, ctx-scoped
+	// goroutine lifecycle per account (see wireBinanceTradeStream's doc comment for why
+	// ResolveExchange itself can't do this).
+	if ar.exchangeName == "binance" {
+		if stream := wireBinanceTradeStream(ar.exchange, ar.creds); stream != nil {
+			go safeLoop(ctx, "binanceTradeStream/"+ar.accountID, stream.Run)
+		}
+		<-ctx.Done()
+		return
+	}
+
+	// tradeStream (Bybit's low-latency order-placement WS) and RunPrivateStream
+	// (Bybit's private fill/position push WS) are both Bybit-specific — starting them
+	// unconditionally for every account, as before, meant a Binance account's two loops
+	// spent forever retrying a Bybit auth failure every 5s for nothing, spamming the log
+	// ("strategy: bybit WS disconnected ... auth failed", "trader trade ws: ..., retry
+	// in 5s") without ever doing anything useful. reconcile/riskMonitor above are both
+	// exchange-aware (see reconcile.go/risk.go) and are, on their own, a fully working
+	// safety net regardless of exchange — just 20s-poll-paced rather than push-reactive,
+	// same as it's always been for order/position state specifically (fills are still
+	// caught by reconcile's own level/cycle checks, not by a push event).
+	if ar.exchangeName != "bybit" {
+		<-ctx.Done()
+		return
+	}
+
+	go safeLoop(ctx, "tradeStream/"+ar.accountID, ar.tradeStream.Run)
 	safeLoop(ctx, "privateStream/"+ar.accountID, func(ctx context.Context) {
 		trader.RunPrivateStream(ctx, ar.creds, ar)
 	})

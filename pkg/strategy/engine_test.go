@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"sis/pkg/trader"
+	"sis/pkg/trader/binance"
 )
 
 func TestCalculateMatrixPrices(t *testing.T) {
@@ -579,5 +580,24 @@ func TestOnPositionEvent_CachesLeverage(t *testing.T) {
 	})
 	if got := ar.GetPositionLeverage("BTCUSDT", 1); got != 25 {
 		t.Errorf("GetPositionLeverage after event without leverage field = %v, want unchanged 25", got)
+	}
+}
+
+func TestWireBinanceTradeStream_BinanceExchange_WiresAndReturnsStream(t *testing.T) {
+	ex := binance.NewBinanceExchange(trader.Credentials{})
+	stream := wireBinanceTradeStream(ex, trader.Credentials{})
+	if stream == nil {
+		t.Fatal("expected a non-nil *binance.BinanceTradeStream")
+	}
+	if !ex.HasTradeStream() {
+		t.Error("wireBinanceTradeStream did not actually call SetTradeStream on the exchange")
+	}
+}
+
+func TestWireBinanceTradeStream_BybitExchange_ReturnsNil(t *testing.T) {
+	ex := trader.NewBybitExchange(trader.Credentials{}, nil)
+	stream := wireBinanceTradeStream(ex, trader.Credentials{})
+	if stream != nil {
+		t.Error("expected nil for a non-Binance exchange")
 	}
 }
