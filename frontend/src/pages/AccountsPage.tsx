@@ -1278,7 +1278,7 @@ function PageHead({ count }: { count: number }) {
 }
 
 /* ─── Modals ─────────────────────────────────────────────────────────────── */
-function Modal({ open, onClose, children }: { open: boolean; onClose: () => void; children: React.ReactNode }) {
+function Modal({ open, onClose, children, width = 460 }: { open: boolean; onClose: () => void; children: React.ReactNode; width?: number }) {
   if (!open) return null
   return (
     <div style={{
@@ -1286,7 +1286,7 @@ function Modal({ open, onClose, children }: { open: boolean; onClose: () => void
       background: 'rgba(8,10,16,.65)', backdropFilter: 'blur(6px)', padding: 20,
     }} onClick={onClose}>
       <div onClick={e => e.stopPropagation()} style={{
-        width: '100%', maxWidth: 460,
+        width: '100%', maxWidth: width,
         background: T.panel, border: `1px solid ${T.borderHi}`, borderRadius: 16,
         boxShadow: '0 40px 80px -20px rgba(0,0,0,.7)',
         animation: 'modalIn .18s ease-out', overflow: 'hidden',
