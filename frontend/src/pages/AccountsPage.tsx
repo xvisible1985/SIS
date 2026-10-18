@@ -54,7 +54,6 @@ const IcZap      = (p: IP) => svg(p, <path d="M13 3L4 14h7l-1 7 9-11h-7l1-7z"/>)
 const IcExt      = (p: IP) => svg(p, <><path d="M14 4h6v6"/><path d="M20 4L10 14"/><path d="M19 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6"/></>)
 const IcInfo     = (p: IP) => svg(p, <><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></>)
 const IcX        = (p: IP) => svg(p, <path d="M6 6l12 12M18 6L6 18"/>)
-const IcFilter   = (p: IP) => svg(p, <path d="M3 5h18M6 12h12M10 19h4"/>)
 const IcWallet   = (p: IP) => svg(p, <><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M16 13h2"/><path d="M3 9h15a3 3 0 0 1 0 6H3"/></>)
 const IcDownload = (p: IP) => svg(p, <><path d="M12 4v12M6 12l6 6 6-6M5 20h14"/></>)
 
