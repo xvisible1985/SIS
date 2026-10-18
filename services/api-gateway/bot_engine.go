@@ -1172,7 +1172,19 @@ type botStrategyCols struct {
 // grid_size_usdt auto-raise (Plan #4b/#4c) — Binance and Bybit enforce different
 // minimum order values, so raising a Binance bot's grid size using Bybit's minimum
 // (or vice versa) could under- or over-shoot the real exchange minimum.
-func (s *Server) computeBotStrategyCols(ctx context.Context, cfg botCfgJSON, sym, accountID string, leverageOverride int) botStrategyCols {
+// computeBotStrategyCols returns an error — instead of creating a strategy a bot can
+// never actually trade — when sym doesn't exist on the account's own exchange. Found
+// live (2026-10-18): the bot engine's scan-and-open universe (trader.FetchAllLinearSymbols,
+// still Bybit-only — see botEngineTick) is shared across every bot regardless of its
+// account's exchange, so a Binance-account bot routinely matches a Bybit-only symbol
+// (2ZUSDT, ACEUSDT, PIXELUSDT, 1000TURBOUSDT, ...). createBotStrategy used to insert the
+// row anyway — this call already existed (to auto-raise grid_size_usdt to the exchange
+// minimum) but only logged the lookup failure and fell through with gridSize unchanged,
+// so the broken strategy got created, then sat stuck at 0 volume forever once the
+// strategy engine's own first cycle start failed against the real exchange (mirrors
+// strategy_handler.go's CreateStrategy fix for the same class of bug via the manual
+// creation path, which this scan-and-open path bypasses entirely).
+func (s *Server) computeBotStrategyCols(ctx context.Context, cfg botCfgJSON, sym, accountID string, leverageOverride int) (botStrategyCols, error) {
 	// Apply defaults (same as strategyPayload.applyDefaults)
 	category := cfg.Category
 	if category == "" {
@@ -1229,6 +1241,7 @@ func (s *Server) computeBotStrategyCols(ctx context.Context, cfg botCfgJSON, sym
 	}
 	if pubInfo, perr := getPublicInstrumentInfoFor(ctx, exchangeName, category, sym); perr != nil {
 		log.Printf("createBotStrategy %s/%s: GetPublicInstrumentInfo error: %v (gridSize=%.4f)", sym, category, perr, gridSize)
+		return botStrategyCols{}, fmt.Errorf("символ %s не найден на %s: %w", sym, exchangeName, perr)
 	} else {
 		log.Printf("createBotStrategy %s/%s: MinOrderUSDT=%.4f MinQty=%.6f gridSize=%.4f", sym, category, pubInfo.MinOrderUSDT, pubInfo.MinQty, gridSize)
 		if pubInfo.MinOrderUSDT > gridSize {
@@ -1323,7 +1336,7 @@ func (s *Server) computeBotStrategyCols(ctx context.Context, cfg botCfgJSON, sym
 		trailingActPct:         trailingActPct,
 		trailingCallPct:        trailingCallPct,
 		maxCycles:              cfg.MaxCycles,
-	}
+	}, nil
 }
 
 // pgxExec is satisfied by both *pgxpool.Pool and pgx.Tx, so callers can run
@@ -1372,7 +1385,10 @@ func (s *Server) applyBotConfigToStrategy(ctx context.Context, db pgxExec, strat
 // covers. A unique partial index on hedged_strategy_id prevents two bots from hedging
 // the same main position; if the slot is already taken the INSERT is silently skipped.
 func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botCfgJSON, sym, dir string, leverageOverride int, hedgedStrategyID string, adoptJSON *string) (string, error) {
-	cols := s.computeBotStrategyCols(ctx, cfg, sym, b.accountID, leverageOverride)
+	cols, colsErr := s.computeBotStrategyCols(ctx, cfg, sym, b.accountID, leverageOverride)
+	if colsErr != nil {
+		return "", colsErr
+	}
 
 	// NULLIF converts empty hedgedStrategyID to NULL so the unique partial index
 	// only fires when a real main-strategy ID is provided.

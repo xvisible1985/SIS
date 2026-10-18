@@ -14,11 +14,17 @@ import (
 // TestBindStrategiesToBot: две одиночные (bot_id NULL) matrix-леги одного символа с
 // противоположными направлениями привязываются к matrix-боту → у обеих bot_id=бот,
 // status active. Невалидные комбинации отклоняются.
+//
+// Stubs bybitGetPublicInstrumentInfo (see instrument_handler_test.go's pattern) because
+// the bind endpoint now validates the symbol exists on the account's exchange (via
+// computeBotStrategyCols, see its doc comment) — BNDUSDT is a placeholder test symbol,
+// not a real Bybit listing.
 func TestBindStrategiesToBot(t *testing.T) {
 	s := newTestServer(t)
 	ctx := context.Background()
 	userID := createWHUser(t, s, "bind")
 	accID := createTestAccount(t, s, userID)
+	stubBybitPublicInstrumentInfoOK(t)
 	var botID string
 	s.pool.QueryRow(ctx,
 		`INSERT INTO bots (owner_id, name, account_id, status, strategy_config)

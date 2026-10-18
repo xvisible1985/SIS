@@ -148,7 +148,7 @@ export function GridForm({ accountId, symbol, onSymbolChange, hedgeMode, lastPri
 
           {/* Монета + хедж режим */}
           <div className="flex items-center gap-2">
-            <CoinPicker value={symbol} onChange={onSymbolChange} size="sm" />
+            <CoinPicker value={symbol} onChange={onSymbolChange} size="sm" exchange={accountExchange === 'binance' ? 'binance' : 'bybit'} />
             <span className={`ml-auto px-1.5 py-0.5 rounded text-[10px] font-medium flex-shrink-0 ${hedgeMode ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400'}`}>
               {hedgeMode ? 'Хедж' : 'One-way'}
             </span>

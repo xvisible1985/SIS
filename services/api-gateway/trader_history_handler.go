@@ -142,47 +142,71 @@ func (s *Server) ListTraderExecutions(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := (page - 1) * limit
 
-	where := "owner_id=$1"
+	where := "te.owner_id=$1"
 	args := []any{userID}
 	i := 2
 	if accountID != "" {
-		where += fmt.Sprintf(" AND account_id=$%d", i)
+		where += fmt.Sprintf(" AND te.account_id=$%d", i)
 		args = append(args, accountID)
 		i++
 	}
 	if execType != "" && execType != "all" {
-		where += fmt.Sprintf(" AND exec_type=$%d", i)
+		where += fmt.Sprintf(" AND te.exec_type=$%d", i)
 		args = append(args, execType)
 		i++
 	}
 	if symbol != "" {
-		where += fmt.Sprintf(" AND symbol=$%d", i)
+		where += fmt.Sprintf(" AND te.symbol=$%d", i)
 		args = append(args, symbol)
 		i++
 	}
 	if fromStr != "" {
 		if t, err := time.Parse(time.RFC3339, fromStr); err == nil {
-			where += fmt.Sprintf(" AND exec_time>=$%d", i)
+			where += fmt.Sprintf(" AND te.exec_time>=$%d", i)
 			args = append(args, t)
 			i++
 		}
 	}
 	if toStr != "" {
 		if t, err := time.Parse(time.RFC3339, toStr); err == nil {
-			where += fmt.Sprintf(" AND exec_time<=$%d", i)
+			where += fmt.Sprintf(" AND te.exec_time<=$%d", i)
 			args = append(args, t)
 			i++
 		}
 	}
 
 	var total int
-	s.pool.QueryRow(r.Context(), "SELECT COUNT(*) FROM trader_executions WHERE "+where, args...).Scan(&total)
+	s.pool.QueryRow(r.Context(), "SELECT COUNT(*) FROM trader_executions te WHERE "+where, args...).Scan(&total)
 
 	args = append(args, limit, offset)
+	// LEFT JOIN two sources to backfill order_link_id when it's NULL — Binance
+	// executions are persisted with it deliberately left empty (see
+	// binanceUserTradeToExecution's doc comment in pkg/trader/binance/exchange.go: avoids
+	// one extra REST round-trip per distinct order at sync time, and Binance's userTrades
+	// endpoint it syncs from doesn't return clientOrderId at all), but the terminal
+	// chart's fill-line rendering (frontend TerminalPage.tsx's historicalExecs, filtered
+	// on order_link_id starting with "SIS_STR") depends on it — without these joins,
+	// every Binance strategy's filled grid/matrix level was invisible on the chart even
+	// though the fill itself (and its P&L) was recorded correctly.
+	//   - trader_orders: has it for manually-placed terminal orders (TraderPlaceOrder,
+	//     "SIS_TRM-..." linkIds) — the only path that INSERTs into this table.
+	//   - strategy_levels: has it for strategy-engine grid/matrix ENTRY levels
+	//     (exchange_order_id/exchange_link_id, "SIS_STR-..." linkIds) — pkg/strategy
+	//     never writes to trader_orders at all, so that join alone misses every
+	//     strategy-placed order; this is the one that actually covers the live bug
+	//     (grid levels L2/L3, strategy NEARUSDT, acc N2 Binance, 2026-10-18).
+	// Neither join costs a Binance REST call — both resolve from data already in our own
+	// DB. TP/SL orders aren't covered by either (no table persists their link_id) — a
+	// known, narrower remaining gap, not addressed here.
 	rows, err := s.pool.Query(r.Context(),
-		fmt.Sprintf(`SELECT id, exec_id, order_id, order_link_id, symbol, category, side, exec_type,
-			qty::text, price::text, exec_value::text, exec_fee::text, fee_rate::text, is_maker, exec_time
-			FROM trader_executions WHERE %s ORDER BY exec_time DESC LIMIT $%d OFFSET $%d`, where, i, i+1),
+		fmt.Sprintf(`SELECT te.id, te.exec_id, te.order_id,
+			COALESCE(te.order_link_id, tord.order_link_id, slvl.exchange_link_id),
+			te.symbol, te.category, te.side, te.exec_type,
+			te.qty::text, te.price::text, te.exec_value::text, te.exec_fee::text, te.fee_rate::text, te.is_maker, te.exec_time
+			FROM trader_executions te
+			LEFT JOIN trader_orders tord ON tord.account_id = te.account_id AND tord.order_id = te.order_id
+			LEFT JOIN strategy_levels slvl ON slvl.exchange_order_id = te.order_id
+			WHERE %s ORDER BY te.exec_time DESC LIMIT $%d OFFSET $%d`, where, i, i+1),
 		args...,
 	)
 	if err != nil {

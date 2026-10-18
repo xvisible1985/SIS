@@ -9,16 +9,30 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"sis/pkg/trader"
 )
 
 // TestCreateStrategy_PersistsRelativeSlots verifies that creating a standalone matrix
 // strategy (no bot) with relative_slots=true persists the flag — guarding the
 // CreateStrategy INSERT placeholder/column alignment.
+//
+// Stubs bybitGetPublicInstrumentInfo (see instrument_handler_test.go's identical
+// pattern) because CreateStrategy now validates the symbol exists on the account's
+// exchange before persisting (see strategy_handler.go's PLAYSOUTUSDT comment) — RELUSDT
+// is a placeholder test symbol, not a real Bybit listing, so an unstubbed lookup would
+// reject it.
 func TestCreateStrategy_PersistsRelativeSlots(t *testing.T) {
 	s := newTestServer(t)
 	ctx := context.Background()
 	userID := createWHUser(t, s, "relcreate")
 	accID := createTestAccount(t, s, userID)
+
+	origBybit := bybitGetPublicInstrumentInfo
+	t.Cleanup(func() { bybitGetPublicInstrumentInfo = origBybit })
+	bybitGetPublicInstrumentInfo = func(ctx context.Context, category, symbol string) (trader.PubInstrumentInfo, error) {
+		return trader.PubInstrumentInfo{TickSize: 0.1, QtyStep: 0.001, MinQty: 0.001, MinNotionalValue: 5}, nil
+	}
 
 	body, _ := json.Marshal(map[string]any{
 		"account_id":     accID,

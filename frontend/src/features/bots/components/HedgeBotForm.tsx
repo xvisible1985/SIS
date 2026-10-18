@@ -8,6 +8,7 @@ import { CoinMultiPicker } from '../../../components/common/CoinMultiPicker';
 import { getInstrumentConstraints, type InstrumentConstraints } from '../../../api/strategies';
 import { apiClient } from '../../../api/client';
 import { useSelectedAccount } from '../../../contexts/AccountContext';
+import { listAccounts } from '../../../api/accounts';
 import type { Bot as BotType, CreateBotInput, StrategyConfig, MatrixLevel, MatrixEntryLevel } from '../types';
 import { BOT_KIND_META } from '../botKindMeta';
 import { ResetStatsConfirmModal } from './ResetStatsConfirmModal';
@@ -233,6 +234,20 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
   const { selectedAccountId } = useSelectedAccount();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showIconPicker, setShowIconPicker] = useState(false);
+  // Defaults to "bybit" until resolved — see BotForm.tsx's identical pattern.
+  const [accountExchange, setAccountExchange] = useState('bybit');
+
+  useEffect(() => {
+    let cancelled = false;
+    listAccounts()
+      .then(accs => {
+        if (cancelled) return;
+        const acc = accs.find(a => a.id === selectedAccountId);
+        setAccountExchange(acc?.exchange || 'bybit');
+      })
+      .catch(() => {});
+    return () => { cancelled = true };
+  }, [selectedAccountId]);
 
   useEffect(() => {
     const fn = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -268,9 +283,9 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
   }, [outerTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    getInstrumentConstraints('BTCUSDT', config.category ?? 'linear')
+    getInstrumentConstraints('BTCUSDT', config.category ?? 'linear', accountExchange)
       .then(setInstrInfo).catch(() => setInstrInfo(null));
-  }, [config.category]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [config.category, accountExchange]);
 
   // Apply admin-configured defaults for new bots
   useEffect(() => {
@@ -799,6 +814,7 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
                     color="blue"
                     placeholder="Выбрать монеты для whitelist..."
                     takenSymbols={takenSymbols}
+                    exchange={accountExchange === 'binance' ? 'binance' : 'bybit'}
                   />
                 </div>
                 <div>
@@ -811,6 +827,7 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
                     onChange={setBlacklist}
                     color="red"
                     placeholder="Выбрать монеты для blacklist..."
+                    exchange={accountExchange === 'binance' ? 'binance' : 'bybit'}
                   />
                 </div>
               </div>

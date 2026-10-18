@@ -7,8 +7,16 @@ import type { CoinFilterSettings } from './coinFilter'
 // ─── Ticker cache ─────────────────────────────────────────────────────────────
 
 interface TickerRow { symbol: string; price: number; change: number; turnover: number }
-let _tickers: TickerRow[] = []
-let _cacheAt = 0
+export type Exchange = 'bybit' | 'binance'
+
+// Per-exchange cache — see CoinPicker.tsx's identical comment: a Bybit-only symbol
+// (e.g. PLAYSOUTUSDT) must never appear for a Binance account's bot form, and vice
+// versa. Keyed by exchange so switching between a Bybit and Binance account shows
+// each its own correct symbol list.
+const _tickerCache: Record<Exchange, { tickers: TickerRow[]; cacheAt: number }> = {
+  bybit: { tickers: [], cacheAt: 0 },
+  binance: { tickers: [], cacheAt: 0 },
+}
 let _delistings: string[] = []
 let _delistingsAt = 0
 
@@ -28,29 +36,40 @@ function isDelisted(sym: string): boolean {
   return _delistings.includes(sym)
 }
 
-export async function getAllSymbols(): Promise<string[]> {
-  await loadTickers()
-  return _tickers.map(t => t.symbol)
+export async function getAllSymbols(exchange: Exchange = 'bybit'): Promise<string[]> {
+  await loadTickers(exchange)
+  return _tickerCache[exchange].tickers.map(t => t.symbol)
 }
 
-async function loadTickers() {
-  if (Date.now() - _cacheAt < 30_000 && _tickers.length > 0) return
+async function loadTickers(exchange: Exchange) {
+  const cache = _tickerCache[exchange]
+  if (Date.now() - cache.cacheAt < 30_000 && cache.tickers.length > 0) return
   try {
     const [r] = await Promise.all([
-      fetch('https://api.bybit.com/v5/market/tickers?category=linear'),
+      exchange === 'binance'
+        ? fetch('https://fapi.binance.com/fapi/v1/ticker/24hr')
+        : fetch('https://api.bybit.com/v5/market/tickers?category=linear'),
       loadDelistings(),
     ])
     const j = await r.json()
-    _tickers = ((j.result?.list ?? []) as any[])
+    const raw: any[] = exchange === 'binance' ? (j ?? []) : (j.result?.list ?? [])
+    cache.tickers = raw
       .filter((t: any) => t.symbol.endsWith('USDT') && !isDelisted(t.symbol))
-      .map((t: any) => ({
-        symbol: t.symbol,
-        price: parseFloat(t.lastPrice),
-        change: parseFloat(t.price24hPcnt) * 100,
-        turnover: parseFloat(t.turnover24h),
-      }))
+      .map((t: any) => exchange === 'binance'
+        ? {
+            symbol: t.symbol,
+            price: parseFloat(t.lastPrice),
+            change: parseFloat(t.priceChangePercent),
+            turnover: parseFloat(t.quoteVolume),
+          }
+        : {
+            symbol: t.symbol,
+            price: parseFloat(t.lastPrice),
+            change: parseFloat(t.price24hPcnt) * 100,
+            turnover: parseFloat(t.turnover24h),
+          })
       .sort((a, b) => b.turnover - a.turnover)
-    _cacheAt = Date.now()
+    cache.cacheAt = Date.now()
   } catch {}
 }
 
@@ -148,9 +167,10 @@ interface Props {
   color?: 'blue' | 'red'
   placeholder?: string
   takenSymbols?: Map<string, string>  // symbol → "Имя бота"
+  exchange?: Exchange
 }
 
-export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder = 'Добавить монету...', takenSymbols }: Props) {
+export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder = 'Добавить монету...', takenSymbols, exchange = 'bybit' }: Props) {
   const [open, setOpen]             = useState(false)
   const [rows, setRows]             = useState<TickerRow[]>([])
   const [query, setQuery]           = useState('')
@@ -176,13 +196,13 @@ export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder 
   const inputRef     = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    loadTickers().then(() => setRows([..._tickers]))
+    loadTickers(exchange).then(() => setRows([..._tickerCache[exchange].tickers]))
     setSavedLists(getSavedLists())
-  }, [])
+  }, [exchange])
 
   useEffect(() => {
     if (!open) return
-    loadTickers().then(() => setRows([..._tickers]))
+    loadTickers(exchange).then(() => setRows([..._tickerCache[exchange].tickers]))
     getCoinFilter().then(setCoinFilterSettings).catch(() => {})
     const h = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
@@ -192,7 +212,7 @@ export function CoinMultiPicker({ values, onChange, color = 'blue', placeholder 
     }
     document.addEventListener('mousedown', h)
     return () => document.removeEventListener('mousedown', h)
-  }, [open])
+  }, [open, exchange])
 
   // Dynamic top-N presets (computed from loaded tickers by volume)
   const dynamicPresets: SavedList[] = useMemo(() => {

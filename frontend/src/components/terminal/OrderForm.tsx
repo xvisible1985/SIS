@@ -207,7 +207,7 @@ export function OrderForm({ accountId, symbol, onSymbolChange, lastPrice, orders
       {open && (
         <>
           <div className="px-3 py-1.5 border-b border-gray-200 dark:border-gray-700">
-            <CoinPicker value={symbol} onChange={onSymbolChange} size="sm" />
+            <CoinPicker value={symbol} onChange={onSymbolChange} size="sm" exchange={accountExchange === 'binance' ? 'binance' : 'bybit'} />
           </div>
           <div className="flex border-y border-gray-200 dark:border-gray-700">
             {(['Limit', 'Market', 'Conditional'] as Tab[]).map(t => (

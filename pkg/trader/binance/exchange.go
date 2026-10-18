@@ -202,7 +202,7 @@ func (e *BinanceExchange) GetWalletBalance(ctx context.Context) (equity, availab
 // generic flag — it's baked into the order `type` itself.
 func binanceOrderType(req trader.OrderRequest) string {
 	if req.OrderFilter == "StopOrder" || req.TriggerPrice != "" {
-		return "STOP_MARKET"
+		return binanceConditionalOrderType(req.Side, req.TriggerDirection)
 	}
 	switch req.OrderType {
 	case "Limit":
@@ -210,6 +210,39 @@ func binanceOrderType(req trader.OrderRequest) string {
 	default:
 		return "MARKET"
 	}
+}
+
+// binanceConditionalOrderType picks between Binance's two conditional order types based
+// on the order's side and its trigger direction (1 = triggers when price rises to the
+// trigger, 2 = triggers when price falls to it — pkg/strategy's TriggerDirection
+// convention, mirroring Bybit's triggerDirection semantics it was originally written
+// against). Binance validates this strictly at placement time and REJECTS the wrong
+// combination outright with -2021 "Order would immediately trigger" — not merely a less
+// efficient order choice. Found live (2026-10-18, strategy NEARUSDT, acc N2 Binance): a
+// grid DCA entry level buying further below the current price (Buy,
+// TriggerDirection=2 — "falls to trigger", see pkg/strategy/cycle.go's
+// placeLevelsBatch) was unconditionally sent as STOP_MARKET, which Binance only accepts
+// for a BUY whose trigger fires on a price RISE — exactly backwards for "buy the dip".
+//
+// The rule: STOP_MARKET is correct for (Buy + rises-to-trigger) or (Sell +
+// falls-to-trigger) — e.g. a breakout entry, or updateSL's stop-loss (always Sell +
+// falls-to-trigger for a long position, Buy + rises-to-trigger for a short). The
+// opposite pairing — (Buy + falls-to-trigger) or (Sell + rises-to-trigger), e.g. this
+// grid DCA entry, or a grid's sell-higher level — needs TAKE_PROFIT_MARKET instead,
+// despite not being a "take profit" in the TP/SL sense; Binance's TAKE_PROFIT_MARKET is
+// simply the type that triggers in that direction. TriggerDirection==0 (unset) falls
+// back to STOP_MARKET, the prior unconditional default, so any caller that doesn't set
+// it keeps today's behavior unchanged.
+func binanceConditionalOrderType(side string, triggerDirection int) string {
+	if triggerDirection == 0 {
+		return "STOP_MARKET"
+	}
+	risesToTrigger := triggerDirection == 1
+	isBuy := strings.EqualFold(side, "Buy")
+	if isBuy == risesToTrigger {
+		return "STOP_MARKET"
+	}
+	return "TAKE_PROFIT_MARKET"
 }
 
 // isAlgoOrderType reports whether orderType is one of Binance's conditional types —
@@ -226,6 +259,77 @@ func isAlgoOrderType(orderType string) bool {
 		return true
 	}
 	return false
+}
+
+// isBinanceAgreementError reports whether code means the account must sign Binance's
+// TradFi-Perps agreement before this order can go through — found live (2026-10-18) on
+// a stock/commodity-linked perpetual symbol (Binance's newer "TradFi-Perps" product
+// category, e.g. XAUUSDT/XAGUSDT and others), rejected with:
+// "-4411: Please sign TradFi-Perps agreement contract fapi." Bybit has an analogous
+// per-category trading-agreement gate (see bybit.go's isAgreementError/
+// trySignAgreement) for metals/crude-oil contracts — this is Binance's equivalent for
+// its own new TradFi product line, not something tonight's other Binance fixes touch.
+func isBinanceAgreementError(code int) bool {
+	return code == -4411
+}
+
+// binanceAgreementSignedCache avoids re-signing (and re-paying the extra REST
+// round-trip) on every single order once an account's agreement is known signed for
+// this process's lifetime — mirrors bybit.go's agreementSignedCache exactly.
+var binanceAgreementSignedCache sync.Map // key: apiKey, value: struct{}
+
+// signTradFiPerpsAgreement calls POST /fapi/v1/stock/contract — confirmed via
+// developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/TradFi-Perps:
+// a plain signed POST (timestamp+signature only, no "agree" or category body param —
+// the call itself IS the agreement). Unlike Bybit's equivalent, which needs a guessed
+// categoryV2 value and can take several tries (trySignAgreement), this always succeeds
+// in one call once signed, so there's no candidate-list retry loop needed here.
+func signTradFiPerpsAgreement(ctx context.Context, creds trader.Credentials) error {
+	if _, ok := binanceAgreementSignedCache.Load(creds.APIKey); ok {
+		return nil
+	}
+	if _, err := doSignedPOST(ctx, creds, "/fapi/v1/stock/contract", url.Values{}); err != nil {
+		return err
+	}
+	binanceAgreementSignedCache.Store(creds.APIKey, struct{}{})
+	return nil
+}
+
+// doSignedPOSTWithAgreementRetry is doSignedPOST plus a one-shot sign-and-retry on
+// isBinanceAgreementError — used by placeOrder/placeAlgoOrder (the two REST order-
+// placement endpoints an account's TradFi-Perps agreement actually gates). Retries
+// EXACTLY once: if the retry also fails (including with -4411 again, e.g. signing
+// itself failed), that second error is returned as-is rather than looping.
+func (e *BinanceExchange) doSignedPOSTWithAgreementRetry(ctx context.Context, path string, params url.Values) ([]byte, error) {
+	data, err := doSignedPOST(ctx, e.creds, path, params)
+	if err == nil {
+		return data, nil
+	}
+	code, ok := binanceErrorCodeFromErr(err)
+	if !ok || !isBinanceAgreementError(code) {
+		return data, err
+	}
+	if signErr := signTradFiPerpsAgreement(ctx, e.creds); signErr != nil {
+		return data, err // signing failed — surface the original -4411, not the sign error
+	}
+	return doSignedPOST(ctx, e.creds, path, params)
+}
+
+// binanceErrorCodeFromErr extracts the numeric code from an error produced by
+// checkBinanceError's "binance: code=%d: %s" format — needed because doSignedPOST
+// doesn't expose the raw numeric code separately once wrapped into an error, but the
+// REST order-placement retry paths below need it to decide whether to sign the
+// agreement and retry (mirrors bybit.go's extractRetCode, which has the raw bytes
+// available and doesn't need this string-parsing step).
+func binanceErrorCodeFromErr(err error) (int, bool) {
+	if err == nil {
+		return 0, false
+	}
+	var code int
+	if n, _ := fmt.Sscanf(err.Error(), "binance: code=%d:", &code); n == 1 {
+		return code, true
+	}
+	return 0, false
 }
 
 // binancePositionSide maps our PositionIdx (0=one-way, 1=long hedge slot, 2=short
@@ -339,7 +443,7 @@ func (e *BinanceExchange) placeAlgoOrder(ctx context.Context, req trader.OrderRe
 		params.Set("clientAlgoId", truncateClientOrderID(req.OrderLinkId))
 	}
 
-	data, err := doSignedPOST(ctx, e.creds, "/fapi/v1/algoOrder", params)
+	data, err := e.doSignedPOSTWithAgreementRetry(ctx, "/fapi/v1/algoOrder", params)
 	if err != nil {
 		return trader.OrderResult{}, err
 	}
@@ -390,7 +494,7 @@ func (e *BinanceExchange) placeOrder(ctx context.Context, req trader.OrderReques
 		params.Set("newClientOrderId", truncateClientOrderID(req.OrderLinkId))
 	}
 
-	data, err := doSignedPOST(ctx, e.creds, "/fapi/v1/order", params)
+	data, err := e.doSignedPOSTWithAgreementRetry(ctx, "/fapi/v1/order", params)
 	if err != nil {
 		return trader.OrderResult{}, err
 	}
@@ -528,8 +632,9 @@ func (e *BinanceExchange) placeOrderBatchREST(ctx context.Context, req trader.Ba
 	for i, it := range req.Request {
 		orderReq := trader.OrderRequest{
 			Symbol: it.Symbol, Side: it.Side, OrderType: it.OrderType,
-			TriggerPrice: it.TriggerPrice, OrderFilter: it.OrderFilter,
-			ReduceOnly: it.ReduceOnly, PositionIdx: it.PositionIdx,
+			TriggerPrice: it.TriggerPrice, TriggerDirection: it.TriggerDirection,
+			OrderFilter: it.OrderFilter,
+			ReduceOnly:  it.ReduceOnly, PositionIdx: it.PositionIdx,
 			OrderLinkId: it.OrderLinkId,
 		}
 		orderType := binanceOrderType(orderReq)
@@ -577,7 +682,8 @@ func (e *BinanceExchange) placeOrderBatchREST(ctx context.Context, req trader.Ba
 	if err != nil {
 		return nil, err
 	}
-	data, err := doSignedPOST(ctx, e.creds, "/fapi/v1/batchOrders", url.Values{"batchOrders": {string(encoded)}})
+	batchParams := url.Values{"batchOrders": {string(encoded)}}
+	data, err := doSignedPOST(ctx, e.creds, "/fapi/v1/batchOrders", batchParams)
 	if err != nil {
 		return nil, err
 	}
@@ -589,6 +695,21 @@ func (e *BinanceExchange) placeOrderBatchREST(ctx context.Context, req trader.Ba
 	}
 	if err := json.Unmarshal(data, &rows); err != nil {
 		return nil, err
+	}
+	// Per-item batch response, not a top-level HTTP error — a TradFi-Perps item surfaces
+	// as one row with Code==-4411 alongside otherwise-successful rows, not as the whole
+	// request failing. Sign once and retry the WHOLE batch exactly once if ANY row hit
+	// it (see isBinanceAgreementError's doc comment); any other per-item error is left
+	// alone, same as before this fix.
+	for _, r := range rows {
+		if isBinanceAgreementError(r.Code) {
+			if signErr := signTradFiPerpsAgreement(ctx, e.creds); signErr == nil {
+				if retryData, retryErr := doSignedPOST(ctx, e.creds, "/fapi/v1/batchOrders", batchParams); retryErr == nil {
+					_ = json.Unmarshal(retryData, &rows) // best-effort; rows keeps the pre-retry values on a parse failure
+				}
+			}
+			break
+		}
 	}
 	for j, r := range rows {
 		if j >= len(regularIdx) {
@@ -818,12 +939,29 @@ func (e *BinanceExchange) SetLeverage(ctx context.Context, req trader.LeverageRe
 // SwitchPositionMode sets Hedge Mode (dualSidePosition=true) or One-way Mode (false)
 // for the WHOLE ACCOUNT — Binance has no per-symbol position mode, unlike Bybit. The
 // category/symbol params are accepted only for Exchange interface compatibility and
-// are unused. Binance also errors if any position/order is currently open when this
-// is called — same class of constraint as Bybit's own "can't switch with an open
-// position" error; that error surfaces to the caller unchanged via doSignedPOST.
+// are unused.
+//
+// Checks the account's CURRENT mode via GET first and skips the POST entirely when it
+// already matches — found live (2026-10-18, strategy "1000TURBOUSDT", acc N2 Binance):
+// Binance's POST rejects with -4067 "Position side cannot be changed if there exists
+// open orders" whenever the account has ANY open order on ANY symbol, and it checks
+// this BEFORE checking whether the requested value is even a change — unlike the -4059
+// "no need to change" case below, which only fires when there's nothing open to block
+// it. On an actively-trading account (the normal case — some other strategy's order is
+// almost always open), ensurePositionMode's unconditional POST on every new strategy's
+// first cycle (and after every process restart, which clears its in-memory verified
+// cache — see cycle.go's positionModeVerified) made every such Binance strategy fail to
+// start with -4067, even though the account's mode was already correct. A GET failure
+// (network hiccup, unparseable body) is treated as "unknown" and falls through to the
+// POST exactly as before this fix — never a new failure mode of its own.
 func (e *BinanceExchange) SwitchPositionMode(ctx context.Context, category, symbol string, mode int) error {
+	wantDual := mode != 0
+	if current, ok := binanceCurrentPositionMode(ctx, e.creds); ok && current == wantDual {
+		return nil
+	}
+
 	dual := "false"
-	if mode != 0 {
+	if wantDual {
 		dual = "true"
 	}
 	data, err := doSignedPOST(ctx, e.creds, "/fapi/v1/positionSide/dual", url.Values{"dualSidePosition": {dual}})
@@ -831,15 +969,13 @@ func (e *BinanceExchange) SwitchPositionMode(ctx context.Context, category, symb
 		return nil
 	}
 	// -4059 "No need to change position side": Binance rejects a no-op switch request
-	// outright when the account is already in the requested dualSidePosition — unlike
-	// Bybit, whose own SwitchPositionMode (bybit.go) explicitly treats the equivalent
-	// "already in this mode" response (retCode 110025) as success. Binance needs the
-	// identical treatment here, or pkg/strategy's ensurePositionMode (cycle.go, called
-	// at the start of every cycle) stops the strategy outright on an account that's
-	// already correctly configured — the COMMON case for a setting meant to stay fixed
-	// once set, not a rare edge case. Found live (2026-10-16): every single Binance
-	// strategy cycle start failed with "Не удалось переключить position mode —
-	// стратегия остановлена" the moment the account's position mode was already correct.
+	// outright when the account is already in the requested dualSidePosition and has no
+	// open orders blocking the check above from even running — unlike Bybit, whose own
+	// SwitchPositionMode (bybit.go) explicitly treats the equivalent "already in this
+	// mode" response (retCode 110025) as success. Kept as a belt-and-suspenders fallback
+	// alongside the GET check above (e.g. if the GET itself failed and fell through to
+	// this POST, or a race changed the mode between the GET and this POST) — found live
+	// (2026-10-16) before the GET check existed, when this was the only guard.
 	var r struct {
 		Code int `json:"code"`
 	}
@@ -847,6 +983,24 @@ func (e *BinanceExchange) SwitchPositionMode(ctx context.Context, category, symb
 		return nil
 	}
 	return err
+}
+
+// binanceCurrentPositionMode fetches the account's current dualSidePosition setting.
+// ok is false on any failure (network, non-2xx, unparseable body) — callers must treat
+// that as "unknown" and fall back to attempting the actual switch, never as "assume
+// one-way" or any other guess.
+func binanceCurrentPositionMode(ctx context.Context, creds trader.Credentials) (dual bool, ok bool) {
+	data, err := doSignedGET(ctx, creds, "/fapi/v1/positionSide/dual", url.Values{})
+	if err != nil {
+		return false, false
+	}
+	var r struct {
+		DualSidePosition bool `json:"dualSidePosition"`
+	}
+	if err := json.Unmarshal(data, &r); err != nil {
+		return false, false
+	}
+	return r.DualSidePosition, true
 }
 
 // binanceOrderDetail is GET /fapi/v1/order's response shape — a single order looked up

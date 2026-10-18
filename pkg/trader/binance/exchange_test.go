@@ -148,6 +148,136 @@ func TestBinanceExchange_GetWalletBalance_TranslatesAccountEndpoint(t *testing.T
 	}
 }
 
+// Regression (2026-10-18): a live order on a TradFi-Perps symbol (Binance's newer
+// stock/commodity-linked perpetual product, e.g. XAUUSDT/XAGUSDT) failed with
+// "-4411: Please sign TradFi-Perps agreement contract fapi." — the account hadn't yet
+// signed that one-time agreement. This pins that placeOrder signs it automatically
+// (POST /fapi/v1/stock/contract) and retries the SAME order exactly once, succeeding
+// without the caller ever seeing the -4411 at all.
+func TestBinanceExchange_PlaceOrder_SignsTradFiPerpsAgreementAndRetriesOnce(t *testing.T) {
+	var orderAttempts, agreementCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/stock/contract":
+			agreementCalls++
+			_, _ = w.Write([]byte(`{}`))
+		case "/fapi/v1/order":
+			orderAttempts++
+			if orderAttempts == 1 {
+				_, _ = w.Write([]byte(`{"code":-4411,"msg":"Please sign TradFi-Perps agreement contract fapi."}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"orderId":1,"clientOrderId":"SIS_TRM-x"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	// A unique APIKey (not testCreds()'s shared "test-key") + cleanup keeps this test's
+	// use of the package-level binanceAgreementSignedCache isolated from every other
+	// test in this file — without this, whichever test signs testCreds()'s key FIRST
+	// would make every later test's mock server see zero /fapi/v1/stock/contract calls.
+	creds := testCreds()
+	creds.APIKey = "tradfi-retry-" + t.Name()
+	t.Cleanup(func() { binanceAgreementSignedCache.Delete(creds.APIKey) })
+
+	ex := NewBinanceExchange(creds)
+	got, err := ex.PlaceOrder(context.Background(), trader.OrderRequest{Symbol: "XAUUSDT", Side: "Buy", OrderType: "Market", Qty: "1"})
+	if err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+	if got.OrderId != "1" {
+		t.Errorf("got %+v, want OrderId=1 (the retried order succeeding)", got)
+	}
+	if agreementCalls != 1 {
+		t.Errorf("agreement signed %d times, want 1", agreementCalls)
+	}
+	if orderAttempts != 2 {
+		t.Errorf("order attempted %d times, want 2 (fail then retry)", orderAttempts)
+	}
+}
+
+// Second call on the same account must NOT re-sign — binanceAgreementSignedCache
+// avoids paying the extra REST round-trip once an account is known-signed.
+func TestBinanceExchange_PlaceOrder_DoesNotReSignAgreementOnSubsequentOrders(t *testing.T) {
+	var agreementCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/stock/contract":
+			agreementCalls++
+			_, _ = w.Write([]byte(`{}`))
+		case "/fapi/v1/order":
+			_, _ = w.Write([]byte(`{"orderId":1,"clientOrderId":"x"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	creds := testCreds()
+	creds.APIKey = "already-signed-test-key-" + t.Name()
+	binanceAgreementSignedCache.Store(creds.APIKey, struct{}{})
+	t.Cleanup(func() { binanceAgreementSignedCache.Delete(creds.APIKey) })
+
+	ex := NewBinanceExchange(creds)
+	if _, err := ex.PlaceOrder(context.Background(), trader.OrderRequest{Symbol: "XAUUSDT", Side: "Buy", OrderType: "Market", Qty: "1"}); err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+	if agreementCalls != 0 {
+		t.Errorf("agreement signed %d times, want 0 (already cached as signed)", agreementCalls)
+	}
+}
+
+func TestBinanceExchange_PlaceOrderBatch_SignsTradFiPerpsAgreementAndRetriesOnce(t *testing.T) {
+	var batchAttempts, agreementCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/stock/contract":
+			agreementCalls++
+			_, _ = w.Write([]byte(`{}`))
+		case "/fapi/v1/batchOrders":
+			batchAttempts++
+			if batchAttempts == 1 {
+				_, _ = w.Write([]byte(`[{"code":-4411,"msg":"Please sign TradFi-Perps agreement contract fapi."}]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[{"orderId":1,"clientOrderId":"x","code":0}]`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	creds := testCreds()
+	creds.APIKey = "tradfi-retry-" + t.Name()
+	t.Cleanup(func() { binanceAgreementSignedCache.Delete(creds.APIKey) })
+
+	ex := NewBinanceExchange(creds)
+	req := trader.BatchPlaceRequest{Request: []trader.BatchOrderItem{
+		{Symbol: "XAUUSDT", Side: "Buy", OrderType: "Market", Qty: "1"},
+	}}
+	got, err := ex.placeOrderBatchREST(context.Background(), req)
+	if err != nil {
+		t.Fatalf("placeOrderBatchREST: %v", err)
+	}
+	if len(got) != 1 || got[0].OrderId != "1" || got[0].Code != 0 {
+		t.Fatalf("got %+v, want one succeeding row after the agreement retry", got)
+	}
+	if agreementCalls != 1 {
+		t.Errorf("agreement signed %d times, want 1", agreementCalls)
+	}
+	if batchAttempts != 2 {
+		t.Errorf("batch attempted %d times, want 2 (fail then retry)", batchAttempts)
+	}
+}
+
 func TestBinanceExchange_PlaceOrder_TranslatesMarketOrder(t *testing.T) {
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -666,11 +796,20 @@ func TestBinanceExchange_SetLeverage_SendsSymbolAndLeverage(t *testing.T) {
 func TestBinanceExchange_SwitchPositionMode_SendsDualSidePositionString(t *testing.T) {
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		buf := make([]byte, r.ContentLength)
-		_, _ = r.Body.Read(buf)
-		gotBody = string(buf)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		switch r.Method {
+		case http.MethodGet:
+			// Reports the opposite of what's requested below, so the switch is a real
+			// change and the POST this test actually cares about still happens — see
+			// TestBinanceExchange_SwitchPositionMode_SkipsPOSTWhenAlreadyInRequestedMode
+			// for the GET-already-matches case this test is not about.
+			_, _ = w.Write([]byte(`{"dualSidePosition":false}`))
+		case http.MethodPost:
+			buf := make([]byte, r.ContentLength)
+			_, _ = r.Body.Read(buf)
+			gotBody = string(buf)
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		}
 	}))
 	defer srv.Close()
 	withMockBinanceBase(t, srv)
@@ -687,11 +826,18 @@ func TestBinanceExchange_SwitchPositionMode_SendsDualSidePositionString(t *testi
 func TestBinanceExchange_SwitchPositionMode_OneWayForModeZero(t *testing.T) {
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		buf := make([]byte, r.ContentLength)
-		_, _ = r.Body.Read(buf)
-		gotBody = string(buf)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		switch r.Method {
+		case http.MethodGet:
+			// Opposite of what's requested below — see the comment in
+			// TestBinanceExchange_SwitchPositionMode_SendsDualSidePositionString above.
+			_, _ = w.Write([]byte(`{"dualSidePosition":true}`))
+		case http.MethodPost:
+			buf := make([]byte, r.ContentLength)
+			_, _ = r.Body.Read(buf)
+			gotBody = string(buf)
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		}
 	}))
 	defer srv.Close()
 	withMockBinanceBase(t, srv)
@@ -744,6 +890,105 @@ func TestBinanceExchange_SwitchPositionMode_OtherErrorsStillPropagate(t *testing
 	ex := NewBinanceExchange(testCreds())
 	if err := ex.SwitchPositionMode(context.Background(), "linear", "BTCUSDT", 3); err == nil {
 		t.Error("SwitchPositionMode = nil, want an error for a genuine failure (open position blocking the switch)")
+	}
+}
+
+// TestBinanceExchange_SwitchPositionMode_SkipsPOSTWhenAlreadyInRequestedMode is the
+// regression test for the live bug (2026-10-18, strategy "1000TURBOUSDT", acc N2
+// Binance): Binance's POST /fapi/v1/positionSide/dual rejects with -4067 "Position side
+// cannot be changed if there exists open orders" whenever the account has ANY open
+// order on ANY symbol — Binance checks this before even checking whether the requested
+// value is a no-op, so it fires even when the account is ALREADY in the requested mode
+// (the -4059 case above only fires when there are no open orders to begin with). On an
+// actively-trading account (the normal case — some other strategy almost always has an
+// order open), ensurePositionMode's unconditional POST on every new strategy's first
+// cycle (and after every process restart, which clears the in-memory verified-cache)
+// made every such Binance strategy fail to start. Fixed by checking the account's
+// CURRENT mode via GET first and only POSTing when a real change is needed.
+func TestBinanceExchange_SwitchPositionMode_SkipsPOSTWhenAlreadyInRequestedMode(t *testing.T) {
+	var gotPOST bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`{"dualSidePosition":true}`))
+		case http.MethodPost:
+			gotPOST = true
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":-4067,"msg":"Position side cannot be changed if there exists open orders."}`))
+		}
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	// Requesting hedge (mode=3) while the account is already reported as hedge
+	// (dualSidePosition=true) must succeed without ever POSTing — if it did POST, the
+	// mocked -4067 response proves the account's open orders would have blocked it.
+	if err := ex.SwitchPositionMode(context.Background(), "linear", "BTCUSDT", 3); err != nil {
+		t.Errorf("SwitchPositionMode = %v, want nil (GET already reports the requested mode)", err)
+	}
+	if gotPOST {
+		t.Error("POST /fapi/v1/positionSide/dual was called despite the account already being in the requested mode — must check GET first")
+	}
+}
+
+// TestBinanceExchange_SwitchPositionMode_POSTsWhenModeActuallyDiffers is the positive
+// counterpart: when the GET genuinely reports a different mode, the POST must still
+// happen (so a real, intentional switch — e.g. first-time setup with no open orders
+// yet — keeps working).
+func TestBinanceExchange_SwitchPositionMode_POSTsWhenModeActuallyDiffers(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`{"dualSidePosition":false}`))
+		case http.MethodPost:
+			buf := make([]byte, r.ContentLength)
+			_, _ = r.Body.Read(buf)
+			gotBody = string(buf)
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		}
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	if err := ex.SwitchPositionMode(context.Background(), "linear", "BTCUSDT", 3); err != nil {
+		t.Fatalf("SwitchPositionMode: %v", err)
+	}
+	if !strings.Contains(gotBody, "dualSidePosition=true") {
+		t.Errorf("body = %q, want dualSidePosition=true — GET reported one-way, so the POST switch must still happen", gotBody)
+	}
+}
+
+// TestBinanceExchange_SwitchPositionMode_FallsBackToPOSTWhenGETFails ensures a GET
+// failure (network error, unparseable body, whatever) doesn't block the switch outright
+// — it must fall through to the POST exactly as before this fix, not newly introduce a
+// failure mode of its own.
+func TestBinanceExchange_SwitchPositionMode_FallsBackToPOSTWhenGETFails(t *testing.T) {
+	var gotPOST bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"code":-1000,"msg":"An unknown error occurred."}`))
+		case http.MethodPost:
+			gotPOST = true
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		}
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	if err := ex.SwitchPositionMode(context.Background(), "linear", "BTCUSDT", 3); err != nil {
+		t.Errorf("SwitchPositionMode = %v, want nil (GET failure must fall back to POST, not fail outright)", err)
+	}
+	if !gotPOST {
+		t.Error("POST was never attempted after the GET failed — GET failure must fall back to POST")
 	}
 }
 
@@ -1669,5 +1914,93 @@ func TestBinanceExchange_PlaceOrderREST_NeverTouchesWS(t *testing.T) {
 	}
 	if got.OrderLinkId != "rest-order" {
 		t.Errorf("got %+v, want PlaceOrderREST to always use REST, ignoring any wired ws client", got)
+	}
+}
+
+// TestBinanceConditionalOrderType_PicksCorrectTypeByTriggerDirection is the regression
+// test for the live bug (2026-10-18, strategy NEARUSDT, acc N2 Binance): a grid DCA
+// entry level buying further below the current price (Buy, TriggerDirection=2 — "price
+// falls to trigger", see pkg/strategy/cycle.go's placeLevelsBatch) was unconditionally
+// sent as STOP_MARKET, which Binance only accepts for a BUY whose trigger fires on a
+// price RISE — exactly backwards, and rejected outright with -2021 "Order would
+// immediately trigger" rather than a mere inefficiency. See binanceConditionalOrderType's
+// doc comment for the full STOP_MARKET vs TAKE_PROFIT_MARKET truth table.
+func TestBinanceConditionalOrderType_PicksCorrectTypeByTriggerDirection(t *testing.T) {
+	cases := []struct {
+		name             string
+		side             string
+		triggerDirection int
+		want             string
+	}{
+		{"buy rising (breakout entry / short's SL)", "Buy", 1, "STOP_MARKET"},
+		{"buy falling (grid DCA entry — the live bug)", "Buy", 2, "TAKE_PROFIT_MARKET"},
+		{"sell falling (long's SL)", "Sell", 2, "STOP_MARKET"},
+		{"sell rising (grid sell-level / long's TP-as-trigger)", "Sell", 1, "TAKE_PROFIT_MARKET"},
+		{"unset trigger direction defaults to the prior behavior", "Buy", 0, "STOP_MARKET"},
+		{"side is case-insensitive", "buy", 2, "TAKE_PROFIT_MARKET"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := binanceConditionalOrderType(c.side, c.triggerDirection)
+			if got != c.want {
+				t.Errorf("binanceConditionalOrderType(%q, %d) = %q, want %q", c.side, c.triggerDirection, got, c.want)
+			}
+		})
+	}
+}
+
+// TestBinanceOrderType_NonConditionalUnaffected guards that binanceOrderType's existing
+// LIMIT/MARKET dispatch for plain (non-conditional) orders is untouched by routing
+// conditional orders through binanceConditionalOrderType.
+func TestBinanceOrderType_NonConditionalUnaffected(t *testing.T) {
+	if got := binanceOrderType(trader.OrderRequest{OrderType: "Limit"}); got != "LIMIT" {
+		t.Errorf("plain Limit: got %q, want LIMIT", got)
+	}
+	if got := binanceOrderType(trader.OrderRequest{OrderType: "Market"}); got != "MARKET" {
+		t.Errorf("plain Market: got %q, want MARKET", got)
+	}
+}
+
+// TestBinanceExchange_PlaceOrderBatchREST_SendsTakeProfitMarketForFallingBuy reproduces
+// the live bug end-to-end through the REST batch path (placeOrderBatchREST) — guards
+// against the OTHER half of the bug: even with binanceConditionalOrderType fixed, the
+// batch item → trader.OrderRequest conversion in placeOrderBatchREST dropped
+// TriggerDirection entirely, so the picked type would silently fall back to STOP_MARKET
+// regardless.
+func TestBinanceExchange_PlaceOrderBatchREST_SendsTakeProfitMarketForFallingBuy(t *testing.T) {
+	var gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		gotBody = string(buf)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"algoId":1,"clientAlgoId":"L2"}`))
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	results, err := ex.PlaceOrderBatch(context.Background(), trader.BatchPlaceRequest{
+		Category: "linear",
+		Request: []trader.BatchOrderItem{
+			{
+				Symbol: "NEARUSDT", Side: "Buy", OrderType: "Market",
+				Qty: "10", TriggerPrice: "4.81", TriggerDirection: 2, // falls to trigger — grid DCA entry
+				OrderFilter: "StopOrder", OrderLinkId: "L3",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlaceOrderBatch: %v", err)
+	}
+	if len(results) != 1 || results[0].Code == -1 {
+		t.Fatalf("results = %+v, want a successful algo placement", results)
+	}
+	if gotPath != "/fapi/v1/algoOrder" {
+		t.Errorf("request path = %q, want /fapi/v1/algoOrder (a Buy+falls-to-trigger item must be routed as a conditional/algo order, not the plain batch endpoint)", gotPath)
+	}
+	if !strings.Contains(gotBody, "type=TAKE_PROFIT_MARKET") {
+		t.Errorf("body = %q, want type=TAKE_PROFIT_MARKET — TriggerDirection=2 on a Buy must survive the BatchOrderItem conversion, not be dropped and silently default to STOP_MARKET", gotBody)
 	}
 }

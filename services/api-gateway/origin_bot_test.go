@@ -5,7 +5,23 @@ package main
 import (
 	"context"
 	"testing"
+
+	"sis/pkg/trader"
 )
+
+// stubBybitPublicInstrumentInfoOK stubs bybitGetPublicInstrumentInfo to always succeed
+// (see instrument_handler_test.go's pattern) — createBotStrategy now validates the
+// symbol exists on the account's exchange before creating/reusing a row (see
+// computeBotStrategyCols's doc comment), and this file's ORGUSDT/COAUSDT are
+// placeholder test symbols, not real Bybit listings.
+func stubBybitPublicInstrumentInfoOK(t *testing.T) {
+	t.Helper()
+	origBybit := bybitGetPublicInstrumentInfo
+	t.Cleanup(func() { bybitGetPublicInstrumentInfo = origBybit })
+	bybitGetPublicInstrumentInfo = func(ctx context.Context, category, symbol string) (trader.PubInstrumentInfo, error) {
+		return trader.PubInstrumentInfo{TickSize: 0.1, QtyStep: 0.001, MinQty: 0.001, MinNotionalValue: 5}, nil
+	}
+}
 
 // TestCreateBotStrategy_SetsOriginBotId: createBotStrategy пишет origin_bot_id=bot_id,
 // и detach (leave) его НЕ обнуляет.
@@ -16,6 +32,7 @@ func TestCreateBotStrategy_SetsOriginBotId(t *testing.T) {
 	accID := createTestAccount(t, s, userID)
 	botID := createZombieBot(t, s, userID, "origin")
 	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM strategies WHERE bot_id=$1 OR origin_bot_id=$1", botID) })
+	stubBybitPublicInstrumentInfoOK(t)
 
 	cfg := botCfgJSON{StrategyType: "matrix", GridSizeUSDT: 20, HedgeMode: true}
 	b := botEngineRow{id: botID, ownerID: userID, accountID: accID}
@@ -51,6 +68,7 @@ func TestCreateBotStrategy_ReuseKeepsExistingOrigin(t *testing.T) {
 	t.Cleanup(func() {
 		s.pool.Exec(ctx, "DELETE FROM strategies WHERE bot_id=$1 OR origin_bot_id=$1 OR origin_bot_id=$2", botID, otherBot)
 	})
+	stubBybitPublicInstrumentInfoOK(t)
 
 	// Засидить stopped-строку этого бота, но с origin_bot_id = ДРУГОЙ бот (иной источник).
 	// created_at в прошлом, чтобы reuse-SELECT (ORDER BY created_at DESC) её и взял.

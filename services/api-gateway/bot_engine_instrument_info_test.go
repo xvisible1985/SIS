@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"sis/pkg/trader"
@@ -55,15 +56,46 @@ func TestComputeBotStrategyCols_RaisesGridSizeByAccountExchange(t *testing.T) {
 
 	cfg := botCfgJSON{GridSizeUSDT: 10} // below both minimums' 10% buffer, so both must raise it
 
-	binanceCols := s.computeBotStrategyCols(ctx, cfg, "BTCUSDT", binanceAcctID, 0)
+	binanceCols, err := s.computeBotStrategyCols(ctx, cfg, "BTCUSDT", binanceAcctID, 0)
+	if err != nil {
+		t.Fatalf("binance account: computeBotStrategyCols: %v", err)
+	}
 	// 100 * 1.1 = 110, rounded up to one decimal by math.Ceil(x*10)/10 → 110.0
 	if binanceCols.gridSize < 109 || binanceCols.gridSize > 111 {
 		t.Errorf("binance account: gridSize = %.4f, want ~110 (raised to binance's MinOrderUSDT*1.1)", binanceCols.gridSize)
 	}
 
-	bybitCols := s.computeBotStrategyCols(ctx, cfg, "BTCUSDT", bybitAcctID, 0)
+	bybitCols, err := s.computeBotStrategyCols(ctx, cfg, "BTCUSDT", bybitAcctID, 0)
+	if err != nil {
+		t.Fatalf("bybit account: computeBotStrategyCols: %v", err)
+	}
 	// cfg.GridSizeUSDT=10 is already above bybit's MinOrderUSDT*1.1 (5.5), so it's left as-is.
 	if bybitCols.gridSize != 10 {
 		t.Errorf("bybit account: gridSize = %.4f, want 10 (unchanged, already above bybit's minimum)", bybitCols.gridSize)
+	}
+}
+
+// TestComputeBotStrategyCols_RejectsSymbolNotOnAccountExchange is the regression test
+// for the live bug (2026-10-18): the bot engine's scan-and-open universe
+// (trader.FetchAllLinearSymbols, Bybit-only) is shared across every bot regardless of
+// its account's exchange, so a Binance-account bot routinely matched a Bybit-only
+// symbol and created a strategy stuck at 0 volume forever. computeBotStrategyCols
+// already looked up the symbol's exchange info (for grid-size sizing) — it must now
+// reject instead of silently continuing when that lookup fails.
+func TestComputeBotStrategyCols_RejectsSymbolNotOnAccountExchange(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	userID := createWHUser(t, s, "cbscreject")
+	binanceAcctID := createTestAccountExchange(t, s, userID, "binance")
+
+	origBinance := binanceGetPublicInstrumentInfo
+	t.Cleanup(func() { binanceGetPublicInstrumentInfo = origBinance })
+	binanceGetPublicInstrumentInfo = func(ctx context.Context, category, symbol string) (trader.PubInstrumentInfo, error) {
+		return trader.PubInstrumentInfo{}, errors.New("binance: no exchangeInfo entry for symbol PLAYSOUTUSDT")
+	}
+
+	cfg := botCfgJSON{GridSizeUSDT: 10}
+	if _, err := s.computeBotStrategyCols(ctx, cfg, "PLAYSOUTUSDT", binanceAcctID, 0); err == nil {
+		t.Error("computeBotStrategyCols = nil error, want a rejection for a symbol that doesn't exist on the account's exchange")
 	}
 }

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { TemplateSelector } from './TemplateSelector'
 import { Toggle, Tip, SignalPickerField, SignalGateField } from './FormWidgets'
 import { createStrategy, updateStrategy, getStrategyState, getInstrumentConstraints, type InstrumentConstraints } from '../../api/strategies'
+import { listAccounts } from '../../api/accounts'
 import { CoinPicker } from '../common/CoinPicker'
 import { LeverageSlider } from '../common/LeverageSlider'
 import { SIGNALS } from '../../features/indicators/signals'
@@ -259,6 +260,23 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
   const [instrInfo, setInstrInfo] = useState<InstrumentConstraints | null>(null)
   const [leverageMax, setLeverageMax] = useState(false)
   const [openOrderTypeDrop, setOpenOrderTypeDrop] = useState<number | null>(null)
+  // Defaults to "bybit" (matches the backend's /instrument-info default) until the
+  // account lookup below resolves — same pattern as GridForm.tsx/OrderForm.tsx. Needed
+  // so the coin picker and instrument-constraints lookup use the account's real exchange
+  // instead of always assuming Bybit (root cause of the PLAYSOUTUSDT mix-up).
+  const [accountExchange, setAccountExchange] = useState('bybit')
+
+  useEffect(() => {
+    let cancelled = false
+    listAccounts()
+      .then(accs => {
+        if (cancelled) return
+        const acc = accs.find(a => a.id === form.account_id)
+        setAccountExchange(acc?.exchange || 'bybit')
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [form.account_id])
 
   // Fetch live filled count when editing — card state may not be loaded yet.
   useEffect(() => {
@@ -277,8 +295,8 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
   // Fetch instrument constraints whenever symbol or category changes.
   useEffect(() => {
     if (!form.symbol) return
-    getInstrumentConstraints(form.symbol, form.category).then(setInstrInfo).catch(() => {})
-  }, [form.symbol, form.category])
+    getInstrumentConstraints(form.symbol, form.category, accountExchange).then(setInstrInfo).catch(() => {})
+  }, [form.symbol, form.category, accountExchange])
 
   function patch(partial: Partial<StrategyFormData>) {
     setForm(f => ({ ...f, ...partial }))
@@ -529,6 +547,7 @@ export function StrategyModal({ strategy, filledLevels: filledLevelsProp = 0, de
                 <CoinPicker
                   value={form.symbol || 'BTCUSDT'}
                   onChange={sym => patch({ symbol: sym })}
+                  exchange={accountExchange === 'binance' ? 'binance' : 'bybit'}
                   triggerClassName="w-full px-3 py-1.5 text-sm rounded-md border-gray-700 bg-gray-800"
                   disabled={!!strategy}
                   disabledTooltip="Монета выбирается только при создании стратегии. Для смены монеты создайте новую стратегию."

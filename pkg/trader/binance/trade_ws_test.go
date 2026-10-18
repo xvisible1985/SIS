@@ -258,6 +258,60 @@ func TestBinanceTradeStream_PlaceOrder_GenuineRejectionIsNotErrWSUnavailable(t *
 	}
 }
 
+// Regression (2026-10-18): a live order on a TradFi-Perps symbol over the WS trade
+// stream (the primary path for a live account) failed with the same -4411 the REST path
+// hits — this pins that BinanceTradeStream.PlaceOrder also signs the agreement (a REST
+// call to /fapi/v1/stock/contract, separate from the WS connection) and retries the
+// SAME WS order.place exactly once.
+func TestBinanceTradeStream_PlaceOrder_SignsTradFiPerpsAgreementAndRetriesOnce(t *testing.T) {
+	var orderAttempts int
+	wsSrv := wsEchoServer(t, func(method string, params map[string]any) (any, int, string) {
+		orderAttempts++
+		if orderAttempts == 1 {
+			return nil, -4411, "Please sign TradFi-Perps agreement contract fapi."
+		}
+		return map[string]any{"orderId": 1, "clientOrderId": "x"}, 0, ""
+	})
+
+	var agreementCalls int
+	restSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/fapi/v1/stock/contract" {
+			agreementCalls++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer restSrv.Close()
+	withMockBinanceBase(t, restSrv)
+
+	creds := testCreds()
+	creds.APIKey = "tradfi-ws-retry-" + t.Name()
+	t.Cleanup(func() { binanceAgreementSignedCache.Delete(creds.APIKey) })
+
+	ts := NewBinanceTradeStream(creds)
+	ts.dialURL = "ws" + strings.TrimPrefix(wsSrv.URL, "http")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ts.Run(ctx)
+	waitConnected(t, ts)
+
+	got, err := ts.PlaceOrder(ctx, trader.OrderRequest{Symbol: "XAUUSDT", Side: "Buy", OrderType: "Market", Qty: "1"})
+	if err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+	if got.OrderId != "1" {
+		t.Errorf("got %+v, want OrderId=1 (the retried order succeeding)", got)
+	}
+	if agreementCalls != 1 {
+		t.Errorf("agreement signed %d times, want 1", agreementCalls)
+	}
+	if orderAttempts != 2 {
+		t.Errorf("order attempted %d times, want 2 (fail then retry)", orderAttempts)
+	}
+}
+
 func TestBinanceTradeStream_CancelOrder_UsesAlgoOrderCancelWhenOrderFilterIsStopOrder(t *testing.T) {
 	var gotMethod string
 	srv := wsEchoServer(t, func(method string, params map[string]any) (any, int, string) {
@@ -311,6 +365,46 @@ func TestBinanceTradeStream_PlaceOrderBatch_PreservesOriginalIndexOrder(t *testi
 	}
 	if got[1].OrderId != "10" || got[1].OrderLinkId != "eth" {
 		t.Errorf("result[1] (regular ETHUSDT) = %+v, want OrderId=10 OrderLinkId=eth", got[1])
+	}
+}
+
+// TestBinanceTradeStream_PlaceOrderBatch_PreservesTriggerDirection is the WS-path
+// regression test for the live bug (2026-10-18, strategy NEARUSDT, acc N2 Binance — see
+// binanceConditionalOrderType's doc comment in exchange.go for the full root cause):
+// PlaceOrderBatch's BatchOrderItem → trader.OrderRequest conversion dropped
+// TriggerDirection entirely, so even with binanceConditionalOrderType fixed, a batch
+// item would silently fall back to STOP_MARKET regardless of what the caller set.
+func TestBinanceTradeStream_PlaceOrderBatch_PreservesTriggerDirection(t *testing.T) {
+	var gotMethod, gotOrderType string
+	srv := wsEchoServer(t, func(method string, params map[string]any) (any, int, string) {
+		gotMethod = method
+		if v, ok := params["type"]; ok {
+			gotOrderType, _ = v.(string)
+		}
+		return map[string]any{"algoId": 1, "clientAlgoId": "L3"}, 0, ""
+	})
+	ts := NewBinanceTradeStream(testCreds())
+	ts.dialURL = "ws" + strings.TrimPrefix(srv.URL, "http")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ts.Run(ctx)
+	waitConnected(t, ts)
+
+	_, err := ts.PlaceOrderBatch(ctx, trader.BatchPlaceRequest{Request: []trader.BatchOrderItem{
+		{
+			Symbol: "NEARUSDT", Side: "Buy", OrderType: "Market",
+			Qty: "10", TriggerPrice: "4.81", TriggerDirection: 2, // falls to trigger — grid DCA entry
+			OrderFilter: "StopOrder", OrderLinkId: "L3",
+		},
+	}})
+	if err != nil {
+		t.Fatalf("PlaceOrderBatch: %v", err)
+	}
+	if gotMethod != "algoOrder.place" {
+		t.Errorf("method = %q, want algoOrder.place", gotMethod)
+	}
+	if gotOrderType != "TAKE_PROFIT_MARKET" {
+		t.Errorf("order type = %q, want TAKE_PROFIT_MARKET — TriggerDirection=2 on a Buy must survive the BatchOrderItem conversion, not be dropped and silently default to STOP_MARKET", gotOrderType)
 	}
 }
 

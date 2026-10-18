@@ -420,17 +420,31 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the account belongs to the current user.
-	var accountOwned bool
+	// Verify the account belongs to the current user, and fetch its exchange —
+	// needed below to validate the symbol actually exists there.
+	var accountExchange string
 	if err := s.pool.QueryRow(r.Context(),
-		`SELECT true FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
+		`SELECT exchange FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
 		req.AccountID, userID,
-	).Scan(&accountOwned); err != nil || !accountOwned {
+	).Scan(&accountExchange); err != nil {
 		writeError(w, http.StatusForbidden, "account not found")
 		return
 	}
 
 	req.applyDefaults()
+
+	// Reject a symbol that doesn't exist on the account's actual exchange before
+	// persisting — found live (2026-10-18): a Bybit-only symbol (PLAYSOUTUSDT, a real
+	// Bybit listing with no Binance equivalent) was accepted here for a Binance account
+	// with zero validation, saved successfully, and only failed once the strategy engine
+	// actually tried to trade it ("binance: code=-1121: Invalid symbol"), leaving the bot
+	// stuck retrying forever. See getPublicInstrumentInfoFor's doc comment
+	// (instrument_handler.go) — same exchange-aware dispatcher the /instrument-info
+	// endpoint and bot_engine.go's sizing logic already use.
+	if _, err := getPublicInstrumentInfoFor(r.Context(), accountExchange, req.Category, req.Symbol); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("символ %s не найден на %s: %v", req.Symbol, accountExchange, err))
+		return
+	}
 
 	// Prevent duplicate active/finishing strategies for same account+symbol+direction.
 	var dupCount int
@@ -523,6 +537,27 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		).Scan(&dupCount); err == nil && dupCount > 0 {
 			writeError(w, http.StatusConflict, "стратегия для этой пары уже существует")
 			return
+		}
+	}
+
+	// Same cross-exchange guard as CreateStrategy (see its comment) — only when the
+	// symbol is actually changing, so a routine settings edit doesn't pay for an extra
+	// network round-trip (both exchanges' lookups below are already 5-min-cached, but
+	// no need to even take the cache hit when nothing symbol-related changed).
+	if newSym != curSymbol {
+		var accountExchange string
+		if err := s.pool.QueryRow(r.Context(),
+			`SELECT exchange FROM exchange_accounts WHERE id=$1 AND owner_id=$2`,
+			curAccID, userID,
+		).Scan(&accountExchange); err == nil {
+			category := req.Category
+			if category == "" {
+				category = "linear"
+			}
+			if _, err := getPublicInstrumentInfoFor(r.Context(), accountExchange, category, newSym); err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("символ %s не найден на %s: %v", newSym, accountExchange, err))
+				return
+			}
 		}
 	}
 
@@ -1903,7 +1938,11 @@ func (s *Server) BindStrategiesToBot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "не удалось прочитать конфиг бота")
 		return
 	}
-	cols := s.computeBotStrategyCols(ctx, cfg, a.symbol, a.accountID, 0)
+	cols, colsErr := s.computeBotStrategyCols(ctx, cfg, a.symbol, a.accountID, 0)
+	if colsErr != nil {
+		writeError(w, http.StatusBadRequest, colsErr.Error())
+		return
+	}
 
 	// Fetch open positions once — used both to decide hedge roles by notional AND to adopt
 	// any live position on bind, so a bound leg re-configures its existing position instead

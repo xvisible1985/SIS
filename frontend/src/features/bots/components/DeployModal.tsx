@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { X, Rocket, Users } from 'lucide-react';
 import type { Bot } from '../types';
 import { CoinMultiPicker } from '../../../components/common/CoinMultiPicker';
+import { listAccounts } from '../../../api/accounts';
 
 type Props = {
   bot: Bot;
@@ -12,6 +13,24 @@ type Props = {
 export function DeployModal({ bot, onDeploy, onClose }: Props) {
   const [whitelist, setWhitelist] = useState<string[]>([...bot.symbolWhitelist]);
   const [blacklist, setBlacklist] = useState<string[]>([...bot.symbolBlacklist]);
+  // Defaults to "bybit" until resolved — see BotForm.tsx's identical pattern. Deploying
+  // a bot lets you pick its whitelist/blacklist symbols, which must come from the
+  // bot's own account's exchange (PLAYSOUTUSDT mix-up root cause).
+  const [accountExchange, setAccountExchange] = useState('bybit');
+
+  useEffect(() => {
+    let cancelled = false;
+    if (bot.accountId) {
+      listAccounts()
+        .then(accs => {
+          if (cancelled) return;
+          const acc = accs.find(a => a.id === bot.accountId);
+          setAccountExchange(acc?.exchange || 'bybit');
+        })
+        .catch(() => {});
+    }
+    return () => { cancelled = true };
+  }, [bot.accountId]);
 
   useEffect(() => {
     const fn = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -108,6 +127,7 @@ export function DeployModal({ bot, onDeploy, onClose }: Props) {
               onChange={setWhitelist}
               color="blue"
               placeholder="Выбрать монеты для whitelist..."
+              exchange={accountExchange === 'binance' ? 'binance' : 'bybit'}
             />
           </div>
           <div>
@@ -119,6 +139,7 @@ export function DeployModal({ bot, onDeploy, onClose }: Props) {
               onChange={setBlacklist}
               color="red"
               placeholder="Выбрать монеты для blacklist..."
+              exchange={accountExchange === 'binance' ? 'binance' : 'bybit'}
             />
           </div>
         </div>

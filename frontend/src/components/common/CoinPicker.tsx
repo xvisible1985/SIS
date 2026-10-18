@@ -12,8 +12,21 @@ interface TickerRow {
   turnover: number
 }
 
-let _tickers: TickerRow[] = []
-let _cacheAt = 0
+type Exchange = 'bybit' | 'binance'
+
+// Per-exchange cache — a Bybit-only symbol (e.g. PLAYSOUTUSDT, a real Bybit listing with
+// no Binance equivalent at all) must never appear in the dropdown for a Binance account,
+// and vice versa. Found live (2026-10-18): the single shared Bybit-only cache this used
+// to be let a user pick PLAYSOUTUSDT for a Binance-account bot — it saved fine (nothing
+// validates symbol-exists-on-this-exchange at creation time either, see
+// services/api-gateway/strategy_handler.go's CreateStrategy) and only failed once the
+// strategy engine actually tried to trade it ("binance: code=-1121: Invalid symbol"),
+// with the bot stuck retrying forever. Keyed by exchange so switching accounts between
+// a Bybit and Binance account shows each its own correct symbol list.
+const _tickerCache: Record<Exchange, { tickers: TickerRow[]; cacheAt: number }> = {
+  bybit: { tickers: [], cacheAt: 0 },
+  binance: { tickers: [], cacheAt: 0 },
+}
 let _delistings: string[] = []
 let _delistingsAt = 0
 
@@ -33,24 +46,35 @@ function isDelisted(sym: string): boolean {
   return _delistings.includes(sym)
 }
 
-async function loadTickers() {
-  if (Date.now() - _cacheAt < 30_000 && _tickers.length > 0) return
+async function loadTickers(exchange: Exchange) {
+  const cache = _tickerCache[exchange]
+  if (Date.now() - cache.cacheAt < 30_000 && cache.tickers.length > 0) return
   try {
     const [r] = await Promise.all([
-      fetch('https://api.bybit.com/v5/market/tickers?category=linear'),
+      exchange === 'binance'
+        ? fetch('https://fapi.binance.com/fapi/v1/ticker/24hr')
+        : fetch('https://api.bybit.com/v5/market/tickers?category=linear'),
       loadDelistings(),
     ])
     const j = await r.json()
-    _tickers = ((j.result?.list ?? []) as any[])
+    const raw: any[] = exchange === 'binance' ? (j ?? []) : (j.result?.list ?? [])
+    cache.tickers = raw
       .filter((t: any) => t.symbol.endsWith('USDT') && !isDelisted(t.symbol))
-      .map((t: any) => ({
-        symbol: t.symbol,
-        price: parseFloat(t.lastPrice),
-        change: parseFloat(t.price24hPcnt) * 100,
-        turnover: parseFloat(t.turnover24h),
-      }))
+      .map((t: any) => exchange === 'binance'
+        ? {
+            symbol: t.symbol,
+            price: parseFloat(t.lastPrice),
+            change: parseFloat(t.priceChangePercent),
+            turnover: parseFloat(t.quoteVolume),
+          }
+        : {
+            symbol: t.symbol,
+            price: parseFloat(t.lastPrice),
+            change: parseFloat(t.price24hPcnt) * 100,
+            turnover: parseFloat(t.turnover24h),
+          })
       .sort((a, b) => b.turnover - a.turnover)
-    _cacheAt = Date.now()
+    cache.cacheAt = Date.now()
   } catch {}
 }
 
@@ -101,10 +125,13 @@ interface Props {
   triggerClassName?: string
   disabled?: boolean
   disabledTooltip?: string
+  // Defaults to 'bybit' — matches every existing caller's current (pre-fix) behavior
+  // for any usage that hasn't been updated to pass the account's real exchange yet.
+  exchange?: Exchange
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
-export function CoinPicker({ value, onChange, size = 'md', triggerClassName, disabled, disabledTooltip }: Props) {
+export function CoinPicker({ value, onChange, size = 'md', triggerClassName, disabled, disabledTooltip, exchange = 'bybit' }: Props) {
   const [open, setOpen]             = useState(false)
   const [query, setQuery]           = useState('')
   const [rows, setRows]             = useState<TickerRow[]>([])
@@ -129,11 +156,11 @@ export function CoinPicker({ value, onChange, size = 'md', triggerClassName, dis
 
   useEffect(() => {
     if (!open) return
-    loadTickers().then(() => setRows([..._tickers]))
+    loadTickers(exchange).then(() => setRows([..._tickerCache[exchange].tickers]))
     setSavedLists(getSavedLists())
     getCoinFilter().then(setCoinFilterSettings).catch(() => {})
     setTimeout(() => inputRef.current?.focus(), 30)
-  }, [open])
+  }, [open, exchange])
 
   useEffect(() => {
     if (!open) return

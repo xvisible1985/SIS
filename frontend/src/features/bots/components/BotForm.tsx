@@ -18,6 +18,7 @@ import { SettingsSyncConfirmModal } from './SettingsSyncConfirmModal';
 import { hasSyncableDiff } from '../syncableSettingsFields';
 import type { SignalConfig } from '../../../types';
 import { useSelectedAccount } from '../../../contexts/AccountContext';
+import { listAccounts } from '../../../api/accounts';
 
 type Props = {
   bot?: BotType;
@@ -151,6 +152,22 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
   const [submitting,      setSubmitting]      = useState(false);
   const { selectedAccountId } = useSelectedAccount();
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Defaults to "bybit" until resolved — see CoinPicker.tsx/StrategyModal.tsx's identical
+  // pattern. Needed so the whitelist/blacklist pickers and the lot-size reference lookup
+  // below use the selected account's real exchange (PLAYSOUTUSDT mix-up root cause).
+  const [accountExchange, setAccountExchange] = useState('bybit');
+
+  useEffect(() => {
+    let cancelled = false;
+    listAccounts()
+      .then(accs => {
+        if (cancelled) return;
+        const acc = accs.find(a => a.id === selectedAccountId);
+        setAccountExchange(acc?.exchange || 'bybit');
+      })
+      .catch(() => {});
+    return () => { cancelled = true };
+  }, [selectedAccountId]);
 
   const [scanLoading,  setScanLoading]  = useState(false);
   const [scanResult,   setScanResult]   = useState<ScanItem[] | null>(null);
@@ -183,16 +200,16 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
 
   // Загружаем все доступные символы при открытии вкладки Активация
   useEffect(() => {
-    if (outerTab === 'activation' && allSymbols.length === 0) {
-      getAllSymbols().then(setAllSymbols);
+    if (outerTab === 'activation') {
+      getAllSymbols(accountExchange === 'binance' ? 'binance' : 'bybit').then(setAllSymbols);
     }
-  }, [outerTab]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [outerTab, accountExchange]);
 
   // Загружаем ограничения инструмента для отображения минимального лота (используем BTCUSDT как эталон)
   useEffect(() => {
     const category = config.category ?? 'linear';
     setInstrInfo(null);
-    getInstrumentConstraints('BTCUSDT', category).then(setInstrInfo).catch(() => setInstrInfo(null));
+    getInstrumentConstraints('BTCUSDT', category, accountExchange).then(setInstrInfo).catch(() => setInstrInfo(null));
   }, [config.category]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Если включён min-lot — форсируем grid_size_usdt
@@ -1649,6 +1666,7 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
                   onChange={setWhitelist}
                   color="blue"
                   placeholder="Выбрать монеты для whitelist..."
+                  exchange={accountExchange === 'binance' ? 'binance' : 'bybit'}
                 />
               </div>
 
@@ -1665,6 +1683,7 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
                   onChange={setBlacklist}
                   color="red"
                   placeholder="Выбрать монеты для blacklist..."
+                  exchange={accountExchange === 'binance' ? 'binance' : 'bybit'}
                 />
               </div>
 

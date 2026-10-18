@@ -1348,6 +1348,22 @@ export function TerminalPage() {
   const [eventsLogOpen, setEventsLogOpen] = useState(false)
 
   const [symbol, setSymbol] = useState(() => searchParams.get('symbol') ?? _cachedSymbol)
+  // Defaults to "bybit" until resolved — see GridForm.tsx/OrderForm.tsx's identical
+  // pattern (both already fixed). This page's own top-level coin picker (below) was
+  // missed in that pass — it's the main terminal symbol selector, so it needs the same
+  // exchange-aware ticker list as the sub-forms it feeds symbol into.
+  const [accountExchange, setAccountExchange] = useState('bybit')
+  useEffect(() => {
+    let cancelled = false
+    listAccounts()
+      .then(accs => {
+        if (cancelled) return
+        const acc = accs.find(a => a.id === accountId)
+        setAccountExchange(acc?.exchange || 'bybit')
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [accountId])
   const [tf, setTf] = useState(() => searchParams.get('tf') ?? _cachedTf)
   const [bottomTab, setBottomTab] = useState<BottomTab>(() => (localStorage.getItem('t_bottom') as BottomTab) ?? 'positions')
   const [rightTab, setRightTab] = useState<RightTab>(() => (localStorage.getItem('t_right') as RightTab) ?? 'manual')
@@ -1609,7 +1625,7 @@ export function TerminalPage() {
 
   const chartToolbar = (
     <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-200 dark:border-gray-700 flex-shrink-0 overflow-x-auto">
-      <div className="hidden md:block flex-shrink-0"><CoinPicker value={symbol} onChange={setSymbol} /></div>
+      <div className="hidden md:block flex-shrink-0"><CoinPicker value={symbol} onChange={setSymbol} exchange={accountExchange === 'binance' ? 'binance' : 'bybit'} /></div>
       <div className="flex gap-1 flex-shrink-0">
         {TIMEFRAMES.map(t => (
           <button key={t.value} onClick={() => setTf(t.value)}
@@ -1790,7 +1806,7 @@ export function TerminalPage() {
         {/* Chart */}
         <div style={{ flex: `0 0 ${rowSplit}%`, minHeight: 0 }} className="bg-white dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700/50 rounded-xl flex flex-col overflow-hidden">
           <div className="flex items-center gap-3 px-4 py-2 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
-            <CoinPicker value={symbol} onChange={setSymbol} />
+            <CoinPicker value={symbol} onChange={setSymbol} exchange={accountExchange === 'binance' ? 'binance' : 'bybit'} />
             <div className="flex gap-1">
               {TIMEFRAMES.map(t => (
                 <button key={t.value} onClick={() => setTf(t.value)}

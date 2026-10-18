@@ -2026,11 +2026,17 @@ func (sr *StrategyRunner) placeLevelsBatch(ctx context.Context, indices []int) {
 			item.OrderType = "Market"
 		} else {
 			formattedPrice := trader.FormatPrice(l.TargetPrice, sr.instr.TickSize)
-			if sr.strategy.EntryOrderType == "stop_market" {
-				trigDir := 1 // SHORT: price rises to trigger
-				if sr.strategy.Direction == DirectionLong {
-					trigDir = 2 // LONG: price falls to trigger
-				}
+			trigDir := 1 // SHORT: price rises to trigger
+			if sr.strategy.Direction == DirectionLong {
+				trigDir = 2 // LONG: price falls to trigger
+			}
+			if sr.strategy.EntryOrderType == "stop_market" && sr.levelTriggerAlreadyCrossed(ctx, trigDir, l.TargetPrice) {
+				// See levelTriggerAlreadyCrossed's doc comment — the market already passed
+				// this level's trigger, so a conditional order would be rejected outright;
+				// fill it at market instead of leaving it stuck "pending" forever.
+				sr.info(ctx, fmt.Sprintf("L%d: цена уже прошла уровень %.4f — выставляю маркет вместо стоп-ордера", l.LevelIdx, l.TargetPrice))
+				item.OrderType = "Market"
+			} else if sr.strategy.EntryOrderType == "stop_market" {
 				item.OrderType = "Market"
 				item.TriggerPrice = formattedPrice
 				item.TriggerDirection = trigDir
@@ -2112,6 +2118,29 @@ func (sr *StrategyRunner) placeLevelsBatch(ctx context.Context, indices []int) {
 
 // placeLevel places a single grid level on the exchange.
 // Must be called with sr.mu held.
+// levelTriggerAlreadyCrossed reports whether the current mark price has already passed
+// targetPrice in the direction trigDir expects to trigger (1 = rises to trigger, 2 =
+// falls to trigger) — every exchange rejects a conditional (trigger) order whose
+// condition is already satisfied at placement time (Binance: -2021 "Order would
+// immediately trigger"), so placing one in that state is pointless and, left unhandled,
+// leaves the level stuck "pending" forever, repeating the same rejection on every
+// subsequent restart-grid recalculation. Found live (2026-10-18, strategy NEARUSDT, acc
+// N2 Binance): a grid DCA entry level (Buy, falls-to-trigger) whose target price the
+// market had already fallen through by the time placement was attempted. Mirrors the
+// existing TP circuit breaker's philosophy (checkPositionAfterTPCircuitBreaker, below).
+// A GetMarkPrice failure returns false (not-crossed) — the normal conditional order is
+// attempted and its own REST error handling is the fallback, not a guess made here.
+func (sr *StrategyRunner) levelTriggerAlreadyCrossed(ctx context.Context, trigDir int, targetPrice float64) bool {
+	markPrice, err := sr.runner.Exchange().GetMarkPrice(ctx, sr.strategy.Category, sr.strategy.Symbol)
+	if err != nil || markPrice <= 0 {
+		return false
+	}
+	if trigDir == 1 {
+		return markPrice >= targetPrice
+	}
+	return markPrice <= targetPrice
+}
+
 func (sr *StrategyRunner) placeLevel(ctx context.Context, idx int) error {
 	l := &sr.levels[idx]
 	if l.ForceVirtual {
@@ -2132,11 +2161,22 @@ func (sr *StrategyRunner) placeLevel(ctx context.Context, idx int) error {
 		}
 	} else {
 		formattedPrice := trader.FormatPrice(l.TargetPrice, sr.instr.TickSize)
-		if sr.strategy.EntryOrderType == "stop_market" {
-			trigDir := 1 // SHORT: price rises to trigger
-			if sr.strategy.Direction == DirectionLong {
-				trigDir = 2 // LONG: price falls to trigger
+		trigDir := 1 // SHORT: price rises to trigger
+		if sr.strategy.Direction == DirectionLong {
+			trigDir = 2 // LONG: price falls to trigger
+		}
+		if sr.strategy.EntryOrderType == "stop_market" && sr.levelTriggerAlreadyCrossed(ctx, trigDir, l.TargetPrice) {
+			sr.info(ctx, fmt.Sprintf("L%d: цена уже прошла уровень %.4f — выставляю маркет вместо стоп-ордера", l.LevelIdx, l.TargetPrice))
+			req = trader.OrderRequest{
+				Symbol:      sr.strategy.Symbol,
+				Category:    sr.strategy.Category,
+				Side:        l.Side,
+				OrderType:   "Market",
+				Qty:         l.Qty,
+				PositionIdx: positionIdxForOpen(sr.strategy.HedgeMode, l.Side),
+				OrderLinkId: linkID,
 			}
+		} else if sr.strategy.EntryOrderType == "stop_market" {
 			req = trader.OrderRequest{
 				Symbol:           sr.strategy.Symbol,
 				Category:         sr.strategy.Category,

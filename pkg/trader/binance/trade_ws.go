@@ -357,6 +357,18 @@ func (ts *BinanceTradeStream) PlaceOrder(ctx context.Context, req trader.OrderRe
 	if err != nil {
 		return trader.OrderResult{}, err
 	}
+	// Sign-and-retry exactly once on Binance's TradFi-Perps agreement gate — see
+	// isBinanceAgreementError's doc comment (pkg/trader/binance/exchange.go). If the
+	// retry still errors (including -4411 again, e.g. signing itself failed), that
+	// second response falls through to the normal error handling below unchanged.
+	if resp.Error != nil && isBinanceAgreementError(resp.Error.Code) {
+		if signErr := signTradFiPerpsAgreement(ctx, ts.creds); signErr == nil {
+			resp, err = ts.sendReq(ctx, method, params)
+			if err != nil {
+				return trader.OrderResult{}, err
+			}
+		}
+	}
 	if resp.Error != nil {
 		if binanceWSConnDenied(resp.Error.Code) {
 			if binanceWSPermanentlyDenied(resp.Error.Code) {
@@ -436,7 +448,8 @@ func (ts *BinanceTradeStream) PlaceOrderBatch(ctx context.Context, req trader.Ba
 			defer wg.Done()
 			res, err := ts.PlaceOrder(ctx, trader.OrderRequest{
 				Symbol: it.Symbol, Side: it.Side, OrderType: it.OrderType, Qty: it.Qty,
-				Price: it.Price, TriggerPrice: it.TriggerPrice, TimeInForce: it.TimeInForce,
+				Price: it.Price, TriggerPrice: it.TriggerPrice, TriggerDirection: it.TriggerDirection,
+				TimeInForce: it.TimeInForce,
 				OrderFilter: it.OrderFilter, ReduceOnly: it.ReduceOnly,
 				PositionIdx: it.PositionIdx, OrderLinkId: it.OrderLinkId,
 			})

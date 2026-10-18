@@ -29,6 +29,7 @@ func TestEnsureMatrixStrategies_RespectsStrategyLimits(t *testing.T) {
 	}
 	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM bots WHERE id=$1", botID) })
 	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM strategies WHERE bot_id=$1", botID) })
+	stubBybitPublicInstrumentInfoOK(t)
 
 	whitelist := []string{"LIMA1USDT", "LIMA2USDT", "LIMA3USDT", "LIMA4USDT", "LIMA5USDT", "LIMA6USDT"}
 	cfg := botCfgJSON{StrategyType: "matrix"}
@@ -145,6 +146,7 @@ func TestEnsureMatrixStrategies_RepairsOneSidedPairBeforeNewOnes(t *testing.T) {
 	}
 	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM bots WHERE id=$1", botID) })
 	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM strategies WHERE bot_id=$1", botID) })
+	stubBybitPublicInstrumentInfoOK(t)
 
 	// ensureMatrixStrategies takes cfg directly as a parameter below (same pattern as the
 	// existing TestEnsureMatrixStrategies_RespectsStrategyLimits) — it does not re-read
@@ -199,6 +201,7 @@ func TestEnsureMatrixStrategies_RepairTakesPrioritySlotOverNewPair(t *testing.T)
 	}
 	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM bots WHERE id=$1", botID) })
 	t.Cleanup(func() { s.pool.Exec(ctx, "DELETE FROM strategies WHERE bot_id=$1", botID) })
+	stubBybitPublicInstrumentInfoOK(t)
 
 	// PRIOUSDT already has a short leg -> repair candidate, wants "long".
 	// max_long_strategies=1, so exactly one symbol's long leg can open this tick.

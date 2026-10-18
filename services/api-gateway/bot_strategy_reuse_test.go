@@ -6,11 +6,18 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	"sis/pkg/trader"
 )
 
 // TestCreateBotStrategy_ReusesStoppedRow: при наличии остановленной строки бота по
 // слоту createBotStrategy реактивирует ЕЁ (тот же id, status→active, конфиг перезаписан),
 // не создавая новую. Без stopped-строки — создаётся новая.
+//
+// Stubs bybitGetPublicInstrumentInfo (see instrument_handler_test.go's pattern) because
+// createBotStrategy now validates the symbol exists on the account's exchange before
+// creating/reusing a row (see computeBotStrategyCols's doc comment) — REUUSDT/OPENUSDT
+// are placeholder test symbols, not real Bybit listings.
 func TestCreateBotStrategy_ReusesStoppedRow(t *testing.T) {
 	s := newTestServer(t)
 	ctx := context.Background()
@@ -20,6 +27,12 @@ func TestCreateBotStrategy_ReusesStoppedRow(t *testing.T) {
 	t.Cleanup(func() {
 		s.pool.Exec(ctx, "DELETE FROM strategies WHERE bot_id=$1", botID)
 	})
+
+	origBybit := bybitGetPublicInstrumentInfo
+	t.Cleanup(func() { bybitGetPublicInstrumentInfo = origBybit })
+	bybitGetPublicInstrumentInfo = func(ctx context.Context, category, symbol string) (trader.PubInstrumentInfo, error) {
+		return trader.PubInstrumentInfo{TickSize: 0.1, QtyStep: 0.001, MinQty: 0.001, MinNotionalValue: 5}, nil
+	}
 
 	// Seed a stopped matrix leg for the slot (older row, low grid size).
 	var stoppedID string

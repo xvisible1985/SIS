@@ -8,6 +8,7 @@ import { getStrategyDefaults } from '../../admin-defaults/api';
 import { CoinMultiPicker, getAllSymbols, matchesPattern } from '../../../components/common/CoinMultiPicker';
 import { getInstrumentConstraints, type InstrumentConstraints } from '../../../api/strategies';
 import { useSelectedAccount } from '../../../contexts/AccountContext';
+import { listAccounts } from '../../../api/accounts';
 import { apiClient } from '../../../api/client';
 import type { Bot as BotType, CreateBotInput, StrategyConfig, MatrixLevel, MatrixEntryLevel } from '../types';
 import { BOT_KIND_META } from '../botKindMeta';
@@ -140,6 +141,20 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
   const { selectedAccountId } = useSelectedAccount();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showIconPicker, setShowIconPicker] = useState(false);
+  // Defaults to "bybit" until resolved — see BotForm.tsx's identical pattern.
+  const [accountExchange, setAccountExchange] = useState('bybit');
+
+  useEffect(() => {
+    let cancelled = false;
+    listAccounts()
+      .then(accs => {
+        if (cancelled) return;
+        const acc = accs.find(a => a.id === selectedAccountId);
+        setAccountExchange(acc?.exchange || 'bybit');
+      })
+      .catch(() => {});
+    return () => { cancelled = true };
+  }, [selectedAccountId]);
 
   useEffect(() => {
     const fn = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -149,10 +164,10 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
 
   // Загружаем все доступные символы при открытии вкладки Активация
   useEffect(() => {
-    if (outerTab === 'activation' && allSymbols.length === 0) {
-      getAllSymbols().then(setAllSymbols);
+    if (outerTab === 'activation') {
+      getAllSymbols(accountExchange === 'binance' ? 'binance' : 'bybit').then(setAllSymbols);
     }
-  }, [outerTab]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [outerTab, accountExchange]);
 
   // Итоговый список монет: применяем правила whitelist и blacklist (с поддержкой масок)
   const resolvedSymbols = useMemo(() => {
@@ -202,9 +217,9 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
 
   useEffect(() => {
     if (outerTab === 'strategy' && stratTab === 'entry' && config.symbol) {
-      getInstrumentConstraints(config.symbol).then(setInstrInfo).catch(() => {});
+      getInstrumentConstraints(config.symbol, config.category ?? 'linear', accountExchange).then(setInstrInfo).catch(() => {});
     }
-  }, [outerTab, stratTab, config.symbol]);
+  }, [outerTab, stratTab, config.symbol, accountExchange]);
 
   // Apply admin-configured defaults for new bots
   useEffect(() => {
@@ -930,7 +945,7 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
                 <div className="mb-2 text-[11px] text-slate-500">
                   Бот торгует только этими символами. Пусто — без ограничений.
                 </div>
-                <CoinMultiPicker values={whitelist} onChange={setWhitelist} takenSymbols={takenSymbols} />
+                <CoinMultiPicker values={whitelist} onChange={setWhitelist} takenSymbols={takenSymbols} exchange={accountExchange === 'binance' ? 'binance' : 'bybit'} />
               </div>
 
               {/* Blacklist */}
@@ -941,7 +956,7 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
                 <div className="mb-2 text-[11px] text-slate-500">
                   Эти символы исключены.
                 </div>
-                <CoinMultiPicker values={blacklist} onChange={setBlacklist} color="red" />
+                <CoinMultiPicker values={blacklist} onChange={setBlacklist} color="red" exchange={accountExchange === 'binance' ? 'binance' : 'bybit'} />
               </div>
 
               {/* Resolved symbols */}
