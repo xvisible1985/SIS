@@ -54,7 +54,6 @@ const IcZap      = (p: IP) => svg(p, <path d="M13 3L4 14h7l-1 7 9-11h-7l1-7z"/>)
 const IcExt      = (p: IP) => svg(p, <><path d="M14 4h6v6"/><path d="M20 4L10 14"/><path d="M19 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6"/></>)
 const IcInfo     = (p: IP) => svg(p, <><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></>)
 const IcX        = (p: IP) => svg(p, <path d="M6 6l12 12M18 6L6 18"/>)
-const IcFilter   = (p: IP) => svg(p, <path d="M3 5h18M6 12h12M10 19h4"/>)
 const IcWallet   = (p: IP) => svg(p, <><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M16 13h2"/><path d="M3 9h15a3 3 0 0 1 0 6H3"/></>)
 const IcDownload = (p: IP) => svg(p, <><path d="M12 4v12M6 12l6 6 6-6M5 20h14"/></>)
 
@@ -903,10 +902,10 @@ function AddKeyPanel({ onSubmit }: {
                 <button key={id} onClick={() => handleExchange(id)} style={{
                   display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
                   padding: '10px 4px',
-                  background: sel ? 'linear-gradient(180deg, rgba(91,140,255,.18), rgba(91,140,255,.04))' : 'rgba(255,255,255,.02)',
-                  border: `1px solid ${sel ? T.borderActv : T.border}`,
+                  background: sel ? `linear-gradient(180deg, ${e.color}2e, ${e.color}0a)` : 'rgba(255,255,255,.02)',
+                  border: `1px solid ${sel ? e.color + '4d' : T.border}`,
                   borderRadius: 10, cursor: 'pointer', color: sel ? T.text : T.body,
-                  boxShadow: sel ? 'inset 0 1px 0 rgba(255,255,255,.08), 0 6px 14px -10px rgba(91,140,255,.5)' : 'none',
+                  boxShadow: sel ? `inset 0 1px 0 rgba(255,255,255,.08), 0 6px 14px -10px ${e.color}80` : 'none',
                   transition: 'all .12s',
                 }}>
                   <ExBadge id={id} size={22} />
@@ -1095,7 +1094,7 @@ function HowTo({ exchange, naked = false }: { exchange: string; naked?: boolean 
 }
 
 /* ─── EmptyState ─────────────────────────────────────────────────────────── */
-function EmptyState() {
+function EmptyState({ onAddKey }: { onAddKey: () => void }) {
   return (
     <div style={{
       background: 'linear-gradient(180deg, rgba(91,140,255,.04) 0%, rgba(255,255,255,.01) 100%)',
@@ -1120,6 +1119,14 @@ function EmptyState() {
           После подключения платформа сможет читать ваш баланс и выставлять ордера. Все секреты шифруются на нашей стороне.
         </p>
       </div>
+      <button onClick={onAddKey} style={{
+        display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 18px 10px 14px',
+        background: 'linear-gradient(180deg, #4a7dff 0%, #3a67e6 100%)',
+        color: '#fff', border: 0, borderRadius: 9, fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+        boxShadow: '0 10px 24px -10px rgba(74,125,255,.6)',
+      }}>
+        <IcPlus s={13} w={2.2} /> Добавить ключ
+      </button>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
         {Object.entries(EXCHANGES).slice(0, 6).map(([id, e]) => (
           <div key={id} style={{
@@ -1138,10 +1145,11 @@ function EmptyState() {
 }
 
 /* ─── Toolbar ────────────────────────────────────────────────────────────── */
-function Toolbar({ search, setSearch, filter, setFilter, counts }: {
+function Toolbar({ search, setSearch, filter, setFilter, counts, onAddKey }: {
   search: string; setSearch: (v: string) => void
   filter: string; setFilter: (v: string) => void
   counts: Record<string, number>
+  onAddKey: () => void
 }) {
   const filters = [
     { id: 'all',    label: 'Все',               c: undefined },
@@ -1183,12 +1191,13 @@ function Toolbar({ search, setSearch, filter, setFilter, counts }: {
         ))}
       </div>
       <div style={{ flex: 1 }} />
-      <button style={{
-        display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 11px',
-        background: 'rgba(255,255,255,.04)', border: `1px solid ${T.border}`,
-        color: T.body, borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+      <button onClick={onAddKey} style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px 8px 11px',
+        background: 'linear-gradient(180deg, #4a7dff 0%, #3a67e6 100%)',
+        color: '#fff', border: 0, borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+        boxShadow: '0 6px 16px -8px rgba(74,125,255,.6)',
       }}>
-        <IcFilter s={12} c={T.dim} /> Биржа: все
+        <IcPlus s={12} w={2.2} /> Добавить ключ
       </button>
     </div>
   )
@@ -1278,7 +1287,7 @@ function PageHead({ count }: { count: number }) {
 }
 
 /* ─── Modals ─────────────────────────────────────────────────────────────── */
-function Modal({ open, onClose, children }: { open: boolean; onClose: () => void; children: React.ReactNode }) {
+function Modal({ open, onClose, children, width = 460 }: { open: boolean; onClose: () => void; children: React.ReactNode; width?: number }) {
   if (!open) return null
   return (
     <div style={{
@@ -1286,7 +1295,7 @@ function Modal({ open, onClose, children }: { open: boolean; onClose: () => void
       background: 'rgba(8,10,16,.65)', backdropFilter: 'blur(6px)', padding: 20,
     }} onClick={onClose}>
       <div onClick={e => e.stopPropagation()} style={{
-        width: '100%', maxWidth: 460,
+        width: '100%', maxWidth: width,
         background: T.panel, border: `1px solid ${T.borderHi}`, borderRadius: 16,
         boxShadow: '0 40px 80px -20px rgba(0,0,0,.7)',
         animation: 'modalIn .18s ease-out', overflow: 'hidden',
@@ -1490,6 +1499,7 @@ export function AccountsPage() {
   const [testing, setTesting]       = useState<string | null>(null)
   const [modal, setModal]           = useState<null | { type: 'delete' | 'rotate'; acc: ExchangeAccount }>(null)
   const [toast, setToast]           = useState<ToastData | null>(null)
+  const [addKeyOpen, setAddKeyOpen] = useState(false)
 
   const showToast = useCallback((t: ToastData) => { setToast(t) }, [])
 
@@ -1542,6 +1552,7 @@ export function AccountsPage() {
       })
       setAccounts(prev => [newAcc, ...prev])
       setExpandedId(newAcc.id)
+      setAddKeyOpen(false)
       window.dispatchEvent(new Event('accounts-changed'))
       showToast({
         kind: 'success',
@@ -1637,57 +1648,49 @@ export function AccountsPage() {
         </div>
       ) : (
         <>
-          <div style={{
-            display: 'grid', gridTemplateColumns: '420px minmax(0, 1fr)', gap: 24, alignItems: 'flex-start',
-          }}>
-            {/* left — add */}
-            <div style={{ position: 'sticky', top: 24 }}>
-              <AddKeyPanel onSubmit={handleAddKey} />
-            </div>
-
-            {/* right — stats + list */}
-            <div>
-              {accounts.length > 0 && (
-                <StatsStrip accounts={accounts} balances={balances} verifyData={verifyData} />
-              )}
-              {accounts.length === 0 ? (
-                <EmptyState />
-              ) : (
-                <>
-                  <Toolbar search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} counts={counts} />
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {visible.map(acc => (
-                      <KeyCard
-                        key={acc.id}
-                        acc={acc}
-                        balance={balances[acc.id] ?? null}
-                        verify={verifyData[acc.id] ?? null}
-                        latency={latencies[acc.id] ?? null}
-                        expanded={expandedId === acc.id}
-                        testing={testing === acc.id}
-                        onToggle={() => setExpandedId(expandedId === acc.id ? null : acc.id)}
-                        onTest={() => handleTest(acc)}
-                        onDelete={() => setModal({ type: 'delete', acc })}
-                        onRotate={() => setModal({ type: 'rotate', acc })}
-                        onPause={() => handleToggle(acc)}
-                        onSaveRisk={(values) => handleSaveRiskSettings(acc, values)}
-                      />
-                    ))}
-                    {visible.length === 0 && (
-                      <div style={{
-                        padding: '40px 20px', textAlign: 'center', color: T.dim, fontSize: 13,
-                        background: T.card, border: `1px dashed ${T.border}`, borderRadius: 12,
-                      }}>
-                        По фильтру ничего не найдено.
-                      </div>
-                    )}
+          {accounts.length > 0 && (
+            <StatsStrip accounts={accounts} balances={balances} verifyData={verifyData} />
+          )}
+          {accounts.length === 0 ? (
+            <EmptyState onAddKey={() => setAddKeyOpen(true)} />
+          ) : (
+            <>
+              <Toolbar search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} counts={counts} onAddKey={() => setAddKeyOpen(true)} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {visible.map(acc => (
+                  <KeyCard
+                    key={acc.id}
+                    acc={acc}
+                    balance={balances[acc.id] ?? null}
+                    verify={verifyData[acc.id] ?? null}
+                    latency={latencies[acc.id] ?? null}
+                    expanded={expandedId === acc.id}
+                    testing={testing === acc.id}
+                    onToggle={() => setExpandedId(expandedId === acc.id ? null : acc.id)}
+                    onTest={() => handleTest(acc)}
+                    onDelete={() => setModal({ type: 'delete', acc })}
+                    onRotate={() => setModal({ type: 'rotate', acc })}
+                    onPause={() => handleToggle(acc)}
+                    onSaveRisk={(values) => handleSaveRiskSettings(acc, values)}
+                  />
+                ))}
+                {visible.length === 0 && (
+                  <div style={{
+                    padding: '40px 20px', textAlign: 'center', color: T.dim, fontSize: 13,
+                    background: T.card, border: `1px dashed ${T.border}`, borderRadius: 12,
+                  }}>
+                    По фильтру ничего не найдено.
                   </div>
-                </>
-              )}
-            </div>
-          </div>
+                )}
+              </div>
+            </>
+          )}
         </>
       )}
+
+      <Modal open={addKeyOpen} onClose={() => setAddKeyOpen(false)} width={600}>
+        <AddKeyPanel onSubmit={handleAddKey} />
+      </Modal>
 
       <Modal open={!!modal} onClose={() => setModal(null)}>
         {modal?.type === 'delete' && (
@@ -1708,9 +1711,6 @@ export function AccountsPage() {
         @keyframes modalIn { from{opacity:0;transform:scale(.96) translateY(8px)} to{opacity:1;transform:none} }
         .fadein { animation: fadeIn .18s ease-out; }
         input::placeholder { color: #5b6479; }
-        @media (max-width: 1100px) {
-          .ak-layout { grid-template-columns: 1fr !important; }
-        }
       `}</style>
     </div>
   )
