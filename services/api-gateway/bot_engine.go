@@ -1665,6 +1665,16 @@ var cleanupStoppedStrategiesMaxWait = 10 * time.Minute
 // real ICXUSDT position with no strategy left to manage its TP/SL. Past the grace period
 // this now logs a persistent error-level alert instead of deleting, so a human can
 // investigate — the row stays until the position genuinely closes.
+//
+// A strategy is likewise NEVER deleted while it has an ended cycle with no matching
+// trade_history row yet. closeCycle's own RecordStrategyTrade write (and ClosedPnlSyncer's
+// fallback attribution) both depend on the strategies row still existing to resolve
+// strategy_id/bot_id — once this DELETE runs, that context is gone for good, and the close
+// permanently falls back to an unattributed source='manual' row with no strategy or bot
+// linked. Found via a full account audit, 2026-10-18: a bot that stops and deletes one
+// strategy per symbol right after its TP closes raced ahead of its own trade recorder on
+// dozens of closes. Same grace-period/escalation pattern as the open-position guard above —
+// this is a timing race the recorder should win within seconds, not a permanent block.
 func (s *Server) cleanupStoppedStrategies(ctx context.Context, b botEngineRow, stopped []stoppedStrategy, openPositions map[string]bool) {
 	for _, st := range stopped {
 		posKey := st.symbol + ":" + st.direction
@@ -1679,6 +1689,37 @@ func (s *Server) cleanupStoppedStrategies(ctx context.Context, b botEngineRow, s
 			} else {
 				s.logBotEvent(ctx, b.id,
 					fmt.Sprintf("Очистка: стратегия %s — позиция всё ещё открыта спустя %v, требуется ручная проверка (стратегия НЕ удаляется)", st.symbol, cleanupStoppedStrategiesMaxWait),
+					"error", "strategy")
+			}
+			continue
+		}
+		var tradeHistoryGapExists bool
+		if err := s.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM strategy_cycles sc
+				WHERE sc.strategy_id = $1 AND sc.ended_at IS NOT NULL
+				  AND NOT EXISTS (
+					SELECT 1 FROM trade_history th
+					WHERE th.strategy_id = sc.strategy_id AND th.cycle_num = sc.cycle_num AND th.is_partial = false
+				  )
+			)`, st.id,
+		).Scan(&tradeHistoryGapExists); err != nil {
+			s.logBotEvent(ctx, b.id,
+				fmt.Sprintf("Очистка: ошибка проверки истории сделок для %s: %v", st.symbol, err),
+				"error", "strategy")
+			continue
+		}
+		if tradeHistoryGapExists {
+			now := time.Now()
+			firstSeen, _ := s.cleanupWaiters.LoadOrStore(st.id, now)
+			waited := now.Sub(firstSeen.(time.Time))
+			if waited < cleanupStoppedStrategiesMaxWait {
+				s.logBotEvent(ctx, b.id,
+					fmt.Sprintf("Очистка: стратегия %s ожидает записи в историю сделок", st.symbol),
+					"info", "strategy")
+			} else {
+				s.logBotEvent(ctx, b.id,
+					fmt.Sprintf("Очистка: стратегия %s — запись в историю сделок отсутствует спустя %v, требуется ручная проверка (стратегия НЕ удаляется)", st.symbol, cleanupStoppedStrategiesMaxWait),
 					"error", "strategy")
 			}
 			continue
