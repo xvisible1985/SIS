@@ -963,6 +963,128 @@ func TestBinanceExchange_FetchRecentClosedPnl_FindsSymbolWithNoOpenPosition(t *t
 	}
 }
 
+// Regression (2026-10-17): FetchRecentClosedPnl used to append rows in window-processing
+// order (oldest window first) with no final sort, so the P&L tab showed oldest-first —
+// the opposite of Bybit's own convention, which the frontend relies on verbatim (no
+// client-side sort). This fixture spans two symbols with very different close times to
+// also catch Go's randomized map-iteration order (which symbol gets fetched "first"
+// within a window) accidentally determining the result instead of actual close time.
+func TestBinanceExchange_FetchRecentClosedPnl_ReturnsNewestFirst(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/fapi/v3/positionRisk"):
+			_, _ = w.Write([]byte(`[]`))
+		case strings.Contains(r.URL.Path, "/fapi/v1/income"):
+			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","incomeType":"REALIZED_PNL","income":"5","time":1000},{"symbol":"ETHUSDT","incomeType":"REALIZED_PNL","income":"5","time":9000}]`))
+		case strings.Contains(r.URL.Path, "/fapi/v1/userTrades"):
+			switch r.URL.Query().Get("symbol") {
+			case "BTCUSDT":
+				// Closes at time=1000 — the OLDER of the two.
+				_, _ = w.Write([]byte(`[{"id":1,"orderId":100,"symbol":"BTCUSDT","side":"SELL","positionSide":"LONG","price":"61000","qty":"0.1","realizedPnl":"5","time":1000}]`))
+			case "ETHUSDT":
+				// Closes at time=9000 — the NEWER of the two.
+				_, _ = w.Write([]byte(`[{"id":2,"orderId":200,"symbol":"ETHUSDT","side":"SELL","positionSide":"LONG","price":"3000","qty":"1","realizedPnl":"5","time":9000}]`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		case strings.Contains(r.URL.Path, "/fapi/v1/order"):
+			_, _ = w.Write([]byte(`{"orderId":1,"clientOrderId":"x"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	got, err := ex.FetchRecentClosedPnl(context.Background(), "linear", time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("FetchRecentClosedPnl: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want 2", len(got))
+	}
+	if got[0].Symbol != "ETHUSDT" || got[1].Symbol != "BTCUSDT" {
+		t.Errorf("order = [%s, %s], want [ETHUSDT, BTCUSDT] (newest close first)", got[0].Symbol, got[1].Symbol)
+	}
+}
+
+// Regression (2026-10-17): closingFillsToClosedPnl always paid one REST round-trip per
+// distinct closing order to resolve clientOrderId, even when the caller (the P&L tab
+// handler) already has the same mapping cheaply available from our own DB. This test
+// pins that a resolver returning found=true is used instead of hitting /fapi/v1/order at
+// all, and that a resolver miss (found=false) still falls back to REST — never silently
+// drops the row or returns a wrong/empty link id.
+func TestBinanceExchange_FetchClosedPnlForSymbol_UsesOrderLinkIDResolverBeforeREST(t *testing.T) {
+	var hitOrderEndpoint int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/fapi/v1/userTrades"):
+			_, _ = w.Write([]byte(`[{"id":1,"orderId":100,"symbol":"BTCUSDT","side":"SELL","positionSide":"LONG","price":"61000","qty":"0.1","realizedPnl":"5","time":1000}]`))
+		case strings.Contains(r.URL.Path, "/fapi/v1/order"):
+			hitOrderEndpoint++
+			_, _ = w.Write([]byte(`{"orderId":100,"clientOrderId":"REST-FALLBACK"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	ex.SetOrderLinkIDResolver(func(ctx context.Context, symbol string, orderId int64) (string, bool) {
+		if orderId == 100 {
+			return "FROM-DB", true
+		}
+		return "", false
+	})
+	got, err := ex.FetchClosedPnlForSymbol(context.Background(), "linear", "BTCUSDT", 50)
+	if err != nil {
+		t.Fatalf("FetchClosedPnlForSymbol: %v", err)
+	}
+	if len(got) != 1 || got[0].OrderLinkId != "FROM-DB" {
+		t.Fatalf("got %+v, want one row with OrderLinkId=FROM-DB", got)
+	}
+	if hitOrderEndpoint != 0 {
+		t.Errorf("hit /fapi/v1/order %d times, want 0 — a resolver hit must skip REST entirely", hitOrderEndpoint)
+	}
+}
+
+func TestBinanceExchange_FetchClosedPnlForSymbol_FallsBackToRESTWhenResolverMisses(t *testing.T) {
+	var hitOrderEndpoint int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/fapi/v1/userTrades"):
+			_, _ = w.Write([]byte(`[{"id":1,"orderId":100,"symbol":"BTCUSDT","side":"SELL","positionSide":"LONG","price":"61000","qty":"0.1","realizedPnl":"5","time":1000}]`))
+		case strings.Contains(r.URL.Path, "/fapi/v1/order"):
+			hitOrderEndpoint++
+			_, _ = w.Write([]byte(`{"orderId":100,"clientOrderId":"REST-FALLBACK"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	withMockBinanceBase(t, srv)
+
+	ex := NewBinanceExchange(testCreds())
+	ex.SetOrderLinkIDResolver(func(ctx context.Context, symbol string, orderId int64) (string, bool) {
+		return "", false // never found — e.g. an order outside the DB's preloaded window
+	})
+	got, err := ex.FetchClosedPnlForSymbol(context.Background(), "linear", "BTCUSDT", 50)
+	if err != nil {
+		t.Fatalf("FetchClosedPnlForSymbol: %v", err)
+	}
+	if len(got) != 1 || got[0].OrderLinkId != "REST-FALLBACK" {
+		t.Fatalf("got %+v, want one row with OrderLinkId=REST-FALLBACK (resolver miss must still fall back to REST)", got)
+	}
+	if hitOrderEndpoint != 1 {
+		t.Errorf("hit /fapi/v1/order %d times, want 1", hitOrderEndpoint)
+	}
+}
+
 func TestBinanceExchange_FetchClosedPnlForSymbol_ReturnsPartialResultsOnLookupFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

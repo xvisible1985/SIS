@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	traderPkg "sis/pkg/trader"
+	"sis/pkg/trader/binance"
 )
 
 type traderOrderRow struct {
@@ -210,7 +214,88 @@ func (s *Server) ListTraderExecutions(w http.ResponseWriter, r *http.Request) {
 // cursor-paginated closed-pnl endpoint to mirror, so there's no natural "page size" to
 // ask for; a fixed lookback keeps a single request bounded instead of walking back
 // indefinitely.
-const closedPnlTabLookback = 30 * 24 * time.Hour
+//
+// 7 days (not 30, as it originally was) — found live (2026-10-17): a 30-day lookback
+// meant BinanceExchange.FetchRecentClosedPnl's forEachWindowSince walked ~5 separate
+// ≤7-day REST windows every single tab load (Binance caps userTrades'/income's own
+// startTime..endTime span at 7 days, so a wider lookback can't be done in fewer windows
+// — see forEachWindowSince's doc comment), each with its own /fapi/v1/income call plus
+// one /fapi/v1/userTrades call per discovered symbol. At 7 days the window loop always
+// runs exactly once, cutting that fan-out roughly 5x on top of the concurrency and
+// caching fixes below.
+const closedPnlTabLookback = 7 * 24 * time.Hour
+
+// closedPnlCacheTTL: see closedPnlCache's doc comment.
+const closedPnlCacheTTL = 30 * time.Second
+
+type closedPnlCacheEntry struct {
+	list      []traderPkg.ClosedPnl
+	expiresAt time.Time
+}
+
+// closedPnlCache is a short-lived, process-local cache for GetClosedPnl's response,
+// keyed by "accountID|category|cursor". Added alongside the lookback/concurrency/
+// resolver fixes above — found live (2026-10-17) alongside them: the P&L tab fully
+// unmounts and remounts on every tab switch (TerminalPage.tsx's conditional render),
+// with no cache anywhere (unlike positions/orders, which usePositionsWs.ts caches via
+// WS + localStorage), so even after the Binance fan-out above is cut down, toggling the
+// tab back and forth within a few seconds still re-pays the whole REST round-trip (or,
+// for Bybit, at least one) every time for no reason. 30s is short enough that genuinely
+// new data (a trade closing) shows up quickly on the NEXT tab open, long enough to
+// absorb "switched tabs and switched right back" within the same session.
+var (
+	closedPnlCacheMu sync.Mutex
+	closedPnlCache   = map[string]closedPnlCacheEntry{}
+)
+
+func closedPnlCacheKey(accountID, category, cursor string) string {
+	return accountID + "|" + category + "|" + cursor
+}
+
+func getClosedPnlCache(key string) ([]traderPkg.ClosedPnl, bool) {
+	closedPnlCacheMu.Lock()
+	defer closedPnlCacheMu.Unlock()
+	e, ok := closedPnlCache[key]
+	if !ok || time.Now().After(e.expiresAt) {
+		return nil, false
+	}
+	return e.list, true
+}
+
+func setClosedPnlCache(key string, list []traderPkg.ClosedPnl) {
+	closedPnlCacheMu.Lock()
+	defer closedPnlCacheMu.Unlock()
+	closedPnlCache[key] = closedPnlCacheEntry{list: list, expiresAt: time.Now().Add(closedPnlCacheTTL)}
+}
+
+// loadOrderLinkIDMap bulk-preloads this account's own order_id -> order_link_id mapping
+// from trader_orders (one query, not one per closing order) for orders created at or
+// after `since` — see BinanceExchange.SetOrderLinkIDResolver's doc comment for why. Rows
+// with a non-numeric order_id (shouldn't happen for Binance, defensive only) are
+// skipped, not treated as an error.
+func (s *Server) loadOrderLinkIDMap(ctx context.Context, accountID string, since time.Time) (map[int64]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT order_id, order_link_id FROM trader_orders
+		 WHERE account_id=$1 AND order_id IS NOT NULL AND created_at >= $2`,
+		accountID, since,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[int64]string)
+	for rows.Next() {
+		var orderIDStr, linkID string
+		if err := rows.Scan(&orderIDStr, &linkID); err != nil {
+			return nil, err
+		}
+		if id, err := strconv.ParseInt(orderIDStr, 10, 64); err == nil {
+			out[id] = linkID
+		}
+	}
+	return out, rows.Err()
+}
 
 func (s *Server) GetClosedPnl(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromCtx(r.Context())
@@ -242,17 +327,40 @@ func (s *Server) GetClosedPnl(w http.ResponseWriter, r *http.Request) {
 	// more" button simply never appears for a Binance account, a known, deliberate
 	// simplification rather than building out Binance-side pagination to match a model
 	// its own API doesn't share.
+	cacheKey := closedPnlCacheKey(accountID, category, cursor)
+	if cached, ok := getClosedPnlCache(cacheKey); ok {
+		writeJSON(w, http.StatusOK, map[string]any{"list": cached, "nextCursor": ""})
+		return
+	}
+
 	if exchangeName == "binance" {
 		ex, err := s.loadExchange(r, accountID, userID)
 		if err != nil {
 			writeError(w, http.StatusForbidden, err.Error())
 			return
 		}
-		list, err := ex.FetchRecentClosedPnl(r.Context(), category, time.Now().Add(-closedPnlTabLookback))
+		since := time.Now().Add(-closedPnlTabLookback)
+		// See BinanceExchange.SetOrderLinkIDResolver's doc comment: trades a single
+		// bulk DB query for the up-to-dozens of per-closing-order REST calls
+		// FetchRecentClosedPnl would otherwise make. Best-effort — a failed preload
+		// just means every row falls back to the REST lookup, same as before this
+		// fix, not a request failure.
+		if be, ok := ex.(*binance.BinanceExchange); ok {
+			if linkIDs, err := s.loadOrderLinkIDMap(r.Context(), accountID, since); err != nil {
+				log.Printf("trader: preload order_link_id map account=%s: %v", accountID, err)
+			} else {
+				be.SetOrderLinkIDResolver(func(_ context.Context, _ string, orderId int64) (string, bool) {
+					id, ok := linkIDs[orderId]
+					return id, ok
+				})
+			}
+		}
+		list, err := ex.FetchRecentClosedPnl(r.Context(), category, since)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
 		}
+		setClosedPnlCache(cacheKey, list)
 		writeJSON(w, http.StatusOK, map[string]any{"list": list, "nextCursor": ""})
 		return
 	}
@@ -267,6 +375,7 @@ func (s *Server) GetClosedPnl(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	setClosedPnlCache(cacheKey, list)
 	writeJSON(w, http.StatusOK, map[string]any{"list": list, "nextCursor": nextCursor})
 }
 

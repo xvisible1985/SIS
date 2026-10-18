@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"sis/pkg/trader"
@@ -34,6 +35,11 @@ type binanceWsOrderClient interface {
 type BinanceExchange struct {
 	creds trader.Credentials
 	ws    binanceWsOrderClient // nil until SetTradeStream is called — PlaceOrder/CancelOrder/batch fall straight through to REST
+
+	// orderLinkIDResolver, if set, is tried before falling back to a REST call
+	// (lookupClientOrderId) when closingFillsToClosedPnl needs a closing order's
+	// clientOrderId — see SetOrderLinkIDResolver's doc comment.
+	orderLinkIDResolver func(ctx context.Context, symbol string, orderId int64) (string, bool)
 }
 
 // NewBinanceExchange builds a BinanceExchange for one account's credentials. ws stays
@@ -65,6 +71,26 @@ func (e *BinanceExchange) setWsOrderClientForTest(ws binanceWsOrderClient) {
 // actually reached, without exposing the (unexported) ws field itself.
 func (e *BinanceExchange) HasTradeStream() bool {
 	return e.ws != nil
+}
+
+// SetOrderLinkIDResolver wires a fast, caller-supplied lookup for a closing order's
+// clientOrderId (our own orderLinkId), tried before closingFillsToClosedPnl's REST
+// fallback (lookupClientOrderId, one call per distinct closing order). Left nil by
+// default (e.g. for the background closed_pnl_syncer's own BinanceExchange instances),
+// which keeps today's exact behavior — always REST, always correct, since that syncer's
+// whole job is accurate attribution and it isn't on a user-facing latency budget.
+//
+// The P&L tab handler (services/api-gateway/trader_history_handler.go) is the one
+// caller that wires this in: a single request can discover dozens of closing orders,
+// each needing its own clientOrderId REST round-trip — but the SAME mapping (order_id
+// → order_link_id) for every order WE ever placed already lives in trader_orders, so
+// the handler preloads that table once (one bulk DB query) and resolves from an
+// in-memory map instead. A resolver returning (_, false) — an order not found in that
+// window, e.g. placed outside the DB's retention or not by us at all — falls through to
+// the REST lookup exactly as if no resolver were set, so correctness never degrades,
+// only speed improves for the common case.
+func (e *BinanceExchange) SetOrderLinkIDResolver(resolver func(ctx context.Context, symbol string, orderId int64) (string, bool)) {
+	e.orderLinkIDResolver = resolver
 }
 
 func (e *BinanceExchange) GetMarkPrice(ctx context.Context, category, symbol string) (float64, error) {
@@ -1132,7 +1158,10 @@ func isClosingFill(side, positionSide string) bool {
 // limit has purged it) does NOT abort the whole batch — that row is skipped and the
 // first error encountered is returned alongside every row that DID succeed, so a caller
 // keeps partial progress instead of losing already-aggregated rows for unrelated orders.
-func closingFillsToClosedPnl(ctx context.Context, creds trader.Credentials, symbol string, trades []binanceUserTrade) ([]trader.ClosedPnl, error) {
+//
+// A method (not a free function) so it can consult e.orderLinkIDResolver before falling
+// back to the REST lookup — see SetOrderLinkIDResolver's doc comment.
+func (e *BinanceExchange) closingFillsToClosedPnl(ctx context.Context, symbol string, trades []binanceUserTrade) ([]trader.ClosedPnl, error) {
 	sorted := make([]binanceUserTrade, len(trades))
 	copy(sorted, trades)
 	sort.Slice(sorted, func(i, j int) bool {
@@ -1211,7 +1240,7 @@ func closingFillsToClosedPnl(ctx context.Context, creds trader.Credentials, symb
 	var firstErr error
 	for _, orderId := range order {
 		a := byOrder[orderId]
-		linkId, err := lookupClientOrderId(ctx, creds, symbol, orderId)
+		linkId, err := e.resolveOrderLinkID(ctx, symbol, orderId)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -1262,6 +1291,18 @@ func closingFillsToClosedPnl(ctx context.Context, creds trader.Credentials, symb
 	return out, firstErr
 }
 
+// resolveOrderLinkID tries e.orderLinkIDResolver first (if set), falling back to the
+// REST lookup (lookupClientOrderId) on a miss or when no resolver is set — see
+// SetOrderLinkIDResolver's doc comment for why both paths exist.
+func (e *BinanceExchange) resolveOrderLinkID(ctx context.Context, symbol string, orderId int64) (string, error) {
+	if e.orderLinkIDResolver != nil {
+		if id, ok := e.orderLinkIDResolver(ctx, symbol, orderId); ok {
+			return id, nil
+		}
+	}
+	return lookupClientOrderId(ctx, e.creds, symbol, orderId)
+}
+
 // lookupClientOrderId fetches one order's clientOrderId by orderId — userTrades doesn't
 // carry it, but pkg/strategy's attribution (ParseStrategyLinkID) needs it. One call per
 // distinct closing order in the queried window, not per fill.
@@ -1299,7 +1340,7 @@ func (e *BinanceExchange) FetchClosedPnlForSymbol(ctx context.Context, category,
 	if err := json.Unmarshal(data, &trades); err != nil {
 		return nil, err
 	}
-	return closingFillsToClosedPnl(ctx, e.creds, symbol, trades)
+	return e.closingFillsToClosedPnl(ctx, symbol, trades)
 }
 
 // binanceIncomeRow is one row of GET /fapi/v1/income.
@@ -1404,35 +1445,76 @@ func (e *BinanceExchange) forEachWindowSince(ctx context.Context, since time.Tim
 	}
 }
 
+// fetchRecentClosedPnlConcurrency bounds how many symbols' userTrades fetches (each
+// potentially followed by its own closingFillsToClosedPnl, which may itself issue more
+// REST calls — see resolveOrderLinkID) run at once. Found live (2026-10-17): a Binance
+// P&L tab load was doing its per-symbol/per-window REST calls fully sequentially,
+// visibly slow on every single tab open (no caching anywhere in the path — see
+// services/api-gateway/trader_history_handler.go's own cache). Bounded rather than
+// unbounded to stay well under Binance's per-IP rate limit and not monopolize the
+// account's 2-proxy pool against whatever else is using it concurrently.
+const fetchRecentClosedPnlConcurrency = 5
+
 func (e *BinanceExchange) FetchRecentClosedPnl(ctx context.Context, category string, since time.Time) ([]trader.ClosedPnl, error) {
+	var mu sync.Mutex
 	var all []trader.ClosedPnl
 	var firstErr error
 	setErr := func(err error) {
-		if err != nil && firstErr == nil {
+		if err == nil {
+			return
+		}
+		mu.Lock()
+		if firstErr == nil {
 			firstErr = err
 		}
+		mu.Unlock()
 	}
+
+	sem := make(chan struct{}, fetchRecentClosedPnlConcurrency)
+	var wg sync.WaitGroup
 	e.forEachWindowSince(ctx, since, setErr, func(windowStart, windowEnd time.Time, symbols map[string]bool) {
 		for sym := range symbols {
-			data, err := doSignedGET(ctx, e.creds, "/fapi/v1/userTrades", url.Values{
-				"symbol":    {sym},
-				"startTime": {strconv.FormatInt(windowStart.UnixMilli(), 10)},
-				"endTime":   {strconv.FormatInt(windowEnd.UnixMilli(), 10)},
-				"limit":     {"1000"},
-			})
-			if err != nil {
+			sym := sym
+			wg.Add(1)
+			sem <- struct{}{}
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+				data, err := doSignedGET(ctx, e.creds, "/fapi/v1/userTrades", url.Values{
+					"symbol":    {sym},
+					"startTime": {strconv.FormatInt(windowStart.UnixMilli(), 10)},
+					"endTime":   {strconv.FormatInt(windowEnd.UnixMilli(), 10)},
+					"limit":     {"1000"},
+				})
+				if err != nil {
+					setErr(err)
+					return
+				}
+				var trades []binanceUserTrade
+				if err := json.Unmarshal(data, &trades); err != nil {
+					setErr(err)
+					return
+				}
+				rows, err := e.closingFillsToClosedPnl(ctx, sym, trades)
 				setErr(err)
-				continue
-			}
-			var trades []binanceUserTrade
-			if err := json.Unmarshal(data, &trades); err != nil {
-				setErr(err)
-				continue
-			}
-			rows, err := closingFillsToClosedPnl(ctx, e.creds, sym, trades)
-			setErr(err)
-			all = append(all, rows...)
+				mu.Lock()
+				all = append(all, rows...)
+				mu.Unlock()
+			}()
 		}
+	})
+	wg.Wait()
+
+	// Newest first, matching Bybit's own /v5/position/closed-pnl convention (which the
+	// frontend's PnlTable.tsx renders as-is, with no client-side sort of its own) —
+	// forEachWindowSince walks windows oldest-to-newest and symbols within a window in
+	// Go's randomized map-iteration order, so without this the tab showed rows
+	// oldest-first with non-deterministic interleaving between symbols. Found live
+	// 2026-10-17 alongside the slow-load issue above.
+	sort.Slice(all, func(i, j int) bool {
+		ti, _ := strconv.ParseInt(all[i].UpdatedTime, 10, 64)
+		tj, _ := strconv.ParseInt(all[j].UpdatedTime, 10, 64)
+		return ti > tj
 	})
 	return all, firstErr
 }
