@@ -242,7 +242,7 @@ func (s *ClosedPnlSyncer) reconcileMissingTradeHistory(ctx context.Context, a cl
 		       s.symbol, s.category, s.direction, s.bot_id, s.owner_id
 		FROM strategy_cycles sc
 		JOIN strategies s ON s.id = sc.strategy_id
-		LEFT JOIN trade_history th ON th.strategy_id = sc.strategy_id AND th.cycle_num = sc.cycle_num
+		LEFT JOIN trade_history th ON th.strategy_id = sc.strategy_id AND th.cycle_num = sc.cycle_num AND th.is_partial = false
 		WHERE s.account_id = $1
 		  AND sc.result IN ('tp', 'sl')
 		  AND sc.ended_at < $2
@@ -401,7 +401,7 @@ func (s *ClosedPnlSyncer) writeGapTradeHistory(ctx context.Context, a closedPnlA
 			$14, $15, $16, $17,
 			$18, $19, $20, $21
 		)
-		ON CONFLICT (strategy_id, cycle_num) WHERE strategy_id IS NOT NULL
+		ON CONFLICT (strategy_id, cycle_num) WHERE strategy_id IS NOT NULL AND is_partial = false
 		DO NOTHING`,
 		g.strategyID, g.botID, a.id, g.ownerID,
 		g.symbol, g.category, g.direction, g.cycleNum, g.result,

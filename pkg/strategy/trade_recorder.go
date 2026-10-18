@@ -300,6 +300,105 @@ func accumulateMatrixLevelSLPnlNow(ctx context.Context, pool *pgxpool.Pool, in M
 	AccumulateHedgeSessionPnl(ctx, pool, in.StrategyID, netPnl)
 }
 
+// MatrixLevelSLRecordInput carries the data needed to write one partial trade_history row
+// for a per-level matrix SL close. Captured synchronously in handleMatrixSLFill, which has
+// complete, unambiguous in-process context (the strategy that owns this level, its bot).
+type MatrixLevelSLRecordInput struct {
+	Strategy   Strategy
+	CycleNum   int
+	OrderID    string    // the filled SL order's id — dedup key via idx_trade_history_bybit_close
+	EntryPrice float64   // the level's own fill price
+	ExitPrice  float64   // the SL trigger/fill price
+	Qty        float64
+	VolumeUSDT float64
+	OpenedAt   time.Time // when the level's entry order was placed
+	GrossPnl   float64   // already computed synchronously by the caller
+}
+
+// RecordMatrixLevelSLTrade writes one partial trade_history row for a per-level matrix SL
+// close, attributed to the owning strategy/bot from the start.
+//
+// Before this existed, a per-level SL close relied on ClosedPnlSyncer recognizing it after
+// the fact — via the closing order's OrderLinkId (unreliable: Bybit does not always echo a
+// stop order's OrderLinkId back once it triggers and converts to a market fill) or, failing
+// that, a match against strategy_levels.sl_order_id (also unreliable: that field gets
+// overwritten whenever a level's SL is replaced/repriced, or the level itself is reused for
+// a later refill — so it only reflects the MOST RECENT SL placement, not necessarily the one
+// that actually closed). When both fallbacks missed, the close fell all the way through to
+// ClosedPnlSyncer's final "manual trade" bucket — attributed to no strategy and no bot at
+// all, even though it was unambiguously bot-placed. Found live via a full account audit,
+// 2026-10-18: dozens of SIS-account level-SL closes recorded as source='manual'.
+//
+// Idempotent via the existing (account_id, bybit_close_order_id) unique index — a replayed
+// call, or a ClosedPnlSyncer poll that independently rediscovers the same close, is a safe
+// no-op. is_partial=true keeps this row outside idx_trade_history_strategy_cycle's
+// one-row-per-cycle scope — a single matrix cycle can have many per-level SL closes before it
+// finally ends via its global TP/SL.
+//
+// Must be called as a goroutine: it waits for the exchange to record the closing order's fee
+// executions before querying trader_executions, mirroring AccumulateMatrixLevelSLPnl's own
+// fee-lookup pattern (and does not replace it — both run independently off the same fill).
+func RecordMatrixLevelSLTrade(pool *pgxpool.Pool, in MatrixLevelSLRecordInput) {
+	time.Sleep(8 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	recordMatrixLevelSLTradeNow(ctx, pool, in)
+}
+
+// recordMatrixLevelSLTradeNow does the actual fee lookup + insert with no delay — split out
+// from RecordMatrixLevelSLTrade so it's directly testable without an 8s sleep per test case
+// (mirrors accumulateMatrixLevelSLPnlNow's own split above).
+func recordMatrixLevelSLTradeNow(ctx context.Context, pool *pgxpool.Pool, in MatrixLevelSLRecordInput) {
+	var fees float64
+	if in.OrderID != "" {
+		if err := pool.QueryRow(ctx, `
+			SELECT COALESCE(SUM(ABS(exec_fee)), 0)
+			FROM trader_executions
+			WHERE account_id = $1 AND order_id = $2 AND exec_type = 'Trade'`,
+			in.Strategy.AccountID, in.OrderID,
+		).Scan(&fees); err != nil {
+			log.Printf("recordMatrixLevelSLTradeNow: fee lookup for strategy %s order %s: %v", in.Strategy.ID, in.OrderID, err)
+		}
+	}
+	netPnl := in.GrossPnl - fees
+	pnlPct := 0.0
+	if in.VolumeUSDT > 0 {
+		pnlPct = in.GrossPnl / in.VolumeUSDT * 100
+	}
+
+	var oid *string
+	if in.OrderID != "" {
+		oid = &in.OrderID
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO trade_history (
+			strategy_id, bot_id, account_id, owner_id,
+			symbol, category, direction, cycle_num, result, source, is_partial,
+			avg_entry, exit_price, qty, volume_usdt,
+			pnl, pnl_pct, opened_at, closed_at,
+			fees, funding, net_pnl, bybit_close_order_id
+		) VALUES (
+			$1, $2, $3, $4,
+			$5, $6, $7, $8, 'sl', 'strategy', true,
+			$9, $10, $11, $12,
+			$13, $14, $15, NOW(),
+			$16, 0, $17, $18
+		)
+		ON CONFLICT (account_id, bybit_close_order_id) WHERE bybit_close_order_id IS NOT NULL
+		DO NOTHING`,
+		in.Strategy.ID, in.Strategy.BotID, in.Strategy.AccountID, in.Strategy.OwnerID,
+		in.Strategy.Symbol, in.Strategy.Category, string(in.Strategy.Direction), in.CycleNum,
+		in.EntryPrice, in.ExitPrice, in.Qty, in.VolumeUSDT,
+		in.GrossPnl, pnlPct, in.OpenedAt,
+		fees, netPnl, oid,
+	); err != nil {
+		log.Printf("recordMatrixLevelSLTradeNow [%s cy%d]: %v", in.Strategy.Symbol, in.CycleNum, err)
+		return
+	}
+	log.Printf("recordMatrixLevelSLTradeNow [%s cy%d]: записано — gross=%.4f fees=%.4f net=%.4f (order=%s)",
+		in.Strategy.Symbol, in.CycleNum, in.GrossPnl, fees, netPnl, in.OrderID)
+}
+
 // FeesAndFundingInRange sums Trade/Funding execution fees for account+symbol within
 // [from, to]. Deliberately does NOT filter by position_idx: Bybit's execution-list REST
 // endpoint (synced into trader_executions by pkg/trader.Syncer) does not reliably report
@@ -545,7 +644,7 @@ func RecordStrategyTrade(pool *pgxpool.Pool, ex trader.Exchange, in TradeRecordI
 			$14, $15, $16, NOW(),
 			$17, $18, $19, $20
 		)
-		ON CONFLICT (strategy_id, cycle_num) WHERE strategy_id IS NOT NULL
+		ON CONFLICT (strategy_id, cycle_num) WHERE strategy_id IS NOT NULL AND is_partial = false
 		DO UPDATE SET
 			result               = EXCLUDED.result,
 			exit_price           = EXCLUDED.exit_price,

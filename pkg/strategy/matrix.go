@@ -1903,13 +1903,14 @@ func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string
 		slTrigger = filledPrice
 	}
 
-	var levelPnl float64
-	if closed.FilledPrice > 0 && closed.SizeUSDT > 0 {
-		qty := closed.SizeUSDT / closed.FilledPrice
+	var levelPnl, levelQty float64
+	hasFill := closed.FilledPrice > 0 && closed.SizeUSDT > 0
+	if hasFill {
+		levelQty = closed.SizeUSDT / closed.FilledPrice
 		if sr.strategy.Direction == DirectionShort {
-			levelPnl = (closed.FilledPrice - slTrigger) * qty
+			levelPnl = (closed.FilledPrice - slTrigger) * levelQty
 		} else {
-			levelPnl = (slTrigger - closed.FilledPrice) * qty
+			levelPnl = (slTrigger - closed.FilledPrice) * levelQty
 		}
 	}
 	sr.runner.pool.Exec(ctx, //nolint:errcheck
@@ -1921,6 +1922,22 @@ func (sr *StrategyRunner) handleMatrixSLFill(ctx context.Context, levelID string
 	go AccumulateMatrixLevelSLPnl(sr.runner.pool, MatrixLevelSLAccumulateInput{
 		StrategyID: sr.strategy.ID, AccountID: sr.strategy.AccountID, OrderID: slOrderID, GrossPnl: levelPnl,
 	})
+	if hasFill {
+		// Attribute this partial close to the owning strategy/bot from the start — see
+		// RecordMatrixLevelSLTrade's doc comment for why this can no longer rely on
+		// ClosedPnlSyncer reconstructing attribution after the fact.
+		go RecordMatrixLevelSLTrade(sr.runner.pool, MatrixLevelSLRecordInput{
+			Strategy:   sr.strategy,
+			CycleNum:   sr.cycle.CycleNum,
+			OrderID:    slOrderID,
+			EntryPrice: closed.FilledPrice,
+			ExitPrice:  slTrigger,
+			Qty:        levelQty,
+			VolumeUSDT: closed.SizeUSDT,
+			OpenedAt:   closed.PlacedAt,
+			GrossPnl:   levelPnl,
+		})
+	}
 	sr.warn(ctx, fmt.Sprintf("Matrix SL сработал %s @ %.4f",
 		slotLabel(closed.Slot), slTrigger))
 
