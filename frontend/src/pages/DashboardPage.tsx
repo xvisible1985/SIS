@@ -1186,6 +1186,26 @@ export function DashboardPage() {
   }, [period, loadDash])
   useEffect(() => { loadAccount(selectedAccountId) }, [selectedAccountId, loadAccount])
 
+  // Switching accounts (not the initial mount/auto-select, which the effect above and
+  // the mount effect already cover) must not leave the PREVIOUS account's data/equity/
+  // positions on screen while the new account's fetch is in flight — that's a visible
+  // flash of another account's numbers. Re-show the existing loading spinner instead,
+  // hiding stale data until the new account's data has actually landed. Runs alongside
+  // (not instead of) the two effects above — they already trigger the refetch; this one
+  // only manages the loading-state wrapper around it.
+  const accountSwitchMounted = useRef(false)
+  useEffect(() => {
+    if (!accountSwitchMounted.current) { accountSwitchMounted.current = true; return }
+    if (!selectedAccountId) return
+    let cancelled = false
+    setLoading(true)
+    Promise.all([loadDash(period), loadAccount(selectedAccountId)]).finally(() => {
+      if (!cancelled) setLoading(false)
+    })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only react to account changes; period/loadDash/loadAccount are read fresh, not change triggers here
+  }, [selectedAccountId])
+
   const handleRefresh = async () => {
     setRefreshing(true)
     await Promise.all([loadDash(period), loadAccount(selectedAccountId)])
