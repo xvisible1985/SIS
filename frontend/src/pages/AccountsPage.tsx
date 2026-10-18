@@ -1129,17 +1129,24 @@ function EmptyState({ onAddKey }: { onAddKey: () => void }) {
       </button>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
         {Object.entries(EXCHANGES).slice(0, 6).map(([id, e]) => (
-          <div key={id} style={{
+          <div key={id} title={e.supported ? undefined : 'Скоро будет доступно'} style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,
             padding: '5px 10px 5px 5px', background: 'rgba(255,255,255,.03)',
-            border: `1px solid ${T.border}`, borderRadius: 999, fontSize: 11, color: T.body, fontWeight: 500,
+            border: `1px solid ${T.border}`, borderRadius: 999, fontSize: 11,
+            color: e.supported ? T.body : T.faint, fontWeight: 500,
+            opacity: e.supported ? 1 : 0.6,
           }}>
-            <ExBadge id={id} size={16} />
+            <span style={{ display: 'inline-flex', filter: e.supported ? 'none' : 'grayscale(1)' }}>
+              <ExBadge id={id} size={16} />
+            </span>
             {e.name}
           </div>
         ))}
         <span style={{ fontSize: 11, color: T.dim }}>+ ещё 2</span>
       </div>
+      <p style={{ margin: 0, fontSize: 11, color: T.faint }}>
+        Bybit и Binance уже доступны — остальные биржи скоро будут добавлены
+      </p>
     </div>
   )
 }
