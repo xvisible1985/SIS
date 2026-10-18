@@ -120,6 +120,7 @@ export function BotsPage() {
   }, [mine, editBot?.id])
   const [kindPickerOpen, setKindPickerOpen] = useState(false);
   const [selectedKind, setSelectedKind] = useState<BotKind>('signal');
+  const [deployError, setDeployError] = useState<string | null>(null);
 
   if (loading) {
     return (
@@ -161,6 +162,22 @@ export function BotsPage() {
     setSelectedKind('signal');
   };
 
+  // action()'s own try/finally has no catch — a failed deploy (e.g. 409 "already deployed")
+  // used to reject silently with no feedback at all, which is exactly what made the bug
+  // report ("пытаюсь добавить — не добавляет") hard to diagnose from the user's side.
+  const handleCloneTpl = (tplId: string) => {
+    setDeployError(null);
+    action({ type: 'deploy', botId: tplId }).catch((err: unknown) => {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setDeployError(
+        status === 409
+          ? 'Этот бот уже задеплоен на выбранный аккаунт'
+          : msg || 'Не удалось добавить бота — попробуйте ещё раз'
+      );
+    });
+  };
+
   const handleFormSubmit = async (data: CreateBotInput): Promise<{ warnings?: string[] } | void> => {
     if (formMode === 'create') {
       await action({ type: 'create', data });
@@ -190,8 +207,21 @@ export function BotsPage() {
         onEditBot={handleEditBot}
         onDeleteBot={(id) => action({ type: 'delete', botId: id })}
         onRequestApproval={(id) => action({ type: 'request-approval', botId: id })}
-        onCloneTpl={(tplId) => action({ type: 'deploy', botId: tplId })}
+        onCloneTpl={handleCloneTpl}
       />
+
+      {deployError && (
+        <div className="fixed bottom-6 left-1/2 z-[200] flex -translate-x-1/2 items-center gap-3 rounded-xl border border-rose-400/30 bg-[#161922] px-4 py-3 text-sm text-rose-200 shadow-[0_20px_40px_-10px_rgba(0,0,0,.6)]">
+          {deployError}
+          <button
+            type="button"
+            onClick={() => setDeployError(null)}
+            className="text-rose-300/70 hover:text-rose-200"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {kindPickerOpen && (
         <BotTypePickerModal

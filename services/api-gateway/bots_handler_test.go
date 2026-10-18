@@ -190,6 +190,96 @@ func TestDeployBot(t *testing.T) {
 	}
 }
 
+// TestDeployBot_SameTemplateToSecondAccount_Succeeds reproduces the bug reported live
+// (2026-10-18): a user who already deployed a bot template onto one of their accounts could
+// never deploy the SAME template onto a second account of theirs — the duplicate check was
+// scoped by (owner_id, source_bot_id) only, with no account_id in the comparison, so it
+// treated "already deployed anywhere" as "already deployed here". Confirmed against real
+// data: a user with the template deployed on their "Semera" bybit account got 409 trying to
+// deploy the same template onto their separate "N2 Binance" account.
+func TestDeployBot_SameTemplateToSecondAccount_Succeeds(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	authorID := createAdminTestUser(t, s, "bots_2acct_author@example.com", "pass1234", false)
+	deployerID := createAdminTestUser(t, s, "bots_2acct_deployer@example.com", "pass1234", false)
+	defer s.pool.Exec(ctx, "DELETE FROM users WHERE id=$1", authorID)
+	defer s.pool.Exec(ctx, "DELETE FROM users WHERE id=$1", deployerID)
+
+	srcID := createTestBot(t, s, authorID, "Deploy Source Multi-Account", true)
+	defer s.pool.Exec(ctx, "DELETE FROM bots WHERE id=$1", srcID)
+
+	firstAcctID := createTestAccountLabeled(t, s, deployerID, "first-acct")
+	secondAcctID := createTestAccountLabeled(t, s, deployerID, "second-acct")
+
+	deploy := func(acctID string) (*httptest.ResponseRecorder, map[string]interface{}) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/bots/"+srcID+"/deploy", bytes.NewBufferString(`{"accountId":"`+acctID+`"}`))
+		req = withUserID(req, deployerID)
+		req = addChiParams(req, map[string]string{"id": srcID})
+		s.DeployBot(rec, req)
+		var bot map[string]interface{}
+		json.NewDecoder(rec.Body).Decode(&bot)
+		return rec, bot
+	}
+
+	rec1, bot1 := deploy(firstAcctID)
+	if rec1.Code != http.StatusCreated {
+		t.Fatalf("first deploy: got %d: %v", rec1.Code, bot1)
+	}
+	defer s.pool.Exec(ctx, "DELETE FROM bots WHERE id=$1", bot1["id"])
+
+	rec2, bot2 := deploy(secondAcctID)
+	if rec2.Code != http.StatusCreated {
+		t.Fatalf("deploying the same template to a SECOND account must succeed, got %d: %v", rec2.Code, bot2)
+	}
+	defer s.pool.Exec(ctx, "DELETE FROM bots WHERE id=$1", bot2["id"])
+
+	if bot2["accountId"] != secondAcctID {
+		t.Errorf("second deploy accountId = %v, want %v", bot2["accountId"], secondAcctID)
+	}
+	if bot2["id"] == bot1["id"] {
+		t.Errorf("second deploy must create a distinct bot row, got the same id %v", bot2["id"])
+	}
+}
+
+// TestDeployBot_SameTemplateToSameAccountTwice_Conflict verifies the legitimate duplicate
+// check still works: deploying the same template to the SAME account a second time is
+// rejected with 409, exactly as before this fix.
+func TestDeployBot_SameTemplateToSameAccountTwice_Conflict(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	authorID := createAdminTestUser(t, s, "bots_dupacct_author@example.com", "pass1234", false)
+	deployerID := createAdminTestUser(t, s, "bots_dupacct_deployer@example.com", "pass1234", false)
+	defer s.pool.Exec(ctx, "DELETE FROM users WHERE id=$1", authorID)
+	defer s.pool.Exec(ctx, "DELETE FROM users WHERE id=$1", deployerID)
+
+	srcID := createTestBot(t, s, authorID, "Deploy Source Dup", true)
+	defer s.pool.Exec(ctx, "DELETE FROM bots WHERE id=$1", srcID)
+	acctID := createTestAccountLabeled(t, s, deployerID, "dup-acct")
+
+	deployOnce := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/bots/"+srcID+"/deploy", bytes.NewBufferString(`{"accountId":"`+acctID+`"}`))
+		req = withUserID(req, deployerID)
+		req = addChiParams(req, map[string]string{"id": srcID})
+		s.DeployBot(rec, req)
+		return rec
+	}
+
+	rec1 := deployOnce()
+	if rec1.Code != http.StatusCreated {
+		t.Fatalf("first deploy: got %d: %s", rec1.Code, rec1.Body.String())
+	}
+	var bot1 map[string]interface{}
+	json.NewDecoder(rec1.Body).Decode(&bot1)
+	defer s.pool.Exec(ctx, "DELETE FROM bots WHERE id=$1", bot1["id"])
+
+	rec2 := deployOnce()
+	if rec2.Code != http.StatusConflict {
+		t.Errorf("second deploy to the SAME account = %d, want %d (409 already deployed)", rec2.Code, http.StatusConflict)
+	}
+}
+
 func TestForkBot(t *testing.T) {
 	s := newTestServer(t)
 	authorID := createAdminTestUser(t, s, "bots_fauthor@example.com", "pass1234", false)

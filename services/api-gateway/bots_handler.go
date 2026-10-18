@@ -1037,11 +1037,14 @@ func (s *Server) DeployBot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prevent deploying the same template twice (even if the subscription was later edited/forked).
+	// Prevent deploying the same template twice onto the SAME account (even if the
+	// subscription was later edited/forked). Scoped by account_id, not just owner — a user
+	// legitimately runs the same bot template on multiple accounts (e.g. two bybit accounts
+	// plus a binance one), and this check used to block every account after the first.
 	var existingID string
 	dupErr := s.pool.QueryRow(ctx,
-		`SELECT id FROM bots WHERE owner_id = $1 AND source_bot_id = $2 LIMIT 1`,
-		callerID, sourceID,
+		`SELECT id FROM bots WHERE owner_id = $1 AND source_bot_id = $2 AND account_id = $3 LIMIT 1`,
+		callerID, sourceID, req.AccountID,
 	).Scan(&existingID)
 	if dupErr == nil {
 		writeError(w, http.StatusConflict, "already deployed")
