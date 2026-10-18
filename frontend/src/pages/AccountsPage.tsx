@@ -1636,7 +1636,7 @@ export function AccountsPage() {
   }, [accounts, verifyData, search, filter])
 
   return (
-    <div style={{ color: T.body, fontFamily: "'Inter', system-ui, sans-serif" }}>
+    <div style={{ color: T.body, fontFamily: "'Inter', system-ui, sans-serif", maxWidth: 1280, margin: '0 auto' }}>
       <PageHead count={accounts.length} />
 
       {loading ? (
