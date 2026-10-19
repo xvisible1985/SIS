@@ -9,7 +9,8 @@ import { getInstrumentConstraints, type InstrumentConstraints } from '../../../a
 import { apiClient } from '../../../api/client';
 import { useSelectedAccount } from '../../../contexts/AccountContext';
 import { listAccounts } from '../../../api/accounts';
-import type { Bot as BotType, CreateBotInput, StrategyConfig, MatrixLevel, MatrixEntryLevel } from '../types';
+import { useAuth } from '../../../hooks/useAuth';
+import type { Bot as BotType, CreateBotInput, StrategyConfig, MatrixLevel, MatrixEntryLevel, AlsThreshold } from '../types';
 import { BOT_KIND_META } from '../botKindMeta';
 import { ResetStatsConfirmModal } from './ResetStatsConfirmModal';
 import { SettingsSyncConfirmModal } from './SettingsSyncConfirmModal';
@@ -105,6 +106,19 @@ const DEFAULT_MATRIX_ENTRY: MatrixEntryLevel = {
   price_step_pct: null, size_pct: 10, stop_pct: -5.0, stop_cond_pct: -2.0, stop_replace_pct: 1.0, tp_pct: 2.0,
 };
 
+// ALS trigger_type: mirrors the first two ACT_TYPES entries (last-order% / avg-entry%)
+// — ALS deliberately has no PNL$/ROI% trigger kinds (see design spec, "Price-distance
+// thresholds, not ROI").
+const ALS_TRIGGER_TYPES = ['От последнего ордера', 'От ТВХ Main'];
+
+// Worked example straight from the design spec's "target-based hedge sizing" section:
+// -10%→30%, -30%→50%, -60%→80% of main's current live volume.
+const DEFAULT_ALS_THRESHOLDS: AlsThreshold[] = [
+  { trigger_type: 1, trigger_pct: -10, target_hedge_pct: 30 },
+  { trigger_type: 1, trigger_pct: -30, target_hedge_pct: 50 },
+  { trigger_type: 1, trigger_pct: -60, target_hedge_pct: 80 },
+];
+
 function defaultStratConfig(bot?: BotType): StrategyConfig {
   const s = bot?.strategyConfig ?? {};
   return {
@@ -112,7 +126,7 @@ function defaultStratConfig(bot?: BotType): StrategyConfig {
     symbol:                  s.symbol                  ?? 'BTCUSDT',
     category:                s.category                ?? 'linear',
     direction:               s.direction               ?? 'both',
-    strategy_type:           'matrix',
+    strategy_type:           s.strategy_type           ?? 'matrix',
     entry_order_type:        s.entry_order_type        ?? 'limit',
     leverage:                s.leverage                ?? 5,
     margin_type:             s.margin_type             ?? 'isolated',
@@ -134,6 +148,15 @@ function defaultStratConfig(bot?: BotType): StrategyConfig {
     relative_slots:          s.relative_slots          ?? false,
     size_as_main:            s.size_as_main            ?? false,
     hedge_tp_main_mode:      s.hedge_tp_main_mode      ?? 'cancel',
+    // ALS
+    als_thresholds:          s.als_thresholds          ?? DEFAULT_ALS_THRESHOLDS,
+    unsafe_hedge_min_pct:    s.unsafe_hedge_min_pct    ?? 0,
+    unsafe_hedge_max_pct:    s.unsafe_hedge_max_pct    ?? 80,
+    stop_market_size_k:      s.stop_market_size_k      ?? 1,
+    tp_control_enabled:      s.tp_control_enabled      ?? false,
+    initial_stop_be_pct:     s.initial_stop_be_pct     ?? null,
+    als_stop_cond_pct:       s.als_stop_cond_pct       ?? 3,
+    als_stop_replace_pct:    s.als_stop_replace_pct    ?? 1,
   };
 }
 
@@ -163,6 +186,7 @@ function compressImage(file: File, maxPx = 300, quality = 0.82): Promise<string>
 export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function HedgeBotForm(
   { bot, onSubmit, onClose, mode = 'user', takenSymbols, embedded = false, hideFilters = false }, ref
 ) {
+  const { isAdmin } = useAuth();
   const [outerTab, setOuterTab] = useState<OuterTab>(embedded ? 'activation' : 'basic');
   const [stratTab, setStratTab] = useState<StratTab>('entry');
 
@@ -344,6 +368,26 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
     if (!file) return;
     try { setAvatarUrl(await compressImage(file)); } catch {}
     e.target.value = '';
+  }
+
+  // ── ALS threshold-table helpers ──────────────────────────────────────────────
+  const alsThresholds = config.als_thresholds ?? DEFAULT_ALS_THRESHOLDS;
+
+  function addAlsThreshold() {
+    const last = alsThresholds[alsThresholds.length - 1];
+    const nv: AlsThreshold = {
+      trigger_type: last?.trigger_type ?? 1,
+      trigger_pct: last ? +(last.trigger_pct - 10).toFixed(1) : -10,
+      target_hedge_pct: last ? +(last.target_hedge_pct + 20).toFixed(1) : 30,
+    };
+    patch({ als_thresholds: [...alsThresholds, nv] });
+  }
+  function removeAlsThreshold(idx: number) {
+    if (alsThresholds.length <= 1) return;
+    patch({ als_thresholds: alsThresholds.filter((_, i) => i !== idx) });
+  }
+  function updateAlsThreshold(idx: number, field: keyof AlsThreshold, value: number) {
+    patch({ als_thresholds: alsThresholds.map((t, i) => i === idx ? { ...t, [field]: value } : t) });
   }
 
   // ── Matrix helpers ───────────────────────────────────────────────────────────
