@@ -433,6 +433,14 @@ func (s *Server) CreateStrategy(w http.ResponseWriter, r *http.Request) {
 
 	req.applyDefaults()
 
+	// ALS is admin-only while the feature is being rolled out — the client-side button
+	// is disabled for non-admins (HedgeBotForm.tsx), but the server is the actual
+	// enforcement point, same "don't trust the client" posture as the symbol check below.
+	if req.StrategyType == "als" && !s.isAdmin(r.Context(), userID) {
+		writeError(w, http.StatusForbidden, "тип стратегии ALS доступен только администраторам")
+		return
+	}
+
 	// Reject a symbol that doesn't exist on the account's actual exchange before
 	// persisting — found live (2026-10-18): a Bybit-only symbol (PLAYSOUTUSDT, a real
 	// Bybit listing with no Binance equivalent) was accepted here for a Binance account
@@ -511,6 +519,12 @@ func (s *Server) UpdateStrategy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.applyDefaults()
+
+	// ALS is admin-only — same enforcement as CreateStrategy (see its comment).
+	if req.StrategyType == "als" && !s.isAdmin(r.Context(), userID) {
+		writeError(w, http.StatusForbidden, "тип стратегии ALS доступен только администраторам")
+		return
+	}
 
 	// Prevent updating into a duplicate (same account+symbol+direction already exists).
 	var curAccID, curSymbol, curDirection string

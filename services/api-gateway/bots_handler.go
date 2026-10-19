@@ -285,6 +285,18 @@ func (s *Server) CreateBot(w http.ResponseWriter, r *http.Request) {
 	if len(req.StrategyConfig) == 0 {
 		req.StrategyConfig = json.RawMessage("{}")
 	}
+
+	// ALS is admin-only while the feature is being rolled out — the client-side button
+	// is disabled for non-admins (HedgeBotForm.tsx), but the server is the actual
+	// enforcement point. strategyConfig is a free-form JSON blob (see botCfgJSON), so
+	// decode just enough of it to read strategy_type.
+	var newCfgCheck botCfgJSON
+	if json.Unmarshal(req.StrategyConfig, &newCfgCheck) == nil &&
+		newCfgCheck.StrategyType == "als" && !s.isAdmin(ctx, callerID) {
+		writeError(w, http.StatusForbidden, "тип стратегии ALS доступен только администраторам")
+		return
+	}
+
 	if req.SymbolWhitelist == nil {
 		req.SymbolWhitelist = []string{}
 	}
@@ -536,6 +548,13 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 	var haveBotCfgDiff bool
 	if rawCfg, changingCfg := body["strategyConfig"]; changingCfg && !isOfficial {
 		if json.Unmarshal(rawCfg, &newBotCfg) == nil {
+			// ALS is admin-only (see CreateBot's comment) — blocks both switching a bot
+			// into ALS and editing other fields of a bot that's already ALS, so a non-admin
+			// can never hold an active ALS config regardless of how it got there.
+			if newBotCfg.StrategyType == "als" && !s.isAdmin(ctx, callerID) {
+				writeError(w, http.StatusForbidden, "тип стратегии ALS доступен только администраторам")
+				return
+			}
 			var oldStratCfgBytes []byte
 			if s.pool.QueryRow(ctx, `SELECT strategy_config FROM bots WHERE id = $1`, botID).Scan(&oldStratCfgBytes) == nil &&
 				json.Unmarshal(oldStratCfgBytes, &oldBotCfg) == nil {
