@@ -3,6 +3,8 @@ package strategy
 import (
 	"context"
 	"fmt"
+
+	"sis/pkg/trader"
 )
 
 // alsThresholdPrice computes the absolute price at which one AlsThreshold row fires.
@@ -134,4 +136,124 @@ func (sr *StrategyRunner) handleAlsLevelFill(ctx context.Context, levelID string
 // levels (mirrors matrixCancelPerLevelSLs) — called on stop/restart. Stub — see the next
 // plan. Must be called with sr.mu held.
 func (sr *StrategyRunner) alsCancelPerLevelSLs(ctx context.Context) {
+}
+
+// alsMainPositionIdx returns the positionIdx of the MAIN position opposite this ALS
+// hedge strategy's own direction — mirrors effectiveDeposit's identical mapping
+// (cycle.go): hedge long → main is short (2), hedge short → main is long (1).
+func alsMainPositionIdx(hedgeDir Direction) int {
+	if hedgeDir == DirectionLong {
+		return 2
+	}
+	return 1
+}
+
+// alsOwnPositionIdx returns this ALS strategy's OWN positionIdx (the hedge side),
+// mirroring positionIdxForOpen's convention used throughout cycle.go/matrix.go.
+func alsOwnPositionIdx(hedgeDir Direction, hedgeMode bool) int {
+	return positionIdxForOpen(hedgeMode, alsSideForDirection(hedgeDir))
+}
+
+func alsSideForDirection(dir Direction) string {
+	if dir == DirectionShort {
+		return "Sell"
+	}
+	return "Buy"
+}
+
+// alsPriceTick evaluates every pending threshold level against currentPrice, placing a
+// top-up order for any that have crossed. Must be called with sr.mu held.
+func (sr *StrategyRunner) alsPriceTick(ctx context.Context, currentPrice float64) {
+	if sr.cycle == nil || currentPrice <= 0 {
+		return
+	}
+	avgEntry := sr.runner.GetPositionAvgEntry(sr.strategy.Symbol, alsMainPositionIdx(sr.strategy.Direction))
+	if avgEntry <= 0 {
+		return // main position not yet known — nothing to measure thresholds against
+	}
+	mainUsdt := sr.effectiveDeposit(currentPrice)
+	if mainUsdt <= 0 {
+		return
+	}
+	ownIdx := alsOwnPositionIdx(sr.strategy.Direction, sr.strategy.HedgeMode)
+	alreadyOpenCoins := sr.runner.GetPositionSizeCoins(sr.strategy.Symbol, ownIdx)
+	alreadyOpenUsdt := alreadyOpenCoins * currentPrice
+
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Status != LevelPending {
+			continue
+		}
+		if l.LevelIdx-1 >= len(sr.strategy.AlsThresholds) {
+			continue
+		}
+		th := sr.strategy.AlsThresholds[l.LevelIdx-1]
+		var lastOrderPrice float64
+		for j := i - 1; j >= 0; j-- {
+			if sr.levels[j].Status == LevelFilled || sr.levels[j].Status == LevelPlaced {
+				lastOrderPrice = sr.levels[j].FilledPrice
+				if lastOrderPrice == 0 {
+					lastOrderPrice = sr.levels[j].TargetPrice
+				}
+				break
+			}
+		}
+		if lastOrderPrice == 0 {
+			lastOrderPrice = avgEntry
+		}
+		triggerPrice := alsThresholdPrice(sr.strategy.Direction, th.TriggerType, th.TriggerPct, avgEntry, lastOrderPrice)
+		if !alsThresholdCrossed(sr.strategy.Direction, currentPrice, triggerPrice) {
+			continue
+		}
+		topUpUsdt := alsTopUpUsdt(th.TargetHedgePct, mainUsdt, alreadyOpenUsdt)
+		if topUpUsdt <= 0 {
+			// Target already met by existing volume — mark this level placed with no
+			// order so it doesn't keep re-evaluating every tick.
+			l.Status = LevelPlaced
+			l.TargetPrice = triggerPrice
+			continue
+		}
+		sr.alsPlaceTopUp(ctx, l, triggerPrice, topUpUsdt, currentPrice)
+		alreadyOpenUsdt += topUpUsdt // so a later level in the SAME tick sees this one's contribution
+	}
+}
+
+// alsPlaceTopUp places one threshold level's top-up order at market and marks it placed
+// on success. Must be called with sr.mu held.
+func (sr *StrategyRunner) alsPlaceTopUp(ctx context.Context, l *GridLevel, triggerPrice, topUpUsdt, currentPrice float64) {
+	qty := trader.FormatQty(topUpUsdt/currentPrice, sr.instr.QtyStep, sr.instr.MinQty)
+	if qty == "0" || qty == "" {
+		sr.warn(ctx, fmt.Sprintf("ALS L%d: объём округляется до нуля (%.2f USDT @ %.4f) — пропущено", l.LevelIdx, topUpUsdt, currentPrice))
+		return
+	}
+	side := alsSideForDirection(sr.strategy.Direction)
+	linkID := fmt.Sprintf("SIS_STR-%s-als-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx)
+	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
+	sr.runner.RegisterOrder(linkID, ref)
+
+	result, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
+		Symbol:      sr.strategy.Symbol,
+		Category:    sr.strategy.Category,
+		Side:        side,
+		OrderType:   "Market",
+		Qty:         qty,
+		PositionIdx: alsOwnPositionIdx(sr.strategy.Direction, sr.strategy.HedgeMode),
+		OrderLinkId: linkID,
+	})
+	if err != nil {
+		sr.runner.UnregisterOrder(linkID)
+		sr.errlog(ctx, fmt.Sprintf("ALS L%d: ошибка довыставления хеджа: %v", l.LevelIdx, err))
+		return
+	}
+
+	l.Status = LevelPlaced
+	l.TargetPrice = triggerPrice
+	l.ExchangeOrderID = result.OrderId
+	l.ExchangeLinkID = linkID
+	sr.runner.RegisterOrder(result.OrderId, ref)
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategy_levels SET status='placed', exchange_order_id=$1, exchange_link_id=$2, target_price=$3, placed_at=NOW(), qty=$4 WHERE id=$5`,
+		result.OrderId, linkID, triggerPrice, qty, l.ID,
+	)
+	sr.info(ctx, fmt.Sprintf("ALS L%d: довыставлен хедж %.2f USDT (%s qty=%s) @ рынок", l.LevelIdx, topUpUsdt, side, qty))
 }
