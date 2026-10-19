@@ -343,9 +343,12 @@ func (sr *StrategyRunner) loadOrStart(ctx context.Context) {
 		return
 	}
 
-	if sr.strategy.StrategyType == "matrix" {
+	switch sr.strategy.StrategyType {
+	case "matrix":
 		sr.resumeMatrixCycle(ctx)
-	} else {
+	case "als":
+		sr.resumeAlsCycle(ctx)
+	default:
 		sr.resumeGridCycle(ctx)
 	}
 }
@@ -2701,11 +2704,15 @@ func (sr *StrategyRunner) updateTP(ctx context.Context) error {
 // For matrix strategies it calls matrixUpdateTP; for grid strategies it calls updateTP.
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) updateTPByType(ctx context.Context) error {
-	if sr.strategy.StrategyType == "matrix" {
+	switch sr.strategy.StrategyType {
+	case "matrix":
 		sr.matrixUpdateTP(ctx)
 		return nil
+	case "als":
+		return nil
+	default:
+		return sr.updateTP(ctx)
 	}
-	return sr.updateTP(ctx)
 }
 
 func tpParams(dir Direction, avg, tpPct float64) (side string, price float64) {
@@ -2741,8 +2748,8 @@ func slParams(dir Direction, avg, slPct float64) (side string, triggerPrice floa
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) updateSL(ctx context.Context) error {
 	defer sr.setOp("update-sl")()
-	if sr.strategy.StrategyType == "matrix" {
-		return nil // Matrix manages SL per-level via matrixPlacePerLevelSL
+	if sr.strategy.StrategyType == "matrix" || sr.strategy.StrategyType == "als" {
+		return nil // Matrix/ALS manage SL per-level via their own mechanisms
 	}
 	// SL suppressed by active hedge — do not place/re-place SL.
 	if sr.strategy.HedgeSlSuppressed {
@@ -3268,18 +3275,25 @@ func (sr *StrategyRunner) cancelPlacedLevels(ctx context.Context) {
 // startCycleByType starts the correct cycle type: startMatrixCycle for matrix, startCycle for grid.
 // Must be called with startMu held and WITHOUT sr.mu held.
 func (sr *StrategyRunner) startCycleByType(ctx context.Context) error {
-	if sr.strategy.StrategyType == "matrix" {
+	switch sr.strategy.StrategyType {
+	case "matrix":
 		return sr.startMatrixCycle(ctx)
+	case "als":
+		return sr.startAlsCycle(ctx)
+	default:
+		return sr.startCycle(ctx)
 	}
-	return sr.startCycle(ctx)
 }
 
 // resumeCycleAfterSignalByType resumes the correct cycle type after signal fires.
 // Must be called with startMu held and WITHOUT sr.mu held.
 func (sr *StrategyRunner) resumeCycleAfterSignalByType(ctx context.Context) {
-	if sr.strategy.StrategyType == "matrix" {
+	switch sr.strategy.StrategyType {
+	case "matrix":
 		sr.resumeMatrixAfterSignal(ctx)
-	} else {
+	case "als":
+		sr.resumeAlsAfterSignal(ctx)
+	default:
 		sr.resumeGridAfterSignal(ctx)
 	}
 }
@@ -4083,9 +4097,12 @@ func (sr *StrategyRunner) restartCycle(ctx context.Context) {
 	sr.startMu.Lock()
 	defer sr.startMu.Unlock()
 	sr.clearManualAlert(ctx)
-	if sr.strategy.StrategyType == "matrix" {
+	switch sr.strategy.StrategyType {
+	case "matrix":
 		sr.restartMatrixCycle(ctx)
-	} else {
+	case "als":
+		sr.restartAlsCycle(ctx)
+	default:
 		sr.restartGridCycle(ctx)
 	}
 }
