@@ -1,6 +1,9 @@
 package strategy
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // alsThresholdPrice computes the absolute price at which one AlsThreshold row fires.
 // dir is the ALS strategy's OWN (hedge) direction — sr.strategy.Direction, never the
@@ -59,7 +62,50 @@ func alsTopUpUsdt(targetHedgePct, mainUsdt, alreadyOpenUsdt float64) float64 {
 // docs/superpowers/plans/2026-10-18-als-hedge-engine-core.md for the real implementation
 // (will create the strategy_cycles row and seed strategy_levels from AlsThresholds).
 // Must be called with startMu held and WITHOUT sr.mu held — mirrors startCycle/startMatrixCycle.
+// startAlsCycle creates a new strategy_cycles row and seeds one pending strategy_levels
+// row per sr.strategy.AlsThresholds entry — target_price is left at 0 here and computed
+// fresh on every alsPriceTick call (Task 3) from the main position's LIVE avg entry, not
+// fixed at cycle-start time, since the design requires each threshold's trigger point to
+// track the main position's entry as it moves (e.g. via its own DCA).
+// Must be called with startMu held and WITHOUT sr.mu held — mirrors startCycle/startMatrixCycle.
 func (sr *StrategyRunner) startAlsCycle(ctx context.Context) error {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+
+	var cycleID string
+	var cycleNum int
+	err := sr.runner.pool.QueryRow(ctx,
+		`INSERT INTO strategy_cycles (strategy_id, cycle_num, started_at)
+		 VALUES ($1, COALESCE((SELECT MAX(cycle_num)+1 FROM strategy_cycles WHERE strategy_id=$1), 1), NOW())
+		 RETURNING id, cycle_num`,
+		sr.strategy.ID,
+	).Scan(&cycleID, &cycleNum)
+	if err != nil {
+		return fmt.Errorf("startAlsCycle: insert cycle: %w", err)
+	}
+	sr.cycle = &Cycle{ID: cycleID, StrategyID: sr.strategy.ID, CycleNum: cycleNum}
+	sr.levels = nil
+
+	for i := range sr.strategy.AlsThresholds {
+		levelIdx := i + 1
+		side := "Buy"
+		if sr.strategy.Direction == DirectionShort {
+			side = "Sell"
+		}
+		var levelID string
+		if err := sr.runner.pool.QueryRow(ctx,
+			`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, status)
+			 VALUES ($1,$2,$3,$4,0,0,'0','pending') RETURNING id`,
+			sr.strategy.ID, cycleID, levelIdx, side,
+		).Scan(&levelID); err != nil {
+			return fmt.Errorf("startAlsCycle: insert level %d: %w", levelIdx, err)
+		}
+		sr.levels = append(sr.levels, GridLevel{
+			ID: levelID, LevelIdx: levelIdx, Side: side, Status: LevelPending,
+		})
+	}
+
+	sr.info(ctx, fmt.Sprintf("ALS: цикл %d запущен, уровней: %d", cycleNum, len(sr.strategy.AlsThresholds)))
 	return nil
 }
 
