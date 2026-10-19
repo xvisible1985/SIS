@@ -53,9 +53,14 @@ ALTER TABLE strategies
     ADD COLUMN tp_control_enabled BOOLEAN NOT NULL DEFAULT false,
     ADD COLUMN initial_stop_be_pct NUMERIC(10,4);
 
-ALTER TABLE strategy_cycles
-    ADD COLUMN paused_tp_price NUMERIC(18,8),
-    ADD COLUMN paused_tp_qty NUMERIC(18,8);
+-- No new strategy_cycles columns: TP pause/resume (see
+-- 2026-10-18-als-hedge-polish.md) reuses the EXISTING hedge_tp_suppressed column on
+-- strategies and Engine.Notify — the exact mechanism services/api-gateway/hedge_engine.go
+-- already uses for the Matrix hedge bot, which always recomputes the TP fresh from the
+-- main's current avg entry/tp_pct once un-suppressed rather than restoring a saved
+-- snapshot. A design-spec revision from the original "save/restore paused_tp_price" plan,
+-- found during implementation planning — reuses more of the existing, already-proven
+-- code path instead of adding new columns that would duplicate it.
 
 CREATE TABLE als_stop_memory (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -128,17 +133,13 @@ add:
 	InitialStopBEPct  *float64
 ```
 
-- [ ] **Step 3: Add the new `Cycle` fields**
+- [ ] **Step 3: No new `Cycle` fields needed**
 
-In the `Cycle` struct (starts at line 148), add after the existing `StartedAt time.Time`
-field:
-
-```go
-	// ALS TP pause/resume — set when a hedge opens and the main position's TP is
-	// cancelled, cleared when the hedge fully closes and the TP is restored.
-	PausedTPPrice *float64
-	PausedTPQty   *float64
-```
+TP pause/resume (`2026-10-18-als-hedge-polish.md`) reuses the existing
+`Strategy.HedgeTpSuppressed` field (already in this struct, added for the Matrix hedge
+bot) rather than a saved price/qty snapshot — skip this step, it's a no-op now. Kept here
+as an explicit step (not silently removed) so anyone re-reading this plan after Task 1's
+migration edit understands why `Cycle` gets no new fields in this plan, unlike `Strategy`.
 
 - [ ] **Step 4: Build to confirm it compiles**
 
@@ -993,8 +994,8 @@ git commit -m "Add ALS strategy lifecycle foundations test"
   are all no-op stubs.
 - No stop-order memory-bank (`als_stop_memory` table exists but nothing reads/writes it
   yet).
-- No TP pause/resume logic (the `paused_tp_price`/`paused_tp_qty` columns exist but
-  nothing reads/writes them yet).
+- No TP pause/resume logic (will reuse the existing `HedgeTpSuppressed` field/`Engine.Notify`
+  mechanism already in this plan's struct/query wiring — nothing sets it for ALS yet).
 - No `services/api-gateway` HTTP handler changes — an ALS strategy can only be created by
   direct DB insert (as the tests in this plan do) until the API/frontend plan lands.
 - No frontend changes — the "ALS скоро" button stays disabled until the frontend plan.
