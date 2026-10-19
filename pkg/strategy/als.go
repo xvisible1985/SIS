@@ -3,6 +3,7 @@ package strategy
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"sis/pkg/trader"
 )
@@ -126,10 +127,111 @@ func (sr *StrategyRunner) restartAlsCycle(ctx context.Context) {
 func (sr *StrategyRunner) resumeAlsAfterSignal(ctx context.Context) {
 }
 
-// handleAlsLevelFill reacts to one ALS threshold level's order filling. Stub — see the
-// next plan (will update strategy_levels status and place the level's breakeven stop).
+// handleAlsLevelFill marks one ALS threshold level filled and, if InitialStopBEPct is
+// configured, places its breakeven stop immediately (the "condé trailing" variant — see
+// the design spec's Initial Stop Loss Break Even Hedge section). Without
+// InitialStopBEPct, the level stays unprotected until matrixStopCondThreshold's
+// condition fires on a later price tick (built in the polish plan's stop-cond-replace
+// wiring, which reuses matrix.go's existing free functions directly).
 // Must be called with sr.mu held.
 func (sr *StrategyRunner) handleAlsLevelFill(ctx context.Context, levelID string, filledPrice float64) {
+	var l *GridLevel
+	for i := range sr.levels {
+		if sr.levels[i].ID == levelID {
+			l = &sr.levels[i]
+			break
+		}
+	}
+	if l == nil {
+		return
+	}
+	l.Status = LevelFilled
+	l.FilledPrice = filledPrice
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategy_levels SET status='filled', filled_price=$1, filled_at=NOW() WHERE id=$2`,
+		filledPrice, levelID,
+	)
+	sr.info(ctx, fmt.Sprintf("ALS L%d исполнен @ %.4f", l.LevelIdx, filledPrice))
+
+	if sr.strategy.InitialStopBEPct != nil {
+		sr.alsPlaceLevelStop(ctx, l, filledPrice, *sr.strategy.InitialStopBEPct)
+	}
+}
+
+// alsPlaceLevelStop places a breakeven-style stop for one filled ALS level at
+// trigger = matrixStopReplaceTrigger(hedgeDirection, filledPrice, bePct) — reusing
+// matrix.go's existing free function unchanged, since the math (trail behind price on
+// the favorable side by bePct%) is identical regardless of strategy type. Side/
+// triggerDirection are the OPPOSITE of the level's own open side (a stop CLOSES the
+// hedge). Must be called with sr.mu held.
+func (sr *StrategyRunner) alsPlaceLevelStop(ctx context.Context, l *GridLevel, filledPrice, bePct float64) {
+	trigger := matrixStopReplaceTrigger(sr.strategy.Direction, filledPrice, bePct)
+	closeSide := "Buy"
+	if sr.strategy.Direction == DirectionLong {
+		closeSide = "Sell"
+	}
+	// Determine triggerDirection by comparing trigger against filledPrice directly,
+	// rather than hardcoding it from sr.strategy.Direction — matrixApplyStopCondSLs
+	// (matrix.go) uses this exact same comparison-based approach, for the identical
+	// reason documented there: a trigger fixed by direction alone gets this backwards
+	// and the exchange rejects it outright. Found live for matrix (2026-09-16, ICXUSDT):
+	// retCode=110092 "expect Rising, but trigger_price <= current" when trigDir was
+	// hardcoded by direction instead of compared against where the trigger actually
+	// landed relative to price.
+	trigDir := 2 // Falling: price must drop to reach trigger
+	if trigger > filledPrice {
+		trigDir = 1 // Rising: price must climb to reach trigger
+	}
+
+	qty := l.Qty
+	fmtQty := trader.FormatQty(mustParseFloat(qty), sr.instr.QtyStep, sr.instr.MinQty)
+	if fmtQty == "0" || fmtQty == "" {
+		sr.warn(ctx, fmt.Sprintf("ALS L%d: стоп qty округляется до нуля", l.LevelIdx))
+		return
+	}
+
+	linkID := fmt.Sprintf("SIS_STR-%s-alssl-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx)
+	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "sl"}
+	sr.runner.RegisterOrder(linkID, ref)
+
+	result, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
+		Symbol:           sr.strategy.Symbol,
+		Category:         sr.strategy.Category,
+		Side:             closeSide,
+		OrderType:        "Market",
+		Qty:              fmtQty,
+		TriggerPrice:     trader.FormatPrice(trigger, sr.instr.TickSize),
+		TriggerBy:        "LastPrice",
+		TriggerDirection: trigDir,
+		OrderFilter:      "StopOrder",
+		ReduceOnly:       !sr.strategy.HedgeMode,
+		PositionIdx:      alsOwnPositionIdx(sr.strategy.Direction, sr.strategy.HedgeMode),
+		OrderLinkId:      linkID,
+	})
+	if err != nil {
+		sr.runner.UnregisterOrder(linkID)
+		sr.errlog(ctx, fmt.Sprintf("ALS L%d: ошибка выставления стопа: %v", l.LevelIdx, err))
+		return
+	}
+
+	l.SLOrderID = result.OrderId
+	l.SLLinkID = linkID
+	l.SLPrice = trigger
+	sr.runner.RegisterOrder(result.OrderId, ref)
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategy_levels SET sl_order_id=$1, sl_link_id=$2, sl_price=$3 WHERE id=$4`,
+		result.OrderId, linkID, trigger, l.ID,
+	)
+	sr.info(ctx, fmt.Sprintf("ALS L%d: стоп @ %.4f выставлен", l.LevelIdx, trigger))
+}
+
+// mustParseFloat parses a qty string already validated upstream (DB-stored, always a
+// valid float) — panics are acceptable here only because every caller controls the
+// input format; mirrors the same trust level trader.FormatQty's own callers already
+// place in their qty strings throughout cycle.go/matrix.go.
+func mustParseFloat(s string) float64 {
+	v, _ := strconv.ParseFloat(s, 64)
+	return v
 }
 
 // alsCancelPerLevelSLs cancels every stop-order placed for this ALS strategy's filled
