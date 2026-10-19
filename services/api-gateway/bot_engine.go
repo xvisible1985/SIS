@@ -1176,6 +1176,14 @@ type botStrategyCols struct {
 	relativeSlots                                              bool
 	trailingActPct, trailingCallPct                            *float64
 	maxCycles                                                  int
+
+	// ALS-only columns — see botCfgJSON's matching fields (bot_engine.go) for meaning.
+	alsThresholdsParam                  *string
+	unsafeHedgeMinPct, unsafeHedgeMaxPct float64
+	stopMarketSizeK                     float64
+	tpControlEnabled                    bool
+	initialStopBEPct                    *float64
+	alsStopCondPct, alsStopReplacePct   float64
 }
 
 // computeBotStrategyCols applies defaults (same as strategyPayload.applyDefaults), raises
@@ -1315,6 +1323,9 @@ func (s *Server) computeBotStrategyCols(ctx context.Context, cfg botCfgJSON, sym
 	matrixLevelsParam := nullableJSONB(cfg.MatrixLevels)
 	matrixEntryParam := nullableJSONB(cfg.MatrixEntryLevel)
 
+	// ALS threshold table — NULL when not an ALS strategy, same convention as matrix.
+	alsThresholdsParam := nullableJSONB(cfg.AlsThresholds)
+
 	// signal_filter is always false for hedge-bot strategies: signal_configs serves
 	// only as a pool for per-level use_signal buttons and must never block cycle start.
 	// Ignoring cfg.SignalFilter intentionally — the backend is authoritative here.
@@ -1350,6 +1361,14 @@ func (s *Server) computeBotStrategyCols(ctx context.Context, cfg botCfgJSON, sym
 		trailingActPct:         trailingActPct,
 		trailingCallPct:        trailingCallPct,
 		maxCycles:              cfg.MaxCycles,
+		alsThresholdsParam:     alsThresholdsParam,
+		unsafeHedgeMinPct:      cfg.UnsafeHedgeMinPct,
+		unsafeHedgeMaxPct:      cfg.UnsafeHedgeMaxPct,
+		stopMarketSizeK:        cfg.StopMarketSizeK,
+		tpControlEnabled:       cfg.TPControlEnabled,
+		initialStopBEPct:       cfg.InitialStopBEPct,
+		alsStopCondPct:         cfg.AlsStopCondPct,
+		alsStopReplacePct:      cfg.AlsStopReplacePct,
 	}, nil
 }
 
