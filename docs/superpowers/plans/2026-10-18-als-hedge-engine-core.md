@@ -467,11 +467,10 @@ import (
 )
 
 // TestAlsPriceTick_PlacesTopUpWhenThresholdCrossed is the core engine's end-to-end
-// regression test: a long main position with a live avg entry of 100 USDT/coin and a
-// 1000 USDT current volume, one threshold at -10%/target 30%. Price ticks to 89 (past
-// the 90 trigger) — the engine must place a market Buy for exactly 300 USDT worth
-// (target_hedge_pct 30% of mainUsdt 1000, nothing already open) and mark the level
-// placed.
+// regression test: a long main position with a live avg entry of 100 USDT/coin and 10
+// coins. One threshold at -10%/target 30%. Note mainUsdt is effectiveDeposit(currentPrice)
+// — sizeCoins × the TICK price, not the avg entry — so at the tick price used below (85)
+// mainUsdt is 10×85=850, not 10×100=1000.
 func TestAlsPriceTick_PlacesTopUpWhenThresholdCrossed(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
@@ -494,7 +493,7 @@ func TestAlsPriceTick_PlacesTopUpWhenThresholdCrossed(t *testing.T) {
 	ar := newTestAccountRunner(t, fake)
 	ar.pool = pool
 	// Main is LONG (this hedge is SHORT, direction=short, so the opposite/main positionIdx is 1).
-	setWSPosition(ar, "ALSTICKUSDT", 1, 10, 100) // main: 10 coins @ avg entry 100 → 1000 USDT at price 100
+	setWSPosition(ar, "ALSTICKUSDT", 1, 10, 100) // main: 10 coins @ avg entry 100 (mainUsdt depends on the TICK price below, not this entry price)
 	// No hedge position open yet.
 
 	var stratID string
@@ -547,10 +546,10 @@ func TestAlsPriceTick_PlacesTopUpWhenThresholdCrossed(t *testing.T) {
 	if got.Side != "Sell" {
 		t.Errorf("Side = %q, want Sell (short hedge)", got.Side)
 	}
-	// target 30% of 1000 USDT main = 300 USDT, at price 85 → 300/85 ≈ 3.529 coins,
-	// rounded to QtyStep 0.001.
-	if got.Qty != "3.529" {
-		t.Errorf("Qty = %q, want ~3.529 (300 USDT / 85)", got.Qty)
+	// mainUsdt = effectiveDeposit(85) = 10*85 = 850. target 30% of 850 = 255 USDT,
+	// at price 85 → 255/85 = 3.0 exactly.
+	if got.Qty != "3.000" {
+		t.Errorf("Qty = %q, want 3.000 (255 USDT / 85)", got.Qty)
 	}
 
 	if sr.levels[0].Status != LevelPlaced {
