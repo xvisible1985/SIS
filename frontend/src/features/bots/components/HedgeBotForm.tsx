@@ -578,9 +578,10 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
     { id: 'completion', label: 'Завершение' },
     { id: 'strategy',   label: 'Стратегия'  },
   ];
+  const isAls = config.strategy_type === 'als';
   const stratTabs: { id: StratTab; label: string }[] = [
     { id: 'entry',  label: '1. Базовые'   },
-    { id: 'matrix', label: '2. Матрица'   },
+    { id: 'matrix', label: isAls ? '2. Пороги' : '2. Матрица' },
     { id: 'params', label: '3. Параметры' },
   ];
 
@@ -1636,8 +1637,155 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
                 </div>
               )}
 
+              {/* 2. Пороги (ALS) */}
+              {stratTab === 'matrix' && isAls && (
+                <div className="flex flex-col gap-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className={labelCls}>
+                        Депозит
+                        {instrInfo && !sizeAsMain && (
+                          <span className="ml-1.5 text-[10px] text-slate-500">
+                            мин. {instrInfo.min_order_usdt.toFixed(2)}$
+                          </span>
+                        )}
+                        <Tip text="Фиксированный — вводите USDT. Объём Main — размер от текущего объёма мейн-позиции." />
+                      </label>
+                      {sizeAsMain ? (
+                        <div className="flex items-center h-[34px] px-3 rounded-lg border border-amber-500/20 bg-amber-950/20 text-[11px] text-amber-400">
+                          = объём Main-позиции
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <MxNum
+                            value={config.grid_size_usdt ?? 100}
+                            onChange={v => patch({ grid_size_usdt: v })}
+                            disabled={minLotEnabled}
+                            cls={`${inputCls} ${minLotEnabled ? 'cursor-not-allowed opacity-50' : ''}`}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setMinLotEnabled(v => !v)}
+                            className={`shrink-0 rounded-lg border px-3 py-2 text-[11px] font-semibold transition-colors ${
+                              minLotEnabled
+                                ? 'border-amber-500/40 bg-amber-500/[.18] text-amber-300'
+                                : 'border-white/[.07] bg-white/[.02] text-slate-400 hover:bg-white/[.05]'
+                            }`}
+                          >
+                            min
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex flex-col justify-end">
+                      <label className={labelCls}>
+                        Режим депозита
+                        <Tip text="Фиксированный — задаёте USDT вручную. Объём Main — каждый порог рассчитывается от объёма мейн-позиции в реальном времени." />
+                      </label>
+                      <Toggle
+                        options={[
+                          { label: 'Фикс.',       value: 'fixed' },
+                          { label: 'Объём Main',  value: 'main'  },
+                        ]}
+                        value={sizeAsMain ? 'main' : 'fixed'}
+                        onChange={v => setSizeAsMain(v === 'main')}
+                        btnClassName="!py-2"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 items-end">
+                    <div>
+                      <label className={labelCls}>
+                        Плечо&nbsp;
+                        <span className="font-bold text-white">×{config.leverage ?? 5}</span>
+                        {instrInfo && <span className="ml-1.5 text-[10px] text-slate-500">макс. ×{instrInfo.max_leverage}</span>}
+                        <Tip text="Кратность заёмных средств." />
+                      </label>
+                      <input
+                        type="range"
+                        min={1}
+                        max={instrInfo?.max_leverage ?? 100}
+                        step={1}
+                        value={config.leverage ?? 5}
+                        disabled={leverageMax}
+                        onChange={e => { setLeverageMax(false); patch({ leverage: parseInt(e.target.value) }) }}
+                        className="w-full h-1.5 mt-2 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                        style={{ accentColor: BOT_KIND_META['hedge'].color }}
+                      />
+                      <div className="flex justify-between text-[10px] text-slate-500 mt-0.5">
+                        <span>×1</span>
+                        <span>×{instrInfo?.max_leverage ?? 100}</span>
+                      </div>
+                    </div>
+                    <div className="flex flex-col justify-end pb-[22px]">
+                      <label className={labelCls}>Фикс. / Макс.</label>
+                      <Toggle
+                        options={[
+                          { label: 'Фикс.', value: 'fixed' },
+                          { label: 'Макс.', value: 'max'   },
+                        ]}
+                        value={leverageMax ? 'max' : 'fixed'}
+                        onChange={v => {
+                          const isMax = v === 'max'
+                          setLeverageMax(isMax)
+                          if (isMax) patch({ leverage: instrInfo?.max_leverage ?? 100 })
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* ── Пороги хеджа ── */}
+                  <div>
+                    <div className="text-[9px] text-gray-400 uppercase tracking-wider flex items-center justify-between pb-1 border-b border-gray-800 mb-1">
+                      <span>Пороги добора хеджа <span className="normal-case text-gray-600 font-normal">(от ближнего к дальнему)</span></span>
+                      <span className="bg-blue-900/60 text-blue-400 rounded px-1.5 py-0.5 text-[8px]">{alsThresholds.length} порогов</span>
+                    </div>
+                    <div className="grid grid-cols-[24px_1fr_1fr_1fr_18px] gap-[4px] px-1 pb-1">
+                      <span />
+                      <span className="text-[8px] text-gray-400 text-center">Откуда<Tip text="От последнего ордера main или от его ТВХ." /></span>
+                      <span className="text-[8px] text-gray-400 text-center">Триггер %<Tip text="Расстояние цены от выбранной точки main. Отрицательное — против main." /></span>
+                      <span className="text-[8px] text-gray-400 text-center">Цель хеджа %<Tip text="Итоговый (не добавочный) объём хеджа как % от ТЕКУЩЕГО объёма main. Бот добавит только разницу с уже открытым объёмом." /></span>
+                      <span />
+                    </div>
+                    {alsThresholds.map((t, idx) => (
+                      <div key={idx} className="grid grid-cols-[24px_1fr_1fr_1fr_18px] gap-[4px] px-1 py-1 rounded mb-0.5 bg-blue-950/20">
+                        <div className="bg-blue-900 text-blue-300 text-[8px] font-bold rounded text-center py-0.5">{idx + 1}</div>
+                        <select
+                          value={t.trigger_type}
+                          onChange={e => updateAlsThreshold(idx, 'trigger_type', Number(e.target.value))}
+                          className="bg-gray-900 border border-gray-700 rounded py-1 px-1 text-[10px] text-gray-100 w-full outline-none focus:border-amber-500"
+                        >
+                          {ALS_TRIGGER_TYPES.map((label, i) => <option key={i} value={i}>{label}</option>)}
+                        </select>
+                        <MxNum value={t.trigger_pct} onChange={v => updateAlsThreshold(idx, 'trigger_pct', v)} />
+                        <MxNum value={t.target_hedge_pct} onChange={v => updateAlsThreshold(idx, 'target_hedge_pct', v)} />
+                        {alsThresholds.length > 1
+                          ? <button type="button" onClick={() => removeAlsThreshold(idx)} className="text-center text-xs text-red-500 hover:text-red-400">✕</button>
+                          : <span />}
+                      </div>
+                    ))}
+                    <button type="button" onClick={addAlsThreshold}
+                      className="w-full border border-dashed border-blue-900 text-blue-600 rounded py-1 text-[10px] hover:border-blue-700 hover:text-blue-400 transition-colors mt-1">
+                      + Добавить порог
+                    </button>
+                  </div>
+
+                  {/* Сигналы */}
+                  <div>
+                    <div className="flex items-center gap-1 text-[10px] text-gray-400 uppercase tracking-wider pb-1 border-b border-gray-800">
+                      Сигналы для входа<Tip text="AND-логика: все сигналы должны совпасть. Если не добавлены — ALS стартует сразу." />
+                    </div>
+                    <SignalPickerField
+                      configs={(config.signal_configs as SignalConfig[]) ?? []}
+                      onChange={v => patch({ signal_configs: v })}
+                    />
+                  </div>
+                </div>
+              )}
+
               {/* 2. Матрица */}
-              {stratTab === 'matrix' && (() => {
+              {stratTab === 'matrix' && !isAls && (() => {
                 const colGrid = 'grid grid-cols-[30px_1fr_1fr_6px_1fr_1fr_1fr_1fr_42px_36px_18px] gap-[3px] items-center';
                 const sep = <div className="flex items-center justify-center"><div className="w-px h-[20px] bg-gray-700/60" /></div>;
                 const isShort = config.direction === 'short';
