@@ -83,7 +83,9 @@ func (e *Engine) Start(ctx context.Context) {
 		        COALESCE(unsafe_hedge_max_pct,0),
 		        COALESCE(stop_market_size_k,0),
 		        COALESCE(tp_control_enabled,false),
-		        initial_stop_be_pct
+		        initial_stop_be_pct,
+		        COALESCE(als_stop_cond_pct,0),
+		        COALESCE(als_stop_replace_pct,0)
 		 FROM strategies
 		 WHERE status IN ('active','finishing')
 		    OR (status = 'stopped' AND EXISTS (
@@ -200,7 +202,9 @@ func (e *Engine) Notify(ctx context.Context, strategyID string) {
 		        COALESCE(unsafe_hedge_max_pct,0),
 		        COALESCE(stop_market_size_k,0),
 		        COALESCE(tp_control_enabled,false),
-		        initial_stop_be_pct
+		        initial_stop_be_pct,
+		        COALESCE(als_stop_cond_pct,0),
+		        COALESCE(als_stop_replace_pct,0)
 		 FROM strategies WHERE id=$1`, strategyID)
 	if err := scanStrategyRow(row, &s); err != nil {
 		log.Printf("strategy engine: notify %s: %v", strategyID, err)
@@ -793,6 +797,8 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 		&s.StopMarketSizeK,
 		&s.TPControlEnabled,
 		&s.InitialStopBEPct,
+		&s.AlsStopCondPct,
+		&s.AlsStopReplacePct,
 	)
 	if err != nil {
 		return err

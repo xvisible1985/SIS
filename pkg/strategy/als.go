@@ -548,6 +548,34 @@ func (sr *StrategyRunner) alsPriceTick(ctx context.Context, currentPrice float64
 	if sr.cycle == nil || currentPrice <= 0 {
 		return
 	}
+
+	// Ongoing stop-cond/stop-replace re-evaluation for already-filled, still-unprotected
+	// levels. Deliberately placed BEFORE the main-position guards below: this check only
+	// needs the level's OWN FilledPrice and the strategy's global AlsStopCondPct/
+	// AlsStopReplacePct — it has no dependency on the main position's avg entry or
+	// volume, so a temporarily-unknown main position (e.g. a WS gap) must not also leave
+	// an already-open hedge leg unprotected for longer than necessary.
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.Status != LevelFilled || l.SLOrderID != "" {
+			continue // only unprotected filled levels need evaluating
+		}
+		if sr.strategy.AlsStopCondPct <= 0 || sr.strategy.AlsStopReplacePct <= 0 {
+			continue // stop-cond-replace not configured
+		}
+		condThreshold := matrixStopCondThreshold(sr.strategy.Direction, l.FilledPrice, sr.strategy.AlsStopCondPct)
+		var condMet bool
+		if sr.strategy.Direction == DirectionLong {
+			condMet = currentPrice >= condThreshold
+		} else {
+			condMet = currentPrice <= condThreshold
+		}
+		if !condMet {
+			continue
+		}
+		sr.alsPlaceLevelStop(ctx, l, l.FilledPrice, sr.strategy.AlsStopReplacePct)
+	}
+
 	avgEntry := sr.runner.GetPositionAvgEntry(sr.strategy.Symbol, alsMainPositionIdx(sr.strategy.Direction))
 	if avgEntry <= 0 {
 		return // main position not yet known — nothing to measure thresholds against

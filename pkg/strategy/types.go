@@ -147,6 +147,8 @@ type Strategy struct {
 	StopMarketSizeK   float64
 	TPControlEnabled  bool
 	InitialStopBEPct  *float64
+	AlsStopCondPct    float64 // global "Min ROI for hedge stop" — % price move in the hedge's favor before a stop is placed/replaced
+	AlsStopReplacePct float64 // global "Stop Loss Break Even Hedge" — the resulting stop trigger, % behind AlsStopCondPct
 
 	// AdoptPositionData — when non-nil, startMatrixCycle marks L(0) as already-filled
 	// using this position snapshot; cleared from the strategy record after consumption.

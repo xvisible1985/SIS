@@ -67,7 +67,9 @@ func TestScanStrategy_ReadsAlsFields(t *testing.T) {
 		       COALESCE(unsafe_hedge_max_pct,0),
 		       COALESCE(stop_market_size_k,0),
 		       COALESCE(tp_control_enabled,false),
-		       initial_stop_be_pct
+		       initial_stop_be_pct,
+		       COALESCE(als_stop_cond_pct,0),
+		       COALESCE(als_stop_replace_pct,0)
 		FROM strategies WHERE id=$1`, stratID)
 	if err := scanStrategyRow(row, &s); err != nil {
 		t.Fatalf("scanStrategyRow: %v", err)
