@@ -72,6 +72,12 @@ type StrategyRunner struct {
 	tpCancelStreak int
 	tpPlacedAt     time.Time // when TP was last placed (for interference detection)
 
+	// alsHedgeOpen tracks whether this ALS strategy's hedge volume was open as of the
+	// last alsPriceTick call — used to detect the open/close TRANSITION (not just the
+	// current state) so TP pause/resume (Task 1, als-hedge-polish plan) fires exactly
+	// once per transition, not on every tick while the hedge stays open.
+	alsHedgeOpen bool
+
 	// tradingHaltReason is non-empty when order placement is suppressed because the
 	// instrument's trading session is closed (e.g. tokenized stocks outside market hours).
 	// Set by updateTP/updateSL when instrument status != "Trading"; cleared when it returns

@@ -279,6 +279,51 @@ func alsSideForDirection(dir Direction) string {
 
 // alsPriceTick evaluates every pending threshold level against currentPrice, placing a
 // top-up order for any that have crossed. Must be called with sr.mu held.
+// alsFindMainStrategyID returns the strategy_id of the MAIN position's own strategy row
+// — same account+symbol, OPPOSITE direction, currently active/finishing. ALS hedge legs
+// and their main leg are always separate strategies rows (same architecture Matrix's own
+// hedge-bot pairing already uses), so cross-strategy coordination goes through the DB +
+// Engine.Notify — there is no in-package shortcut via a sibling StrategyRunner
+// reference, matching how services/api-gateway/hedge_engine.go already does this for
+// Matrix (just from a different package, since that's an external poller rather than
+// code running inside the hedge strategy's own tick).
+func (sr *StrategyRunner) alsFindMainStrategyID(ctx context.Context) (string, bool) {
+	mainDir := "short"
+	if sr.strategy.Direction == DirectionShort {
+		mainDir = "long"
+	}
+	var id string
+	err := sr.runner.pool.QueryRow(ctx,
+		`SELECT id FROM strategies
+		 WHERE account_id=$1 AND symbol=$2 AND direction=$3 AND status IN ('active','finishing')
+		 LIMIT 1`,
+		sr.strategy.AccountID, sr.strategy.Symbol, mainDir,
+	).Scan(&id)
+	if err != nil {
+		return "", false
+	}
+	return id, true
+}
+
+// alsSetMainTpSuppressed flips the main strategy's hedge_tp_suppressed flag and notifies
+// the engine to pick it up. Engine.Notify's own existing diff-on-reload logic
+// (engine.go ~1179-1184) already cancels/restores the main's TP automatically on this
+// exact transition — nothing else needs calling here; this function's only job is
+// flipping the flag correctly and getting the engine to notice.
+func (sr *StrategyRunner) alsSetMainTpSuppressed(ctx context.Context, suppressed bool) {
+	mainID, ok := sr.alsFindMainStrategyID(ctx)
+	if !ok {
+		return
+	}
+	if _, err := sr.runner.pool.Exec(ctx,
+		`UPDATE strategies SET hedge_tp_suppressed=$1 WHERE id=$2`, suppressed, mainID,
+	); err != nil {
+		sr.errlog(ctx, fmt.Sprintf("ALS: ошибка установки hedge_tp_suppressed=%v для мейн-стратегии: %v", suppressed, err))
+		return
+	}
+	sr.runner.engine.Notify(ctx, mainID)
+}
+
 func (sr *StrategyRunner) alsPriceTick(ctx context.Context, currentPrice float64) {
 	if sr.cycle == nil || currentPrice <= 0 {
 		return
@@ -331,6 +376,19 @@ func (sr *StrategyRunner) alsPriceTick(ctx context.Context, currentPrice float64
 		}
 		sr.alsPlaceTopUp(ctx, l, triggerPrice, topUpUsdt, currentPrice)
 		alreadyOpenUsdt += topUpUsdt // so a later level in the SAME tick sees this one's contribution
+	}
+
+	hedgeIsOpenNow := alreadyOpenUsdt > 0
+	if hedgeIsOpenNow && !sr.alsHedgeOpen {
+		sr.alsHedgeOpen = true
+		if sr.strategy.TPControlEnabled {
+			sr.alsSetMainTpSuppressed(ctx, true)
+		}
+	} else if !hedgeIsOpenNow && sr.alsHedgeOpen {
+		sr.alsHedgeOpen = false
+		if sr.strategy.TPControlEnabled {
+			sr.alsSetMainTpSuppressed(ctx, false)
+		}
 	}
 }
 
