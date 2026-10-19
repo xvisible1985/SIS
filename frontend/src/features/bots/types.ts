@@ -1,6 +1,14 @@
 import type { MatrixLevel, MatrixEntryLevel, SignalConfig } from '../../types';
 export type { MatrixLevel, MatrixEntryLevel, SignalConfig };
 
+// ALS (Anti-Liquidation System) hedge strategy — one row of the "2. Пороги" table.
+// Mirrors pkg/strategy/types.go's AlsThreshold struct (Foundations plan) field-for-field.
+export type AlsThreshold = {
+  trigger_type: number;     // 0 = from last filled order, 1 = from main's avg entry (ТВХ)
+  trigger_pct: number;      // negative = adverse move (against main), same sign convention as hedge_act_value
+  target_hedge_pct: number; // cumulative target hedge volume, % of main's CURRENT live USDT volume
+};
+
 export type BotStatus = 'active' | 'stopped' | 'draft';
 
 export type TriggerSignal = {
@@ -24,7 +32,7 @@ export type StrategyConfig = {
   symbol?: string;
   category?: string;
   direction?: 'long' | 'short' | 'both';
-  strategy_type?: 'grid' | 'matrix';
+  strategy_type?: 'grid' | 'matrix' | 'als';
   entry_order_type?: 'limit' | 'stop_market';
   leverage?: number;
   margin_type?: 'isolated' | 'cross';
@@ -63,6 +71,17 @@ export type StrategyConfig = {
   matrix_rebuild_from_entry?: boolean;
   relative_slots?: boolean;
   size_as_main?: boolean;
+  // ALS-specific (strategy_type: 'als'). Mirrors pkg/strategy/types.go's Strategy
+  // fields of the same name (Foundations/Polish plans) and
+  // services/api-gateway/bot_engine.go's botCfgJSON (API Persistence plan).
+  als_thresholds?: AlsThreshold[];
+  unsafe_hedge_min_pct?: number;
+  unsafe_hedge_max_pct?: number;
+  stop_market_size_k?: number;
+  tp_control_enabled?: boolean;
+  initial_stop_be_pct?: number | null;
+  als_stop_cond_pct?: number;
+  als_stop_replace_pct?: number;
   // Hedge bot activation (see HedgeBotForm)
   hedge_act_type?: number;          // 0=last_order%, 1=drawdown%, 2=pnl$, 3=roi%
   hedge_act_value?: number;
