@@ -1493,17 +1493,36 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
                 <div className="flex gap-1">
                   <button
                     type="button"
-                    className="rounded-lg border px-4 py-1.5 text-[12px] font-semibold border-amber-500/40 bg-amber-500/[.18] text-amber-300"
+                    onClick={() => patch({ strategy_type: 'matrix' })}
+                    className={`rounded-lg border px-4 py-1.5 text-[12px] font-semibold transition-colors ${
+                      (config.strategy_type ?? 'matrix') === 'matrix'
+                        ? 'border-amber-500/40 bg-amber-500/[.18] text-amber-300'
+                        : 'border-white/[.07] bg-white/[.02] text-slate-400 hover:bg-white/[.05]'
+                    }`}
                   >
                     Matrix
                   </button>
-                  <div
-                    title="В разработке"
-                    className="relative rounded-lg border border-white/[.07] bg-white/[.02] px-4 py-1.5 text-[12px] font-semibold text-slate-600 cursor-not-allowed opacity-50"
-                  >
-                    ALS
-                    <span className="ml-1.5 text-[9px] font-bold uppercase tracking-wide text-slate-500">скоро</span>
-                  </div>
+                  {isAdmin ? (
+                    <button
+                      type="button"
+                      onClick={() => patch({ strategy_type: 'als' })}
+                      className={`rounded-lg border px-4 py-1.5 text-[12px] font-semibold transition-colors ${
+                        config.strategy_type === 'als'
+                          ? 'border-amber-500/40 bg-amber-500/[.18] text-amber-300'
+                          : 'border-white/[.07] bg-white/[.02] text-slate-400 hover:bg-white/[.05]'
+                      }`}
+                    >
+                      ALS
+                    </button>
+                  ) : (
+                    <div
+                      title="Доступно только администраторам"
+                      className="relative rounded-lg border border-white/[.07] bg-white/[.02] px-4 py-1.5 text-[12px] font-semibold text-slate-600 cursor-not-allowed opacity-50"
+                    >
+                      ALS
+                      <span className="ml-1.5 text-[9px] font-bold uppercase tracking-wide text-slate-500">админ</span>
+                    </div>
+                  )}
                 </div>
               </div>
 
