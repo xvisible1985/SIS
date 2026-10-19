@@ -1030,7 +1030,7 @@ func (sr *StrategyRunner) reconcileOrders(ctx context.Context) bool {
 	// alongside the new one. Detect any stop orders whose linkId matches our SL prefix
 	// but doesn't match the current slOrderID and schedule them for cancellation.
 	var orphanedSLs []trader.Order
-	if sr.strategy.StrategyType != "matrix" {
+	if sr.strategy.StrategyType != "matrix" && sr.strategy.StrategyType != "als" {
 		slPrefix := fmt.Sprintf("SIS_STR-%s-sl-", sr.strategy.ID[:8])
 		for _, o := range openOrders {
 			if strings.HasPrefix(o.OrderLinkId, slPrefix) && o.OrderId != sr.slOrderID {
@@ -2374,9 +2374,13 @@ func (sr *StrategyRunner) handleLevelFill(ctx context.Context, levelID string, f
 		}
 	}
 
-	// Matrix strategies use their own fill handler.
+	// Matrix/ALS strategies use their own fill handlers.
 	if sr.strategy.StrategyType == "matrix" {
 		sr.handleMatrixLevelFill(ctx, levelID, filledPrice)
+		return
+	}
+	if sr.strategy.StrategyType == "als" {
+		sr.handleAlsLevelFill(ctx, levelID, filledPrice)
 		return
 	}
 
@@ -3161,6 +3165,9 @@ func (sr *StrategyRunner) closeCycle(ctx context.Context, result string) {
 			sr.matrixMonitorStop = nil
 		}
 		sr.matrixWaitingSlots = make(map[int]float64)
+	}
+	if sr.strategy.StrategyType == "als" {
+		sr.alsCancelPerLevelSLs(ctx)
 	}
 	sr.cycle = nil
 	sr.levels = nil
@@ -4040,6 +4047,9 @@ func (sr *StrategyRunner) handleStopRequest(ctx context.Context) {
 			sr.matrixMonitorStop = nil
 		}
 		sr.matrixWaitingSlots = make(map[int]float64)
+	}
+	if sr.strategy.StrategyType == "als" {
+		sr.alsCancelPerLevelSLs(ctx)
 	}
 	sr.cancelPlacedLevels(ctx)
 
