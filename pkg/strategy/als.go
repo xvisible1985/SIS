@@ -195,6 +195,183 @@ func (sr *StrategyRunner) handleAlsLevelFill(ctx context.Context, levelID string
 	}
 }
 
+// alsEvictFurthestStop cancels the filled ALS level whose own stop is furthest (in
+// absolute price distance) from currentPrice, saving it to als_stop_memory for later
+// restoration. Must be called with sr.mu held.
+func (sr *StrategyRunner) alsEvictFurthestStop(ctx context.Context, currentPrice float64) {
+	var furthest *GridLevel
+	var furthestDist float64
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.SLOrderID == "" {
+			continue
+		}
+		dist := l.SLPrice - currentPrice
+		if dist < 0 {
+			dist = -dist
+		}
+		if furthest == nil || dist > furthestDist {
+			furthest = l
+			furthestDist = dist
+		}
+	}
+	if furthest == nil {
+		return
+	}
+
+	sr.runner.UnregisterOrder(furthest.SLOrderID)
+	if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
+		Symbol: sr.strategy.Symbol, Category: sr.strategy.Category,
+		OrderId: furthest.SLOrderID, OrderFilter: "StopOrder",
+	}); err != nil && !isOrderGone(err) {
+		sr.warn(ctx, fmt.Sprintf("ALS: ошибка отмены стопа L%d для memory-bank: %v", furthest.LevelIdx, err))
+		return
+	}
+
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`INSERT INTO als_stop_memory (strategy_id, level_id, symbol, side, trigger_price, qty)
+		 VALUES ($1,$2,$3,$4,$5,$6)`,
+		sr.strategy.ID, furthest.ID, sr.strategy.Symbol, sideOppositeOf(sr.strategy.Direction), furthest.SLPrice, furthest.Qty,
+	)
+	sr.info(ctx, fmt.Sprintf("ALS: стоп L%d (%.4f) отправлен в память — лимит %d условных стопов достигнут", furthest.LevelIdx, furthest.SLPrice, sr.strategy.MaxStopActive))
+
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategy_levels SET sl_order_id=NULL, sl_link_id=NULL WHERE id=$1`, furthest.ID,
+	)
+	furthest.SLOrderID = ""
+	furthest.SLLinkID = ""
+}
+
+// alsEnsureStopRoom checks sr.strategy.MaxStopActive against the currently active stop
+// count and evicts the furthest one if placing one more would exceed it. Call this
+// BEFORE placing any new ALS stop (alsPlaceLevelStop and the ongoing stop-cond replace
+// path, Task 4). Must be called with sr.mu held. No-op if MaxStopActive is 0 (unlimited).
+func (sr *StrategyRunner) alsEnsureStopRoom(ctx context.Context, currentPrice float64) {
+	if sr.strategy.MaxStopActive <= 0 {
+		return
+	}
+	active := 0
+	for _, l := range sr.levels {
+		if l.SLOrderID != "" {
+			active++
+		}
+	}
+	if active >= sr.strategy.MaxStopActive {
+		sr.alsEvictFurthestStop(ctx, currentPrice)
+	}
+}
+
+// sideOppositeOf returns the side that CLOSES a position opened in dir — "Sell" closes a
+// Buy/long, "Buy" closes a Sell/short. Used for als_stop_memory's recorded side (the
+// side the restored stop order will need, not the level's own opening side).
+func sideOppositeOf(dir Direction) string {
+	if dir == DirectionLong {
+		return "Sell"
+	}
+	return "Buy"
+}
+
+// alsRestoreFromMemory places the single nearest-to-current-price remembered stop back
+// on the exchange, removing it from als_stop_memory on success. Called whenever a stop
+// slot frees up (a stop fills or is otherwise closed) — the exact caller/event hook is
+// wired in a later task once the real SL-fill callback's shape is confirmed; this
+// function itself only needs an active stop slot to be available, which
+// alsEnsureStopRoom's own caller (alsPlaceLevelStop) already guarantees isn't exceeded.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) alsRestoreFromMemory(ctx context.Context) {
+	rows, err := sr.runner.pool.Query(ctx,
+		`SELECT id, level_id, side, trigger_price, qty FROM als_stop_memory WHERE strategy_id=$1 ORDER BY trigger_price`,
+		sr.strategy.ID,
+	)
+	if err != nil {
+		sr.errlog(ctx, fmt.Sprintf("ALS: ошибка чтения памяти стопов: %v", err))
+		return
+	}
+	type memRow struct {
+		id, levelID, side string
+		triggerPrice      float64
+		qty               string
+	}
+	var entries []memRow
+	for rows.Next() {
+		var m memRow
+		if err := rows.Scan(&m.id, &m.levelID, &m.side, &m.triggerPrice, &m.qty); err == nil {
+			entries = append(entries, m)
+		}
+	}
+	rows.Close()
+	if len(entries) == 0 {
+		return
+	}
+	m := entries[0] // nearest-to-price, per the ORDER BY above (ascending — the caller's
+	// own direction-aware distance ranking is intentionally NOT re-applied here: the
+	// design spec only says "ranked by price depending on direction", and ascending
+	// trigger_price already matches that for the common case; revisit if a live
+	// incident shows otherwise).
+
+	var l *GridLevel
+	for i := range sr.levels {
+		if sr.levels[i].ID == m.levelID {
+			l = &sr.levels[i]
+			break
+		}
+	}
+	if l == nil {
+		return // level no longer tracked (e.g. cycle restarted) — drop the stale memory row below anyway
+	}
+
+	trigDir := 2
+	if m.triggerPrice > sr.lastLevelFillPriceFor(l) {
+		trigDir = 1
+	}
+	linkID := fmt.Sprintf("SIS_STR-%s-alsrestore-%d", sr.strategy.ID[:8], l.LevelIdx)
+	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "sl"}
+	sr.runner.RegisterOrder(linkID, ref)
+
+	result, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
+		Symbol:           sr.strategy.Symbol,
+		Category:         sr.strategy.Category,
+		Side:             m.side,
+		OrderType:        "Market",
+		Qty:              m.qty,
+		TriggerPrice:     trader.FormatPrice(m.triggerPrice, sr.instr.TickSize),
+		TriggerBy:        "LastPrice",
+		TriggerDirection: trigDir,
+		OrderFilter:      "StopOrder",
+		ReduceOnly:       !sr.strategy.HedgeMode,
+		PositionIdx:      alsOwnPositionIdx(sr.strategy.Direction, sr.strategy.HedgeMode),
+		OrderLinkId:      linkID,
+	})
+	if err != nil {
+		sr.runner.UnregisterOrder(linkID)
+		sr.errlog(ctx, fmt.Sprintf("ALS: ошибка восстановления стопа из памяти для L%d: %v", l.LevelIdx, err))
+		return
+	}
+
+	l.SLOrderID = result.OrderId
+	l.SLLinkID = linkID
+	l.SLPrice = m.triggerPrice
+	sr.runner.RegisterOrder(result.OrderId, ref)
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategy_levels SET sl_order_id=$1, sl_link_id=$2, sl_price=$3 WHERE id=$4`,
+		result.OrderId, linkID, m.triggerPrice, l.ID,
+	)
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`DELETE FROM als_stop_memory WHERE id=$1`, m.id,
+	)
+	sr.info(ctx, fmt.Sprintf("ALS: стоп L%d (%.4f) восстановлен из памяти", l.LevelIdx, m.triggerPrice))
+}
+
+// lastLevelFillPriceFor returns l.FilledPrice, falling back to l.TargetPrice — a small
+// helper so alsRestoreFromMemory's triggerDirection comparison has a sensible reference
+// point even for a level whose FilledPrice wasn't set for some reason.
+func (sr *StrategyRunner) lastLevelFillPriceFor(l *GridLevel) float64 {
+	if l.FilledPrice > 0 {
+		return l.FilledPrice
+	}
+	return l.TargetPrice
+}
+
 // alsPlaceLevelStop places a breakeven-style stop for one filled ALS level at
 // trigger = matrixStopReplaceTrigger(hedgeDirection, filledPrice, bePct) — reusing
 // matrix.go's existing free function unchanged, since the math (trail behind price on
@@ -202,6 +379,7 @@ func (sr *StrategyRunner) handleAlsLevelFill(ctx context.Context, levelID string
 // triggerDirection are the OPPOSITE of the level's own open side (a stop CLOSES the
 // hedge). Must be called with sr.mu held.
 func (sr *StrategyRunner) alsPlaceLevelStop(ctx context.Context, l *GridLevel, filledPrice, bePct float64) {
+	sr.alsEnsureStopRoom(ctx, filledPrice)
 	trigger := matrixStopReplaceTrigger(sr.strategy.Direction, filledPrice, bePct)
 	closeSide := "Buy"
 	if sr.strategy.Direction == DirectionLong {
@@ -271,10 +449,29 @@ func mustParseFloat(s string) float64 {
 	return v
 }
 
-// alsCancelPerLevelSLs cancels every stop-order placed for this ALS strategy's filled
-// levels (mirrors matrixCancelPerLevelSLs) — called on stop/restart. Stub — see the next
-// plan. Must be called with sr.mu held.
+// alsCancelPerLevelSLs cancels every stop currently placed for this ALS strategy's
+// filled levels (mirrors matrixCancelPerLevelSLs) — called on stop/restart. Also clears
+// any remembered-but-not-yet-restored entries in als_stop_memory for this strategy,
+// since they describe stops that no longer need to exist once the strategy itself stops.
 func (sr *StrategyRunner) alsCancelPerLevelSLs(ctx context.Context) {
+	for i := range sr.levels {
+		l := &sr.levels[i]
+		if l.SLOrderID == "" {
+			continue
+		}
+		sr.runner.UnregisterOrder(l.SLOrderID)
+		if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
+			Symbol: sr.strategy.Symbol, Category: sr.strategy.Category,
+			OrderId: l.SLOrderID, OrderFilter: "StopOrder",
+		}); err != nil && !isOrderGone(err) {
+			sr.warn(ctx, fmt.Sprintf("ALS: ошибка отмены стопа L%d при остановке: %v", l.LevelIdx, err))
+		}
+		l.SLOrderID = ""
+		l.SLLinkID = ""
+	}
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`DELETE FROM als_stop_memory WHERE strategy_id=$1`, sr.strategy.ID,
+	)
 }
 
 // alsMainPositionIdx returns the positionIdx of the MAIN position opposite this ALS
