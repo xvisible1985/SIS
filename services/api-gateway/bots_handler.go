@@ -811,7 +811,12 @@ func botConfigStructuralFieldsChanged(oldCfg, newCfg botCfgJSON) bool {
 		oldCfg.Leverage != newCfg.Leverage ||
 		!reflect.DeepEqual(oldCfg.Steps, newCfg.Steps) ||
 		!jsonRawEqual(oldCfg.MatrixLevels, newCfg.MatrixLevels) ||
-		!jsonRawEqual(oldCfg.MatrixEntryLevel, newCfg.MatrixEntryLevel)
+		!jsonRawEqual(oldCfg.MatrixEntryLevel, newCfg.MatrixEntryLevel) ||
+		// ALS's threshold table plays the same role matrix_levels does — it defines the
+		// strategy_levels rows seeded at cycle start (see pkg/strategy/als.go's
+		// startAlsCycle), so a genuine change must restart the cycle the same way editing
+		// matrix_levels does.
+		!jsonRawEqual(oldCfg.AlsThresholds, newCfg.AlsThresholds)
 }
 
 // jsonRawEqual compares two json.RawMessage values structurally (ignoring key order and
@@ -939,6 +944,11 @@ func (s *Server) syncBotStrategies(ctx context.Context, botID string, structural
 	matrixLevelsParam := nullableJSONB(cfg.MatrixLevels)
 	matrixEntryParam := nullableJSONB(cfg.MatrixEntryLevel)
 
+	// ALS params (nil/0 = keep existing when not an ALS bot — same convention as matrix
+	// above; numeric fields use the same "0 means absent" CASE pattern safe_zone_pct
+	// already uses, so a sync of unrelated fields can't zero these out).
+	alsThresholdsParam := nullableJSONB(cfg.AlsThresholds)
+
 	// Hedge-bot strategies must never block cycle-start on a signal:
 	// signal_configs is a pool for per-level use_signal buttons only.
 	syncSignalFilter := cfg.SignalFilter
@@ -960,7 +970,15 @@ func (s *Server) syncBotStrategies(ctx context.Context, botID string, structural
 		   protected_build    = $21,
 		   matrix_rebuild_on_sl      = $22,
 		   matrix_rebuild_from_entry = $23,
-		   relative_slots            = $24
+		   relative_slots            = $24,
+		   als_thresholds       = COALESCE(($26::text)::jsonb, als_thresholds),
+		   unsafe_hedge_min_pct = CASE WHEN $27::float8 > 0 THEN $27 ELSE unsafe_hedge_min_pct END,
+		   unsafe_hedge_max_pct = CASE WHEN $28::float8 > 0 THEN $28 ELSE unsafe_hedge_max_pct END,
+		   stop_market_size_k   = CASE WHEN $29::float8 > 0 THEN $29 ELSE stop_market_size_k END,
+		   tp_control_enabled   = $30,
+		   initial_stop_be_pct  = $31,
+		   als_stop_cond_pct    = CASE WHEN $32::float8 > 0 THEN $32 ELSE als_stop_cond_pct END,
+		   als_stop_replace_pct = CASE WHEN $33::float8 > 0 THEN $33 ELSE als_stop_replace_pct END
 		 WHERE bot_id = $25 AND status IN ('active','finishing')
 		 RETURNING id`,
 		gridLevels, gridActive, gridStep, gridSize,
@@ -971,6 +989,8 @@ func (s *Server) syncBotStrategies(ctx context.Context, botID string, structural
 		matrixLevelsParam, matrixEntryParam, cfg.SafeZonePct,
 		cfg.ProtectedBuild, cfg.MatrixRebuildOnSL, cfg.MatrixRebuildFromEntry, cfg.RelativeSlots,
 		botID,
+		alsThresholdsParam, cfg.UnsafeHedgeMinPct, cfg.UnsafeHedgeMaxPct, cfg.StopMarketSizeK,
+		cfg.TPControlEnabled, cfg.InitialStopBEPct, cfg.AlsStopCondPct, cfg.AlsStopReplacePct,
 	)
 	if err != nil {
 		return

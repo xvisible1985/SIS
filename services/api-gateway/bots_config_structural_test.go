@@ -84,6 +84,15 @@ func TestBotConfigStructuralFieldsChanged(t *testing.T) {
 		}
 	})
 
+	t.Run("true when als_thresholds genuinely differs", func(t *testing.T) {
+		oldCfg := botCfgJSON{AlsThresholds: json.RawMessage(`[{"trigger_pct":-10}]`)}
+		newCfg := botCfgJSON{AlsThresholds: json.RawMessage(`[{"trigger_pct":-20}]`)}
+
+		if !botConfigStructuralFieldsChanged(oldCfg, newCfg) {
+			t.Errorf("expected true: als_thresholds content differs")
+		}
+	})
+
 	t.Run("false when everything equal", func(t *testing.T) {
 		cfg := botCfgJSON{
 			GridLevels:     5,
