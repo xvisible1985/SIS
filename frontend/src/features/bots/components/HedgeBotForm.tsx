@@ -471,7 +471,10 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
       strategyConfig: {
         ...config,
         bot_kind:      'hedge',
-        strategy_type: 'matrix',
+        strategy_type: config.strategy_type ?? 'matrix',
+        // grid_levels/grid_step_pct are matrix-only derived values — harmless no-ops for
+        // ALS (pkg/strategy's als.go seeds strategy_levels rows from als_thresholds, never
+        // from grid_levels/grid_step_pct; see docs/superpowers/plans/2026-10-18-als-hedge-engine-core.md).
         grid_levels:   totalMatrixLevels,
         grid_step_pct: belowLevels[0]?.price_step_pct ?? aboveLevels[0]?.price_step_pct ?? 0,
         signal_filter: false,
