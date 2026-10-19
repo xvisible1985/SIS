@@ -389,7 +389,21 @@ func (sr *StrategyRunner) alsPriceTick(ctx context.Context, currentPrice float64
 		if !alsThresholdCrossed(sr.strategy.Direction, currentPrice, triggerPrice) {
 			continue
 		}
+		var openUnprotectedUsdt, stoppedUsdt float64
+		for _, lv := range sr.levels {
+			if lv.Status != LevelFilled && lv.Status != LevelPlaced {
+				continue
+			}
+			q, _ := strconv.ParseFloat(lv.Qty, 64)
+			usdt := q * currentPrice
+			if lv.SLOrderID != "" {
+				stoppedUsdt += usdt
+			} else {
+				openUnprotectedUsdt += usdt
+			}
+		}
 		topUpUsdt := alsTopUpUsdt(th.TargetHedgePct, mainUsdt, alreadyOpenUsdt)
+		topUpUsdt = alsUnsafeHedgeClamp(topUpUsdt, sr.strategy.UnsafeHedgeMaxPct, mainUsdt, openUnprotectedUsdt, stoppedUsdt, sr.strategy.StopMarketSizeK)
 		if topUpUsdt <= 0 {
 			// Target already met by existing volume — mark this level placed with no
 			// order so it doesn't keep re-evaluating every tick.
