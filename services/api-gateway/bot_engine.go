@@ -1397,7 +1397,10 @@ func (s *Server) applyBotConfigToStrategy(ctx context.Context, db pgxExec, strat
 		   max_cycles=$23, size_as_main=$24,
 		   matrix_levels=($25::text)::jsonb, matrix_entry_level=($26::text)::jsonb, safe_zone_pct=$27,
 		   protected_build=$28, matrix_rebuild_on_sl=$29, matrix_rebuild_from_entry=$30, relative_slots=$31,
-		   hedged_strategy_id=NULLIF($32,'')::uuid, adopt_position_data=($33::text)::jsonb
+		   hedged_strategy_id=NULLIF($32,'')::uuid, adopt_position_data=($33::text)::jsonb,
+		   als_thresholds=($34::text)::jsonb, unsafe_hedge_min_pct=$35, unsafe_hedge_max_pct=$36,
+		   stop_market_size_k=$37, tp_control_enabled=$38, initial_stop_be_pct=$39,
+		   als_stop_cond_pct=$40, als_stop_replace_pct=$41
 		 WHERE id=$1`,
 		strategyID, botID, cols.category,
 		cols.gridLevels, cols.gridActive, cols.gridStep, cols.gridSize,
@@ -1409,6 +1412,9 @@ func (s *Server) applyBotConfigToStrategy(ctx context.Context, db pgxExec, strat
 		cols.matrixLevelsParam, cols.matrixEntryParam, cols.safeZonePct,
 		cols.protectedBuild, cols.matrixRebuildOnSL, cols.matrixRebuildFromEntry, cols.relativeSlots,
 		hedgedStrategyID, adoptJSON,
+		cols.alsThresholdsParam, cols.unsafeHedgeMinPct, cols.unsafeHedgeMaxPct,
+		cols.stopMarketSizeK, cols.tpControlEnabled, cols.initialStopBEPct,
+		cols.alsStopCondPct, cols.alsStopReplacePct,
 	)
 	return err
 }
