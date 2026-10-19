@@ -2,6 +2,59 @@ package strategy
 
 import "context"
 
+// alsThresholdPrice computes the absolute price at which one AlsThreshold row fires.
+// dir is the ALS strategy's OWN (hedge) direction — sr.strategy.Direction, never the
+// main position's — see the direction-convention note in als_calc_test.go for the full
+// reasoning. triggerType 0 = % from the last filled order (lastOrderPrice); 1 =
+// % from the main position's average entry (avgEntryPrice) — mirrors the existing
+// hedge-activation act_type convention (0/1), not the source ALS's ROI-based units; see
+// docs/superpowers/specs/2026-10-18-als-hedge-strategy-design.md. triggerPct is signed:
+// negative means "adverse move" (price against the main position).
+func alsThresholdPrice(dir Direction, triggerType int, triggerPct, avgEntryPrice, lastOrderPrice float64) float64 {
+	base := avgEntryPrice
+	if triggerType == 0 {
+		base = lastOrderPrice
+	}
+	if dir == DirectionShort {
+		// Hedge Short ⟹ main is Long ⟹ adverse-for-main = price FALLING ⟹ trigger
+		// lands BELOW base (a negative triggerPct correctly lowers it).
+		return base * (1 + triggerPct/100)
+	}
+	// Hedge Long (or Both, treated as Long here — ALS's per-level direction should
+	// never actually be "Both"; the UI constrains thresholds to a single hedge
+	// direction) ⟹ main is Short ⟹ adverse-for-main = price RISING ⟹ trigger lands
+	// ABOVE base (a negative triggerPct correctly raises it).
+	return base * (1 - triggerPct/100)
+}
+
+// alsThresholdCrossed reports whether currentPrice has reached triggerPrice in the
+// adverse-for-main direction. dir is the hedge's own direction, same convention as
+// alsThresholdPrice: hedge Short (long main) crosses on a FALL to/below triggerPrice;
+// hedge Long (short main) crosses on a RISE to/above triggerPrice.
+func alsThresholdCrossed(dir Direction, currentPrice, triggerPrice float64) bool {
+	if dir == DirectionShort {
+		return currentPrice <= triggerPrice
+	}
+	return currentPrice >= triggerPrice
+}
+
+// alsTopUpUsdt computes how much MORE hedge volume (in USDT) to place for one threshold
+// row: the row's target is a CUMULATIVE percentage of the main position's current live
+// volume (mainUsdt — pass effectiveDeposit(currentPrice), which already resolves to the
+// opposite-direction position's live USDT value when SizeAsMain is set), not a flat
+// per-level add. Only the gap between that target and what's already open gets placed —
+// see the design spec's worked example. Never negative: if the hedge is already at or
+// above this level's target (e.g. main shrank since an earlier level fired), there is
+// nothing to top up.
+func alsTopUpUsdt(targetHedgePct, mainUsdt, alreadyOpenUsdt float64) float64 {
+	target := targetHedgePct / 100 * mainUsdt
+	topUp := target - alreadyOpenUsdt
+	if topUp < 0 {
+		return 0
+	}
+	return topUp
+}
+
 // startAlsCycle starts a brand-new ALS hedge cycle. Stub — see
 // docs/superpowers/plans/2026-10-18-als-hedge-engine-core.md for the real implementation
 // (will create the strategy_cycles row and seed strategy_levels from AlsThresholds).
