@@ -77,7 +77,13 @@ func (e *Engine) Start(ctx context.Context) {
 		        tp_signal_dir,
 		        sl_signal_dir,
 		        tp_signal_configs::text,
-		        sl_signal_configs::text
+		        sl_signal_configs::text,
+		        COALESCE(als_thresholds::text,'[]'),
+		        COALESCE(unsafe_hedge_min_pct,0),
+		        COALESCE(unsafe_hedge_max_pct,0),
+		        COALESCE(stop_market_size_k,0),
+		        COALESCE(tp_control_enabled,false),
+		        initial_stop_be_pct
 		 FROM strategies
 		 WHERE status IN ('active','finishing')
 		    OR (status = 'stopped' AND EXISTS (
@@ -188,7 +194,13 @@ func (e *Engine) Notify(ctx context.Context, strategyID string) {
 		        tp_signal_dir,
 		        sl_signal_dir,
 		        tp_signal_configs::text,
-		        sl_signal_configs::text
+		        sl_signal_configs::text,
+		        COALESCE(als_thresholds::text,'[]'),
+		        COALESCE(unsafe_hedge_min_pct,0),
+		        COALESCE(unsafe_hedge_max_pct,0),
+		        COALESCE(stop_market_size_k,0),
+		        COALESCE(tp_control_enabled,false),
+		        initial_stop_be_pct
 		 FROM strategies WHERE id=$1`, strategyID)
 	if err := scanStrategyRow(row, &s); err != nil {
 		log.Printf("strategy engine: notify %s: %v", strategyID, err)
@@ -752,6 +764,7 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 	var stoppedByStr *string
 	var tpSignalDir, slSignalDir *string
 	var tpSigCfgJSON, slSigCfgJSON *string
+	var alsThresholdsJSON string
 	err := rows.Scan(
 		&s.ID, &s.OwnerID, &s.AccountID, &s.Symbol, &s.Category,
 		&dir, &stat,
@@ -774,6 +787,12 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 		&slSignalDir,
 		&tpSigCfgJSON,
 		&slSigCfgJSON,
+		&alsThresholdsJSON,
+		&s.UnsafeHedgeMinPct,
+		&s.UnsafeHedgeMaxPct,
+		&s.StopMarketSizeK,
+		&s.TPControlEnabled,
+		&s.InitialStopBEPct,
 	)
 	if err != nil {
 		return err
@@ -805,6 +824,9 @@ func scanStrategy(rows interface{ Scan(...any) error }, s *Strategy) error {
 	}
 	if matrixJSON != "" && matrixJSON != "[]" && matrixJSON != "null" {
 		_ = json.Unmarshal([]byte(matrixJSON), &s.MatrixLevels)
+	}
+	if alsThresholdsJSON != "" && alsThresholdsJSON != "[]" && alsThresholdsJSON != "null" {
+		_ = json.Unmarshal([]byte(alsThresholdsJSON), &s.AlsThresholds)
 	}
 	if entryLevelJSON != "" && entryLevelJSON != "null" {
 		var el MatrixEntryLevel
