@@ -87,6 +87,17 @@ type MatrixEntryLevel struct {
 	UseSignal      bool     `json:"use_signal,omitempty"` // gate entry level on signal before placing
 }
 
+// AlsThreshold is one row of an ALS strategy's "Пороги" (thresholds) table — see
+// docs/superpowers/specs/2026-10-18-als-hedge-strategy-design.md. TriggerType mirrors
+// the existing hedge-activation act_type convention (0 = % from the last filled order,
+// 1 = % from the main position's average entry price) rather than the source ALS's own
+// ROI-based units — a deliberate adaptation, not an oversight.
+type AlsThreshold struct {
+	TriggerType    int     `json:"trigger_type"`    // 0 = from last order, 1 = from avg entry (ТВХ)
+	TriggerPct     float64 `json:"trigger_pct"`      // negative = adverse move, matches act_value convention
+	TargetHedgePct float64 `json:"target_hedge_pct"` // cumulative target hedge volume, % of main's CURRENT live volume
+}
+
 type Strategy struct {
 	ID                    string
 	OwnerID               string
@@ -127,6 +138,15 @@ type Strategy struct {
 	RebuildFromEntry      bool // Якорь на точку входа: все уровни строятся от цены заполнения L(0); SL L(0) тоже ждёт SZ и перезаходит
 	RelativeSlots         bool // Novabot-style: после SL слоты перенумеровываются к точке входа; взаимоисключимо с RebuildOnSL/RebuildFromEntry
 	SizeAsMain            bool // Deposit = Main-position volume: each slot sized against opposite-direction position's USDT value
+
+	// ALS (Anti-Liquidation System) hedge strategy fields — meaningful only when
+	// StrategyType == "als". See docs/superpowers/specs/2026-10-18-als-hedge-strategy-design.md.
+	AlsThresholds     []AlsThreshold
+	UnsafeHedgeMinPct float64
+	UnsafeHedgeMaxPct float64
+	StopMarketSizeK   float64
+	TPControlEnabled  bool
+	InitialStopBEPct  *float64
 
 	// AdoptPositionData — when non-nil, startMatrixCycle marks L(0) as already-filled
 	// using this position snapshot; cleared from the strategy record after consumption.
