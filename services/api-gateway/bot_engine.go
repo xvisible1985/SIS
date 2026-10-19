@@ -1469,7 +1469,10 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 			   matrix_levels=($24::text)::jsonb, matrix_entry_level=($25::text)::jsonb, safe_zone_pct=$26,
 			   protected_build=$27, matrix_rebuild_on_sl=$28, matrix_rebuild_from_entry=$29, relative_slots=$30,
 			   hedged_strategy_id=NULLIF($31,'')::uuid, adopt_position_data=($32::text)::jsonb,
-			   origin_bot_id=COALESCE(origin_bot_id, $33::uuid)
+			   origin_bot_id=COALESCE(origin_bot_id, $33::uuid),
+			   als_thresholds=($34::text)::jsonb, unsafe_hedge_min_pct=$35, unsafe_hedge_max_pct=$36,
+			   stop_market_size_k=$37, tp_control_enabled=$38, initial_stop_be_pct=$39,
+			   als_stop_cond_pct=$40, als_stop_replace_pct=$41
 			 WHERE id=$1 AND status='stopped'
 			 RETURNING id`,
 			reuseID, cols.category,
@@ -1483,6 +1486,9 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 			cols.protectedBuild, cols.matrixRebuildOnSL, cols.matrixRebuildFromEntry, cols.relativeSlots,
 			hedgedStrategyID, adoptJSON,
 			b.id,
+			cols.alsThresholdsParam, cols.unsafeHedgeMinPct, cols.unsafeHedgeMaxPct,
+			cols.stopMarketSizeK, cols.tpControlEnabled, cols.initialStopBEPct,
+			cols.alsStopCondPct, cols.alsStopReplacePct,
 		).Scan(&rid)
 		if reErr == nil {
 			go s.engine.Notify(context.Background(), rid)
@@ -1518,7 +1524,9 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		   cycle_count, max_cycles, size_as_main,
 		   matrix_levels, matrix_entry_level, safe_zone_pct,
 		   protected_build, matrix_rebuild_on_sl, matrix_rebuild_from_entry, relative_slots,
-		   hedged_strategy_id, adopt_position_data, origin_bot_id)
+		   hedged_strategy_id, adopt_position_data, origin_bot_id,
+		   als_thresholds, unsafe_hedge_min_pct, unsafe_hedge_max_pct, stop_market_size_k,
+		   tp_control_enabled, initial_stop_be_pct, als_stop_cond_pct, als_stop_replace_pct)
 		VALUES ($1,$2,$3,$4,$5,$6,'active',
 		        $7,$8,$9,$10,
 		        $11,$12,$13,$14,$15,
@@ -1528,7 +1536,9 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		        $26, $27, $28,
 		        ($29::text)::jsonb, ($30::text)::jsonb, $31,
 		        $32, $33, $34, $35,
-		        NULLIF($36,'')::uuid, ($37::text)::jsonb, $38)
+		        NULLIF($36,'')::uuid, ($37::text)::jsonb, $38,
+		        ($39::text)::jsonb, $40, $41, $42,
+		        $43, $44, $45, $46)
 		ON CONFLICT DO NOTHING
 		RETURNING id`,
 		b.ownerID, b.accountID, b.id, sym, cols.category, dir,
@@ -1541,6 +1551,8 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		cols.matrixLevelsParam, cols.matrixEntryParam, cols.safeZonePct,
 		cols.protectedBuild, cols.matrixRebuildOnSL, cols.matrixRebuildFromEntry, cols.relativeSlots,
 		hedgedStrategyID, adoptJSON, b.id,
+		cols.alsThresholdsParam, cols.unsafeHedgeMinPct, cols.unsafeHedgeMaxPct, cols.stopMarketSizeK,
+		cols.tpControlEnabled, cols.initialStopBEPct, cols.alsStopCondPct, cols.alsStopReplacePct,
 	).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Another hedge bot already claimed this main strategy — silently skip.
