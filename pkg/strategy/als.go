@@ -46,6 +46,29 @@ func alsThresholdCrossed(dir Direction, currentPrice, triggerPrice float64) bool
 	return currentPrice >= triggerPrice
 }
 
+// alsUnsafeHedgeClamp caps topUpUsdt against the "unsafe hedge percent" formula from the
+// design spec: Vh = Vmax − Vopen + Vstop/stopMarketSizeK. maxPct==0 means unconfigured —
+// no limit (matches the existing 0-means-unlimited convention already used by
+// MaxStopActive/GridActive elsewhere on Strategy). Never returns negative.
+func alsUnsafeHedgeClamp(topUpUsdt, maxPct, mainUsdt, openUnprotectedUsdt, stoppedUsdt, stopMarketSizeK float64) float64 {
+	if maxPct <= 0 {
+		return topUpUsdt
+	}
+	vmax := maxPct / 100 * mainUsdt
+	k := stopMarketSizeK
+	if k <= 0 {
+		k = 1
+	}
+	vh := vmax - openUnprotectedUsdt + stoppedUsdt/k
+	if vh < 0 {
+		vh = 0
+	}
+	if topUpUsdt > vh {
+		return vh
+	}
+	return topUpUsdt
+}
+
 // alsTopUpUsdt computes how much MORE hedge volume (in USDT) to place for one threshold
 // row: the row's target is a CUMULATIVE percentage of the main position's current live
 // volume (mainUsdt — pass effectiveDeposit(currentPrice), which already resolves to the
