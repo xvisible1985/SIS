@@ -952,8 +952,11 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
                 )}
               </div>
 
-              {/* Условие активации + Закрыть Safe — одна строка */}
-              <div className={`grid grid-cols-2 gap-3${ha.force_activation ? ' opacity-40 pointer-events-none select-none' : ''}`}>
+              {/* Условие активации + Закрыть Safe — одна строка.
+                  For ALS, threshold row 1 (see "2. Пороги") replaces act_type/act_value's
+                  role, so that cell is hidden and "Если занят слот" takes the full row. */}
+              <div className={`grid gap-3 ${isAls ? 'grid-cols-1' : 'grid-cols-2'}${ha.force_activation ? ' opacity-40 pointer-events-none select-none' : ''}`}>
+                {!isAls && (
                 <div>
                   <label className={labelCls}>
                     Активировать при
@@ -1029,6 +1032,7 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
                     </>)}
                   </p>
                 </div>
+                )}
 
                 <div>
                   <label className={labelCls}>
