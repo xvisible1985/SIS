@@ -1047,6 +1047,20 @@ type botCfgJSON struct {
 	// (main) position's volume instead of a fixed GridSizeUSDT.
 	SizeAsMain bool `json:"size_as_main"`
 
+	// ALS (Anti-Liquidation System) hedge strategy fields — read/written only when
+	// StrategyType="als". Mirrors pkg/strategy/types.go's Strategy.AlsThresholds etc.
+	// (same shape; this package never imports pkg/strategy — it's a separate JSON
+	// contract that happens to line up). See
+	// docs/superpowers/specs/2026-10-18-als-hedge-strategy-design.md.
+	AlsThresholds     json.RawMessage `json:"als_thresholds"`
+	UnsafeHedgeMinPct float64         `json:"unsafe_hedge_min_pct"`
+	UnsafeHedgeMaxPct float64         `json:"unsafe_hedge_max_pct"`
+	StopMarketSizeK   float64         `json:"stop_market_size_k"`
+	TPControlEnabled  bool            `json:"tp_control_enabled"`
+	InitialStopBEPct  *float64        `json:"initial_stop_be_pct,omitempty"`
+	AlsStopCondPct    float64         `json:"als_stop_cond_pct"`
+	AlsStopReplacePct float64         `json:"als_stop_replace_pct"`
+
 	// Hedge → Main control actions (hedge bots only).
 	HedgeCancelMainTp bool `json:"hedge_cancel_main_tp"` // cancel TP on main at hedge activation
 	HedgeCancelMainSl bool `json:"hedge_cancel_main_sl"` // cancel all SL on main at hedge activation
