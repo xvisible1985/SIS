@@ -2027,71 +2027,173 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
                 <div className="flex flex-col gap-5">
 
                   {/* ── Управление Хедж ── */}
-                  <div>
-                    <div className="flex items-center gap-1 text-[10px] text-gray-400 uppercase tracking-wider pb-1 border-b border-gray-800 mb-3">
-                      Управление Хедж
+                  {isAls ? (
+                    <div>
+                      <div className="flex items-center gap-1 text-[10px] text-gray-400 uppercase tracking-wider pb-1 border-b border-gray-800 mb-3">
+                        Управление Хедж (ALS)
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className={labelCls}>
+                            Safe-Zone от SL %
+                            <Tip text="После срабатывания стопа хеджа — зона вокруг цены стопа, в которой хедж не переоткрывается, пока цена не отойдёт в сторону main." />
+                          </label>
+                          <input type="number" step="0.1" min={0}
+                            value={config.safe_zone_pct ?? 1.5}
+                            onChange={e => patch({ safe_zone_pct: Number(e.target.value) })}
+                            className={inputCls} />
+                        </div>
+                        <div>
+                          <label className={labelCls}>
+                            Условных стопов ×K
+                            <Tip text="Stop Market Size K — множитель объёма стоп-ордера хеджа относительно объёма хеджа, который он защищает." />
+                          </label>
+                          <input type="number" step="0.1" min={0}
+                            value={config.stop_market_size_k ?? 1}
+                            onChange={e => patch({ stop_market_size_k: Number(e.target.value) })}
+                            className={inputCls} />
+                        </div>
+                        <div>
+                          <label className={labelCls}>
+                            Min ROI для стопа хеджа, %
+                            <Tip text="Насколько цена должна пройти в пользу хеджа, прежде чем на него впервые выставляется безубыточный стоп." />
+                          </label>
+                          <input type="number" step="0.1" min={0}
+                            value={config.als_stop_cond_pct ?? 3}
+                            onChange={e => patch({ als_stop_cond_pct: Number(e.target.value) })}
+                            className={inputCls} />
+                        </div>
+                        <div>
+                          <label className={labelCls}>
+                            Stop Loss Break Even Hedge, %
+                            <Tip text="Итоговое расстояние безубыточного стопа хеджа от цены, после того как условие выше выполнено." />
+                          </label>
+                          <input type="number" step="0.1" min={0}
+                            value={config.als_stop_replace_pct ?? 1}
+                            onChange={e => patch({ als_stop_replace_pct: Number(e.target.value) })}
+                            className={inputCls} />
+                        </div>
+                        <div>
+                          <label className={labelCls}>
+                            Unsafe hedge % мин.
+                            <Tip text="Минимальный размер добора хеджа, % от текущего объёма main." />
+                          </label>
+                          <input type="number" step="0.1" min={0}
+                            value={config.unsafe_hedge_min_pct ?? 0}
+                            onChange={e => patch({ unsafe_hedge_min_pct: Number(e.target.value) })}
+                            className={inputCls} />
+                        </div>
+                        <div>
+                          <label className={labelCls}>
+                            Unsafe hedge % макс.
+                            <Tip text="Максимальный размер добора хеджа без стопа, % от текущего объёма main. 0 = без ограничения." />
+                          </label>
+                          <input type="number" step="0.1" min={0}
+                            value={config.unsafe_hedge_max_pct ?? 80}
+                            onChange={e => patch({ unsafe_hedge_max_pct: Number(e.target.value) })}
+                            className={inputCls} />
+                        </div>
+                        <div>
+                          <label className={labelCls}>
+                            Контроль ТП на Main
+                            <Tip text="Пока хедж открыт — ТП на main-позиции снимается, и восстанавливается после закрытия хеджа." />
+                          </label>
+                          <Toggle
+                            options={[{ label: 'Выкл', value: 'false' }, { label: 'Вкл', value: 'true' }]}
+                            value={String(config.tp_control_enabled ?? false)}
+                            onChange={v => patch({ tp_control_enabled: v === 'true' })}
+                            optionColors={{ true: 'bg-blue-700 text-white' }}
+                          />
+                        </div>
+                        <div>
+                          <label className={labelCls}>
+                            Initial Stop BE Hedge, %
+                            <Tip text="Опционально: безубыточный стоп ставится сразу при открытии хеджа, ещё до того как сработает условие Min ROI выше. Пусто/выкл — стоп ждёт обычного условия." />
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <Toggle
+                              options={[{ label: 'Выкл', value: 'false' }, { label: 'Вкл', value: 'true' }]}
+                              value={String(config.initial_stop_be_pct !== null && config.initial_stop_be_pct !== undefined)}
+                              onChange={v => patch({ initial_stop_be_pct: v === 'true' ? (config.als_stop_replace_pct ?? 1) : null })}
+                              optionColors={{ true: 'bg-amber-700 text-white' }}
+                            />
+                            {config.initial_stop_be_pct !== null && config.initial_stop_be_pct !== undefined && (
+                              <input type="number" step="0.1" min={0}
+                                value={config.initial_stop_be_pct}
+                                onChange={e => patch({ initial_stop_be_pct: Number(e.target.value) })}
+                                className={`${inputCls} flex-1`} />
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className={labelCls}>
-                          Safe-Zone от SL %
-                          <Tip text="После срабатывания SL — зона вокруг цены, в которой новые ордера матрицы не выставляются." />
-                        </label>
-                        <input type="number" step="0.1" min={0}
-                          value={config.safe_zone_pct ?? 1.5}
-                          onChange={e => patch({ safe_zone_pct: Number(e.target.value) })}
-                          className={inputCls} />
+                  ) : (
+                    <div>
+                      <div className="flex items-center gap-1 text-[10px] text-gray-400 uppercase tracking-wider pb-1 border-b border-gray-800 mb-3">
+                        Управление Хедж
                       </div>
-                      <div>
-                        <label className={labelCls}>
-                          🔒 Защищённое построение
-                          <Tip text="Следующий уровень выставляется только после того, как предыдущий прикрыт хотя бы одним стопом." />
-                        </label>
-                        <Toggle
-                          options={[{ label: 'Выкл', value: 'false' }, { label: '🔒 Вкл', value: 'true' }]}
-                          value={String(config.protected_build ?? false)}
-                          onChange={v => patch({ protected_build: v === 'true' })}
-                          optionColors={{ true: 'bg-amber-700 text-white' }}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>
-                          ⟳ Перестройка сетки от SZ
-                          <Tip text="После SL немедленно переставляет все незаполненные уровни от нижней границы SafeZone." />
-                        </label>
-                        <Toggle
-                          options={[{ label: 'Выкл', value: 'false' }, { label: '⟳ Вкл', value: 'true' }]}
-                          value={String(config.matrix_rebuild_on_sl ?? false)}
-                          onChange={v => patch(v === 'true' ? { matrix_rebuild_on_sl: true, relative_slots: false } : { matrix_rebuild_on_sl: false })}
-                          optionColors={{ true: 'bg-blue-700 text-white' }}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>
-                          ⚓ Якорь на точку входа
-                          <Tip text="Все уровни строятся от цены заполнения L(0). После SL перезаходит маркетом из SafeZone." />
-                        </label>
-                        <Toggle
-                          options={[{ label: 'Выкл', value: 'false' }, { label: '⚓ Вкл', value: 'true' }]}
-                          value={String(config.matrix_rebuild_from_entry ?? false)}
-                          onChange={v => patch(v === 'true' ? { matrix_rebuild_from_entry: true, relative_slots: false } : { matrix_rebuild_from_entry: false })}
-                          optionColors={{ true: 'bg-violet-700 text-white' }}
-                        />
-                      </div>
-                      <div>
-                        <label className={labelCls}>
-                          ↻ Относительные слоты (Novabot)
-                          <Tip text="После срабатывания SL внутреннего слота остальные перенумеровываются к входу, а следующий слот берётся по параметрам освободившейся глубины. Взаимоисключимо с перестройкой сетки." />
-                        </label>
-                        <Toggle
-                          options={[{ label: 'Выкл', value: 'false' }, { label: '↻ Вкл', value: 'true' }]}
-                          value={String(config.relative_slots ?? false)}
-                          onChange={v => patch(v === 'true' ? { relative_slots: true, matrix_rebuild_on_sl: false, matrix_rebuild_from_entry: false } : { relative_slots: false })}
-                          optionColors={{ true: 'bg-emerald-700 text-white' }}
-                        />
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className={labelCls}>
+                            Safe-Zone от SL %
+                            <Tip text="После срабатывания SL — зона вокруг цены, в которой новые ордера матрицы не выставляются." />
+                          </label>
+                          <input type="number" step="0.1" min={0}
+                            value={config.safe_zone_pct ?? 1.5}
+                            onChange={e => patch({ safe_zone_pct: Number(e.target.value) })}
+                            className={inputCls} />
+                        </div>
+                        <div>
+                          <label className={labelCls}>
+                            🔒 Защищённое построение
+                            <Tip text="Следующий уровень выставляется только после того, как предыдущий прикрыт хотя бы одним стопом." />
+                          </label>
+                          <Toggle
+                            options={[{ label: 'Выкл', value: 'false' }, { label: '🔒 Вкл', value: 'true' }]}
+                            value={String(config.protected_build ?? false)}
+                            onChange={v => patch({ protected_build: v === 'true' })}
+                            optionColors={{ true: 'bg-amber-700 text-white' }}
+                          />
+                        </div>
+                        <div>
+                          <label className={labelCls}>
+                            ⟳ Перестройка сетки от SZ
+                            <Tip text="После SL немедленно переставляет все незаполненные уровни от нижней границы SafeZone." />
+                          </label>
+                          <Toggle
+                            options={[{ label: 'Выкл', value: 'false' }, { label: '⟳ Вкл', value: 'true' }]}
+                            value={String(config.matrix_rebuild_on_sl ?? false)}
+                            onChange={v => patch(v === 'true' ? { matrix_rebuild_on_sl: true, relative_slots: false } : { matrix_rebuild_on_sl: false })}
+                            optionColors={{ true: 'bg-blue-700 text-white' }}
+                          />
+                        </div>
+                        <div>
+                          <label className={labelCls}>
+                            ⚓ Якорь на точку входа
+                            <Tip text="Все уровни строятся от цены заполнения L(0). После SL перезаходит маркетом из SafeZone." />
+                          </label>
+                          <Toggle
+                            options={[{ label: 'Выкл', value: 'false' }, { label: '⚓ Вкл', value: 'true' }]}
+                            value={String(config.matrix_rebuild_from_entry ?? false)}
+                            onChange={v => patch(v === 'true' ? { matrix_rebuild_from_entry: true, relative_slots: false } : { matrix_rebuild_from_entry: false })}
+                            optionColors={{ true: 'bg-violet-700 text-white' }}
+                          />
+                        </div>
+                        <div>
+                          <label className={labelCls}>
+                            ↻ Относительные слоты (Novabot)
+                            <Tip text="После срабатывания SL внутреннего слота остальные перенумеровываются к входу, а следующий слот берётся по параметрам освободившейся глубины. Взаимоисключимо с перестройкой сетки." />
+                          </label>
+                          <Toggle
+                            options={[{ label: 'Выкл', value: 'false' }, { label: '↻ Вкл', value: 'true' }]}
+                            value={String(config.relative_slots ?? false)}
+                            onChange={v => patch(v === 'true' ? { relative_slots: true, matrix_rebuild_on_sl: false, matrix_rebuild_from_entry: false } : { relative_slots: false })}
+                            optionColors={{ true: 'bg-emerald-700 text-white' }}
+                          />
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  )}
 
                   {/* ── Управление Мэйн ── */}
                   <div>
