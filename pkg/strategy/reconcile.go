@@ -142,6 +142,41 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 		sr.warn(ctx, "Цикл оживлён: был закрыт извне (ghost_close), пока я продолжал им управлять — ложное закрытие")
 	}
 
+	// --- 0c. Catch externally-closed positions on exchanges with no position push stream ---
+	// handlePositionClose/handlePositionCloseRetry (cycle.go) — the only code that detects
+	// "this strategy's position just went to zero" and ends the cycle — is driven entirely
+	// by Bybit's private WS "position" topic (AccountRunner.OnPositionEvent). For every
+	// other exchange that stream is never started at all (see AccountRunner.run's own
+	// comment: "tradeStream ... and RunPrivateStream ... are both Bybit-specific"), so a
+	// closed Binance position was never detected — the cycle stayed open, the filled level
+	// stayed 'filled', and anything derived from that state (the strategy card, the chart's
+	// SL overlay) stayed stale forever, until the process was restarted. Found live
+	// (2026-10-19, account N2 Binance, TERUSDT/NEARUSDT/1000TURBOUSDT).
+	//
+	// handlePositionCloseRetry is already exchange-agnostic (confirms against
+	// trader.Exchange.FetchPositions before closing anything) and already a safe no-op
+	// when the position is genuinely still open or there's nothing filled to close — so
+	// polling it here every reconcile tick for non-Bybit accounts is the minimal fix:
+	// reuse the existing, already-tested confirm-then-close path instead of duplicating it.
+	if ar.exchangeName != "bybit" {
+		for _, sr := range liveRunners {
+			sr.mu.RLock()
+			hasPosition := sr.cycle != nil && (sr.tpOrderID != "" || sr.slOrderID != "")
+			if !hasPosition {
+				for _, l := range sr.levels {
+					if l.Status == LevelFilled {
+						hasPosition = true
+						break
+					}
+				}
+			}
+			sr.mu.RUnlock()
+			if hasPosition {
+				sr.submit(func(ctx context.Context) { sr.handlePositionCloseRetry(ctx) })
+			}
+		}
+	}
+
 	// --- 1. Query placed grid levels ---
 	rows, err := ar.pool.Query(ctx,
 		`SELECT sl.id, sl.exchange_order_id, sl.strategy_id, s.symbol, s.category
