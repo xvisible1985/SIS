@@ -3,7 +3,9 @@ package strategy
 import (
 	"context"
 	"fmt"
+	"log"
 	"strconv"
+	"time"
 
 	"sis/pkg/trader"
 )
@@ -109,17 +111,29 @@ func (sr *StrategyRunner) startAlsCycle(ctx context.Context) error {
 	}
 
 	sr.info(ctx, fmt.Sprintf("ALS: цикл %d запущен, уровней: %d", cycleNum, len(sr.strategy.AlsThresholds)))
+	go sr.launchAlsPriceMonitor()
 	return nil
 }
 
-// resumeAlsCycle resumes an ALS cycle that was already running (e.g. after a process
-// restart). Stub — see the next plan. Must be called WITHOUT sr.mu held.
+// resumeAlsCycle restarts the price monitor for an ALS cycle that was already running
+// (e.g. after a process restart) — the cycle/levels themselves were already loaded by
+// the generic loadActiveCycle path (same one grid/matrix use), so there's nothing to
+// reconstruct here beyond relaunching the goroutine.
 func (sr *StrategyRunner) resumeAlsCycle(ctx context.Context) {
+	go sr.launchAlsPriceMonitor()
 }
 
 // restartAlsCycle re-applies strategy config to an already-running ALS cycle (settings
-// changed mid-flight). Stub — see the next plan. Must be called WITHOUT sr.mu held.
+// changed mid-flight) — thresholds are re-read from sr.strategy on every alsPriceTick
+// call already (no cached copy), so nothing needs rebuilding; just confirm the monitor
+// is still running.
 func (sr *StrategyRunner) restartAlsCycle(ctx context.Context) {
+	sr.mu.Lock()
+	monitorRunning := sr.matrixMonitorStop != nil
+	sr.mu.Unlock()
+	if !monitorRunning {
+		go sr.launchAlsPriceMonitor()
+	}
 }
 
 // resumeAlsAfterSignal resumes an ALS cycle that was waiting on an activation signal.
@@ -358,4 +372,100 @@ func (sr *StrategyRunner) alsPlaceTopUp(ctx context.Context, l *GridLevel, trigg
 		result.OrderId, linkID, triggerPrice, qty, l.ID,
 	)
 	sr.info(ctx, fmt.Sprintf("ALS L%d: довыставлен хедж %.2f USDT (%s qty=%s) @ рынок", l.LevelIdx, topUpUsdt, side, qty))
+}
+
+// launchAlsPriceMonitor starts a goroutine feeding real-time mark prices into
+// alsPriceTick — structurally identical to launchMatrixPriceMonitor (matrix.go), reused
+// by copy rather than by call since the two have no shared state to coordinate through.
+// Falls back to 5-second REST polling if the signal engine is unavailable.
+// Must be called WITHOUT sr.mu held.
+func (sr *StrategyRunner) launchAlsPriceMonitor() {
+	sr.mu.Lock()
+	if sr.matrixMonitorStop != nil {
+		sr.matrixMonitorStop()
+	}
+	sr.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sr.mu.Lock()
+	sr.matrixMonitorStop = cancel // reuses the same field — als and matrix are mutually exclusive per strategy
+	stratID := sr.strategy.ID
+	symbol := sr.strategy.Symbol
+	se := sr.runner.signalEngine
+	sr.mu.Unlock()
+
+	if se == nil {
+		go sr.runAlsPriceMonitorPolling(ctx, cancel, stratID, symbol)
+		return
+	}
+
+	priceCh := make(chan float64, 1)
+	go func() {
+		unsub := se.PriceHub().Subscribe("bybit", symbol, func(markPrice float64) {
+			select {
+			case <-priceCh:
+			default:
+			}
+			select {
+			case priceCh <- markPrice:
+			default:
+			}
+		})
+		defer cancel()
+		defer unsub()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case price := <-priceCh:
+				sr.mu.Lock()
+				hasCycle := sr.cycle != nil
+				sr.mu.Unlock()
+				if !hasCycle {
+					return
+				}
+				sr.submit(func(taskCtx context.Context) {
+					sr.mu.Lock()
+					defer sr.mu.Unlock()
+					sr.alsPriceTick(taskCtx, price)
+				})
+			}
+		}
+	}()
+}
+
+// runAlsPriceMonitorPolling is the REST fallback when signalEngine is nil — mirrors
+// runMatrixPriceMonitorPolling exactly.
+func (sr *StrategyRunner) runAlsPriceMonitorPolling(ctx context.Context, cancel context.CancelFunc, stratID, symbol string) {
+	defer cancel()
+	sr.mu.Lock()
+	ex := sr.runner.Exchange()
+	category := sr.strategy.Category
+	sr.mu.Unlock()
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sr.mu.Lock()
+			hasCycle := sr.cycle != nil
+			sr.mu.Unlock()
+			if !hasCycle {
+				return
+			}
+			price, err := ex.GetMarkPrice(ctx, category, symbol)
+			if err != nil {
+				log.Printf("strategy %s: als price monitor: %v", stratID, err)
+				continue
+			}
+			sr.submit(func(taskCtx context.Context) {
+				sr.mu.Lock()
+				defer sr.mu.Unlock()
+				sr.alsPriceTick(taskCtx, price)
+			})
+		}
+	}
 }
