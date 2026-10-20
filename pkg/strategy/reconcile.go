@@ -744,6 +744,39 @@ func (ar *AccountRunner) reconcile(ctx context.Context) {
 		}
 	}
 
+	// --- 8d. ALS per-level SL ghost-fill detection ---
+	// ALS counterpart of block 8b above, for the exact same reason: handleAlsLevelSLFill
+	// is normally driven by the live WS order-Filled event (engine.go OnOrderEvent,
+	// refType="als_sl"), which requires the runner to be running at the exact moment the
+	// fill happens. If the process was down or mid-restart then, the fill is missed
+	// entirely by that path, leaving the level LevelFilled with a now-dead SLOrderID —
+	// silently shrinking the hedge's real exchange position below what our own
+	// bookkeeping believes is still protected. Reuses the real fill price from
+	// trader_executions and replays it through the same handleAlsLevelSLFill the live WS
+	// path would have called, so realized_pnl/memory-bank-restore all run exactly as they
+	// would have at the time — not a hand-rolled substitute.
+	for stratID, sr := range strategyRefs {
+		if sr.strategy.StrategyType != "als" {
+			continue
+		}
+		sr.mu.RLock()
+		ghosts := alsGhostSLCandidates(sr.levels, live)
+		sr.mu.RUnlock()
+		for _, g := range ghosts {
+			var fillPrice float64
+			if err := ar.pool.QueryRow(ctx,
+				`SELECT price FROM trader_executions WHERE account_id=$1 AND order_id=$2 ORDER BY exec_time DESC LIMIT 1`,
+				ar.accountID, g.slOrderID,
+			).Scan(&fillPrice); err != nil {
+				log.Printf("strategy reconcile: ALS level SL %s (strategy %s) missing from exchange with no matching execution found — leaving level as-is",
+					g.slOrderID, stratID[:8])
+				continue
+			}
+			levelID := g.levelID
+			sr.submit(func(ctx context.Context) { sr.handleAlsLevelSLFill(ctx, levelID, fillPrice) })
+		}
+	}
+
 	// --- 8c. Matrix pending entry health-check ---
 	// For each active matrix runner, retries placing non-virtual pending entry levels
 	// with no exchange_order_id. Covers placement failures during rebuild (transient
