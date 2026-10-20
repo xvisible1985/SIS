@@ -977,6 +977,28 @@ func matrixGhostSLCandidates(levels []GridLevel, live map[string]bool) []ghostSL
 	return ghosts
 }
 
+// alsGhostSLCandidates is matrixGhostSLCandidates's ALS counterpart — same ghost-fill
+// detection (an SL order our own bookkeeping still thinks is live, but has vanished from
+// the exchange's open-order list), but without the Slot requirement: ALS levels never
+// set Slot (that's a matrix-only concept, see GridLevel's own field comment), so the
+// equivalent "is this an ALS per-level stop" check is simply the level still being
+// LevelFilled with a non-empty SLOrderID — the reconcile caller already scopes this to
+// StrategyType=="als" runners only, so no further type discrimination is needed here.
+func alsGhostSLCandidates(levels []GridLevel, live map[string]bool) []ghostSL {
+	var ghosts []ghostSL
+	for i := range levels {
+		l := &levels[i]
+		if l.Status != LevelFilled || l.SLOrderID == "" {
+			continue
+		}
+		if live[l.SLOrderID] {
+			continue // still genuinely resting on the exchange
+		}
+		ghosts = append(ghosts, ghostSL{l.ID, l.SLOrderID})
+	}
+	return ghosts
+}
+
 // matrix8cRetryPrice picks the price block 8c's health-check passes into placeMatrixLevel
 // when retrying a stuck pending level. Relative-slots levels (l.Slot != nil) are only ever
 // inserted after price has already reached/passed their TargetPrice (matrixRelativeExpand
