@@ -325,7 +325,7 @@ func (sr *StrategyRunner) alsRestoreFromMemory(ctx context.Context) {
 		trigDir = 1
 	}
 	linkID := fmt.Sprintf("SIS_STR-%s-alsrestore-%d", sr.strategy.ID[:8], l.LevelIdx)
-	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "sl"}
+	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "als_sl"}
 	sr.runner.RegisterOrder(linkID, ref)
 
 	result, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
@@ -372,6 +372,87 @@ func (sr *StrategyRunner) lastLevelFillPriceFor(l *GridLevel) float64 {
 	return l.TargetPrice
 }
 
+// handleAlsLevelSLFill is called when a per-level ALS stop fires (refType="als_sl") —
+// mirrors handleMatrixSLFill's role for matrix, which this was mistakenly NOT routed
+// through until now: alsPlaceLevelStop/alsRestoreFromMemory originally tagged their
+// stop orders with refType="sl" (the GENERIC single-whole-position stop used by grid
+// strategies, handled by handleSLFill — which takes no levelID at all and would have
+// mishandled a real ALS stop fill by ignoring which of possibly several levels actually
+// closed). Found while wiring this handler up; fixed by introducing "als_sl" as its own
+// refType, same pattern as matrix's "matrix_sl".
+//
+// Marks the level sl_closed, records the realized PnL via the exact same generic
+// trade-recording helpers matrix's own per-level SL close uses (AccumulateMatrixLevelSLPnl/
+// RecordMatrixLevelSLTrade take no matrix-specific data — just Strategy/CycleNum/prices/qty,
+// confirmed by reading their bodies), then restores the nearest remembered stop from
+// als_stop_memory into the now-freed slot (Polish plan's memory-bank, Task 3 — this was the
+// explicitly-flagged-as-unresolved event hook).
+// Must NOT be called with sr.mu held (submitted to worker via sr.submit).
+func (sr *StrategyRunner) handleAlsLevelSLFill(ctx context.Context, levelID string, filledPrice float64) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+
+	if sr.cycle == nil {
+		return
+	}
+
+	var closed *GridLevel
+	for i := range sr.levels {
+		if sr.levels[i].ID == levelID {
+			closed = &sr.levels[i]
+			break
+		}
+	}
+	if closed == nil {
+		return
+	}
+
+	slTrigger := closed.SLPrice
+	if slTrigger == 0 {
+		slTrigger = filledPrice
+	}
+
+	var levelPnl, levelQty float64
+	hasFill := closed.FilledPrice > 0
+	if hasFill {
+		levelQty, _ = strconv.ParseFloat(closed.Qty, 64)
+		if sr.strategy.Direction == DirectionShort {
+			levelPnl = (closed.FilledPrice - slTrigger) * levelQty
+		} else {
+			levelPnl = (slTrigger - closed.FilledPrice) * levelQty
+		}
+	}
+
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategy_levels SET status='sl_closed', realized_pnl=$1, sl_closed_at=NOW() WHERE id=$2`, levelPnl, levelID,
+	)
+	closed.Status = LevelSLClosed
+	slOrderID := closed.SLOrderID
+	closed.SLOrderID = ""
+	closed.SLLinkID = ""
+
+	go AccumulateMatrixLevelSLPnl(sr.runner.pool, MatrixLevelSLAccumulateInput{
+		StrategyID: sr.strategy.ID, AccountID: sr.strategy.AccountID, OrderID: slOrderID, GrossPnl: levelPnl,
+	})
+	if hasFill {
+		go RecordMatrixLevelSLTrade(sr.runner.pool, MatrixLevelSLRecordInput{
+			Strategy:   sr.strategy,
+			CycleNum:   sr.cycle.CycleNum,
+			OrderID:    slOrderID,
+			EntryPrice: closed.FilledPrice,
+			ExitPrice:  slTrigger,
+			Qty:        levelQty,
+			VolumeUSDT: levelQty * closed.FilledPrice,
+			OpenedAt:   closed.PlacedAt,
+			GrossPnl:   levelPnl,
+		})
+	}
+	sr.warn(ctx, fmt.Sprintf("ALS L%d: стоп сработал @ %.4f", closed.LevelIdx, slTrigger))
+
+	// A stop slot just freed up — restore the nearest remembered entry, if any.
+	sr.alsRestoreFromMemory(ctx)
+}
+
 // alsPlaceLevelStop places a breakeven-style stop for one filled ALS level at
 // trigger = matrixStopReplaceTrigger(hedgeDirection, filledPrice, bePct) — reusing
 // matrix.go's existing free function unchanged, since the math (trail behind price on
@@ -406,7 +487,7 @@ func (sr *StrategyRunner) alsPlaceLevelStop(ctx context.Context, l *GridLevel, f
 	}
 
 	linkID := fmt.Sprintf("SIS_STR-%s-alssl-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx)
-	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "sl"}
+	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "als_sl"}
 	sr.runner.RegisterOrder(linkID, ref)
 
 	result, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{

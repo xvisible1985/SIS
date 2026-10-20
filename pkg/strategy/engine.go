@@ -1482,6 +1482,10 @@ func (ar *AccountRunner) OnOrderEvent(ev trader.OrderEvent) {
 		fillPrice, _ := strconv.ParseFloat(ev.AvgPrice, 64)
 		levelID := ref.levelID
 		sr.submit(func(ctx context.Context) { sr.handleMatrixSLFill(ctx, levelID, fillPrice) })
+	case "als_sl":
+		fillPrice, _ := strconv.ParseFloat(ev.AvgPrice, 64)
+		levelID := ref.levelID
+		sr.submit(func(ctx context.Context) { sr.handleAlsLevelSLFill(ctx, levelID, fillPrice) })
 	}
 }
 
