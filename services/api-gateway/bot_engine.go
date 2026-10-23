@@ -589,6 +589,15 @@ func (s *Server) botEngineTick(ctx context.Context) {
 	// ── STEP 2: Parse configs, build groups ───────────────────────────────
 	groups := make(map[groupKey]*groupEntry)
 
+	// Bots with no activation signal configured never gate on signal.State — they open
+	// immediately on every whitelist symbol instead (STEP 4b below), independently per
+	// direction the same way a direction="both" signal bot can hold long AND short at
+	// once (openDirectionKey is keyed by (symbol,direction), not just symbol).
+	var noSignalBots []struct {
+		row botEngineRow
+		cfg botCfgJSON
+	}
+
 	for _, b := range bots {
 		var cfg botCfgJSON
 		if err := json.Unmarshal(b.stratCfg, &cfg); err != nil {
@@ -600,7 +609,10 @@ func (s *Server) botEngineTick(ctx context.Context) {
 			continue
 		}
 		if len(cfg.ActivationSignals) == 0 {
-			s.logBotEvent(ctx, b.id, "Тик: не настроены сигналы активации — пропуск", "warn", "tick")
+			noSignalBots = append(noSignalBots, struct {
+				row botEngineRow
+				cfg botCfgJSON
+			}{row: b, cfg: cfg})
 			continue
 		}
 
@@ -666,7 +678,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 		}{row: b, cfg: cfg})
 	}
 
-	if len(groups) == 0 {
+	if len(groups) == 0 && len(noSignalBots) == 0 {
 		return
 	}
 
@@ -919,6 +931,88 @@ func (s *Server) botEngineTick(ctx context.Context) {
 			}()
 		}
 	}
+
+	// ── STEP 4b: No-signal bots — open immediately on every whitelist symbol ──────
+	// There's no signal.State to gate on, so every whitelist symbol is itself the
+	// opportunity. "both" (the default when direction is unset) opens long AND short
+	// as two independent opportunities — the same (symbol,direction) dedup key below
+	// is what already lets a direction="both" signal bot hold both sides at once.
+	for _, item := range noSignalBots {
+		item := item
+		botWg.Add(1)
+		go func() {
+			defer botWg.Done()
+			defer recoverEngine("botEngineTick noSignal bot " + item.row.id)
+			select {
+			case <-ctx.Done():
+				return
+			case botSemCh <- struct{}{}:
+			}
+			defer func() { <-botSemCh }()
+
+			b := item.row
+			cfg := item.cfg
+
+			botSymbols := resolveSymbolList(b.whitelist, b.blacklist, s.GetDelistingSymbols(), allSymbols)
+			if len(botSymbols) == 0 {
+				return
+			}
+
+			opened, err := s.loadOpenDirections(ctx, b.accountID)
+			if err != nil {
+				return
+			}
+
+			dirs := []string{"long", "short"}
+			switch cfg.Direction {
+			case "long":
+				dirs = []string{"long"}
+			case "short":
+				dirs = []string{"short"}
+			}
+
+			var opportunities []string
+			var skippedOpen []string
+			for _, sym := range botSymbols {
+				for _, d := range dirs {
+					if opened[openDirectionKey{sym, d}] {
+						skippedOpen = append(skippedOpen, fmt.Sprintf("%s→%s", sym, d))
+						continue
+					}
+					opportunities = append(opportunities, fmt.Sprintf("%s→%s", sym, d))
+				}
+			}
+
+			if len(skippedOpen) > 0 {
+				s.logBotEvent(ctx, b.id,
+					fmt.Sprintf("Тик: %d слотов без сигнала уже открыты на аккаунте: %s",
+						len(skippedOpen), joinMax(skippedOpen, 5)), "info", "tick")
+			}
+			if len(opportunities) == 0 {
+				return
+			}
+
+			totalOppsMu.Lock()
+			totalOpps += len(opportunities)
+			totalOppsMu.Unlock()
+
+			if b.autoMode {
+				s.ensureBotWorker(ctx, b.id)
+				for _, sym := range botSymbols {
+					for _, d := range dirs {
+						if opened[openDirectionKey{sym, d}] {
+							continue
+						}
+						s.sendBotOpportunity(b.id, botOpportunity{sym: sym, dir: d, score: 1.0, source: "tick"})
+					}
+				}
+			} else {
+				s.logBotEvent(ctx, b.id,
+					fmt.Sprintf("Тик: %d возможностей для открытия без сигнала (включите авто-режим): %s",
+						len(opportunities), joinMax(opportunities, 5)), "info", "tick")
+			}
+		}()
+	}
 	botWg.Wait()
 
 	// ── Update metrics ────────────────────────────────────────────────────
@@ -1060,6 +1154,7 @@ type botCfgJSON struct {
 	InitialStopBEPct  *float64        `json:"initial_stop_be_pct,omitempty"`
 	AlsStopCondPct    float64         `json:"als_stop_cond_pct"`
 	AlsStopReplacePct float64         `json:"als_stop_replace_pct"`
+	AlsExchangeOrders bool            `json:"als_exchange_orders"`
 
 	// Hedge → Main control actions (hedge bots only).
 	HedgeCancelMainTp bool `json:"hedge_cancel_main_tp"` // cancel TP on main at hedge activation
@@ -1184,6 +1279,7 @@ type botStrategyCols struct {
 	tpControlEnabled                    bool
 	initialStopBEPct                    *float64
 	alsStopCondPct, alsStopReplacePct   float64
+	alsExchangeOrders                   bool
 }
 
 // computeBotStrategyCols applies defaults (same as strategyPayload.applyDefaults), raises
@@ -1369,6 +1465,7 @@ func (s *Server) computeBotStrategyCols(ctx context.Context, cfg botCfgJSON, sym
 		initialStopBEPct:       cfg.InitialStopBEPct,
 		alsStopCondPct:         cfg.AlsStopCondPct,
 		alsStopReplacePct:      cfg.AlsStopReplacePct,
+		alsExchangeOrders:      cfg.AlsExchangeOrders,
 	}, nil
 }
 
@@ -1400,7 +1497,7 @@ func (s *Server) applyBotConfigToStrategy(ctx context.Context, db pgxExec, strat
 		   hedged_strategy_id=NULLIF($32,'')::uuid, adopt_position_data=($33::text)::jsonb,
 		   als_thresholds=($34::text)::jsonb, unsafe_hedge_min_pct=$35, unsafe_hedge_max_pct=$36,
 		   stop_market_size_k=$37, tp_control_enabled=$38, initial_stop_be_pct=$39,
-		   als_stop_cond_pct=$40, als_stop_replace_pct=$41
+		   als_stop_cond_pct=$40, als_stop_replace_pct=$41, als_exchange_orders=$42
 		 WHERE id=$1`,
 		strategyID, botID, cols.category,
 		cols.gridLevels, cols.gridActive, cols.gridStep, cols.gridSize,
@@ -1414,7 +1511,7 @@ func (s *Server) applyBotConfigToStrategy(ctx context.Context, db pgxExec, strat
 		hedgedStrategyID, adoptJSON,
 		cols.alsThresholdsParam, cols.unsafeHedgeMinPct, cols.unsafeHedgeMaxPct,
 		cols.stopMarketSizeK, cols.tpControlEnabled, cols.initialStopBEPct,
-		cols.alsStopCondPct, cols.alsStopReplacePct,
+		cols.alsStopCondPct, cols.alsStopReplacePct, cols.alsExchangeOrders,
 	)
 	return err
 }
@@ -1472,7 +1569,7 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 			   origin_bot_id=COALESCE(origin_bot_id, $33::uuid),
 			   als_thresholds=($34::text)::jsonb, unsafe_hedge_min_pct=$35, unsafe_hedge_max_pct=$36,
 			   stop_market_size_k=$37, tp_control_enabled=$38, initial_stop_be_pct=$39,
-			   als_stop_cond_pct=$40, als_stop_replace_pct=$41
+			   als_stop_cond_pct=$40, als_stop_replace_pct=$41, als_exchange_orders=$42
 			 WHERE id=$1 AND status='stopped'
 			 RETURNING id`,
 			reuseID, cols.category,
@@ -1488,7 +1585,7 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 			b.id,
 			cols.alsThresholdsParam, cols.unsafeHedgeMinPct, cols.unsafeHedgeMaxPct,
 			cols.stopMarketSizeK, cols.tpControlEnabled, cols.initialStopBEPct,
-			cols.alsStopCondPct, cols.alsStopReplacePct,
+			cols.alsStopCondPct, cols.alsStopReplacePct, cols.alsExchangeOrders,
 		).Scan(&rid)
 		if reErr == nil {
 			go s.engine.Notify(context.Background(), rid)
@@ -1526,7 +1623,8 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		   protected_build, matrix_rebuild_on_sl, matrix_rebuild_from_entry, relative_slots,
 		   hedged_strategy_id, adopt_position_data, origin_bot_id,
 		   als_thresholds, unsafe_hedge_min_pct, unsafe_hedge_max_pct, stop_market_size_k,
-		   tp_control_enabled, initial_stop_be_pct, als_stop_cond_pct, als_stop_replace_pct)
+		   tp_control_enabled, initial_stop_be_pct, als_stop_cond_pct, als_stop_replace_pct,
+		   als_exchange_orders)
 		VALUES ($1,$2,$3,$4,$5,$6,'active',
 		        $7,$8,$9,$10,
 		        $11,$12,$13,$14,$15,
@@ -1538,7 +1636,8 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		        $32, $33, $34, $35,
 		        NULLIF($36,'')::uuid, ($37::text)::jsonb, $38,
 		        ($39::text)::jsonb, $40, $41, $42,
-		        $43, $44, $45, $46)
+		        $43, $44, $45, $46,
+		        $47)
 		ON CONFLICT DO NOTHING
 		RETURNING id`,
 		b.ownerID, b.accountID, b.id, sym, cols.category, dir,
@@ -1553,6 +1652,7 @@ func (s *Server) createBotStrategy(ctx context.Context, b botEngineRow, cfg botC
 		hedgedStrategyID, adoptJSON, b.id,
 		cols.alsThresholdsParam, cols.unsafeHedgeMinPct, cols.unsafeHedgeMaxPct, cols.stopMarketSizeK,
 		cols.tpControlEnabled, cols.initialStopBEPct, cols.alsStopCondPct, cols.alsStopReplacePct,
+		cols.alsExchangeOrders,
 	).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Another hedge bot already claimed this main strategy — silently skip.

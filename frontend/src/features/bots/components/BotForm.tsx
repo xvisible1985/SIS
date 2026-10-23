@@ -1650,6 +1650,20 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
                   priorityKey={config.priority_signal as string | undefined}
                   onPriorityChange={key => patch({ priority_signal: key })}
                 />
+                {((config.activation_signals as SignalConfig[] | undefined)?.length ?? 0) === 0 && (
+                  <div className="mt-2 flex items-start gap-2.5 rounded-lg border border-amber-500/30 bg-amber-500/[.08] px-3 py-2.5">
+                    <span className="mt-0.5 shrink-0 text-[14px] text-amber-400">⚠️</span>
+                    <p className="text-[11px] leading-relaxed text-slate-400">
+                      <span className="font-semibold text-amber-300">Без сигналов активации бот откроет позицию немедленно</span>
+                      {' '}— на каждом символе из whitelist, как только станет активным, без какого-либо фильтра.{' '}
+                      {config.direction === 'long'
+                        ? 'Направление: LONG.'
+                        : config.direction === 'short'
+                          ? 'Направление: SHORT.'
+                          : 'Направление: сразу ОБЕ стороны — LONG и SHORT одновременно.'}
+                    </p>
+                  </div>
+                )}
               </div>
 
 

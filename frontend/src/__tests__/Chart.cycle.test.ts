@@ -1,5 +1,38 @@
 import { describe, it, expect } from 'vitest'
-import { extractCycleNum, isOtherStrategyLinkId, deriveEffectiveCycleNum, isCycleLive } from '../components/terminal/Chart'
+import { extractCycleNum, isOtherStrategyLinkId, deriveEffectiveCycleNum, isCycleLive, parseOrderLabel } from '../components/terminal/Chart'
+
+// Regression for the 2026-10-23 incident: ALS hedge level/stop orders use a '-als-'/'-alssl-'
+// segment (literal letters) where the generic grid/matrix regexes require a purely-numeric
+// cycle segment, so parseOrderLabel/extractCycleNum always failed to match them — ALS
+// threshold lines (and SL markers) never rendered on the chart at all, even though the
+// orders were really on the exchange and the DB.
+describe('parseOrderLabel (ALS)', () => {
+  it('labels an ALS entry/top-up level order as L{levelIdx}', () => {
+    expect(parseOrderLabel('SIS_STR-abc12345-als-1-2')).toBe('L2')
+  })
+
+  it('labels a fresh ALS per-level stop order as SL_L(levelIdx)', () => {
+    expect(parseOrderLabel('SIS_STR-abc12345-alssl-1-2')).toBe('SL_L(2)')
+  })
+
+  it('labels an ALS stop restored from memory as SL_L(levelIdx)', () => {
+    expect(parseOrderLabel('SIS_STR-abc12345-alsrestore-3')).toBe('SL_L(3)')
+  })
+})
+
+describe('extractCycleNum (ALS)', () => {
+  it('parses cycle from an ALS entry/top-up order linkId', () => {
+    expect(extractCycleNum('SIS_STR-abc12345-als-5-2')).toBe(5)
+  })
+
+  it('parses cycle from an ALS per-level stop order linkId', () => {
+    expect(extractCycleNum('SIS_STR-abc12345-alssl-5-2')).toBe(5)
+  })
+
+  it('returns null for an ALS restored-from-memory stop (no embedded cycle)', () => {
+    expect(extractCycleNum('SIS_STR-abc12345-alsrestore-2')).toBeNull()
+  })
+})
 
 describe('extractCycleNum', () => {
   it('parses cycle from a TP order linkId', () => {

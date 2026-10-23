@@ -36,7 +36,7 @@ interface Props {
   hedgePairTarget?: number | null
 }
 
-function parseOrderLabel(linkId: string, side?: string): string {
+export function parseOrderLabel(linkId: string, side?: string): string {
   if (!linkId) return ''
   // Per-level matrix SL orders: SIS_STR-{stratId8}-msl-{slotEncoded}-{seq}
   // Slot encoding: positive/zero → plain digits, negative → "n{abs}" (e.g. slot -1 → "n1")
@@ -63,6 +63,21 @@ function parseOrderLabel(linkId: string, side?: string): string {
   }
   if (/^(SIS_STR|STP)-[a-f0-9]+-sl(-\d+)+$/.test(linkId))
     return side === 'Sell' ? 'SL_LONG' : side === 'Buy' ? 'SL_SHORT' : 'SL'
+  // ALS per-level stops — fresh: SIS_STR-{stratId8}-alssl-{cycle}-{levelIdx};
+  // restored from als_stop_memory: SIS_STR-{stratId8}-alsrestore-{levelIdx}.
+  // Must be checked before the plain '-als-' branch below (both contain it as a substring).
+  if (linkId.includes('-alssl-') || linkId.includes('-alsrestore-')) {
+    const parts = linkId.split('-')
+    return `SL_L(${parts[parts.length - 1]})`
+  }
+  // ALS entry/top-up level orders: SIS_STR-{stratId8}-als-{cycle}-{levelIdx}.
+  // The generic grid/matrix regex below requires a purely-numeric segment right after the
+  // strategy id (cycle), so the literal "als" there always failed to match — these orders
+  // got label='' and never rendered as chart lines/price markers at all.
+  if (linkId.includes('-als-')) {
+    const parts = linkId.split('-')
+    return `L${parts[parts.length - 1]}`
+  }
   // Grid virtual: -{repriceGen}-v  Matrix virtual: -v{repriceGen}
   const m = linkId.match(/^(SIS_STR|STR)-[a-f0-9]+-\d+-(\d+)(?:-(?:v\d+|\d+(?:-v)?))?$/)
   return m ? `L${m[2]}` : ''
@@ -77,6 +92,10 @@ export function extractCycleNum(linkId?: string): number | null {
   if (!linkId) return null
   // SIS_STR-{id}-tp[l{slot}]-{cycle}[-{seq}] or SIS_STR-{id}-sl-{cycle}[-{seq}]
   let m = linkId.match(/^(?:SIS_STR|STP)-[a-f0-9]+-(?:tp(?:l[n\d]+)?|sl)-(\d+)/)
+  if (m) return parseInt(m[1])
+  // ALS entry/top-up and per-level-stop orders: -als-{cycle}-{levelIdx} / -alssl-{cycle}-{levelIdx}.
+  // (-alsrestore-{levelIdx} has no embedded cycle number at all — falls through to null.)
+  m = linkId.match(/^(?:SIS_STR|STR)-[a-f0-9]+-als(?:sl)?-(\d+)-\d+$/)
   if (m) return parseInt(m[1])
   // Grid virtual: -{repriceGen}-v  Matrix virtual: -v{repriceGen}
   m = linkId.match(/^(?:SIS_STR|STR)-[a-f0-9]+-(\d+)-\d+(?:-(?:v\d+|\d+(?:-v)?))?$/)
@@ -713,6 +732,17 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         if (stratIdShort && effectiveCycleNum != null && n !== effectiveCycleNum) continue
         activeCycles.add(n)
       }
+      // ALS hedges have no whole-position TP sitting open on the exchange (only per-level
+      // protective stops, placed reactively and often absent entirely — see
+      // alsPlaceLevelStop/als_stop_cond_pct), so once every crossed threshold has filled
+      // there can be zero open orders for a perfectly live cycle, unlike grid/matrix which
+      // always keep their TP order open. The open-orders-only activeCycles above then stays
+      // empty and the execution-fallback fill lines below never render. Same fix as the
+      // execution-markers effect: strategyLevels is only ever non-empty for a cycle the
+      // backend confirms hasn't ended, so treat that as an equally valid "cycle is live" signal.
+      if (effectiveCycleNum != null && strategyLevels && strategyLevels.length > 0) {
+        activeCycles.add(effectiveCycleNum)
+      }
 
       // If a TP order is currently active (placed on exchange), hide TP executions to
       // avoid showing both the [B] placed-order line and a stale execution line simultaneously.
@@ -964,6 +994,17 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
       if (n === null) continue
       if (stratIdShort && effectiveCycleNum != null && n !== effectiveCycleNum) continue
       activeCycles.add(n)
+    }
+    // ALS hedges never sit on the order book waiting for their thresholds — alsPriceTick
+    // reacts with a market order only once a threshold is actually crossed, so once every
+    // crossed level has filled there can be zero open orders for a perfectly live cycle
+    // (no pending L4+ the way grid/matrix always have). The open-orders-only activeCycles
+    // above then stays empty and the line-1018-equivalent filter below drops every one of
+    // this cycle's fill markers. strategyLevels is only ever non-empty for a cycle the
+    // backend confirms hasn't ended (GetStrategyState's `!cycleEnded` guard), so treat that
+    // as an equally valid "this cycle is live" signal.
+    if (effectiveCycleNum != null && strategyLevels && strategyLevels.length > 0) {
+      activeCycles.add(effectiveCycleNum)
     }
 
     // Strategy closed: no active position and no open orders → cycle finished, clear all markers.

@@ -323,7 +323,7 @@ export interface Strategy {
   leverage: number
   margin_type: 'isolated' | 'cross'
   hedge_mode: boolean
-  strategy_type: 'grid' | 'matrix' | 'manual'
+  strategy_type: 'grid' | 'matrix' | 'manual' | 'als'
   entry_order_type: 'limit' | 'stop_market'
   signal_configs: SignalConfig[]
   steps: GridStep[] | null
@@ -475,7 +475,7 @@ export interface StrategyFormData {
   symbol: string
   category: string
   direction: 'long' | 'short'
-  strategy_type: 'grid' | 'matrix' | 'manual'
+  strategy_type: 'grid' | 'matrix' | 'manual' | 'als'
   robot_enabled: boolean
   virtual_orders: boolean
   entry_order_type: 'limit' | 'stop_market'

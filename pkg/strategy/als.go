@@ -148,14 +148,42 @@ func (sr *StrategyRunner) resumeAlsCycle(ctx context.Context) {
 
 // restartAlsCycle re-applies strategy config to an already-running ALS cycle (settings
 // changed mid-flight) — thresholds are re-read from sr.strategy on every alsPriceTick
-// call already (no cached copy), so nothing needs rebuilding; just confirm the monitor
-// is still running.
+// call already (no cached copy), and alsPriceTick itself grows sr.levels to match a
+// longer AlsThresholds (see alsSyncLevelsToThresholds), so nothing needs rebuilding
+// here; just confirm the monitor is still running.
 func (sr *StrategyRunner) restartAlsCycle(ctx context.Context) {
 	sr.mu.Lock()
 	monitorRunning := sr.matrixMonitorStop != nil
 	sr.mu.Unlock()
 	if !monitorRunning {
 		go sr.launchAlsPriceMonitor()
+	}
+}
+
+// alsSyncLevelsToThresholds appends a fresh Pending GridLevel (and its strategy_levels
+// row) for every threshold added to sr.strategy.AlsThresholds since the cycle started —
+// mirrors startAlsCycle's own level-creation SQL exactly, just scoped to the missing
+// indices. Never removes or renumbers existing levels; a threshold REMOVED from the
+// table is already handled gracefully further down in alsPriceTick (the
+// "l.LevelIdx-1 >= len(AlsThresholds)" skip), so no symmetric removal is needed here.
+// Must be called with sr.mu held and sr.cycle != nil (checked by the caller).
+func (sr *StrategyRunner) alsSyncLevelsToThresholds(ctx context.Context) {
+	side := "Buy"
+	if sr.strategy.Direction == DirectionShort {
+		side = "Sell"
+	}
+	for levelIdx := len(sr.levels) + 1; levelIdx <= len(sr.strategy.AlsThresholds); levelIdx++ {
+		var levelID string
+		if err := sr.runner.pool.QueryRow(ctx,
+			`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, status)
+			 VALUES ($1,$2,$3,$4,0,0,'0','pending') RETURNING id`,
+			sr.strategy.ID, sr.cycle.ID, levelIdx, side,
+		).Scan(&levelID); err != nil {
+			sr.errlog(ctx, fmt.Sprintf("ALS: ошибка добавления нового порога L%d: %v", levelIdx, err))
+			return // stop; retry next tick
+		}
+		sr.levels = append(sr.levels, GridLevel{ID: levelID, LevelIdx: levelIdx, Side: side, Status: LevelPending})
+		sr.info(ctx, fmt.Sprintf("ALS: добавлен новый порог L%d (настройки изменены на лету)", levelIdx))
 	}
 }
 
@@ -191,7 +219,9 @@ func (sr *StrategyRunner) handleAlsLevelFill(ctx context.Context, levelID string
 	sr.info(ctx, fmt.Sprintf("ALS L%d исполнен @ %.4f", l.LevelIdx, filledPrice))
 
 	if sr.strategy.InitialStopBEPct != nil {
-		sr.alsPlaceLevelStop(ctx, l, filledPrice, *sr.strategy.InitialStopBEPct)
+		// filledPrice doubles as the current-price reference here: this fires right at
+		// fill time, so the fill price IS where the market is right now.
+		sr.alsPlaceLevelStop(ctx, l, filledPrice, *sr.strategy.InitialStopBEPct, filledPrice)
 	}
 }
 
@@ -278,7 +308,7 @@ func sideOppositeOf(dir Direction) string {
 // function itself only needs an active stop slot to be available, which
 // alsEnsureStopRoom's own caller (alsPlaceLevelStop) already guarantees isn't exceeded.
 // Must be called with sr.mu held.
-func (sr *StrategyRunner) alsRestoreFromMemory(ctx context.Context) {
+func (sr *StrategyRunner) alsRestoreFromMemory(ctx context.Context, currentPrice float64) {
 	rows, err := sr.runner.pool.Query(ctx,
 		`SELECT id, level_id, side, trigger_price, qty FROM als_stop_memory WHERE strategy_id=$1 ORDER BY trigger_price`,
 		sr.strategy.ID,
@@ -320,8 +350,12 @@ func (sr *StrategyRunner) alsRestoreFromMemory(ctx context.Context) {
 		return // level no longer tracked (e.g. cycle restarted) — drop the stale memory row below anyway
 	}
 
+	// Compare against the LIVE current price, not a stale fill/target price from some
+	// OTHER level (lastLevelFillPriceFor's old reference) — same bug class and fix as
+	// alsPlaceLevelStop above: Bybit validates TriggerDirection against where the trigger
+	// sits relative to price right now.
 	trigDir := 2
-	if m.triggerPrice > sr.lastLevelFillPriceFor(l) {
+	if m.triggerPrice > currentPrice {
 		trigDir = 1
 	}
 	linkID := fmt.Sprintf("SIS_STR-%s-alsrestore-%d", sr.strategy.ID[:8], l.LevelIdx)
@@ -360,16 +394,6 @@ func (sr *StrategyRunner) alsRestoreFromMemory(ctx context.Context) {
 		`DELETE FROM als_stop_memory WHERE id=$1`, m.id,
 	)
 	sr.info(ctx, fmt.Sprintf("ALS: стоп L%d (%.4f) восстановлен из памяти", l.LevelIdx, m.triggerPrice))
-}
-
-// lastLevelFillPriceFor returns l.FilledPrice, falling back to l.TargetPrice — a small
-// helper so alsRestoreFromMemory's triggerDirection comparison has a sensible reference
-// point even for a level whose FilledPrice wasn't set for some reason.
-func (sr *StrategyRunner) lastLevelFillPriceFor(l *GridLevel) float64 {
-	if l.FilledPrice > 0 {
-		return l.FilledPrice
-	}
-	return l.TargetPrice
 }
 
 // handleAlsLevelSLFill is called when a per-level ALS stop fires (refType="als_sl") —
@@ -450,7 +474,8 @@ func (sr *StrategyRunner) handleAlsLevelSLFill(ctx context.Context, levelID stri
 	sr.warn(ctx, fmt.Sprintf("ALS L%d: стоп сработал @ %.4f", closed.LevelIdx, slTrigger))
 
 	// A stop slot just freed up — restore the nearest remembered entry, if any.
-	sr.alsRestoreFromMemory(ctx)
+	// filledPrice is this SL's own fill price, i.e. where the market is right now.
+	sr.alsRestoreFromMemory(ctx, filledPrice)
 }
 
 // alsPlaceLevelStop places a breakeven-style stop for one filled ALS level at
@@ -459,23 +484,22 @@ func (sr *StrategyRunner) handleAlsLevelSLFill(ctx context.Context, levelID stri
 // the favorable side by bePct%) is identical regardless of strategy type. Side/
 // triggerDirection are the OPPOSITE of the level's own open side (a stop CLOSES the
 // hedge). Must be called with sr.mu held.
-func (sr *StrategyRunner) alsPlaceLevelStop(ctx context.Context, l *GridLevel, filledPrice, bePct float64) {
+func (sr *StrategyRunner) alsPlaceLevelStop(ctx context.Context, l *GridLevel, filledPrice, bePct, currentPrice float64) {
 	sr.alsEnsureStopRoom(ctx, filledPrice)
 	trigger := matrixStopReplaceTrigger(sr.strategy.Direction, filledPrice, bePct)
 	closeSide := "Buy"
 	if sr.strategy.Direction == DirectionLong {
 		closeSide = "Sell"
 	}
-	// Determine triggerDirection by comparing trigger against filledPrice directly,
-	// rather than hardcoding it from sr.strategy.Direction — matrixApplyStopCondSLs
-	// (matrix.go) uses this exact same comparison-based approach, for the identical
-	// reason documented there: a trigger fixed by direction alone gets this backwards
-	// and the exchange rejects it outright. Found live for matrix (2026-09-16, ICXUSDT):
-	// retCode=110092 "expect Rising, but trigger_price <= current" when trigDir was
-	// hardcoded by direction instead of compared against where the trigger actually
-	// landed relative to price.
+	// Determine triggerDirection by comparing trigger against the LIVE current price,
+	// not filledPrice — matrixApplyStopCondSLs (matrix.go) does the same against its own
+	// currentPrice parameter, for the identical reason documented there: Bybit validates
+	// TriggerDirection against where the trigger sits relative to price RIGHT NOW, not
+	// where price was when the level filled. Found live (2026-10-23, BIRBUSDT/ALTUSDT):
+	// retCode=110092/110093 "expect Rising/Falling, but trigger_price <=/>= current"
+	// once price had moved meaningfully past filledPrice by the time this ran.
 	trigDir := 2 // Falling: price must drop to reach trigger
-	if trigger > filledPrice {
+	if trigger > currentPrice {
 		trigDir = 1 // Rising: price must climb to reach trigger
 	}
 
@@ -654,7 +678,7 @@ func (sr *StrategyRunner) alsPriceTick(ctx context.Context, currentPrice float64
 		if !condMet {
 			continue
 		}
-		sr.alsPlaceLevelStop(ctx, l, l.FilledPrice, sr.strategy.AlsStopReplacePct)
+		sr.alsPlaceLevelStop(ctx, l, l.FilledPrice, sr.strategy.AlsStopReplacePct, currentPrice)
 	}
 
 	avgEntry := sr.runner.GetPositionAvgEntry(sr.strategy.Symbol, alsMainPositionIdx(sr.strategy.Direction))
@@ -669,9 +693,46 @@ func (sr *StrategyRunner) alsPriceTick(ctx context.Context, currentPrice float64
 	alreadyOpenCoins := sr.runner.GetPositionSizeCoins(sr.strategy.Symbol, ownIdx)
 	alreadyOpenUsdt := alreadyOpenCoins * currentPrice
 
+	// Thresholds can be edited (a row appended) on a bot that's already mid-cycle — the
+	// settings-update path re-reads sr.strategy live but never rebuilds sr.levels for
+	// ALS (restartAlsCycle is a no-op by design, see its own comment). Without this, a
+	// newly added threshold would sit invisible until the current cycle ends. Appending
+	// its level row here makes it eligible for evaluation (and an instant top-up below if
+	// its trigger is already met) on this very tick instead.
+	if len(sr.strategy.AlsThresholds) > len(sr.levels) {
+		sr.alsSyncLevelsToThresholds(ctx)
+	}
+
 	for i := range sr.levels {
 		l := &sr.levels[i]
-		if l.Status != LevelPending {
+		// Exchange-order mode was switched off while this level still had a real
+		// conditional order resting on the exchange — cancel it and fall back to pending
+		// so the reactive/virtual path below picks the threshold back up on this same
+		// tick, instead of leaving the order orphaned on the exchange forever (nothing
+		// else in this strategy's tick ever looks at a LevelPlaced level with
+		// AlsExchangeOrders now false).
+		if !sr.strategy.AlsExchangeOrders && l.Status == LevelPlaced && l.ExchangeOrderID != "" {
+			if sr.alsCancelLevelOrder(ctx, l) {
+				l.Status = LevelPending
+				l.TargetPrice = 0
+				sr.runner.pool.Exec(ctx, //nolint:errcheck
+					`UPDATE strategy_levels SET status='pending', exchange_order_id=NULL, exchange_link_id=NULL, target_price=0 WHERE id=$1`,
+					l.ID)
+				sr.info(ctx, fmt.Sprintf("ALS L%d: режим переключён на виртуальный — биржевой порог снят, уровень снова ожидает", l.LevelIdx))
+			}
+			// else: the order had already filled on the exchange — its own WS fill event
+			// will carry the level through handleAlsLevelFill normally; leave it as-is.
+		}
+
+		// In exchange mode a level with a resting conditional order is still "pending" in
+		// every sense that matters here (it hasn't filled) even though its Status is
+		// LevelPlaced — alsSyncExchangeLevel must keep re-evaluating it every tick so it
+		// can reprice the resting order as the main position's avg entry moves. Reactive
+		// mode's LevelPlaced means "already fired, nothing left to do" and must NOT be
+		// reopened for re-evaluation — only exchange-mode levels with a real resting order
+		// qualify for the exception.
+		exchangePending := sr.strategy.AlsExchangeOrders && l.Status == LevelPlaced && l.ExchangeOrderID != ""
+		if l.Status != LevelPending && !exchangePending {
 			continue
 		}
 		if l.LevelIdx-1 >= len(sr.strategy.AlsThresholds) {
@@ -692,7 +753,27 @@ func (sr *StrategyRunner) alsPriceTick(ctx context.Context, currentPrice float64
 			lastOrderPrice = avgEntry
 		}
 		triggerPrice := alsThresholdPrice(sr.strategy.Direction, th.TriggerType, th.TriggerPct, avgEntry, lastOrderPrice)
-		if !alsThresholdCrossed(sr.strategy.Direction, currentPrice, triggerPrice) {
+		crossed := alsThresholdCrossed(sr.strategy.Direction, currentPrice, triggerPrice)
+		// Exchange mode keeps a live conditional order sitting on the exchange at
+		// triggerPrice, repriced as it moves, instead of waiting for our own price tick to
+		// notice the threshold was crossed and reacting with a market order (which can
+		// fill far from — and out of sequence with — the intended targets during a fast
+		// move; see the 2026-10-23 BIRBUSDT incident). That only works AHEAD of the
+		// threshold, though: once price has already crossed it, flipping the resting
+		// order's own TriggerDirection to stay valid does NOT make it fire "now" — it just
+		// changes what it's waiting for (price to come BACK to that level), which is the
+		// wrong order entirely. So the one case this must NOT route into
+		// alsSyncExchangeLevel is "crossed AND no resting order yet" (e.g. a threshold
+		// just added mid-cycle, or a cold-start/reconcile gap) — that falls through to the
+		// same immediate market order virtual mode uses below. A level that already HAS a
+		// resting order still goes through alsSyncExchangeLevel even if now crossed: the
+		// exchange's own trigger is about to (or already did) fire it, and racing that
+		// with our own market order here would double the fill.
+		if sr.strategy.AlsExchangeOrders && (l.ExchangeOrderID != "" || !crossed) {
+			sr.alsSyncExchangeLevel(ctx, l, th, triggerPrice, mainUsdt, alreadyOpenUsdt, currentPrice)
+			continue
+		}
+		if !crossed {
 			continue
 		}
 		var openUnprotectedUsdt, stoppedUsdt float64
@@ -765,6 +846,7 @@ func (sr *StrategyRunner) alsPlaceTopUp(ctx context.Context, l *GridLevel, trigg
 
 	l.Status = LevelPlaced
 	l.TargetPrice = triggerPrice
+	l.Qty = qty
 	l.ExchangeOrderID = result.OrderId
 	l.ExchangeLinkID = linkID
 	sr.runner.RegisterOrder(result.OrderId, ref)
@@ -773,6 +855,155 @@ func (sr *StrategyRunner) alsPlaceTopUp(ctx context.Context, l *GridLevel, trigg
 		result.OrderId, linkID, triggerPrice, qty, l.ID,
 	)
 	sr.info(ctx, fmt.Sprintf("ALS L%d: довыставлен хедж %.2f USDT (%s qty=%s) @ рынок", l.LevelIdx, topUpUsdt, side, qty))
+}
+
+// alsSyncExchangeLevel keeps a pending level's conditional (stop-market) order on the
+// exchange in sync with its live-computed triggerPrice/size, placing it if absent and
+// cancel+replacing it once either has drifted meaningfully since it was last placed.
+// Only called when sr.strategy.AlsExchangeOrders is true — see alsPriceTick.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) alsSyncExchangeLevel(ctx context.Context, l *GridLevel, th AlsThreshold, triggerPrice, mainUsdt, baseAlreadyOpenUsdt, currentPrice float64) {
+	// alreadyOpenUsdt/openUnprotectedUsdt/stoppedUsdt mirror the reactive path's own
+	// accounting (alsPriceTick above) exactly, evaluated at triggerPrice rather than the
+	// live tick price — this level isn't filled yet, so there is no real fill price to use,
+	// and triggerPrice is this level's own best estimate of where it will fill.
+	alreadyOpenUsdt := baseAlreadyOpenUsdt
+	var openUnprotectedUsdt, stoppedUsdt float64
+	for _, lv := range sr.levels {
+		if lv.Status != LevelFilled && lv.Status != LevelPlaced {
+			continue
+		}
+		q, _ := strconv.ParseFloat(lv.Qty, 64)
+		usdt := q * triggerPrice
+		if lv.SLOrderID != "" {
+			stoppedUsdt += usdt
+		} else {
+			openUnprotectedUsdt += usdt
+		}
+	}
+	topUpUsdt := alsTopUpUsdt(th.TargetHedgePct, mainUsdt, alreadyOpenUsdt)
+	topUpUsdt = alsUnsafeHedgeClamp(topUpUsdt, sr.strategy.UnsafeHedgeMaxPct, mainUsdt, openUnprotectedUsdt, stoppedUsdt, sr.strategy.StopMarketSizeK)
+
+	if topUpUsdt <= 0 {
+		// Target already met by existing volume — cancel any stale order for this level
+		// and stop tracking it dynamically, mirroring the reactive path's own handling.
+		if l.ExchangeOrderID != "" {
+			sr.alsCancelLevelOrder(ctx, l)
+		}
+		l.Status = LevelPlaced
+		l.TargetPrice = triggerPrice
+		sr.runner.pool.Exec(ctx, //nolint:errcheck
+			`UPDATE strategy_levels SET status='placed', target_price=$1, exchange_order_id=NULL WHERE id=$2`,
+			triggerPrice, l.ID)
+		return
+	}
+
+	qty := trader.FormatQty(topUpUsdt/triggerPrice, sr.instr.QtyStep, sr.instr.MinQty)
+	if qty == "0" || qty == "" {
+		return // too small to place yet (e.g. main still tiny) — re-evaluate next tick
+	}
+
+	if l.ExchangeOrderID != "" {
+		priceDrift := triggerPrice - l.TargetPrice
+		if priceDrift < 0 {
+			priceDrift = -priceDrift
+		}
+		// Already in sync within a tick's worth of price and exact qty — nothing to do.
+		// Repricing on every negligible float wobble would spam cancel/place at the
+		// exchange for no real benefit.
+		if priceDrift < sr.instr.TickSize && l.Qty == qty {
+			return
+		}
+		if !sr.alsCancelLevelOrder(ctx, l) {
+			// The old order had already filled on the exchange — a WS fill event for it
+			// is already in flight (or will be); placing a second order here would double
+			// this level's volume. Let handleAlsLevelFill carry it through normally.
+			return
+		}
+	}
+
+	side := alsSideForDirection(sr.strategy.Direction)
+	// TriggerDirection by comparing triggerPrice against the LIVE current price, not
+	// hardcoded from sr.strategy.Direction alone — same bug class as alsPlaceLevelStop's
+	// fix above. Normally triggerPrice sits on the adverse side of currentPrice (the whole
+	// point of placing it ahead of time), so this agrees with the old hardcoded value in
+	// the common case, but alsPriceTick only ever reaches this function for a level that's
+	// either not yet crossed or already has a resting order being repriced — never for an
+	// already-crossed level with no order yet (that routes to an immediate market order
+	// instead, since flipping a resting order's direction to stay valid would just make it
+	// wait for price to come BACK to that level, not fire now). This still earns its own
+	// currentPrice-based comparison rather than the strategy's fixed long/short direction:
+	// a reprice after a big avgEntry jump could otherwise land on the wrong side too.
+	trigDir := 2 // Falling: price must drop to reach triggerPrice
+	if triggerPrice > currentPrice {
+		trigDir = 1 // Rising: price must climb to reach triggerPrice
+	}
+	linkID := fmt.Sprintf("SIS_STR-%s-alsx-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx)
+	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
+	sr.runner.RegisterOrder(linkID, ref)
+
+	result, err := sr.runner.Exchange().PlaceOrder(ctx, trader.OrderRequest{
+		Symbol:           sr.strategy.Symbol,
+		Category:         sr.strategy.Category,
+		Side:             side,
+		OrderType:        "Market",
+		Qty:              qty,
+		TriggerPrice:     trader.FormatPrice(triggerPrice, sr.instr.TickSize),
+		TriggerBy:        "LastPrice",
+		TriggerDirection: trigDir,
+		OrderFilter:      "StopOrder",
+		PositionIdx:      alsOwnPositionIdx(sr.strategy.Direction, sr.strategy.HedgeMode),
+		OrderLinkId:      linkID,
+	})
+	if err != nil {
+		sr.runner.UnregisterOrder(linkID)
+		sr.errlog(ctx, fmt.Sprintf("ALS L%d: ошибка выставления биржевого порога: %v", l.LevelIdx, err))
+		return
+	}
+
+	l.Status = LevelPlaced
+	l.TargetPrice = triggerPrice
+	l.Qty = qty
+	l.ExchangeOrderID = result.OrderId
+	l.ExchangeLinkID = linkID
+	sr.runner.RegisterOrder(result.OrderId, ref)
+	sr.runner.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE strategy_levels SET status='placed', exchange_order_id=$1, exchange_link_id=$2, target_price=$3, placed_at=NOW(), qty=$4 WHERE id=$5`,
+		result.OrderId, linkID, triggerPrice, qty, l.ID,
+	)
+	sr.info(ctx, fmt.Sprintf("ALS L%d: биржевой порог выставлен @ %s (%s qty=%s)", l.LevelIdx, trader.FormatPrice(triggerPrice, sr.instr.TickSize), side, qty))
+}
+
+// alsCancelLevelOrder cancels a level's currently-placed conditional order on the exchange
+// and unregisters it. Returns false if the order turns out to have already filled before
+// the cancel reached the exchange — the caller must NOT place a replacement in that case;
+// the fill's own WS event (already in flight) will carry the level through
+// handleAlsLevelFill normally, and placing a second order would double its volume.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) alsCancelLevelOrder(ctx context.Context, l *GridLevel) bool {
+	orderID := l.ExchangeOrderID
+	if orderID == "" {
+		return true
+	}
+	safe := true
+	if err := sr.runner.Exchange().CancelOrder(ctx, trader.CancelRequest{
+		Symbol: sr.strategy.Symbol, Category: sr.strategy.Category,
+		OrderId: orderID, OrderFilter: "StopOrder",
+	}); err != nil {
+		if hist, _, ferr := sr.runner.Exchange().FetchOrderById(ctx, sr.strategy.Category, sr.strategy.Symbol, orderID); ferr == nil && hist.OrderStatus == "Filled" {
+			sr.info(ctx, fmt.Sprintf("ALS L%d: порог уже исполнился на бирже во время репрайса — пропускаю замену", l.LevelIdx))
+			safe = false
+		} else {
+			sr.warn(ctx, fmt.Sprintf("ALS L%d: отмена биржевого порога: %v", l.LevelIdx, err))
+		}
+	}
+	sr.runner.UnregisterOrder(orderID)
+	if l.ExchangeLinkID != "" {
+		sr.runner.UnregisterOrder(l.ExchangeLinkID)
+	}
+	l.ExchangeOrderID = ""
+	l.ExchangeLinkID = ""
+	return safe
 }
 
 // launchAlsPriceMonitor starts a goroutine feeding real-time mark prices into

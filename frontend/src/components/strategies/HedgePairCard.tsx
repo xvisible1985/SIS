@@ -263,7 +263,7 @@ function StrategyRow({
   const pnl = computePnl(pos, tickerPrices)
   const volUsdt    = pos ? pos.sizeUsdt : 0
   const isStopped  = strategy.status === 'stopped'
-  const gridType   = strategy.strategy_type === 'matrix' ? 'Matrix' : 'Grid'
+  const gridType   = strategy.strategy_type === 'matrix' ? 'Matrix' : strategy.strategy_type === 'als' ? 'ALS' : 'Grid'
   const stoppedNoPos = isStopped && !pos
   const isLong     = strategy.direction === 'long'
   const isSelected = selectedStrategyId === strategy.id

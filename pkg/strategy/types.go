@@ -149,6 +149,13 @@ type Strategy struct {
 	InitialStopBEPct  *float64
 	AlsStopCondPct    float64 // global "Min ROI for hedge stop" — % price move in the hedge's favor before a stop is placed/replaced
 	AlsStopReplacePct float64 // global "Stop Loss Break Even Hedge" — the resulting stop trigger, % behind AlsStopCondPct
+	// AlsExchangeOrders: when true, pending top-up levels are placed as real conditional
+	// (stop-market) orders on the exchange at their live computed target_price — repriced
+	// as the main position's avg entry moves — instead of the default reactive behavior
+	// (alsPriceTick fires a plain market order only once price has already crossed the
+	// threshold, which can fill far from and out of order relative to the intended targets
+	// during a fast move). See alsPriceTick/alsSyncExchangeLevel.
+	AlsExchangeOrders bool
 
 	// AdoptPositionData — when non-nil, startMatrixCycle marks L(0) as already-filled
 	// using this position snapshot; cleared from the strategy record after consumption.

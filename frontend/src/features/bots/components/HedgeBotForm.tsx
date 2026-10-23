@@ -372,6 +372,7 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
 
   // ── ALS threshold-table helpers ──────────────────────────────────────────────
   const alsThresholds = config.als_thresholds ?? DEFAULT_ALS_THRESHOLDS;
+  const alsExchangeOrders = config.als_exchange_orders ?? false;
 
   function addAlsThreshold() {
     const last = alsThresholds[alsThresholds.length - 1];
@@ -956,10 +957,11 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
               </div>
 
               {/* Условие активации + Закрыть Safe — одна строка.
-                  For ALS, threshold row 1 (see "2. Пороги") replaces act_type/act_value's
-                  role, so that cell is hidden and "Если занят слот" takes the full row. */}
-              <div className={`grid gap-3 ${isAls ? 'grid-cols-1' : 'grid-cols-2'}${ha.force_activation ? ' opacity-40 pointer-events-none select-none' : ''}`}>
-                {!isAls && (
+                  act_type/act_value is the real activation gate in hedge_engine.go
+                  (meetsActivationCriteria) for ALS too — als_thresholds only scales the
+                  hedge's own size once it's already open, it is not an activation gate —
+                  so this cell must stay visible/editable for ALS, not just non-ALS bots. */}
+              <div className={`grid gap-3 grid-cols-2${ha.force_activation ? ' opacity-40 pointer-events-none select-none' : ''}`}>
                 <div>
                   <label className={labelCls}>
                     Активировать при
@@ -1035,7 +1037,6 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
                     </>)}
                   </p>
                 </div>
-                )}
 
                 <div>
                   <label className={labelCls}>
@@ -1740,6 +1741,27 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
                         }}
                       />
                     </div>
+                  </div>
+
+                  {/* ── Режим выставления порогов ── */}
+                  <div className="rounded-lg border border-white/[.07] bg-white/[.02] p-3 flex items-center justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <span className="flex items-center gap-1 text-[12px] font-semibold text-slate-300">
+                        Биржевые ордера для порогов
+                        <Tip text="Виртуальные (по умолчанию) — бот сам отслеживает цену и реагирует маркет-ордером только после того, как порог уже пройден; при резком движении исполнение может произойти заметно дальше цели. Биржевые — бот заранее выставляет условный (stop-market) ордер на бирже прямо по расчётной цене порога и переставляет его при изменении ТВХ main; срабатывает сама биржа — точнее при резких движениях, и ордер виден на графике до срабатывания." />
+                      </span>
+                      <p className="mt-0.5 text-[10px] text-slate-500 leading-snug">
+                        {alsExchangeOrders
+                          ? 'Условный ордер выставлен заранее на бирже и переставляется при изменении ТВХ main.'
+                          : 'Бот реагирует рыночным ордером только после того, как цена уже прошла порог.'}
+                      </p>
+                    </div>
+                    <Toggle
+                      options={[{ label: 'Виртуальные', value: 'false' }, { label: 'Биржевые', value: 'true' }]}
+                      value={String(alsExchangeOrders)}
+                      onChange={v => patch({ als_exchange_orders: v === 'true' })}
+                      btnClassName="!py-2"
+                    />
                   </div>
 
                   {/* ── Пороги хеджа ── */}

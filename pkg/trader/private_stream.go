@@ -36,7 +36,10 @@ type PositionEvent struct {
 	Symbol      string `json:"symbol"`
 	Side        string `json:"side"`
 	Size        string `json:"size"`
-	AvgPrice    string `json:"avgPrice"` // exchange position avg entry price
+	// Bybit's WS "position" topic names this field entryPrice, not avgPrice (that name is
+	// only used by REST /v5/position/list and the WS "order" topic) — see
+	// docs reference_bybit_api.md. Using the wrong tag here left this field permanently 0.
+	AvgPrice string `json:"entryPrice"` // exchange position avg entry price
 	Category    string `json:"category"`
 	PositionIdx int    `json:"positionIdx"`
 	Leverage    string `json:"leverage"` // exchange-side leverage currently applied to this position

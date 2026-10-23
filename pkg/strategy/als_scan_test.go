@@ -30,8 +30,8 @@ func TestScanStrategy_ReadsAlsFields(t *testing.T) {
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO strategies (owner_id, account_id, symbol, direction, strategy_type,
 		  als_thresholds, unsafe_hedge_min_pct, unsafe_hedge_max_pct, stop_market_size_k,
-		  tp_control_enabled, initial_stop_be_pct)
-		VALUES ($1,$2,'ALSUSDT','long','als',$3::jsonb,5,40,1.2,true,2.5)
+		  tp_control_enabled, initial_stop_be_pct, als_exchange_orders)
+		VALUES ($1,$2,'ALSUSDT','long','als',$3::jsonb,5,40,1.2,true,2.5,true)
 		RETURNING id`,
 		ownerID, accID, thresholdsJSON,
 	).Scan(&stratID); err != nil {
@@ -69,7 +69,8 @@ func TestScanStrategy_ReadsAlsFields(t *testing.T) {
 		       COALESCE(tp_control_enabled,false),
 		       initial_stop_be_pct,
 		       COALESCE(als_stop_cond_pct,0),
-		       COALESCE(als_stop_replace_pct,0)
+		       COALESCE(als_stop_replace_pct,0),
+		       COALESCE(als_exchange_orders,false)
 		FROM strategies WHERE id=$1`, stratID)
 	if err := scanStrategyRow(row, &s); err != nil {
 		t.Fatalf("scanStrategyRow: %v", err)
@@ -92,5 +93,8 @@ func TestScanStrategy_ReadsAlsFields(t *testing.T) {
 	}
 	if s.InitialStopBEPct == nil || *s.InitialStopBEPct != 2.5 {
 		t.Errorf("InitialStopBEPct = %v, want 2.5", s.InitialStopBEPct)
+	}
+	if !s.AlsExchangeOrders {
+		t.Error("AlsExchangeOrders = false, want true")
 	}
 }

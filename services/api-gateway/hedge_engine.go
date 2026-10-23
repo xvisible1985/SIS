@@ -155,7 +155,7 @@ func (s *Server) processHedgeBot(ctx context.Context, botID, ownerID, accountID 
 			"warn", "system")
 	}
 
-	s.checkHedgeDeactivation(ctx, botID, accountID, cfg, posMap)
+	s.checkHedgeDeactivation(ctx, botID, accountID, cfg, ex, posMap)
 	s.checkHedgeActivation(ctx, botID, ownerID, accountID, whitelist, blacklist, cfg, ex, posMap, watches)
 	s.buildPairedCloseWatches(ctx, botID, accountID, "hedge", cfg, posMap, pairedWatches)
 	if cfg.RescuePartialCloseEnabled {
@@ -689,7 +689,7 @@ func (s *Server) verifyAndClosePairedBot(ctx context.Context, entry pairedCloseW
 
 	switch entry.botKind {
 	case "hedge":
-		s.checkHedgeDeactivation(ctx, entry.botID, entry.accountID, cfg, posMap)
+		s.checkHedgeDeactivation(ctx, entry.botID, entry.accountID, cfg, ex, posMap)
 	case "matrix":
 		s.checkMatrixPairedClose(ctx, entry.botID, entry.accountID, cfg, ex, posMap)
 	}
@@ -1516,7 +1516,20 @@ func (s *Server) cleanupStoppedHedgeCards(ctx context.Context, botID, symbol, he
 }
 
 // resolveHedgeSlotConflict checks for a strategy already occupying the hedge slot
-// (owned by a different bot or manual).
+// (owned by a different bot, detached/manual, or even this same bot).
+// Deliberately NOT scoped to "bot_id <> this bot" — matrix's own equivalent check
+// (directionHasLiveStrategy, matrix_engine.go) never excludes same-bot rows either, because
+// a (symbol,direction) exchange slot can only ever hold one real position regardless of which
+// strategy row currently claims it. Excluding same-bot rows here left a live incident-causing
+// gap: releaseHedgeToGrid clears a just-TP'd ALS hedge's bot_id to NULL, but the caller
+// guards above this function (the "this bot already has a hedge" checks) are ALL scoped to
+// bot_id = this bot or bot_kind='hedge' joins — neither sees a bot_id=NULL row — so if a new
+// activation for the same slot is evaluated before that release is visible here, it used to
+// sail through and open a second position in the exact same (account,symbol,direction) slot
+// the old row still occupied, which the position-routing/ghost-detection logic then fought
+// over and force-closed (BTRUSDT short, 2026-10-22, net -0.0667 USDT). Treating ANY
+// active/finishing row at this slot as a conflict — not just foreign-bot ones — closes that
+// gap the same way matrix's unconditional check already does.
 // Returns (suspendedStrategyID, ok):
 //   - ok=false  → slot is occupied and cannot be freed yet; skip this activation
 //   - ok=true   → slot is free or was freed; proceed with hedge creation
@@ -1528,9 +1541,8 @@ func (s *Server) resolveHedgeSlotConflict(ctx context.Context, botID, accountID,
 		`SELECT id FROM strategies
 		 WHERE account_id=$1 AND symbol=$2 AND direction=$3
 		   AND status IN ('active','finishing')
-		   AND (bot_id IS NULL OR bot_id <> $4)
 		 LIMIT 1`,
-		accountID, symbol, hedgeDir, botID).Scan(&conflictID)
+		accountID, symbol, hedgeDir).Scan(&conflictID)
 	if err != nil {
 		return "", true // no conflict
 	}
@@ -1752,7 +1764,7 @@ func (s *Server) hedgeHasPendingOrders(ctx context.Context, strategyID string) b
 
 // checkHedgeDeactivation inspects all active hedge strategies for this bot and
 // stops them when deactivation or paired-close conditions are met.
-func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID string, cfg botCfgJSON, posMap map[string]map[string]hedgePosInfo) {
+func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID string, cfg botCfgJSON, ex trader.Exchange, posMap map[string]map[string]hedgePosInfo) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, symbol, direction, COALESCE(hedged_strategy_id::text,'') FROM strategies
 		 WHERE bot_id=$1 AND status IN ('active','finishing')`,
@@ -1902,6 +1914,13 @@ func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID st
 		}
 		if hasMain && hasHedge && meetsPairedCloseCriteria(mainPos, hedgePos, cfg, accumulatedPnl) {
 			combined := mainPos.UnrealisedPnl + hedgePos.UnrealisedPnl
+
+			// Close both legs at market NOW — the combined PnL that satisfied the condition
+			// was measured at this instant, so waiting on a later TP/SL (which may not even
+			// exist, e.g. ALS) would lock in a different, unverified number instead.
+			s.closeHedgePositionAtMarket(ctx, botID, ex, h.symbol, cfg.Category, cfg.HedgeMode, hedgePos)
+			s.closeHedgePositionAtMarket(ctx, botID, ex, h.symbol, cfg.Category, cfg.HedgeMode, mainPos)
+
 			s.stopHedgeStrategy(ctx, botID, h.id, h.symbol, "paired_close",
 				fmt.Sprintf("парное закрытие: суммарный PnL %.4g (тип=%d, порог=%.4g)",
 					combined, cfg.HedgeDeactCloseType, cfg.HedgeDeactCloseValue))
@@ -2156,6 +2175,55 @@ func (s *Server) carryForwardHedgeAccumulatedPnl(ctx context.Context, botID, sym
 		return 0
 	}
 	return pnl
+}
+
+// hedgePositionIdxForSide returns the Bybit positionIdx for a given order side under the
+// account's hedge-mode setting (1=Buy, 2=Sell in hedge mode; 0 for one-way mode).
+func hedgePositionIdxForSide(hedgeMode bool, side string) int {
+	if !hedgeMode {
+		return 0
+	}
+	if side == "Sell" {
+		return 2
+	}
+	return 1
+}
+
+// closeHedgePositionAtMarket places an immediate reduce-only market order closing a live
+// position. Used by paired close, which measures combined PnL at one instant and must lock
+// it in right then — a graceful stop (cancel pending orders, let the existing TP/SL fire
+// later, see stopHedgeStrategy/handleStopRequest) works for grid/matrix, which always have a
+// whole-position TP that's usually close by. ALS hedges have no such TP (only per-level
+// protective stops), so a graceful stop left the position open indefinitely: the paired-close
+// condition kept re-evaluating true on every tick, re-logging "стратегия остановлена" every
+// ~30s without the position ever actually closing (BTRUSDT, 2026-10-22/23 — PnL drifted down
+// from 10.24 to 7.735 over ~9.5 minutes of repeats before it happened to close on its own).
+func (s *Server) closeHedgePositionAtMarket(ctx context.Context, botID string, ex trader.Exchange, symbol, category string, hedgeMode bool, pos hedgePosInfo) {
+	if ex == nil || pos.Size <= 0 {
+		return
+	}
+	closeSide := "Sell"
+	if pos.Side == "Sell" {
+		closeSide = "Buy"
+	}
+	qty := pos.SizeStr
+	if qty == "" {
+		qty = strconv.FormatFloat(pos.Size, 'f', -1, 64)
+	}
+	if _, err := ex.PlaceOrderREST(ctx, trader.OrderRequest{
+		Category:    category,
+		Symbol:      symbol,
+		Side:        closeSide,
+		OrderType:   "Market",
+		Qty:         qty,
+		ReduceOnly:  true,
+		PositionIdx: hedgePositionIdxForSide(hedgeMode, pos.Side),
+		OrderLinkId: fmt.Sprintf("SIS_PC-%s-%d", symbol, time.Now().UnixMilli()),
+	}); err != nil {
+		s.logBotEvent(ctx, botID,
+			fmt.Sprintf("Хедж: %s — ошибка рыночного закрытия при парном закрытии: %v", symbol, err),
+			"error", "hedge")
+	}
 }
 
 // stopHedgeStrategy sets a hedge strategy to 'stopped' and notifies the engine.

@@ -1455,14 +1455,26 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 
 	var c Cycle
 	var tpID, slID *string
+	var startPrice *float64
 	err := sr.runner.pool.QueryRow(ctx,
 		`SELECT id, strategy_id, cycle_num, start_price, started_at, tp_order_id, sl_order_id
 		 FROM strategy_cycles WHERE strategy_id=$1 AND ended_at IS NULL
 		 ORDER BY cycle_num DESC LIMIT 1`,
 		sr.strategy.ID,
-	).Scan(&c.ID, &c.StrategyID, &c.CycleNum, &c.StartPrice, &c.StartedAt, &tpID, &slID)
+	).Scan(&c.ID, &c.StrategyID, &c.CycleNum, &startPrice, &c.StartedAt, &tpID, &slID)
 	if err != nil {
 		return err
+	}
+	// start_price is NULL for every ALS cycle (startAlsCycle never sets it — ALS computes
+	// each threshold's trigger from the main position's LIVE avg entry, not a cycle-start
+	// snapshot, so the column is meaningless there). Scanning NULL into a non-pointer
+	// float64 failed outright on every single restart for an ALS strategy, since this was
+	// the ONLY site reading start_price — loadOrStart then silently treated that scan
+	// error as "no active cycle" and started a brand-new one, permanently orphaning the
+	// real position's already-filled levels. Found live (2026-10-23, DNAUSDT): three
+	// consecutive restarts produced three separate "live" cycles for the same strategy.
+	if startPrice != nil {
+		c.StartPrice = *startPrice
 	}
 	if tpID != nil {
 		c.TPOrderID = *tpID

@@ -760,6 +760,46 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
   const [loading, setLoading] = useState(true)
   const [editTarget, setEditTarget] = useState<Strategy | undefined>()
   const [modalOpen, setModalOpen] = useState(false)
+  // Bot-managed strategies (bot_id set) must be edited through their own bot's form
+  // (MultiBotForm/HedgeBotForm/MatrixBotForm/BotForm) — the generic StrategyModal below
+  // only understands grid/matrix and has no concept of ALS (thresholds, activation, etc.),
+  // so opening it for a bot-managed leg silently showed misleading grid-shaped settings for
+  // any strategy_type it didn't recognize. Own useBots() call (independent of the hedgeBots
+  // prop, which is this same list but may be a tick stale) so `action`/the edited bot's own
+  // fresh data are available right here, mirroring TerminalBotsTab's identical editing block.
+  const { mine: editableBots, action: botAction, refresh: refreshEditableBots } = useBots()
+  const [editBotId, setEditBotId] = useState<string | null>(null)
+  const editBot = editBotId ? editableBots.find(b => b.id === editBotId) ?? null : null
+  const editTakenSymbols = useMemo((): Map<string, string> => {
+    const map = new Map<string, string>()
+    for (const b of editableBots) {
+      if (b.id === editBot?.id) continue
+      if (b.status !== 'active') continue
+      for (const sym of b.symbolWhitelist) {
+        if (!sym.includes('*') && !map.has(sym)) map.set(sym, b.name)
+      }
+    }
+    return map
+  }, [editableBots, editBot?.id])
+  // Resolves which bot actually owns a strategy's *editable config*. A hedge leg's own
+  // bot_id points at the hedge bot itself, but that bot is only ever edited as half of its
+  // pair — via the signal bot's pairedBotId, same as clicking the pair's own card gear does.
+  const handleEditStrategy = (s: Strategy) => {
+    if (s.bot_id) {
+      const owningBot = editableBots.find(b => b.id === s.bot_id)
+      const targetBotId = owningBot?.strategyConfig?.bot_kind === 'hedge' && owningBot.pairedBotId
+        ? owningBot.pairedBotId
+        : s.bot_id
+      if (editableBots.some(b => b.id === targetBotId)) {
+        setEditBotId(targetBotId)
+        return
+      }
+    }
+    // Standalone/detached strategy (no bot, or its bot vanished) — fall back to the
+    // generic per-strategy editor, same as before this change.
+    setEditTarget(s)
+    setModalOpen(true)
+  }
   const [selectedId, setSelectedId] = useState<string | null>(() => localStorage.getItem('t_sel'))
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [signalStates, setSignalStates] = useState<Record<string, LiveSignal>>({})
@@ -1151,7 +1191,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
                   tickerPrices={tickerPrices}
                   selectedStrategyId={selectedId}
                   hedgeBot={hedgeBots.find(b => b.id === item.hedge.bot_id) ?? null}
-                  onEdit={s => { setEditTarget(s); setModalOpen(true) }}
+                  onEdit={handleEditStrategy}
                   onChanged={load}
                   onSelect={handleSelect}
                   onOpenDetail={focusId ? undefined : onOpenDetail}
@@ -1191,7 +1231,7 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
                 orders={orders}
                 positions={positions}
                 tickerPrices={tickerPrices}
-                onEdit={s => { setEditTarget(s); setModalOpen(true) }}
+                onEdit={handleEditStrategy}
                 onChanged={load}
                 selected={selectedIds.size > 0 ? selectedIds.has(s.id) : s.id === selectedId}
                 onSelect={handleSelect}
@@ -1228,6 +1268,37 @@ function TerminalStrategiesTab({ onSymbolChange, orders, positions, tickerPrices
           onClose={() => setModalOpen(false)}
           onSaved={() => { setModalOpen(false); load() }}
           liveSignal={editTarget ? signalStates[editTarget.id] : undefined}
+        />
+      )}
+      {editBot && editBot.pairedBotId && (
+        <MultiBotForm
+          signalBot={editBot}
+          hedgeBot={editableBots.find(b => b.id === editBot.pairedBotId) ?? undefined}
+          onClose={() => setEditBotId(null)}
+          onSaved={() => { refreshEditableBots(); load() }}
+        />
+      )}
+      {editBot && !editBot.pairedBotId && editBot.strategyConfig.bot_kind === 'hedge' && (
+        <HedgeBotForm
+          bot={editBot}
+          takenSymbols={editTakenSymbols}
+          onSubmit={async (data) => botAction({ type: 'update', botId: editBot.id, data }) as Promise<{ warnings?: string[] } | void>}
+          onClose={() => setEditBotId(null)}
+        />
+      )}
+      {editBot && !editBot.pairedBotId && editBot.strategyConfig.bot_kind === 'matrix' && (
+        <MatrixBotForm
+          bot={editBot}
+          takenSymbols={editTakenSymbols}
+          onSubmit={async (data) => botAction({ type: 'update', botId: editBot.id, data }) as Promise<{ warnings?: string[] } | void>}
+          onClose={() => setEditBotId(null)}
+        />
+      )}
+      {editBot && !editBot.pairedBotId && editBot.strategyConfig.bot_kind !== 'hedge' && editBot.strategyConfig.bot_kind !== 'matrix' && (
+        <BotForm
+          bot={editBot}
+          onSubmit={async (data) => { await botAction({ type: 'update', botId: editBot.id, data }); setEditBotId(null) }}
+          onClose={() => setEditBotId(null)}
         />
       )}
 

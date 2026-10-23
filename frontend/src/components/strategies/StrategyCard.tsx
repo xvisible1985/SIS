@@ -961,12 +961,12 @@ export function StrategyCard({ strategy: s, accounts, orders, positions, tickerP
           <div className="flex-1 flex items-center gap-2 overflow-hidden">
             <div className="relative group/ctip flex items-baseline gap-1.5 shrink-0">
               <span className={`text-[11px] uppercase tracking-[.8px] font-semibold ${stoppedNoPos ? 'text-slate-600' : 'text-slate-400'}`}>
-                {s.strategy_type === 'matrix' ? 'Matrix' : 'Grid'}
+                {s.strategy_type === 'matrix' ? 'Matrix' : s.strategy_type === 'als' ? 'ALS' : 'Grid'}
               </span>
               <span className={`text-[13px] font-semibold ${stoppedNoPos ? 'text-slate-600' : s.active_levels > 0 ? 'text-slate-200' : 'text-slate-500'}`}>
                 {s.active_levels}/{s.grid_levels}
               </span>
-              <CardTip text={s.strategy_type === 'matrix' ? 'Заполненных слотов матрицы / всего слотов в цикле' : 'Исполненных уровней сетки / всего уровней в текущем цикле'} />
+              <CardTip text={s.strategy_type === 'matrix' ? 'Заполненных слотов матрицы / всего слотов в цикле' : s.strategy_type === 'als' ? 'Сработавших порогов ALS / всего порогов' : 'Исполненных уровней сетки / всего уровней в текущем цикле'} />
             </div>
             <div className="w-px h-2.5 bg-white/[.08] shrink-0" />
             <div className="relative group/ctip flex items-baseline gap-1.5 shrink-0">

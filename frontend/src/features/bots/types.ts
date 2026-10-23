@@ -82,6 +82,7 @@ export type StrategyConfig = {
   initial_stop_be_pct?: number | null;
   als_stop_cond_pct?: number;
   als_stop_replace_pct?: number;
+  als_exchange_orders?: boolean; // place pending thresholds as real conditional exchange orders instead of reacting to crossed ones
   // Hedge bot activation (see HedgeBotForm)
   hedge_act_type?: number;          // 0=last_order%, 1=drawdown%, 2=pnl$, 3=roi%
   hedge_act_value?: number;

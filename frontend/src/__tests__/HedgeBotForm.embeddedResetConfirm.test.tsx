@@ -21,6 +21,10 @@ vi.mock('../contexts/AccountContext', () => ({
   useSelectedAccount: () => ({ selectedAccountId: 'acct-1', setSelectedAccountId: vi.fn() }),
 }))
 
+vi.mock('../hooks/useAuth', () => ({
+  useAuth: () => ({ isAdmin: false }),
+}))
+
 beforeEach(() => {
   vi.mocked(apiClient.get).mockResolvedValue({ data: { catalog: [], mine: [] } })
 })

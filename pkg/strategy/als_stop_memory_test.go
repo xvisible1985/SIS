@@ -133,7 +133,7 @@ func TestAlsRestoreFromMemory_PlacesNearestRememberedStop(t *testing.T) {
 	}
 
 	sr.mu.Lock()
-	sr.alsRestoreFromMemory(ctx)
+	sr.alsRestoreFromMemory(ctx, 85.0)
 	sr.mu.Unlock()
 
 	if sr.levels[0].SLOrderID != "restored-sl-1" {
