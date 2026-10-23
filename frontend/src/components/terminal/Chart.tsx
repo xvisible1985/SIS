@@ -804,9 +804,25 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
           execGroups.set(groupKey, { totalQty: qty, totalValue: e.price * qty, side: e.side, isTP, label: levelLabel })
         }
       }
+      // Fills of different levels at the same price (e.g. ALS fires several market levels on
+      // one tick) would draw identical overlapping lines and stack their labels, hiding all
+      // but one — merge them into a single "L1+L2" line.
+      const mergedFills = new Map<string, ExecAgg>()
       for (const [, g] of execGroups) {
-        // TP fills are displayed as candle markers (arrows) — no price line needed.
         if (g.isTP) continue
+        const px = g.totalQty > 0 ? g.totalValue / g.totalQty : 0
+        if (px <= 0) continue
+        const key = `${g.side}|${px.toFixed(8)}`
+        const ex = mergedFills.get(key)
+        if (ex) {
+          ex.totalQty += g.totalQty
+          ex.totalValue += g.totalValue
+          ex.label = `${ex.label}+${g.label}`
+        } else {
+          mergedFills.set(key, { ...g })
+        }
+      }
+      for (const [, g] of mergedFills) {
         const avgPrice = g.totalQty > 0 ? g.totalValue / g.totalQty : 0
         if (avgPrice <= 0) continue
         const isBuy = g.side === 'Buy'
