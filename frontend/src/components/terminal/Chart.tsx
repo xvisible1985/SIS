@@ -70,7 +70,8 @@ export function parseOrderLabel(linkId: string, side?: string): string {
     const parts = linkId.split('-')
     return `SL_L(${parts[parts.length - 1]})`
   }
-  // ALS entry/top-up level orders: SIS_STR-{stratId8}-als-{cycle}-{levelIdx}.
+  // ALS entry/top-up level orders: SIS_STR-{stratId8}-als-{cycle}-{levelIdx}; resting
+  // conditional (als_exchange_orders) top-ups use -alsx- instead.
   // The generic grid/matrix regex below requires a purely-numeric segment right after the
   // strategy id (cycle), so the literal "als" there always failed to match — these orders
   // got label='' and never rendered as chart lines/price markers at all.
@@ -78,6 +79,9 @@ export function parseOrderLabel(linkId: string, side?: string): string {
     const parts = linkId.split('-')
     return `L${parts[parts.length - 1]}`
   }
+  // -alsx-{cycle}-{levelIdx}-{stamp}: the trailing stamp makes every (re)placement unique.
+  const alsx = linkId.match(/-alsx-\d+-(\d+)-[0-9a-z]+$/)
+  if (alsx) return `L${alsx[1]}`
   // Grid virtual: -{repriceGen}-v  Matrix virtual: -v{repriceGen}
   const m = linkId.match(/^(SIS_STR|STR)-[a-f0-9]+-\d+-(\d+)(?:-(?:v\d+|\d+(?:-v)?))?$/)
   return m ? `L${m[2]}` : ''
@@ -96,6 +100,8 @@ export function extractCycleNum(linkId?: string): number | null {
   // ALS entry/top-up and per-level-stop orders: -als-{cycle}-{levelIdx} / -alssl-{cycle}-{levelIdx}.
   // (-alsrestore-{levelIdx} has no embedded cycle number at all — falls through to null.)
   m = linkId.match(/^(?:SIS_STR|STR)-[a-f0-9]+-als(?:sl)?-(\d+)-\d+$/)
+  if (m) return parseInt(m[1])
+  m = linkId.match(/^(?:SIS_STR|STR)-[a-f0-9]+-alsx-(\d+)-\d+-[0-9a-z]+$/)
   if (m) return parseInt(m[1])
   // Grid virtual: -{repriceGen}-v  Matrix virtual: -v{repriceGen}
   m = linkId.match(/^(?:SIS_STR|STR)-[a-f0-9]+-(\d+)-\d+(?:-(?:v\d+|\d+(?:-v)?))?$/)

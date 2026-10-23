@@ -938,7 +938,13 @@ func (sr *StrategyRunner) alsSyncExchangeLevel(ctx context.Context, l *GridLevel
 	if triggerPrice > currentPrice {
 		trigDir = 1 // Rising: price must climb to reach triggerPrice
 	}
-	linkID := fmt.Sprintf("SIS_STR-%s-alsx-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx)
+	// Bybit rejects a reused orderLinkId even after the previous order was cancelled
+	// (retCode 110072), so every placement — including a reprice of the same level — needs a
+	// fresh one. The trailing base-36 stamp (6 chars, ms resolution) keeps it unique and
+	// within the 36-char limit; the chart/attribution parsers read cycle and level from the
+	// segments before it.
+	linkID := fmt.Sprintf("SIS_STR-%s-alsx-%d-%d-%s", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx,
+		strconv.FormatInt(time.Now().UnixMilli()%2176782336, 36))
 	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
 	sr.runner.RegisterOrder(linkID, ref)
 

@@ -988,7 +988,8 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(tp_order_id,''), COALESCE(sl_order_id,''), started_at,
 		       ended_at IS NOT NULL
 		FROM strategy_cycles
-		WHERE strategy_id=$1 ORDER BY cycle_num DESC LIMIT 1`, id,
+		WHERE strategy_id=$1
+		ORDER BY (ended_at IS NULL) DESC, cycle_num DESC LIMIT 1`, id,
 	).Scan(&cycleID, &cycle.CycleNum, &cycle.StartPrice,
 		&cycle.TPOrderID, &cycle.SLOrderID, &cycle.StartedAt, &cycleEnded)
 	if cycleEnded {

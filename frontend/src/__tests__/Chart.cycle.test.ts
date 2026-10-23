@@ -13,6 +13,7 @@ describe('parseOrderLabel (ALS)', () => {
 
   it('labels a fresh ALS per-level stop order as SL_L(levelIdx)', () => {
     expect(parseOrderLabel('SIS_STR-abc12345-alssl-1-2')).toBe('SL_L(2)')
+    expect(parseOrderLabel('SIS_STR-abc12345-alsx-1-3-k9x2ab')).toBe('L3')
   })
 
   it('labels an ALS stop restored from memory as SL_L(levelIdx)', () => {
@@ -27,6 +28,7 @@ describe('extractCycleNum (ALS)', () => {
 
   it('parses cycle from an ALS per-level stop order linkId', () => {
     expect(extractCycleNum('SIS_STR-abc12345-alssl-5-2')).toBe(5)
+    expect(extractCycleNum('SIS_STR-abc12345-alsx-5-3-k9x2ab')).toBe(5)
   })
 
   it('returns null for an ALS restored-from-memory stop (no embedded cycle)', () => {

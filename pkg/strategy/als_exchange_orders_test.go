@@ -192,6 +192,10 @@ func TestAlsPriceTick_ExchangeMode_RepricesWhenMainAvgEntryMoves(t *testing.T) {
 	if got := fake.placeOrderCalls[1].TriggerPrice; got != "72.00" {
 		t.Errorf("repriced TriggerPrice = %q, want 72.00", got)
 	}
+	// Bybit rejects a reused orderLinkId even after cancel (110072) — the reprice must not reuse it.
+	if a, b := fake.placeOrderCalls[0].OrderLinkId, fake.placeOrderCalls[1].OrderLinkId; a == b || len(b) > 36 {
+		t.Errorf("repriced OrderLinkId = %q (first %q): must differ and be <=36 chars", b, a)
+	}
 	if sr.levels[0].ExchangeOrderID != "als-x-2" {
 		t.Errorf("level ExchangeOrderID = %q, want als-x-2 (the repriced order)", sr.levels[0].ExchangeOrderID)
 	}
