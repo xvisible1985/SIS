@@ -873,6 +873,13 @@ func (sr *StrategyRunner) alsSyncExchangeLevel(ctx context.Context, l *GridLevel
 		if lv.Status != LevelFilled && lv.Status != LevelPlaced {
 			continue
 		}
+		// A resting conditional order (this level's own, or another level's) has not filled,
+		// so it is not open volume yet. Counting it fed the computed size back into itself
+		// through the unsafe-hedge cap: qty flapped tick to tick and the order was
+		// cancelled and replaced on every one.
+		if lv.Status == LevelPlaced && lv.ExchangeOrderID != "" {
+			continue
+		}
 		q, _ := strconv.ParseFloat(lv.Qty, 64)
 		usdt := q * triggerPrice
 		if lv.SLOrderID != "" {

@@ -286,3 +286,87 @@ func TestAlsPriceTick_ExchangeMode_SkipsReplacementWhenOldOrderAlreadyFilled(t *
 		t.Errorf("level.ExchangeOrderID = %q, want cleared (the fill's own WS event owns this level now)", sr.levels[0].ExchangeOrderID)
 	}
 }
+
+func TestAlsPriceTick_ExchangeMode_DoesNotCountOwnRestingOrderAgainstUnsafeHedgeCap(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+
+	var ownerID, accID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id`,
+		"als-xselfcap-"+t.Name()+"@example.com").Scan(&ownerID); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM users WHERE id=$1", ownerID) })
+	if err := pool.QueryRow(ctx, `INSERT INTO exchange_accounts (owner_id, exchange, label, api_key_enc, secret_enc) VALUES ($1,'binance','x','','') RETURNING id`,
+		ownerID).Scan(&accID); err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM exchange_accounts WHERE id=$1", accID) })
+
+	fake := &fakeExchange{}
+	fake.placeOrderQ.push(trader.OrderResult{OrderId: "als-x-1", OrderLinkId: "link-x-1"}, nil)
+	fake.placeOrderQ.push(trader.OrderResult{OrderId: "als-x-2", OrderLinkId: "link-x-2"}, nil)
+
+	ar := newTestAccountRunner(t, fake)
+	ar.pool = pool
+	setWSPosition(ar, "ALSXSELFUSDT", 1, 10, 100) // main avg entry 100
+
+	var stratID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO strategies (owner_id, account_id, symbol, direction, strategy_type, status, size_as_main, hedge_mode)
+		VALUES ($1,$2,'ALSXSELFUSDT','short','als','active',true,true) RETURNING id`,
+		ownerID, accID,
+	).Scan(&stratID); err != nil {
+		t.Fatalf("create als strategy: %v", err)
+	}
+	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM strategies WHERE id=$1", stratID) })
+
+	var cycleID, levelID string
+	if err := pool.QueryRow(ctx, `INSERT INTO strategy_cycles (strategy_id, cycle_num, started_at) VALUES ($1,1,NOW()) RETURNING id`,
+		stratID).Scan(&cycleID); err != nil {
+		t.Fatalf("create cycle: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, status)
+		VALUES ($1,$2,1,'Sell',0,0,'0','pending') RETURNING id`,
+		stratID, cycleID,
+	).Scan(&levelID); err != nil {
+		t.Fatalf("create level: %v", err)
+	}
+
+	sr := &StrategyRunner{
+		runner: ar,
+		strategy: Strategy{
+			ID: stratID, Symbol: "ALSXSELFUSDT", Category: "linear", Direction: DirectionShort,
+			HedgeMode: true, SizeAsMain: true, AlsExchangeOrders: true, UnsafeHedgeMaxPct: 20,
+			AlsThresholds: []AlsThreshold{{TriggerType: 1, TriggerPct: -10, TargetHedgePct: 30}},
+		},
+		cycle:  &Cycle{ID: cycleID, CycleNum: 1},
+		instr:  trader.InstrumentInfo{TickSize: 0.01, QtyStep: 0.001, MinQty: 0.001},
+		levels: []GridLevel{{ID: levelID, LevelIdx: 1, Side: "Sell", Status: LevelPending}},
+	}
+
+	sr.mu.Lock()
+	sr.alsPriceTick(ctx, 95) // trigger = 100*0.9 = 90
+	sr.mu.Unlock()
+	if len(fake.placeOrderCalls) != 1 || fake.placeOrderCalls[0].TriggerPrice != "90.00" {
+		t.Fatalf("after 1st tick: placeOrderCalls = %+v, want one call @ 90.00", fake.placeOrderCalls)
+	}
+
+	first := fake.placeOrderCalls[0].Qty
+
+	// Nothing about the market, main position or settings changed — the resting order must be
+	// left alone. Regression: the level's own unfilled resting order used to be counted as
+	// "open unprotected" volume against UnsafeHedgeMaxPct, so every tick shrank/grew the
+	// computed size and cancel+replaced the order forever (qty flapping 12 <-> 228 live).
+	for i := 0; i < 3; i++ {
+		sr.mu.Lock()
+		sr.alsPriceTick(ctx, 95)
+		sr.mu.Unlock()
+	}
+	if len(fake.cancelOrderCalls) != 0 || len(fake.placeOrderCalls) != 1 {
+		t.Fatalf("stable inputs: cancels=%d places=%d, want 0 and 1 (first qty %s)",
+			len(fake.cancelOrderCalls), len(fake.placeOrderCalls), first)
+	}
+}
+
