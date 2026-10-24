@@ -4316,6 +4316,27 @@ func (sr *StrategyRunner) restartGridCycle(ctx context.Context) {
 		// restore the originally-placed ones back to 'pending' so they can be re-placed.
 		for i := range sr.levels {
 			if sr.levels[i].Status == LevelPlaced {
+				// cancelPlacedLevels just sent a cancel for this order, but cancel and fill
+				// can race: if the order had already filled on the exchange (e.g. its fill
+				// event was lost to a process restart before it could be recorded), the
+				// cancel is a no-op and blindly resetting this level to pending would make
+				// placeNextLevels place a second, genuinely duplicate order for a level
+				// that's already filled for real. Confirm against the exchange before
+				// discarding the order's identity — same check reconcile.go already does
+				// for "placed order missing from exchange".
+				orderID := sr.levels[i].ExchangeOrderID
+				if hist, _, err := sr.runner.exchange.FetchOrderById(ctx, sr.strategy.Category, sr.strategy.Symbol, orderID); err == nil && hist.OrderStatus == "Filled" {
+					filledPrice, _ := strconv.ParseFloat(hist.AvgPrice, 64)
+					sr.runner.pool.Exec(ctx, //nolint:errcheck
+						`UPDATE strategy_levels SET status='filled', filled_price=$1, filled_at=NOW() WHERE id=$2`,
+						filledPrice, sr.levels[i].ID)
+					sr.runner.UnregisterOrder(orderID)
+					sr.levels[i].Status = LevelFilled
+					sr.levels[i].FilledPrice = filledPrice
+					sr.info(ctx, fmt.Sprintf("L%d %s @ %.0f USDT уже исполнен на бирже @ %.4f — учитываю филл вместо повторной постановки",
+						sr.levels[i].LevelIdx, sr.levels[i].Side, sr.levels[i].SizeUSDT, filledPrice))
+					continue
+				}
 				sr.levels[i].Status = LevelPending
 				sr.levels[i].ExchangeOrderID = ""
 				sr.runner.pool.Exec(ctx, //nolint:errcheck
