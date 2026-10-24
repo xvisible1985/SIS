@@ -882,6 +882,11 @@ func (sr *StrategyRunner) alsPriceTick(ctx context.Context, currentPrice float64
 			if lv.Status != LevelFilled && lv.Status != LevelPlaced {
 				continue
 			}
+			// A resting conditional order has not filled — not open volume (see the same
+			// exclusion in alsSyncExchangeLevel).
+			if lv.Status == LevelPlaced && lv.ExchangeOrderID != "" {
+				continue
+			}
 			q, _ := strconv.ParseFloat(lv.Qty, 64)
 			usdt := q * currentPrice
 			if lv.SLOrderID != "" {

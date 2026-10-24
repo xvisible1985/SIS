@@ -103,3 +103,83 @@ func TestAlsPriceTick_RearmsStoppedLevelAfterSafeZone(t *testing.T) {
 		t.Errorf("re-armed row = %+v, want level 1 no longer sl_closed", sr.levels[1])
 	}
 }
+
+func TestAlsPriceTick_CrossedLevelNotBlockedByOtherLevelsRestingOrder(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+
+	var ownerID, accID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id`,
+		"als-restcap-"+t.Name()+"@example.com").Scan(&ownerID); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM users WHERE id=$1", ownerID) })
+	if err := pool.QueryRow(ctx, `INSERT INTO exchange_accounts (owner_id, exchange, label, api_key_enc, secret_enc) VALUES ($1,'binance','x','','') RETURNING id`,
+		ownerID).Scan(&accID); err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM exchange_accounts WHERE id=$1", accID) })
+
+	fake := &fakeExchange{}
+	fake.placeOrderQ.push(trader.OrderResult{OrderId: "als-x-1", OrderLinkId: "link-x-1"}, nil)
+	
+	ar := newTestAccountRunner(t, fake)
+	ar.pool = pool
+	setWSPosition(ar, "ALSRESTCAPUSDT", 1, 10, 100) // main avg entry 100
+
+	var stratID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO strategies (owner_id, account_id, symbol, direction, strategy_type, status, size_as_main, hedge_mode)
+		VALUES ($1,$2,'ALSRESTCAPUSDT','short','als','active',true,true) RETURNING id`,
+		ownerID, accID,
+	).Scan(&stratID); err != nil {
+		t.Fatalf("create als strategy: %v", err)
+	}
+	t.Cleanup(func() { pool.Exec(ctx, "DELETE FROM strategies WHERE id=$1", stratID) })
+
+	var cycleID, levelID string
+	if err := pool.QueryRow(ctx, `INSERT INTO strategy_cycles (strategy_id, cycle_num, started_at) VALUES ($1,1,NOW()) RETURNING id`,
+		stratID).Scan(&cycleID); err != nil {
+		t.Fatalf("create cycle: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, status)
+		VALUES ($1,$2,1,'Sell',0,0,'0','pending') RETURNING id`,
+		stratID, cycleID,
+	).Scan(&levelID); err != nil {
+		t.Fatalf("create level: %v", err)
+	}
+
+	sr := &StrategyRunner{
+		runner: ar,
+		strategy: Strategy{
+			ID: stratID, Symbol: "ALSRESTCAPUSDT", Category: "linear", Direction: DirectionShort,
+			HedgeMode: true, SizeAsMain: true, AlsExchangeOrders: true, UnsafeHedgeMaxPct: 80,
+			AlsThresholds: []AlsThreshold{{TriggerType: 1, TriggerPct: -10, TargetHedgePct: 30}, {TriggerType: 1, TriggerPct: -50, TargetHedgePct: 80}},
+		},
+		cycle:  &Cycle{ID: cycleID, CycleNum: 1},
+		instr:  trader.InstrumentInfo{TickSize: 0.01, QtyStep: 0.001, MinQty: 0.001},
+		levels: []GridLevel{
+			{ID: levelID, LevelIdx: 1, Side: "Sell", Status: LevelPending},
+			// L2 already rests on the exchange, sized far beyond the cap — it is not open volume.
+			{ID: "00000000-0000-0000-0000-000000000002", LevelIdx: 2, Side: "Sell", Status: LevelPlaced, ExchangeOrderID: "rest-2", Qty: "1000", TargetPrice: 50},
+		},
+	}
+
+	// Price 85: below L1's trigger (100*0.9 = 90) with no resting order of its own, so it must
+	// fire at market. Regression: L2's unfilled resting order (1000 coins) was counted as open
+	// unprotected volume against UnsafeHedgeMaxPct, driving the cap to 0 and silently
+	// cancelling this top-up (live DNAUSDT, 2026-10-24).
+	sr.mu.Lock()
+	sr.alsPriceTick(ctx, 85)
+	sr.mu.Unlock()
+	market := 0
+	for _, c := range fake.placeOrderCalls {
+		if c.TriggerPrice == "" {
+			market++
+		}
+	}
+	if market != 1 {
+		t.Fatalf("placeOrderCalls = %+v, want exactly one immediate market top-up for L1", fake.placeOrderCalls)
+	}
+}
