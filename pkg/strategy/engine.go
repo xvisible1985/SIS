@@ -576,6 +576,29 @@ func (e *Engine) GetMatrixSafeZone(strategyID string) *MatrixSafeZone {
 	return nil
 }
 
+// GetAlsSafeZone returns the Safe Zone band of an ALS hedge leg whose per-level stop has
+// fired and whose thresholds have not been re-armed yet, or nil when none is active.
+func (e *Engine) GetAlsSafeZone(strategyID string) *MatrixSafeZone {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, runner := range e.runners {
+		runner.mu.RLock()
+		sr, ok := runner.strategies[strategyID]
+		runner.mu.RUnlock()
+		if !ok {
+			continue
+		}
+		sr.mu.RLock()
+		defer sr.mu.RUnlock()
+		low, high, ok := alsSafeZoneBounds(sr.strategy.Direction, sr.strategy.SafeZonePct, sr.alsSafeAnchor)
+		if !ok {
+			return nil
+		}
+		return &MatrixSafeZone{Low: low, High: high}
+	}
+	return nil
+}
+
 // MatrixRelativePreview describes the upcoming (not-yet-triggered) relative slot for one
 // side of a relative_slots matrix strategy — used by the chart to show the next target
 // before price actually reaches it, mirroring how absolute-mode virtual levels are

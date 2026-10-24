@@ -40,3 +40,18 @@ func TestAlsMaxLevelIdx(t *testing.T) {
 		t.Errorf("alsMaxLevelIdx(nil) = %d, want 0", got)
 	}
 }
+
+func TestAlsSafeZoneBounds(t *testing.T) {
+	if lo, hi, ok := alsSafeZoneBounds(DirectionShort, 2, 100); !ok || lo != 98 || hi != 100 {
+		t.Errorf("short: (%v,%v,%v), want (98,100,true)", lo, hi, ok)
+	}
+	if lo, hi, ok := alsSafeZoneBounds(DirectionLong, 2, 100); !ok || lo != 100 || hi != 102 {
+		t.Errorf("long: (%v,%v,%v), want (100,102,true)", lo, hi, ok)
+	}
+	if _, _, ok := alsSafeZoneBounds(DirectionShort, 0, 100); ok {
+		t.Error("no SafeZonePct configured: want no zone")
+	}
+	if _, _, ok := alsSafeZoneBounds(DirectionShort, 2, 0); ok {
+		t.Error("no stop pending: want no zone")
+	}
+}

@@ -1113,6 +1113,11 @@ func (s *Server) GetStrategyState(w http.ResponseWriter, r *http.Request) {
 	}
 	var safeZone *safeZoneInfo
 	var relativePreviewAccum, relativePreviewCounter *strategy.MatrixRelativePreview
+	if strategyType == "als" && !cycleEnded {
+		if sz := s.engine.GetAlsSafeZone(id); sz != nil {
+			safeZone = &safeZoneInfo{Low: sz.Low, High: sz.High}
+		}
+	}
 	if strategyType == "matrix" {
 		if sz := s.engine.GetMatrixSafeZone(id); sz != nil {
 			safeZone = &safeZoneInfo{Low: sz.Low, High: sz.High}

@@ -110,6 +110,19 @@ func alsSafeZoneBlocked(dir Direction, safeZonePct, anchor, currentPrice float64
 	return currentPrice > anchor*(1-safeZonePct/100)
 }
 
+// alsSafeZoneBounds returns the price band the chart shades as the Safe Zone — between the
+// stop trigger and the price the hedge must reach before it may be re-entered (below the
+// trigger for a short hedge, above it for a long one) — or ok=false when none is active.
+func alsSafeZoneBounds(dir Direction, safeZonePct, anchor float64) (low, high float64, ok bool) {
+	if safeZonePct <= 0 || anchor <= 0 {
+		return 0, 0, false
+	}
+	if dir == DirectionLong {
+		return anchor, anchor * (1 + safeZonePct/100), true
+	}
+	return anchor * (1 - safeZonePct/100), anchor, true
+}
+
 // alsMaxLevelIdx returns the highest level_idx present in levels (0 if empty). A level_idx
 // can appear on several rows once stopped levels are re-armed, so len(levels) no longer
 // equals the number of thresholds covered.
