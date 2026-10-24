@@ -2,9 +2,8 @@ package strategy
 
 import "testing"
 
-// alsSafeZoneBlocked mirrors matrixCheckWaitingReentry's rule: after a per-level stop at
-// anchor, a short hedge waits for price to fall safeZonePct% below it, a long hedge for
-// price to rise safeZonePct% above it.
+// alsSafeZoneBlocked keeps the hedge out only while price is inside the Safe Zone band
+// around the stop trigger; once price is outside the band on either side it no longer blocks.
 func TestAlsSafeZoneBlocked(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -14,13 +13,15 @@ func TestAlsSafeZoneBlocked(t *testing.T) {
 		price   float64
 		blocked bool
 	}{
-		{"short, price still above safe price", DirectionShort, 2, 100, 99, true},
-		{"short, price exactly at safe price", DirectionShort, 2, 100, 98, false},
-		{"short, price well below safe price", DirectionShort, 2, 100, 90, false},
-		{"long, price still below safe price", DirectionLong, 2, 100, 101, true},
-		{"long, price at safe price", DirectionLong, 2, 100, 102, false},
-		{"no safe zone configured", DirectionShort, 0, 100, 150, false},
-		{"no stop pending", DirectionShort, 2, 0, 150, false},
+		{"short, inside band", DirectionShort, 2, 100, 99, true},
+		{"short, at band edges", DirectionShort, 2, 100, 98, true},
+		{"short, below band", DirectionShort, 2, 100, 97, false},
+		{"short, above the stop trigger (live DNAUSDT case)", DirectionShort, 1.5, 0.18137, 0.188, false},
+		{"long, inside band", DirectionLong, 2, 100, 101, true},
+		{"long, above band", DirectionLong, 2, 100, 103, false},
+		{"long, below the stop trigger", DirectionLong, 2, 100, 99, false},
+		{"no safe zone configured", DirectionShort, 0, 100, 99, false},
+		{"no stop pending", DirectionShort, 2, 0, 99, false},
 	}
 	for _, c := range cases {
 		if got := alsSafeZoneBlocked(c.dir, c.pct, c.anchor, c.price); got != c.blocked {

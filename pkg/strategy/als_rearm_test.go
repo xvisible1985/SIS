@@ -74,7 +74,7 @@ func TestAlsPriceTick_RearmsStoppedLevelAfterSafeZone(t *testing.T) {
 		return n
 	}
 
-	// Price 89: still above the safe price 90*(1-2%) = 88.2 — hedge must stay out.
+	// Price 89: inside the Safe Zone band [88.2, 90] — hedge must stay out.
 	sr.mu.Lock()
 	sr.alsPriceTick(ctx, 89)
 	sr.mu.Unlock()
@@ -82,7 +82,7 @@ func TestAlsPriceTick_RearmsStoppedLevelAfterSafeZone(t *testing.T) {
 		t.Fatalf("inside Safe Zone: places=%d levels=%d anchor=%v, want 0/1/90", len(fake.placeOrderCalls), len(sr.levels), sr.alsSafeAnchor)
 	}
 
-	// Price 88: past the Safe Zone and below the L1 trigger (100*0.9 = 90) — the stopped level
+	// Price 88: out of the band (below 88.2) and below the L1 trigger (100*0.9 = 90) — the stopped level
 	// is re-armed (history row kept, fresh pending row added) and the hedge topped back up.
 	sr.mu.Lock()
 	sr.alsPriceTick(ctx, 88)

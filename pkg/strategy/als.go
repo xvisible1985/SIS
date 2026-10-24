@@ -96,18 +96,17 @@ func alsLinkStamp() string {
 }
 
 // alsSafeZoneBlocked reports whether re-arming stopped-out levels must still wait: after a
-// per-level stop fired at anchor, the hedge may not be re-entered until price has moved
-// safeZonePct% back past that trigger — below it for a short hedge, above it for a long
-// one (same rule matrixCheckWaitingReentry applies). No Safe Zone configured, or no stop
-// pending (anchor == 0), never blocks.
+// per-level stop fired at anchor, the hedge is kept out only while price sits INSIDE the
+// Safe Zone band (alsSafeZoneBounds) — right around the trigger, where re-entering would
+// just whip-saw into the same stop. Price outside the band on either side (moved on past
+// it, in either direction) no longer blocks: the thresholds' target volume applies again.
+// No Safe Zone configured, or no stop pending (anchor == 0), never blocks.
 func alsSafeZoneBlocked(dir Direction, safeZonePct, anchor, currentPrice float64) bool {
-	if safeZonePct <= 0 || anchor <= 0 {
+	low, high, ok := alsSafeZoneBounds(dir, safeZonePct, anchor)
+	if !ok {
 		return false
 	}
-	if dir == DirectionLong {
-		return currentPrice < anchor*(1+safeZonePct/100)
-	}
-	return currentPrice > anchor*(1-safeZonePct/100)
+	return currentPrice >= low && currentPrice <= high
 }
 
 // alsSafeZoneBounds returns the price band the chart shades as the Safe Zone — between the
