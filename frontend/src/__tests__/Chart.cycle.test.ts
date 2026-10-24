@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractCycleNum, isOtherStrategyLinkId, deriveEffectiveCycleNum, isCycleLive, parseOrderLabel } from '../components/terminal/Chart'
+import { extractCycleNum, isOtherStrategyLinkId, deriveEffectiveCycleNum, isCycleLive, parseOrderLabel, alsExecLevel } from '../components/terminal/Chart'
 
 // Regression for the 2026-10-23 incident: ALS hedge level/stop orders use a '-als-'/'-alssl-'
 // segment (literal letters) where the generic grid/matrix regexes require a purely-numeric
@@ -136,5 +136,16 @@ describe('isCycleLive', () => {
 
   it('is true when no strategy is selected', () => {
     expect(isCycleLive(1, null, [])).toBe(true)
+  })
+})
+
+describe('alsExecLevel', () => {
+  it('classifies ALS entries and stops', () => {
+    expect(alsExecLevel('SIS_STR-abc12345-als-1-2')).toEqual({ levelIdx: 2, closing: false })
+    expect(alsExecLevel('SIS_STR-abc12345-alsx-1-3-k9x2ab')).toEqual({ levelIdx: 3, closing: false })
+    expect(alsExecLevel('SIS_STR-abc12345-alssl-1-2')).toEqual({ levelIdx: 2, closing: true })
+    expect(alsExecLevel('SIS_STR-abc12345-alsrestore-3')).toEqual({ levelIdx: 3, closing: true })
+    expect(alsExecLevel('SIS_STR-abc12345-1-2')).toBeNull()
+    expect(alsExecLevel(undefined)).toBeNull()
   })
 })

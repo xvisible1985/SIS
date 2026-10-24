@@ -87,6 +87,17 @@ export function parseOrderLabel(linkId: string, side?: string): string {
   return m ? `L${m[2]}` : ''
 }
 
+// ALS level-order link IDs: -als-/-alsx-{cycle}-{level}[-stamp] are entries, -alssl-{cycle}-{level}
+// and -alsrestore-{level} are the level's protective stop (a closing order).
+export function alsExecLevel(linkId?: string): { levelIdx: number; closing: boolean } | null {
+  if (!linkId) return null
+  let m = linkId.match(/-als(?:x)?-\d+-(\d+)(?:-[0-9a-z]+)?$/)
+  if (m) return { levelIdx: parseInt(m[1]), closing: false }
+  m = linkId.match(/-alssl-\d+-(\d+)$/) || linkId.match(/-alsrestore-(\d+)$/)
+  if (m) return { levelIdx: parseInt(m[1]), closing: true }
+  return null
+}
+
 function isTPLinkId(linkId?: string): boolean {
   return !!linkId && /^(SIS_STR|STP)-[a-f0-9]+-tp(l[n\d]+)?(-\d+)+$/.test(linkId)
 }
@@ -780,6 +791,13 @@ export function Chart({ candles, candleSymbol, positions, orders, executions, sy
         if (!e.price || e.price <= 0) continue
         const isTP = isTPLinkId(e.orderLinkId)
         if (isTP && hasActiveTP) continue
+        // ALS: an entry fill line stays only while its level is still 'filled' (open position);
+        // once the level's stop closed it (sl_closed) both the entry and the stop-fill lines are
+        // stale, even though the cycle itself keeps running for the remaining thresholds.
+        if (strategyLevels && strategyLevels.length > 0) {
+          const als = alsExecLevel(e.orderLinkId)
+          if (als && (als.closing || !filledLevelIdxs.has(als.levelIdx))) continue
+        }
         const isBuy = e.side === 'Buy'
         const label = resolveLabel(parseOrderLabel(e.orderLinkId ?? '', e.side))
         const levelLabel = label || (isBuy ? 'Buy' : 'Sell')
