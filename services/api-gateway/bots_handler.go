@@ -979,7 +979,8 @@ func (s *Server) syncBotStrategies(ctx context.Context, botID string, structural
 		   initial_stop_be_pct  = $31,
 		   als_stop_cond_pct    = CASE WHEN $32::float8 > 0 THEN $32 ELSE als_stop_cond_pct END,
 		   als_stop_replace_pct = CASE WHEN $33::float8 > 0 THEN $33 ELSE als_stop_replace_pct END,
-		   als_exchange_orders  = $34
+		   als_exchange_orders  = $34,
+		   size_as_main         = $35
 		 WHERE bot_id = $25 AND status IN ('active','finishing')
 		 RETURNING id`,
 		gridLevels, gridActive, gridStep, gridSize,
@@ -992,7 +993,7 @@ func (s *Server) syncBotStrategies(ctx context.Context, botID string, structural
 		botID,
 		alsThresholdsParam, cfg.UnsafeHedgeMinPct, cfg.UnsafeHedgeMaxPct, cfg.StopMarketSizeK,
 		cfg.TPControlEnabled, cfg.InitialStopBEPct, cfg.AlsStopCondPct, cfg.AlsStopReplacePct,
-		cfg.AlsExchangeOrders,
+		cfg.AlsExchangeOrders, cfg.SizeAsMain,
 	)
 	if err != nil {
 		return

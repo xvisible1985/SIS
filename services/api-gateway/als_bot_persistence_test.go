@@ -44,6 +44,7 @@ func TestAlsFieldsRoundTrip(t *testing.T) {
 		AlsStopCondPct:    3,
 		AlsStopReplacePct: 1,
 		AlsExchangeOrders: true,
+		SizeAsMain:        true,
 	}
 	b := botEngineRow{id: botID, ownerID: userID, accountID: accID}
 
@@ -152,5 +153,13 @@ func TestAlsFieldsRoundTrip(t *testing.T) {
 		}
 		s.syncBotStrategies(ctx, botID, false)
 		assertRow(t, readAls(stratID), "sync-UPDATE")
+		// Switching a hedge bot's size to "as main" must reach an already-running strategy —
+		// it used to be dropped from this UPDATE, so the live leg kept sizing from the fixed
+		// grid_size_usdt (live DNAUSDT, 2026-10-24).
+		var sizeAsMain bool
+		s.pool.QueryRow(ctx, `SELECT size_as_main FROM strategies WHERE id=$1`, stratID).Scan(&sizeAsMain) //nolint:errcheck
+		if !sizeAsMain {
+			t.Errorf("sync-UPDATE: size_as_main = false, want true")
+		}
 	})
 }
