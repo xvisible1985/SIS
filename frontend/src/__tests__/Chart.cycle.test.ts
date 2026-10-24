@@ -149,3 +149,14 @@ describe('alsExecLevel', () => {
     expect(alsExecLevel(undefined)).toBeNull()
   })
 })
+
+describe('ALS stamped link IDs', () => {
+  it('parses -als- and -alssl- placements carrying a uniqueness stamp', () => {
+    expect(parseOrderLabel('SIS_STR-abc12345-als-1-2-k9x2ab')).toBe('L2')
+    expect(parseOrderLabel('SIS_STR-abc12345-alssl-1-2-k9x2ab')).toBe('SL_L(2)')
+    expect(extractCycleNum('SIS_STR-abc12345-als-5-2-k9x2ab')).toBe(5)
+    expect(extractCycleNum('SIS_STR-abc12345-alssl-5-2-k9x2ab')).toBe(5)
+    expect(alsExecLevel('SIS_STR-abc12345-als-1-2-k9x2ab')).toEqual({ levelIdx: 2, closing: false })
+    expect(alsExecLevel('SIS_STR-abc12345-alssl-1-2-k9x2ab')).toEqual({ levelIdx: 2, closing: true })
+  })
+})

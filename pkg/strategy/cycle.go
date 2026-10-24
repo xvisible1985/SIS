@@ -26,6 +26,9 @@ type StrategyRunner struct {
 
 	cycle                   *Cycle
 	levels                  []GridLevel
+	// alsSafeAnchor is the trigger price of the most recent ALS per-level stop that fired and
+	// whose level has not been re-armed yet (0 = no Safe Zone active). See alsRearmStoppedLevels.
+	alsSafeAnchor float64
 	tpOrderID               string
 	slOrderID               string
 	tpPlaceSeq              int
@@ -1492,7 +1495,8 @@ func (sr *StrategyRunner) loadActiveCycle(ctx context.Context) error {
 		        COALESCE(exchange_order_id,''), COALESCE(filled_price,0), COALESCE(exchange_link_id,''),
 		        COALESCE(sl_order_id,''), COALESCE(sl_link_id,''), COALESCE(sl_price,0), COALESCE(sl_replaced,false), slot, COALESCE(force_virtual,false),
 		        COALESCE(use_signal,false)
-		 FROM strategy_levels WHERE cycle_id=$1 ORDER BY level_idx ASC`,
+		 FROM strategy_levels WHERE cycle_id=$1
+		 ORDER BY level_idx ASC, COALESCE(sl_closed_at, 'infinity'::timestamptz) ASC`,
 		c.ID,
 	)
 	if err != nil {

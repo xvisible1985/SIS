@@ -66,7 +66,10 @@ export function parseOrderLabel(linkId: string, side?: string): string {
   // ALS per-level stops — fresh: SIS_STR-{stratId8}-alssl-{cycle}-{levelIdx};
   // restored from als_stop_memory: SIS_STR-{stratId8}-alsrestore-{levelIdx}.
   // Must be checked before the plain '-als-' branch below (both contain it as a substring).
-  if (linkId.includes('-alssl-') || linkId.includes('-alsrestore-')) {
+  // -alssl-{cycle}-{levelIdx}[-stamp]: the optional trailing stamp makes each placement unique.
+  const alssl = linkId.match(/-alssl-\d+-(\d+)(?:-[0-9a-z]+)?$/)
+  if (alssl) return `SL_L(${alssl[1]})`
+  if (linkId.includes('-alsrestore-')) {
     const parts = linkId.split('-')
     return `SL_L(${parts[parts.length - 1]})`
   }
@@ -75,10 +78,8 @@ export function parseOrderLabel(linkId: string, side?: string): string {
   // The generic grid/matrix regex below requires a purely-numeric segment right after the
   // strategy id (cycle), so the literal "als" there always failed to match — these orders
   // got label='' and never rendered as chart lines/price markers at all.
-  if (linkId.includes('-als-')) {
-    const parts = linkId.split('-')
-    return `L${parts[parts.length - 1]}`
-  }
+  const alsEntry = linkId.match(/-als-\d+-(\d+)(?:-[0-9a-z]+)?$/)
+  if (alsEntry) return `L${alsEntry[1]}`
   // -alsx-{cycle}-{levelIdx}-{stamp}: the trailing stamp makes every (re)placement unique.
   const alsx = linkId.match(/-alsx-\d+-(\d+)-[0-9a-z]+$/)
   if (alsx) return `L${alsx[1]}`
@@ -93,7 +94,7 @@ export function alsExecLevel(linkId?: string): { levelIdx: number; closing: bool
   if (!linkId) return null
   let m = linkId.match(/-als(?:x)?-\d+-(\d+)(?:-[0-9a-z]+)?$/)
   if (m) return { levelIdx: parseInt(m[1]), closing: false }
-  m = linkId.match(/-alssl-\d+-(\d+)$/) || linkId.match(/-alsrestore-(\d+)$/)
+  m = linkId.match(/-alssl-\d+-(\d+)(?:-[0-9a-z]+)?$/) || linkId.match(/-alsrestore-(\d+)$/)
   if (m) return { levelIdx: parseInt(m[1]), closing: true }
   return null
 }
@@ -110,7 +111,7 @@ export function extractCycleNum(linkId?: string): number | null {
   if (m) return parseInt(m[1])
   // ALS entry/top-up and per-level-stop orders: -als-{cycle}-{levelIdx} / -alssl-{cycle}-{levelIdx}.
   // (-alsrestore-{levelIdx} has no embedded cycle number at all — falls through to null.)
-  m = linkId.match(/^(?:SIS_STR|STR)-[a-f0-9]+-als(?:sl)?-(\d+)-\d+$/)
+  m = linkId.match(/^(?:SIS_STR|STR)-[a-f0-9]+-als(?:sl)?-(\d+)-\d+(?:-[0-9a-z]+)?$/)
   if (m) return parseInt(m[1])
   m = linkId.match(/^(?:SIS_STR|STR)-[a-f0-9]+-alsx-(\d+)-\d+-[0-9a-z]+$/)
   if (m) return parseInt(m[1])

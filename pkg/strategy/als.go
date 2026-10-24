@@ -86,6 +86,79 @@ func alsTopUpUsdt(targetHedgePct, mainUsdt, alreadyOpenUsdt float64) float64 {
 	return topUp
 }
 
+// alsLinkStamp is a 6-char base-36 millisecond stamp appended to ALS order link IDs.
+// Bybit rejects a reused orderLinkId even after the order was cancelled/closed (110072),
+// and a level can now be placed several times in one cycle (reprice, re-arm after its stop
+// fired), so every placement needs its own. The cycle and level are read from the segments
+// before it.
+func alsLinkStamp() string {
+	return strconv.FormatInt(time.Now().UnixMilli()%2176782336, 36)
+}
+
+// alsSafeZoneBlocked reports whether re-arming stopped-out levels must still wait: after a
+// per-level stop fired at anchor, the hedge may not be re-entered until price has moved
+// safeZonePct% back past that trigger — below it for a short hedge, above it for a long
+// one (same rule matrixCheckWaitingReentry applies). No Safe Zone configured, or no stop
+// pending (anchor == 0), never blocks.
+func alsSafeZoneBlocked(dir Direction, safeZonePct, anchor, currentPrice float64) bool {
+	if safeZonePct <= 0 || anchor <= 0 {
+		return false
+	}
+	if dir == DirectionLong {
+		return currentPrice < anchor*(1+safeZonePct/100)
+	}
+	return currentPrice > anchor*(1-safeZonePct/100)
+}
+
+// alsMaxLevelIdx returns the highest level_idx present in levels (0 if empty). A level_idx
+// can appear on several rows once stopped levels are re-armed, so len(levels) no longer
+// equals the number of thresholds covered.
+func alsMaxLevelIdx(levels []GridLevel) int {
+	m := 0
+	for _, l := range levels {
+		if l.LevelIdx > m {
+			m = l.LevelIdx
+		}
+	}
+	return m
+}
+
+// alsRearmStoppedLevels puts every threshold whose latest row is sl_closed back into play
+// once the Safe Zone (if any) is clear: a fresh pending row is inserted right after the
+// stopped one (the sl_closed row stays — its realized_pnl feeds bot PnL — and keeps the
+// slice ordered by level_idx so alsPriceTick's "previous order price" lookup still sees
+// the levels above in order). The ordinary threshold evaluation then tops the hedge back
+// up to each threshold's target volume as usual, honouring every other setting.
+// Must be called with sr.mu held.
+func (sr *StrategyRunner) alsRearmStoppedLevels(ctx context.Context, currentPrice float64) {
+	if alsSafeZoneBlocked(sr.strategy.Direction, sr.strategy.SafeZonePct, sr.alsSafeAnchor, currentPrice) {
+		return
+	}
+	for i := 0; i < len(sr.levels); i++ {
+		l := sr.levels[i]
+		if l.Status != LevelSLClosed || l.LevelIdx > len(sr.strategy.AlsThresholds) {
+			continue
+		}
+		if i+1 < len(sr.levels) && sr.levels[i+1].LevelIdx == l.LevelIdx {
+			continue // already re-armed — a newer row for this level exists
+		}
+		var newID string
+		if err := sr.runner.pool.QueryRow(ctx,
+			`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, status)
+			 VALUES ($1,$2,$3,$4,0,0,'0','pending') RETURNING id`,
+			sr.strategy.ID, sr.cycle.ID, l.LevelIdx, l.Side,
+		).Scan(&newID); err != nil {
+			sr.errlog(ctx, fmt.Sprintf("ALS: ошибка повторного ввода порога L%d: %v", l.LevelIdx, err))
+			return // retry next tick
+		}
+		fresh := GridLevel{ID: newID, LevelIdx: l.LevelIdx, Side: l.Side, Status: LevelPending}
+		sr.levels = append(sr.levels[:i+1], append([]GridLevel{fresh}, sr.levels[i+1:]...)...)
+		sr.info(ctx, fmt.Sprintf("ALS L%d: после стопа порог снова в работе (Safe Zone пройдена)", l.LevelIdx))
+		i++ // skip the row just inserted
+	}
+	sr.alsSafeAnchor = 0
+}
+
 // startAlsCycle starts a brand-new ALS hedge cycle. Stub — see
 // docs/superpowers/plans/2026-10-18-als-hedge-engine-core.md for the real implementation
 // (will create the strategy_cycles row and seed strategy_levels from AlsThresholds).
@@ -143,6 +216,20 @@ func (sr *StrategyRunner) startAlsCycle(ctx context.Context) error {
 // the generic loadActiveCycle path (same one grid/matrix use), so there's nothing to
 // reconstruct here beyond relaunching the goroutine.
 func (sr *StrategyRunner) resumeAlsCycle(ctx context.Context) {
+	// Rebuild the Safe Zone anchor: the latest stopped-out level that has not been re-armed
+	// yet (its row is still the newest for its level_idx).
+	sr.mu.Lock()
+	if sr.cycle != nil {
+		var anchor float64
+		for i, l := range sr.levels {
+			if l.Status != LevelSLClosed || (i+1 < len(sr.levels) && sr.levels[i+1].LevelIdx == l.LevelIdx) {
+				continue
+			}
+			anchor = l.SLPrice // rows are ordered by sl_closed_at, so the last one wins
+		}
+		sr.alsSafeAnchor = anchor
+	}
+	sr.mu.Unlock()
 	go sr.launchAlsPriceMonitor()
 }
 
@@ -172,7 +259,7 @@ func (sr *StrategyRunner) alsSyncLevelsToThresholds(ctx context.Context) {
 	if sr.strategy.Direction == DirectionShort {
 		side = "Sell"
 	}
-	for levelIdx := len(sr.levels) + 1; levelIdx <= len(sr.strategy.AlsThresholds); levelIdx++ {
+	for levelIdx := alsMaxLevelIdx(sr.levels) + 1; levelIdx <= len(sr.strategy.AlsThresholds); levelIdx++ {
 		var levelID string
 		if err := sr.runner.pool.QueryRow(ctx,
 			`INSERT INTO strategy_levels (strategy_id, cycle_id, level_idx, side, target_price, size_usdt, qty, status)
@@ -451,6 +538,7 @@ func (sr *StrategyRunner) handleAlsLevelSLFill(ctx context.Context, levelID stri
 		`UPDATE strategy_levels SET status='sl_closed', realized_pnl=$1, sl_closed_at=NOW() WHERE id=$2`, levelPnl, levelID,
 	)
 	closed.Status = LevelSLClosed
+	sr.alsSafeAnchor = slTrigger // Safe Zone starts here — see alsRearmStoppedLevels
 	slOrderID := closed.SLOrderID
 	closed.SLOrderID = ""
 	closed.SLLinkID = ""
@@ -510,7 +598,7 @@ func (sr *StrategyRunner) alsPlaceLevelStop(ctx context.Context, l *GridLevel, f
 		return
 	}
 
-	linkID := fmt.Sprintf("SIS_STR-%s-alssl-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx)
+	linkID := fmt.Sprintf("SIS_STR-%s-alssl-%d-%d-%s", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, alsLinkStamp())
 	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "als_sl"}
 	sr.runner.RegisterOrder(linkID, ref)
 
@@ -699,9 +787,10 @@ func (sr *StrategyRunner) alsPriceTick(ctx context.Context, currentPrice float64
 	// newly added threshold would sit invisible until the current cycle ends. Appending
 	// its level row here makes it eligible for evaluation (and an instant top-up below if
 	// its trigger is already met) on this very tick instead.
-	if len(sr.strategy.AlsThresholds) > len(sr.levels) {
+	if len(sr.strategy.AlsThresholds) > alsMaxLevelIdx(sr.levels) {
 		sr.alsSyncLevelsToThresholds(ctx)
 	}
+	sr.alsRearmStoppedLevels(ctx, currentPrice)
 
 	for i := range sr.levels {
 		l := &sr.levels[i]
@@ -825,7 +914,7 @@ func (sr *StrategyRunner) alsPlaceTopUp(ctx context.Context, l *GridLevel, trigg
 		return
 	}
 	side := alsSideForDirection(sr.strategy.Direction)
-	linkID := fmt.Sprintf("SIS_STR-%s-als-%d-%d", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx)
+	linkID := fmt.Sprintf("SIS_STR-%s-als-%d-%d-%s", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, alsLinkStamp())
 	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
 	sr.runner.RegisterOrder(linkID, ref)
 
@@ -950,8 +1039,7 @@ func (sr *StrategyRunner) alsSyncExchangeLevel(ctx context.Context, l *GridLevel
 	// fresh one. The trailing base-36 stamp (6 chars, ms resolution) keeps it unique and
 	// within the 36-char limit; the chart/attribution parsers read cycle and level from the
 	// segments before it.
-	linkID := fmt.Sprintf("SIS_STR-%s-alsx-%d-%d-%s", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx,
-		strconv.FormatInt(time.Now().UnixMilli()%2176782336, 36))
+	linkID := fmt.Sprintf("SIS_STR-%s-alsx-%d-%d-%s", sr.strategy.ID[:8], sr.cycle.CycleNum, l.LevelIdx, alsLinkStamp())
 	ref := orderRef{strategyID: sr.strategy.ID, levelID: l.ID, refType: "level"}
 	sr.runner.RegisterOrder(linkID, ref)
 
