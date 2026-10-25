@@ -1750,12 +1750,19 @@ func (s *Server) hedgeHasOpenFilledLevels(ctx context.Context, strategyID string
 // hedgeHasPendingOrders returns true if the hedge strategy has placed/pending orders
 // in an open cycle. Used for standalone force-activated hedges: when no exchange
 // position is visible yet, pending orders mean the entry order hasn't filled — wait.
+//
+// ALS strategies never count: their levels are standing thresholds (virtual 'pending'
+// rows, or resting conditional orders in exchange mode), not an entry order about to
+// fill. Treating them as such meant an ALS hedge whose main position was gone was never
+// stopped — the card sat there forever with no strategy position behind it.
 func (s *Server) hedgeHasPendingOrders(ctx context.Context, strategyID string) bool {
 	var count int
 	s.pool.QueryRow(ctx, //nolint:errcheck
 		`SELECT COUNT(*) FROM strategy_levels sl
 		 JOIN strategy_cycles sc ON sl.cycle_id = sc.id
+		 JOIN strategies st ON st.id = sc.strategy_id
 		 WHERE sc.strategy_id = $1 AND sc.ended_at IS NULL
+		   AND st.strategy_type <> 'als'
 		   AND sl.status IN ('placed','pending')`,
 		strategyID,
 	).Scan(&count)
