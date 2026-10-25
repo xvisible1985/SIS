@@ -855,8 +855,9 @@ func TestPatchBot_StrategyResetTimer(t *testing.T) {
 	s.pool.Exec(context.Background(),
 		`UPDATE bots SET active_seconds_acc = 10*86400, status = 'stopped' WHERE id = $1`, botID)
 
-	// Patch strategyConfig while stopped — should reset timer
-	body := `{"strategyConfig":{"strategy_type":"grid","direction":"long","leverage":5}}`
+	// Patch strategyConfig while stopped with an explicit stats reset — should reset timer
+	// (without resetStats the timer and history are kept: see TestPatchBot_ResetStatsFlag).
+	body := `{"strategyConfig":{"strategy_type":"grid","direction":"long","leverage":5},"resetStats":true}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPatch, "/bots/"+botID, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")

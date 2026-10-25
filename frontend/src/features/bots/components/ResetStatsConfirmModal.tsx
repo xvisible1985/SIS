@@ -7,10 +7,12 @@ type Props = {
   tradesWin:   number;
   onConfirm:   () => void;
   onCancel:    () => void;
+  /** Save the new settings but keep the trade history. Omitted for public bots, which always reset. */
+  onKeep?:     () => void;
 };
 
 /** Подтверждение обнуления статистики сделок при изменении настроек бота */
-export function ResetStatsConfirmModal({ tradesTotal, netPnlTotal, tradesWin, onConfirm, onCancel }: Props) {
+export function ResetStatsConfirmModal({ tradesTotal, netPnlTotal, tradesWin, onConfirm, onCancel, onKeep }: Props) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onCancel();
@@ -48,7 +50,9 @@ export function ResetStatsConfirmModal({ tradesTotal, netPnlTotal, tradesWin, on
               Обнуление статистики
             </div>
             <div className="mt-0.5 text-[12px] leading-[1.5] text-slate-400">
-              Изменение настроек стратегии удалит всю историю сделок бота.
+              {onKeep
+                ? 'Сохранить новые настройки можно с обнулением истории сделок бота или без него.'
+                : 'Изменение настроек стратегии удалит всю историю сделок бота.'}
             </div>
           </div>
         </div>
@@ -72,6 +76,15 @@ export function ResetStatsConfirmModal({ tradesTotal, netPnlTotal, tradesWin, on
         </div>
 
         {/* Кнопки */}
+        {onKeep && (
+          <button
+            type="button"
+            onClick={onKeep}
+            className="mb-2 w-full rounded-lg border border-emerald-500/30 bg-emerald-500/[.12] py-2.5 text-sm font-semibold text-emerald-300 hover:bg-emerald-500/[.2] transition-colors"
+          >
+            Сохранить без сброса
+          </button>
+        )}
         <div className="flex gap-2">
           <button
             type="button"

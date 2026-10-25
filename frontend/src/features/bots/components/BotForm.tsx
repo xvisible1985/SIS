@@ -180,6 +180,8 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
   const [coinFilterSettings, setCoinFilterSettings] = useState<CoinFilterSettings | null>(null);
   const [showCoinFilterConfirm, setShowCoinFilterConfirm] = useState(false);
   const [showResetStatsConfirm, setShowResetStatsConfirm] = useState(false);
+  // Set by the reset-stats dialog: true = wipe the bot's trade history on this save.
+  const resetStatsRef = useRef(false);
   const [showApplyActiveConfirm, setShowApplyActiveConfirm] = useState(false);
   const applyActiveDecisionRef = useRef<boolean | null>(null);
 
@@ -421,6 +423,10 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
   }
 
   function buildPayload(): CreateBotInput {
+    return { ...buildPayloadBase(), resetStats: resetStatsRef.current };
+  }
+
+  function buildPayloadBase(): CreateBotInput {
     const steps = config.steps ?? [];
     const isMatrix = config.strategy_type === 'matrix';
     const totalMatrixLevels = aboveLevels.length + 1 + belowLevels.length;
@@ -1834,7 +1840,8 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
           tradesTotal={bot.tradesTotal ?? 0}
           netPnlTotal={bot.netPnlTotal ?? 0}
           tradesWin={bot.tradesWin ?? 0}
-          onConfirm={() => { setShowResetStatsConfirm(false); void doSubmit(); }}
+          onConfirm={() => { resetStatsRef.current = true; setShowResetStatsConfirm(false); void doSubmit(); }}
+          onKeep={bot.isPublic ? undefined : () => { resetStatsRef.current = false; setShowResetStatsConfirm(false); void doSubmit(); }}
           onCancel={() => { setShowResetStatsConfirm(false); resolveEmbedded(null); }}
         />,
         document.body

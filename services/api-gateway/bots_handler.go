@@ -512,11 +512,11 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var ownerID, botStatus string
-	var isFork, isOfficial bool
+	var isFork, isOfficial, isPublicBot bool
 	var sourceID *string
 	if err := s.pool.QueryRow(ctx,
-		`SELECT owner_id, is_fork, source_bot_id, status, is_official FROM bots WHERE id = $1`, botID,
-	).Scan(&ownerID, &isFork, &sourceID, &botStatus, &isOfficial); err != nil {
+		`SELECT owner_id, is_fork, source_bot_id, status, is_official, is_public FROM bots WHERE id = $1`, botID,
+	).Scan(&ownerID, &isFork, &sourceID, &botStatus, &isOfficial, &isPublicBot); err != nil {
 		writeError(w, http.StatusNotFound, "bot not found")
 		return
 	}
@@ -671,11 +671,28 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 	addFloat("maxMarginUsdt", "max_margin_usdt")
 	addInt("maxSymConsecutiveRuns", "max_sym_consecutive_runs")
 
-	// Reset approval timer + stats when strategy_config changes on a non-official user bot.
+	// strategy_config changed on a non-official user bot. Whether that wipes the bot's trade
+	// history and approval timer depends on resetStats (see wipeStats below); either way the
+	// strategies still get re-synced further down.
 	changingStrategy := false
 	if _, ok := body["strategyConfig"]; ok && !isOfficial {
-		sets = append(sets, "active_seconds_acc = 0", "active_since = NULL")
 		changingStrategy = true
+	}
+	// A bot's stats are only wiped when the caller explicitly asked for it (the editor's
+	// confirm dialog offers "reset" and "keep") — an omitted flag keeps the history, so a
+	// settings tweak can no longer silently erase it. Public bots always reset: their
+	// published statistics must keep matching the config they are shown with.
+	var resetStats bool
+	if v, ok := body["resetStats"]; ok {
+		json.Unmarshal(v, &resetStats) //nolint:errcheck
+	}
+	becomingPublic := false
+	if v, ok := body["isPublic"]; ok {
+		json.Unmarshal(v, &becomingPublic) //nolint:errcheck
+	}
+	wipeStats := changingStrategy && (resetStats || isPublicBot || becomingPublic)
+	if wipeStats {
+		sets = append(sets, "active_seconds_acc = 0", "active_since = NULL")
 	}
 
 	if len(sets) == 0 {
@@ -707,11 +724,13 @@ func (s *Server) PatchBot(w http.ResponseWriter, r *http.Request) {
 	// If strategyConfig changed: reset trade stats, update in-memory snapshot, and
 	// (only if the caller explicitly asked) sync active strategies.
 	if changingStrategy {
-		if _, err := s.pool.Exec(ctx,
-			`DELETE FROM trade_history WHERE bot_id = $1 AND owner_id = $2`,
-			botID, ownerID,
-		); err != nil {
-			_ = err
+		if wipeStats {
+			if _, err := s.pool.Exec(ctx,
+				`DELETE FROM trade_history WHERE bot_id = $1 AND owner_id = $2`,
+				botID, ownerID,
+			); err != nil {
+				_ = err
+			}
 		}
 		// Immediately update in-memory bot snapshot so reactive signals use the new config
 		// without waiting up to 30 seconds for the next periodic tick.

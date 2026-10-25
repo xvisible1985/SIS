@@ -70,4 +70,19 @@ test('stats-reset confirm dialog stays reachable when the embedded hedge form si
 
   await waitFor(() => expect(onResult).toHaveBeenCalled())
   expect(onResult.mock.calls[0][0]).not.toBeNull()
+  // Explicit reset → the payload carries resetStats so the server wipes the history.
+  expect(onResult.mock.calls[0][0]).toMatchObject({ resetStats: true })
+})
+
+test('"Сохранить без сброса" saves the settings with resetStats=false so the trade history survives', async () => {
+  const onResult = vi.fn()
+  render(<Harness onResult={onResult} />)
+
+  fireEvent.click(screen.getByText('trigger'))
+  await screen.findByText('Обнуление статистики')
+
+  fireEvent.click(screen.getByText('Сохранить без сброса'))
+
+  await waitFor(() => expect(onResult).toHaveBeenCalled())
+  expect(onResult.mock.calls[0][0]).toMatchObject({ resetStats: false })
 })

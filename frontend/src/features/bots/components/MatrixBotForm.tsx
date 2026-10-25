@@ -136,6 +136,8 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
   const [submitError,           setSubmitError]           = useState<string | null>(null);
   const [submitWarnings,        setSubmitWarnings]        = useState<string[]>([]);
   const [showResetStatsConfirm, setShowResetStatsConfirm] = useState(false);
+  // Set by the reset-stats dialog: true = wipe the bot's trade history on this save.
+  const resetStatsRef = useRef(false);
   const [instrInfo,   setInstrInfo]   = useState<InstrumentConstraints | null>(null);
 
   const { selectedAccountId } = useSelectedAccount();
@@ -329,6 +331,7 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
     const totalMatrixLevels = aboveLevels.length + 1 + belowLevels.length;
     try {
       const result = await onSubmit({
+        resetStats: resetStatsRef.current,
         name: name.trim(),
         description: description.trim(),
         fullDescription: fullDescription.trim() || undefined,
@@ -1213,7 +1216,8 @@ export function MatrixBotForm({ bot, onSubmit, onClose, mode = 'user', takenSymb
           tradesTotal={bot.tradesTotal ?? 0}
           netPnlTotal={bot.netPnlTotal ?? 0}
           tradesWin={bot.tradesWin ?? 0}
-          onConfirm={() => { setShowResetStatsConfirm(false); void doSubmit(); }}
+          onConfirm={() => { resetStatsRef.current = true; setShowResetStatsConfirm(false); void doSubmit(); }}
+          onKeep={bot.isPublic ? undefined : () => { resetStatsRef.current = false; setShowResetStatsConfirm(false); void doSubmit(); }}
           onCancel={() => setShowResetStatsConfirm(false)}
         />
       )}

@@ -178,6 +178,8 @@ export type CreateBotInput = {
   triggers?: Trigger[];
   strategyConfig?: StrategyConfig;
   applyToActive?: boolean;
+  // true wipes the bot's trade history on save; omitted/false keeps it (public bots always reset server-side).
+  resetStats?: boolean;
   maxStrategies?: number;
   maxLongStrategies?: number;
   maxShortStrategies?: number;
