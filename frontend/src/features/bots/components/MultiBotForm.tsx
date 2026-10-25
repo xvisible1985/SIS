@@ -6,6 +6,7 @@ import { BotForm, type BotFormHandle } from './BotForm';
 import { HedgeBotForm, type HedgeBotFormHandle } from './HedgeBotForm';
 import { BotIconPicker } from './BotIconPicker';
 import { SettingsSyncConfirmModal } from './SettingsSyncConfirmModal';
+import { ResetStatsConfirmModal } from './ResetStatsConfirmModal';
 import { hasSyncableDiff } from '../syncableSettingsFields';
 import { apiClient } from '../../../api/client';
 import { useSelectedAccount } from '../../../contexts/AccountContext';
@@ -95,6 +96,12 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
     signalPayload: CreateBotInput; hedgePayload: CreateBotInput; identity: Record<string, unknown>;
   } | null>(null);
 
+  // One stats-reset question for the whole Мультибот (both legs have their own trade history):
+  // null = not asked yet, true = wipe both, false = keep both. Handed to the embedded forms,
+  // which then skip their own per-leg dialogs.
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const resetDecisionRef = useRef<boolean | null>(null);
+
   const signalRef = useRef<BotFormHandle>(null);
   const hedgeRef = useRef<HedgeBotFormHandle>(null);
 
@@ -113,6 +120,11 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
     if (!name.trim()) {
       setTab('basic');
       setSubmitError('Название обязательно');
+      return;
+    }
+    if (isEdit && signalBot && hedgeBot && resetDecisionRef.current === null &&
+        ((signalBot.tradesTotal ?? 0) > 0 || (hedgeBot.tradesTotal ?? 0) > 0)) {
+      setShowResetConfirm(true);
       return;
     }
     setSubmitting(true);
@@ -196,6 +208,7 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
       // it was paired with) on retry; re-ask (if still relevant) since the user may have
       // changed strategy fields in the meantime.
       applyActiveDecisionRef.current = null;
+      resetDecisionRef.current = null;
       setPendingSavePayloads(null);
       setSubmitError(e instanceof Error ? e.message : 'Неизвестная ошибка');
     } finally {
@@ -438,11 +451,11 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
           </div>
 
           <div style={{ display: tab === 'signal' ? 'flex' : 'none' }} className="min-h-0 flex-1 flex-col overflow-hidden">
-            <BotForm ref={signalRef} embedded initialKind="signal" bot={signalBot} onSubmit={() => {}} onClose={onClose} />
+            <BotForm ref={signalRef} embedded resetStatsDecisionRef={resetDecisionRef} initialKind="signal" bot={signalBot} onSubmit={() => {}} onClose={onClose} />
           </div>
 
           <div style={{ display: tab === 'hedge' ? 'flex' : 'none' }} className="min-h-0 flex-1 flex-col overflow-hidden">
-            <HedgeBotForm ref={hedgeRef} embedded hideFilters bot={hedgeBot} onSubmit={() => {}} onClose={onClose} />
+            <HedgeBotForm ref={hedgeRef} embedded resetStatsDecisionRef={resetDecisionRef} hideFilters bot={hedgeBot} onSubmit={() => {}} onClose={onClose} />
           </div>
         </div>
 
@@ -471,6 +484,20 @@ export function MultiBotForm({ signalBot, hedgeBot, onClose, onSaved }: Props) {
           </div>
         </div>
       </div>
+
+      {showResetConfirm && signalBot && hedgeBot && createPortal(
+        <ResetStatsConfirmModal
+          tradesTotal={(signalBot.tradesTotal ?? 0) + (hedgeBot.tradesTotal ?? 0)}
+          netPnlTotal={(signalBot.netPnlTotal ?? 0) + (hedgeBot.netPnlTotal ?? 0)}
+          tradesWin={(signalBot.tradesWin ?? 0) + (hedgeBot.tradesWin ?? 0)}
+          onConfirm={() => { resetDecisionRef.current = true; setShowResetConfirm(false); void handleSave(); }}
+          onKeep={signalBot.isPublic || hedgeBot.isPublic || isPublic
+            ? undefined
+            : () => { resetDecisionRef.current = false; setShowResetConfirm(false); void handleSave(); }}
+          onCancel={() => setShowResetConfirm(false)}
+        />,
+        document.body
+      )}
 
       {showApplyActiveConfirm && pendingSavePayloads && signalBot && hedgeBot && createPortal(
         <SettingsSyncConfirmModal

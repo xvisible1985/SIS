@@ -7,6 +7,26 @@ import type { Position, ExchangeAccount } from '../types'
 import { T, mono, grotesk, fmt$, fmtPct, Card, NoData, useIsMobile } from '../components/dashboard/shared'
 import { TradeRowHeader, TradeRow } from '../components/dashboard/TradeRow'
 
+// GET /accounts/:id/positions returns the raw exchange shape — no sizeUsdt field, and
+// entry price comes through as avgPrice, not entryPrice (same gap already worked around
+// in QuickStartPage.tsx's PosCard). Compute them the same way usePositionsWs.ts's
+// mapPosition does for the WS-fed Terminal path, or every $-based figure derived from
+// these positions here (Dashboard's position size/entry columns, asset allocation donut)
+// stays stuck at 0.
+function withComputedFields(p: Position): Position {
+  const raw = p as unknown as Record<string, string | undefined>
+  const entry = parseFloat(raw.entryPrice ?? raw.avgPrice ?? '0')
+  const mark = parseFloat(p.markPrice || '0')
+  const size = parseFloat(p.size || '0')
+  const pnl = parseFloat(p.unrealisedPnl || '0')
+  return {
+    ...p,
+    entryPrice: String(entry),
+    sizeUsdt: size * (mark > 0 ? mark : entry),
+    unrealisedPnlPct: entry > 0 && size > 0 ? ((pnl / (size * entry)) * 100).toFixed(2) : '0',
+  }
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function fmtPrice(v: number): string {
   return v < 10 ? v.toFixed(4) : v < 1000 ? v.toFixed(2) : v.toLocaleString('en-US')
@@ -1155,7 +1175,7 @@ export function DashboardPage() {
         }
       }
       if (posRes.ok && posRes.positions) {
-        setPositions(posRes.positions.filter(p => parseFloat(p.size || '0') > 0))
+        setPositions(posRes.positions.filter(p => parseFloat(p.size || '0') > 0).map(withComputedFields))
       }
     } catch { /* silent */ }
   }, [])

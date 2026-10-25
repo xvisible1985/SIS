@@ -30,6 +30,10 @@ type Props = {
   // backdrop/header/footer — see BotFormHandle.trySubmit, which MultiBotForm calls
   // directly instead of relying on this form's internal Save button.
   embedded?: boolean;
+  // Мультибот asks the stats-reset question ONCE for both legs (see MultiBotForm) and hands the
+  // answer down here: when its .current is set, this embedded form skips its own reset dialog and
+  // sends that decision as resetStats. A ref, not a value, so a re-entrant save never reads a stale one.
+  resetStatsDecisionRef?: { current: boolean | null };
 };
 
 /** Imperative handle exposed when embedded — lets a parent (MultiBotForm) drive this
@@ -128,7 +132,7 @@ function compressImage(file: File, maxPx = 300, quality = 0.82): Promise<string>
 // ─── BotForm ─────────────────────────────────────────────────────────────────
 
 export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
-  { bot, initialKind, onSubmit, onClose, mode = 'user', embedded = false }, ref
+  { bot, initialKind, onSubmit, onClose, mode = 'user', embedded = false, resetStatsDecisionRef }, ref
 ) {
   const [outerTab, setOuterTab]   = useState<OuterTab>(embedded ? 'activation' : 'basic');
   const [stratTab, setStratTab]   = useState<StrategySubTab>('entry');
@@ -423,7 +427,7 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
   }
 
   function buildPayload(): CreateBotInput {
-    return { ...buildPayloadBase(), resetStats: resetStatsRef.current };
+    return { ...buildPayloadBase(), resetStats: resetStatsDecisionRef?.current ?? resetStatsRef.current };
   }
 
   function buildPayloadBase(): CreateBotInput {
@@ -511,7 +515,7 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
     }
 
     // Warn about stats reset when editing a bot that already has trade history.
-    if (bot && (bot.tradesTotal ?? 0) > 0) {
+    if (bot && (bot.tradesTotal ?? 0) > 0 && resetStatsDecisionRef?.current == null) {
       setShowResetStatsConfirm(true);
       return;
     }

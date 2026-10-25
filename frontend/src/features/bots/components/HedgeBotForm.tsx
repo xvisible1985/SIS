@@ -28,6 +28,10 @@ type Props = {
   // Мультибот embeds this form as one tab of its own modal — see BotForm.tsx's `embedded`
   // for the same pattern and HedgeBotFormHandle.trySubmit for how the parent drives it.
   embedded?: boolean;
+  // Мультибот asks the stats-reset question ONCE for both legs (see MultiBotForm) and hands the
+  // answer down here: when its .current is set, this embedded form skips its own reset dialog and
+  // sends that decision as resetStats. A ref, not a value, so a re-entrant save never reads a stale one.
+  resetStatsDecisionRef?: { current: boolean | null };
   // Мультибот's hedge leg only ever watches its own paired signal leg's strategies
   // (hedge_bot_whitelist is locked server-side to that one bot) — the coin/bot filter
   // pickers below would be dead controls in that context, so the parent hides them.
@@ -184,7 +188,7 @@ function compressImage(file: File, maxPx = 300, quality = 0.82): Promise<string>
 // ─── HedgeBotForm ──────────────────────────────────────────────────────────────
 
 export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function HedgeBotForm(
-  { bot, onSubmit, onClose, mode = 'user', takenSymbols, embedded = false, hideFilters = false }, ref
+  { bot, onSubmit, onClose, mode = 'user', takenSymbols, embedded = false, hideFilters = false, resetStatsDecisionRef }, ref
 ) {
   const { isAdmin } = useAuth();
   const [outerTab, setOuterTab] = useState<OuterTab>(embedded ? 'activation' : 'basic');
@@ -462,7 +466,7 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
   }
 
   function buildPayload(): CreateBotInput {
-    return { ...buildPayloadBase(), resetStats: resetStatsRef.current };
+    return { ...buildPayloadBase(), resetStats: resetStatsDecisionRef?.current ?? resetStatsRef.current };
   }
 
   function buildPayloadBase(): CreateBotInput {
@@ -552,7 +556,7 @@ export const HedgeBotForm = forwardRef<HedgeBotFormHandle, Props>(function Hedge
     if (!embedded && !name.trim()) { resolveEmbedded(null); return; }
 
     // Warn about stats reset when editing a bot that already has trade history.
-    if (bot && (bot.tradesTotal ?? 0) > 0) {
+    if (bot && (bot.tradesTotal ?? 0) > 0 && resetStatsDecisionRef?.current == null) {
       setShowResetStatsConfirm(true);
       return;
     }

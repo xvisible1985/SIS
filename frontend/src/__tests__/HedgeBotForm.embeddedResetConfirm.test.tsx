@@ -86,3 +86,23 @@ test('"Сохранить без сброса" saves the settings with resetStat
   await waitFor(() => expect(onResult).toHaveBeenCalled())
   expect(onResult.mock.calls[0][0]).toMatchObject({ resetStats: false })
 })
+
+test('embedded form skips its own reset dialog when the Мультибот already answered (resetStatsDecisionRef set)', async () => {
+  function Decided({ onResult }: { onResult: (p: unknown) => void }) {
+    const ref = useRef<HedgeBotFormHandle>(null)
+    return (
+      <div>
+        <HedgeBotForm ref={ref} embedded hideFilters bot={hedgeBotWithTrades} resetStatsDecisionRef={{ current: false }} onSubmit={() => {}} onClose={() => {}} />
+        <button onClick={() => { void ref.current?.trySubmit().then(onResult) }}>trigger</button>
+      </div>
+    )
+  }
+  const onResult = vi.fn()
+  render(<Decided onResult={onResult} />)
+
+  fireEvent.click(screen.getByText('trigger'))
+
+  await waitFor(() => expect(onResult).toHaveBeenCalled())
+  expect(screen.queryByText('Обнуление статистики')).toBeNull()
+  expect(onResult.mock.calls[0][0]).toMatchObject({ resetStats: false })
+})
