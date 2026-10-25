@@ -186,6 +186,9 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
   const [showResetStatsConfirm, setShowResetStatsConfirm] = useState(false);
   // Set by the reset-stats dialog: true = wipe the bot's trade history on this save.
   const resetStatsRef = useRef(false);
+  // The reset dialog was answered this save attempt — continue to the next question (apply to
+  // active strategies) instead of submitting straight away, and don't re-ask the reset one.
+  const resetAnsweredRef = useRef(false);
   const [showApplyActiveConfirm, setShowApplyActiveConfirm] = useState(false);
   const applyActiveDecisionRef = useRef<boolean | null>(null);
 
@@ -494,6 +497,7 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
       // Submit failed — don't silently reuse this decision on retry; re-ask (if still
       // relevant) since the user may have changed strategy fields in the meantime.
       applyActiveDecisionRef.current = null;
+      resetAnsweredRef.current = false;
       setSubmitError(e instanceof Error ? e.message : 'Неизвестная ошибка');
     } finally {
       setSubmitting(false);
@@ -515,7 +519,7 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
     }
 
     // Warn about stats reset when editing a bot that already has trade history.
-    if (bot && (bot.tradesTotal ?? 0) > 0 && resetStatsDecisionRef?.current == null) {
+    if (bot && (bot.tradesTotal ?? 0) > 0 && resetStatsDecisionRef?.current == null && !resetAnsweredRef.current) {
       setShowResetStatsConfirm(true);
       return;
     }
@@ -1844,9 +1848,9 @@ export const BotForm = forwardRef<BotFormHandle, Props>(function BotForm(
           tradesTotal={bot.tradesTotal ?? 0}
           netPnlTotal={bot.netPnlTotal ?? 0}
           tradesWin={bot.tradesWin ?? 0}
-          onConfirm={() => { resetStatsRef.current = true; setShowResetStatsConfirm(false); void doSubmit(); }}
-          onKeep={bot.isPublic ? undefined : () => { resetStatsRef.current = false; setShowResetStatsConfirm(false); void doSubmit(); }}
-          onCancel={() => { setShowResetStatsConfirm(false); resolveEmbedded(null); }}
+          onConfirm={() => { resetStatsRef.current = true; resetAnsweredRef.current = true; setShowResetStatsConfirm(false); void handleSubmit(); }}
+          onKeep={bot.isPublic ? undefined : () => { resetStatsRef.current = false; resetAnsweredRef.current = true; setShowResetStatsConfirm(false); void handleSubmit(); }}
+          onCancel={() => { resetAnsweredRef.current = false; setShowResetStatsConfirm(false); resolveEmbedded(null); }}
         />,
         document.body
       )}

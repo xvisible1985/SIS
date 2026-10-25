@@ -106,3 +106,22 @@ test('embedded form skips its own reset dialog when the Мультибот alrea
   expect(screen.queryByText('Обнуление статистики')).toBeNull()
   expect(onResult.mock.calls[0][0]).toMatchObject({ resetStats: false })
 })
+
+test('standalone: after the reset dialog the "apply to active strategies" question still follows (it used to be skipped)', async () => {
+  const onSubmit = vi.fn().mockResolvedValue(undefined)
+  const bot = { ...hedgeBotWithTrades, activeStrategiesCount: 1 } as unknown as BotType
+  render(<HedgeBotForm bot={bot} onSubmit={onSubmit} onClose={() => {}} />)
+
+  fireEvent.click(screen.getByText('Сохранить'))
+  await screen.findByText('Обнуление статистики')
+  fireEvent.click(screen.getByText('Сохранить без сброса'))
+
+  // Previously the reset dialog's confirm called doSubmit() directly, so a bot with trade
+  // history never got asked — settings edits silently skipped its running strategies.
+  expect(await screen.findByText('Применить к активным стратегиям?')).toBeVisible()
+  expect(onSubmit).not.toHaveBeenCalled()
+
+  fireEvent.click(screen.getByText('Да, применить сейчас'))
+  await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+  expect(onSubmit.mock.calls[0][0]).toMatchObject({ resetStats: false, applyToActive: true })
+})

@@ -104,3 +104,36 @@ describe('hasSyncableDiff', () => {
     })
   })
 })
+
+describe('ALS hedge settings', () => {
+  const thresholds = [{ trigger_type: 1, trigger_pct: -2, target_hedge_pct: 20 }]
+
+  it('reports a diff when only the ALS thresholds changed (so "apply to active" is offered)', () => {
+    const a = { strategy_type: 'als', als_thresholds: [{ ...thresholds[0], target_hedge_pct: 30 }] }
+    const b = { strategy_type: 'als', als_thresholds: thresholds }
+    expect(hasSyncableDiff(a, b)).toBe(true)
+  })
+
+  it('reports a diff for each other ALS limit / flag', () => {
+    const base = { strategy_type: 'als', als_thresholds: thresholds }
+    for (const [field, value] of [
+      ['als_stop_cond_pct', 3], ['als_stop_replace_pct', 1], ['unsafe_hedge_min_pct', 5],
+      ['unsafe_hedge_max_pct', 80], ['stop_market_size_k', 1.2], ['tp_control_enabled', true],
+      ['initial_stop_be_pct', 2], ['als_exchange_orders', true], ['size_as_main', true],
+    ] as const) {
+      expect(hasSyncableDiff({ ...base, [field]: value }, base), field).toBe(true)
+    }
+  })
+
+  it('ignores form-filled ALS defaults on a non-ALS entity', () => {
+    const a = { strategy_type: 'matrix', tp_pct: 2, als_thresholds: thresholds, unsafe_hedge_max_pct: 80, als_stop_cond_pct: 3 }
+    const b = { strategy_type: 'matrix', tp_pct: 2, als_thresholds: null }
+    expect(hasSyncableDiff(a, b)).toBe(false)
+  })
+
+  it('treats a missing boolean as false (form writes explicit false, stored config omits it)', () => {
+    const a = { strategy_type: 'als', size_as_main: false, als_exchange_orders: false, tp_control_enabled: false }
+    const b = { strategy_type: 'als' }
+    expect(hasSyncableDiff(a, b)).toBe(false)
+  })
+})

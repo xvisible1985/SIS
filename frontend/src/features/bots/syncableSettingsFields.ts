@@ -12,6 +12,13 @@ export const SYNCABLE_SETTINGS_FIELDS = [
   'trailing_stop_enabled', 'trailing_activation_pct', 'trailing_callback_pct',
   'matrix_levels', 'matrix_entry_level', 'safe_zone_pct',
   'protected_build', 'matrix_rebuild_on_sl', 'matrix_rebuild_from_entry', 'relative_slots',
+  'size_as_main',
+  // ALS hedge settings — see ALS_ONLY_FIELDS below. Without these, editing only the ALS
+  // thresholds/limits never offered "apply to active strategies" and the running hedges kept
+  // their old values (2026-10-24: als_exchange_orders and size_as_main stayed stale on DNAUSDT).
+  'als_thresholds', 'als_stop_cond_pct', 'als_stop_replace_pct',
+  'unsafe_hedge_min_pct', 'unsafe_hedge_max_pct', 'stop_market_size_k',
+  'tp_control_enabled', 'initial_stop_be_pct', 'als_exchange_orders',
 ] as const
 
 export type SyncableSettingsField = typeof SYNCABLE_SETTINGS_FIELDS[number]
@@ -29,6 +36,20 @@ export type SyncableSettingsField = typeof SYNCABLE_SETTINGS_FIELDS[number]
 const MATRIX_ONLY_FIELDS = new Set<SyncableSettingsField>([
   'matrix_levels', 'matrix_entry_level', 'safe_zone_pct',
   'protected_build', 'matrix_rebuild_on_sl', 'matrix_rebuild_from_entry', 'relative_slots',
+])
+
+// Same idea as MATRIX_ONLY_FIELDS for the ALS cluster: the hedge form fills these with default
+// literals for every strategy type, so they are only compared when one side is actually ALS.
+const ALS_ONLY_FIELDS = new Set<SyncableSettingsField>([
+  'als_thresholds', 'als_stop_cond_pct', 'als_stop_replace_pct',
+  'unsafe_hedge_min_pct', 'unsafe_hedge_max_pct', 'stop_market_size_k',
+  'tp_control_enabled', 'initial_stop_be_pct', 'als_exchange_orders',
+])
+
+// Booleans whose absence in stored config means false, while the form always writes an
+// explicit false — null-vs-false must not look like a change.
+const BOOLEAN_DEFAULT_FALSE = new Set<SyncableSettingsField>([
+  'size_as_main', 'tp_control_enabled', 'als_exchange_orders',
 ])
 
 /** Deep structural equality. Arrays are compared element-by-element in order (index order
@@ -71,9 +92,13 @@ export function hasSyncableDiff(
   const strategyTypeKnown = aType !== undefined || bType !== undefined
   const isMatrix = aType === 'matrix' || bType === 'matrix'
   const skipMatrixFields = strategyTypeKnown && !isMatrix
+  const isAls = aType === 'als' || bType === 'als'
+  const skipAlsFields = strategyTypeKnown && !isAls
 
   return SYNCABLE_SETTINGS_FIELDS.some(field => {
     if (skipMatrixFields && MATRIX_ONLY_FIELDS.has(field)) return false
+    if (skipAlsFields && ALS_ONLY_FIELDS.has(field)) return false
+    if (BOOLEAN_DEFAULT_FALSE.has(field)) return Boolean(a[field]) !== Boolean(b[field])
     return !deepEqual(a[field] ?? null, b[field] ?? null)
   })
 }
