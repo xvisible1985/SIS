@@ -796,17 +796,12 @@ func (s *Server) onAccumulateChange(stratID string, netPnl float64) {
 // positionPassesBotFilter returns true if the position at symbol/mainDir on
 // accountID is allowed by the hedge bot's bot whitelist/blacklist.
 //
-// currentBotID is the hedge bot running the check — strategies promoted by this
-// bot via flip (flip_origin_bot_id = currentBotID) are always allowed through
-// even when bot_id is NULL, enabling infinite flip chains.
-//
 // Logic:
 //   - Finds the MOST RELEVANT strategy for this symbol+direction+account
 //     (priority: active > finishing > stopped, then most recently created).
 //     Only the top-priority strategy is checked to avoid false whitelist matches
 //     from old stopped strategies of another bot.
 //   - If no strategy is found (manual trade): whitelist rejects, blacklist-only allows.
-//   - Flip-origin: if flip_origin_bot_id == currentBotID → always allow (bypass whitelist).
 //   - Blacklist takes priority: if the strategy's bot is blacklisted → false.
 //   - Whitelist (non-empty): the strategy's bot must be whitelisted → true.
 //   - Empty whitelist + empty blacklist → always true.
@@ -814,7 +809,6 @@ func (s *Server) positionPassesBotFilter(
 	ctx context.Context,
 	accountID, symbol, mainDir string,
 	whitelist, blacklist []string,
-	currentBotID string,
 ) bool {
 	if len(whitelist) == 0 && len(blacklist) == 0 {
 		return true
@@ -824,9 +818,9 @@ func (s *Server) positionPassesBotFilter(
 	// Priority: active first, then finishing, then stopped; most recently created within
 	// each status. This prevents a stale stopped strategy from a whitelisted bot from
 	// granting access to a position that is currently owned by a different (non-whitelisted) bot.
-	var botID, flipOriginBotID string
+	var botID string
 	err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE(bot_id::text, ''), COALESCE(flip_origin_bot_id::text, '')
+		`SELECT COALESCE(bot_id::text, '')
 		 FROM strategies
 		 WHERE account_id = $1
 		   AND symbol     = $2
@@ -839,26 +833,13 @@ func (s *Server) positionPassesBotFilter(
 		          created_at DESC
 		 LIMIT 1`,
 		accountID, symbol, mainDir,
-	).Scan(&botID, &flipOriginBotID)
+	).Scan(&botID)
 	if err != nil {
 		// No strategy found — position has no DB owner (manual trade or fully deleted strategy).
 		// With a whitelist we cannot verify ownership → reject.
 		// With only a blacklist there's nothing to blacklist → allow.
 		if len(whitelist) > 0 {
 			return false
-		}
-		return true
-	}
-
-	// Flip-origin bypass: this strategy was promoted by our hedge bot — allow it
-	// through regardless of whitelist so flip chains can continue indefinitely.
-	if currentBotID != "" && flipOriginBotID == currentBotID {
-		// Still respect the blacklist (the hedge bot itself shouldn't be blacklisted,
-		// but guard just in case).
-		for _, bl := range blacklist {
-			if botID == bl {
-				return false
-			}
 		}
 		return true
 	}
@@ -947,7 +928,7 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 			mainDir := hedgeSideToDir(side)
 
 			if !s.positionPassesBotFilter(ctx, accountID, pos.Symbol, mainDir,
-				nil, cfg.HedgeBotBlacklist, botID) {
+				nil, cfg.HedgeBotBlacklist) {
 				continue
 			}
 
@@ -960,7 +941,7 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 			switch {
 			case symbolWL && botWL:
 				symbolOK := symbolPassesHedgeFilter(pos.Symbol, whitelist, nil, nil)
-				botOK := s.positionPassesBotFilter(ctx, accountID, pos.Symbol, mainDir, cfg.HedgeBotWhitelist, nil, botID)
+				botOK := s.positionPassesBotFilter(ctx, accountID, pos.Symbol, mainDir, cfg.HedgeBotWhitelist, nil)
 				if !symbolOK && !botOK {
 					continue
 				}
@@ -969,7 +950,7 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 					continue
 				}
 			case botWL:
-				if !s.positionPassesBotFilter(ctx, accountID, pos.Symbol, mainDir, cfg.HedgeBotWhitelist, nil, botID) {
+				if !s.positionPassesBotFilter(ctx, accountID, pos.Symbol, mainDir, cfg.HedgeBotWhitelist, nil) {
 					continue
 				}
 			}
