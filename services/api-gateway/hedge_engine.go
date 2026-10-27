@@ -2153,8 +2153,9 @@ func (s *Server) promoteHedgeToMain(ctx context.Context, botID, strategyID, symb
 
 // handleMainTpFlip is called when a main strategy closes at TP.
 // If the associated hedge bot is configured with hedge_tp_main_mode="flip" and
-// the hedge has an open filled position, the hedge is promoted to standalone main
-// via releaseHedgeToGrid (TP=0.5%, no SL).
+// the hedge has an open filled position, the hedge is promoted to the new main
+// in place via promoteHedgeToMain — it stays bot-managed, keeping its existing
+// bot_id, strategy_type, and SL/TP config unchanged (no detach, no config reset).
 func (s *Server) handleMainTpFlip(ctx context.Context, mainStrategyID string) {
 	defer recoverEngine("handleMainTpFlip")
 	// Find the active hedge strategy linked to this main.
