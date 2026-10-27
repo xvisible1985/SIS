@@ -211,3 +211,59 @@ func TestHandleMainTpFlip_ChainedFlips_NeverTwoRowsInSameSlot(t *testing.T) {
 		t.Error("hedgeA (old main after flip 2) still exists — must be deleted")
 	}
 }
+
+// TestCheckHedgeDeactivation_MissedFlipRecovery_PromotesInPlace covers the second
+// flip-related call site: checkHedgeDeactivation's recovery path for a flip that didn't
+// fire in time (main already stopped, its last cycle ended with result='tp', but the main
+// position is gone from the exchange while the hedge still has filled levels). This must
+// also promote the hedge in place, not detach it via releaseHedgeToGrid.
+func TestCheckHedgeDeactivation_MissedFlipRecovery_PromotesInPlace(t *testing.T) {
+	s := newTestServer(t)
+	userID := createWHUser(t, s, "flip3")
+	accID := createTestAccount(t, s, userID)
+	stubBybitPublicInstrumentInfoOK(t)
+
+	botID, oldMainID, hedgeID := seedFlipFixture(t, s, userID, accID, "FLPCUSDT", "short")
+	t.Cleanup(func() {
+		s.pool.Exec(context.Background(), "DELETE FROM strategies WHERE symbol='FLPCUSDT' AND bot_id=$1", botID)
+	})
+
+	// Simulate the missed flip: old main's cycle already ended via TP.
+	if _, err := s.pool.Exec(context.Background(),
+		`INSERT INTO strategy_cycles (strategy_id, cycle_num, started_at, ended_at, result)
+		 VALUES ($1,1,NOW()-INTERVAL '2 minutes',NOW()-INTERVAL '1 minute','tp')`,
+		oldMainID,
+	); err != nil {
+		t.Fatalf("insert old main closed cycle: %v", err)
+	}
+
+	cfg := botCfgJSON{BotKind: "hedge", HedgeTpMainMode: "flip"}
+	// No position on the main side (it's gone), but the hedge side is still open on the exchange.
+	posMap := map[string]map[string]hedgePosInfo{
+		"FLPCUSDT": {
+			"Sell": {Symbol: "FLPCUSDT", Side: "Sell", Size: 400, EntryPrice: 0.05, MarkPrice: 0.05, Leverage: 1},
+		},
+	}
+
+	s.checkHedgeDeactivation(context.Background(), botID, accID, cfg, nil, posMap)
+
+	var botIDAfter string
+	var hedgedStratID *string
+	if err := s.pool.QueryRow(context.Background(),
+		`SELECT COALESCE(bot_id::text,''), hedged_strategy_id::text FROM strategies WHERE id=$1`, hedgeID,
+	).Scan(&botIDAfter, &hedgedStratID); err != nil {
+		t.Fatalf("read promoted strategy: %v", err)
+	}
+	if botIDAfter != botID {
+		t.Errorf("bot_id = %q, want %q — missed-flip recovery must also keep the leg under the bot", botIDAfter, botID)
+	}
+	if hedgedStratID != nil {
+		t.Errorf("hedged_strategy_id = %v, want NULL", *hedgedStratID)
+	}
+
+	var oldMainExists bool
+	s.pool.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM strategies WHERE id=$1)`, oldMainID).Scan(&oldMainExists) //nolint:errcheck
+	if oldMainExists {
+		t.Error("old main strategy still exists — must be deleted after recovery promotion")
+	}
+}

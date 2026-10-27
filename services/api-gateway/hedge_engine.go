@@ -1857,7 +1857,7 @@ func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID st
 									s.logBotEvent(ctx, botID,
 										fmt.Sprintf("Хедж: мейн %s закрылся по TP — восстанавливаем переворот хеджа", h.symbol),
 										"info", "hedge")
-									s.releaseHedgeToGrid(ctx, botID, h.id, h.symbol, hedgeSidePos,
+									s.promoteHedgeToMain(ctx, botID, h.id, h.symbol, hedgeSidePos,
 										"переворот (восстановление): мейн закрылся по TP")
 									continue
 								}
