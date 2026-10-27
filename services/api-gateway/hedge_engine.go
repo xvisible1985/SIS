@@ -2219,11 +2219,6 @@ func (s *Server) handleMainTpFlip(ctx context.Context, mainStrategyID string) {
 		Size:       hedgeSize,
 		EntryPrice: hedgeEntry,
 	}, "переворот: мейн закрылся по TP")
-
-	// Mark the promoted strategy so the hedge bot can re-hedge it on the next tick.
-	s.pool.Exec(ctx, //nolint:errcheck
-		`UPDATE strategies SET flip_origin_bot_id=$1 WHERE id=$2`,
-		botID, hedgeID)
 }
 
 // carryForwardHedgeAccumulatedPnl returns the accumulated_pnl a brand-new hedge_sessions
