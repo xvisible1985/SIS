@@ -2070,6 +2070,87 @@ func (s *Server) releaseHedgeToGrid(ctx context.Context, botID, strategyID, symb
 	}
 }
 
+// promoteHedgeToMain is releaseHedgeToGrid's counterpart for a genuine flip
+// (hedge_tp_main_mode="flip"): instead of detaching the hedge and resetting its trading
+// config to a bare grid with no SL, the hedge keeps its bot_id, strategy_type, and SL/TP
+// config exactly as they were — it simply becomes the new main in place. The only field
+// this touches on the promoted strategy is its own hedged_strategy_id (it was pointing at
+// the now-closed old main; cleared since this strategy is no longer anyone's hedge). A
+// new hedge is then opened against it immediately — same tail as releaseHedgeToGrid's own
+// immediate re-hedge, just without resetting the promoted leg's config first.
+func (s *Server) promoteHedgeToMain(ctx context.Context, botID, strategyID, symbol string, hedgePos hedgePosInfo, reason string) {
+	// Remember the old main ID before clearing the link — we'll delete it below.
+	var oldMainID string
+	s.pool.QueryRow(ctx, //nolint:errcheck
+		`SELECT COALESCE(hedged_strategy_id::text,'') FROM strategies WHERE id=$1`, strategyID,
+	).Scan(&oldMainID)
+
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE strategies SET hedged_strategy_id = NULL, updated_at = NOW() WHERE id = $1`,
+		strategyID,
+	); err != nil {
+		s.logBotEvent(ctx, botID,
+			fmt.Sprintf("Хедж: %s — ошибка переворота (promote): %v", symbol, err),
+			"error", "hedge")
+		return
+	}
+
+	go s.engine.Notify(context.Background(), strategyID)
+
+	s.pool.Exec(ctx, //nolint:errcheck
+		`UPDATE hedge_sessions SET ended_at=NOW(), end_reason='deactivation' WHERE hedge_strategy_id=$1 AND ended_at IS NULL`,
+		strategyID)
+	s.restoreHedgeMainControls(ctx, botID, strategyID)
+
+	s.logBotEvent(ctx, botID,
+		fmt.Sprintf("Хедж: %s — нога стала новым мейном (под ботом, без сброса SL/TP): %s", symbol, reason),
+		"info", "hedge")
+
+	// Delete the old stopped main (it has zero exchange position — TP already fired).
+	// ON DELETE CASCADE removes its cycles, levels and events automatically.
+	if oldMainID != "" {
+		var acctID string
+		if err := s.pool.QueryRow(ctx,
+			`DELETE FROM strategies WHERE id=$1 AND status='stopped' RETURNING account_id`,
+			oldMainID,
+		).Scan(&acctID); err == nil {
+			go s.engine.ForceRemoveStrategy(context.Background(), oldMainID, acctID)
+			s.logBotEvent(ctx, botID,
+				fmt.Sprintf("Хедж: старый мейн %s удалён после переворота", oldMainID[:8]),
+				"info", "hedge")
+		}
+	}
+
+	// Immediately create a new hedge for the promoted (still bot-managed) position.
+	// Direction is the opposite of the promoted strategy's side.
+	newHedgeDir := "short"
+	if hedgePos.Side == "Sell" {
+		newHedgeDir = "long"
+	}
+	var ownerID, acctID string
+	var wl, bl []string
+	var cfgRaw []byte
+	if err := s.pool.QueryRow(ctx,
+		`SELECT owner_id, account_id, symbol_whitelist, symbol_blacklist, strategy_config
+		 FROM bots WHERE id=$1`, botID,
+	).Scan(&ownerID, &acctID, &wl, &bl, &cfgRaw); err == nil {
+		var cfg botCfgJSON
+		if json.Unmarshal(cfgRaw, &cfg) == nil {
+			b := botEngineRow{id: botID, ownerID: ownerID, accountID: acctID, whitelist: wl, blacklist: bl}
+			s.cleanupStoppedHedgeCards(ctx, botID, symbol, newHedgeDir)
+			if newID, err := s.createBotStrategy(ctx, b, cfg, symbol, newHedgeDir, 0, strategyID, nil); err != nil {
+				s.logBotEvent(ctx, botID,
+					fmt.Sprintf("Хедж: ошибка создания нового хеджа %s после переворота: %v", symbol, err),
+					"error", "hedge")
+			} else {
+				s.logBotEvent(ctx, botID,
+					fmt.Sprintf("Хедж: новый %s хедж создан после переворота %s → %s", newHedgeDir, symbol, newID[:8]),
+					"info", "hedge")
+			}
+		}
+	}
+}
+
 // handleMainTpFlip is called when a main strategy closes at TP.
 // If the associated hedge bot is configured with hedge_tp_main_mode="flip" and
 // the hedge has an open filled position, the hedge is promoted to standalone main
@@ -2132,7 +2213,7 @@ func (s *Server) handleMainTpFlip(ctx context.Context, mainStrategyID string) {
 		side = "Buy"
 	}
 
-	s.releaseHedgeToGrid(ctx, botID, hedgeID, symbol, hedgePosInfo{
+	s.promoteHedgeToMain(ctx, botID, hedgeID, symbol, hedgePosInfo{
 		Symbol:     symbol,
 		Side:       side,
 		Size:       hedgeSize,
