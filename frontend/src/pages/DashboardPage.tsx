@@ -1,11 +1,12 @@
 import { useState, useEffect, useMemo, useCallback, useRef, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getDashboard, type DashboardData, type DailyPnL, type EquityPoint, type DashboardPeriod } from '../api/dashboard'
+import { getDashboard, getDashboardDeposit, type DepositDay, type DashboardData, type DailyPnL, type EquityPoint, type DashboardPeriod } from '../api/dashboard'
 import { getAccountBalance, getAccountPositions, listAccounts, clearAccountStats } from '../api/accounts'
 import { useSelectedAccount } from '../contexts/AccountContext'
 import type { Position, ExchangeAccount } from '../types'
 import { T, mono, grotesk, fmt$, fmtPct, Card, NoData, useIsMobile } from '../components/dashboard/shared'
 import { TradeRowHeader, TradeRow } from '../components/dashboard/TradeRow'
+import { groupDepositDays, drawdownOf, returnPct, type Drawdown, type DepositGroup, type DepositSlice } from '../components/dashboard/depositGroups'
 
 // GET /accounts/:id/positions returns the raw exchange shape — no sizeUsdt field, and
 // entry price comes through as avgPrice, not entryPrice (same gap already worked around
@@ -189,63 +190,6 @@ function DailyBarsChart({ items, xLabels }: { items: DailyPnL[]; xLabels: string
         <text key={i} x={pad.l + (w * i) / Math.max(xLabels.length - 1, 1)} y={pad.t + h + 18}
           fill={T.faint} fontSize="10" fontFamily="'Inter',sans-serif" textAnchor="middle">{l}</text>
       ))}
-    </svg>
-  )
-}
-
-// ─── Chart: Drawdown area ─────────────────────────────────────────────────────
-function DrawdownChart({ daily }: { daily: DailyPnL[] }) {
-  const id = useMemo(() => 'dd' + Math.random().toString(36).slice(2, 7), [])
-
-  const W = 480, H = 200
-  const pad = { t: 14, r: 10, b: 26, l: 42 }
-  const w = W - pad.l - pad.r, h = H - pad.t - pad.b
-
-  const dd = useMemo(() => {
-    let running = 0, peak = 0
-    return daily.map(d => {
-      running += d.pnl
-      if (running > peak) peak = running
-      return peak > 0 ? ((running - peak) / peak) * 100 : 0
-    })
-  }, [daily])
-
-  if (daily.length < 2) {
-    return <NoData height={H} />
-  }
-
-  const minDD = Math.min(...dd, -0.01)
-  const range = 0 - minDD || 1
-  const step = (w) / (dd.length - 1)
-  const pts: [number, number][] = dd.map((v, i) => [pad.l + i * step, pad.t + ((0 - v) / range) * h])
-  const line = smoothPath(pts)
-  const grids = [0, -2, -4, -6, -8, -10, -15].filter(v => v >= minDD - 1)
-
-  const clipId = id + 'c'
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" style={{ display: 'block' }}>
-      <defs>
-        <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={T.red} stopOpacity="0" />
-          <stop offset="100%" stopColor={T.red} stopOpacity=".34" />
-        </linearGradient>
-        <clipPath id={clipId}>
-          <rect x="0" y="0" width={0} height={H}>
-            <animate attributeName="width" from={0} to={W} dur="1.1s"
-              calcMode="spline" keySplines="0.25 0.46 0.45 0.94" fill="freeze" />
-          </rect>
-        </clipPath>
-      </defs>
-      {grids.map((v, i) => (
-        <g key={i}>
-          <line x1={pad.l} x2={pad.l + w} y1={pad.t + ((0 - v) / range) * h} y2={pad.t + ((0 - v) / range) * h} stroke={T.border} strokeDasharray="2 4" />
-          <text x={pad.l - 6} y={pad.t + ((0 - v) / range) * h + 4} fill={T.faint} fontSize="10" fontFamily="'JetBrains Mono',monospace" textAnchor="end">{v}%</text>
-        </g>
-      ))}
-      <g clipPath={`url(#${clipId})`}>
-        <path d={`${line} L${pad.l + w},${pad.t + h} L${pad.l},${pad.t + h} Z`} fill={`url(#${id})`} />
-        <path d={line} fill="none" stroke={T.red} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      </g>
     </svg>
   )
 }
@@ -855,25 +799,278 @@ function DailyBarsCard({ data }: { data: DashboardData }) {
   )
 }
 
-// ─── Drawdown card ────────────────────────────────────────────────────────────
-function DrawdownCard({ data }: { data: DashboardData }) {
-  const { daily_pnl } = data
-  const maxDD = useMemo(() => {
-    let running = 0, peak = 0, mx = 0
-    for (const d of daily_pnl) {
-      running += d.pnl
-      if (running > peak) peak = running
-      if (peak > 0) { const dd = Math.abs((running - peak) / peak * 100); if (dd > mx) mx = dd }
-    }
-    return mx
-  }, [daily_pnl])
+// ─── Deposit card ─────────────────────────────────────────────────────────────
+// Per-UTC-day deposit history of the selected account. Each day shows its real result
+// (equity change without deposits/withdrawals) and exactly what it is made of; deposits and
+// withdrawals are listed separately as funds movement. Single-account only.
+type DepPartKey = 'realized_usd' | 'fees_usd' | 'funding_usd' | 'positions_usd'
+const DEP_PARTS: { key: DepPartKey; label: string; hint: string; color: string }[] = [
+  { key: 'realized_usd', label: 'Закрытые сделки', hint: 'Валовый PnL сделок, закрытых в эти сутки', color: '#5b8cff' },
+  { key: 'fees_usd', label: 'Комиссии', hint: 'Торговые комиссии по закрытым сделкам', color: '#f7a600' },
+  { key: 'funding_usd', label: 'Фандинг', hint: 'Выплаты и получения фандинга по закрытым сделкам', color: '#a78bfa' },
+  { key: 'positions_usd', label: 'Открытые позиции', hint: 'Изменение плавающего PnL позиций, которые ещё в работе (и мелкие корректировки биржи)', color: '#5ad1e6' },
+]
+
+const sgn = (v: number) => (v >= 0 ? '+' : '') + fmt$(v)
+
+type DepParts = Record<DepPartKey, number> & { deposits_usd: number; withdrawals_usd: number }
+
+// Segment bar: each component's share of the total movement (by magnitude).
+function PartsBar({ parts }: { parts: Record<DepPartKey, number> }) {
+  const items = DEP_PARTS.map(p => ({ ...p, v: parts[p.key] })).filter(p => Math.abs(p.v) >= 0.005)
+  const total = items.reduce((s, p) => s + Math.abs(p.v), 0)
+  if (total === 0) return <div style={{ height: 6, borderRadius: 3, background: 'rgba(255,255,255,.05)' }} />
   return (
-    <Card pad="16px 18px">
-      <SHead title="Просадка" sub="от пика P&L"
-        right={<Pill c={T.red} bg={T.redSoft} bd={T.redBd}>max: -{maxDD.toFixed(1)}%</Pill>}
-      />
-      <DrawdownChart daily={daily_pnl} />
-    </Card>
+    <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', gap: 2, background: 'rgba(255,255,255,.04)' }}>
+      {items.map(p => (
+        <div key={p.key} title={`${p.label}: ${sgn(p.v)}`} style={{ flex: Math.abs(p.v) / total, minWidth: 3, background: p.color, opacity: p.v < 0 ? 0.55 : 1 }} />
+      ))}
+    </div>
+  )
+}
+
+function PartsGrid({ parts, trades }: { parts: DepParts; trades?: number }) {
+  const flows = [
+    { label: 'Ввод', v: parts.deposits_usd },
+    { label: 'Вывод', v: -parts.withdrawals_usd },
+  ].filter(f => Math.abs(f.v) >= 0.005)
+  return (
+    <div style={{ marginTop: 9 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '5px 16px' }}>
+        {DEP_PARTS.map(p => {
+          const v = parts[p.key]
+          const zero = Math.abs(v) < 0.005
+          return (
+            <div key={p.key} title={p.hint} style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
+              <span style={{ width: 7, height: 7, borderRadius: 2, background: p.color, flexShrink: 0, opacity: zero ? 0.3 : 1 }} />
+              <span style={{ fontSize: 11, color: T.dim, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {p.label}{p.key === 'realized_usd' && trades ? ` · ${trades}` : ''}
+              </span>
+              <span style={{ flex: 1 }} />
+              <span style={{ ...mono, fontSize: 12, fontWeight: 600, color: zero ? T.faint : v > 0 ? T.green : T.red }}>{zero ? '—' : sgn(v)}</span>
+            </div>
+          )
+        })}
+      </div>
+      {flows.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 8, paddingTop: 7, borderTop: `1px dashed ${T.border}` }}>
+          <span style={{ fontSize: 10, color: T.faint, textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 600 }}>Движение средств</span>
+          <span style={{ flex: 1 }} />
+          {flows.map(f => (
+            <span key={f.label} style={{ fontSize: 11, color: T.dim }}>
+              {f.label} <span style={{ ...mono, fontWeight: 600, color: f.v > 0 ? T.green : T.red }}>{sgn(f.v)}</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+const GROUP_TABS: { id: DepositGroup; label: string }[] = [
+  { id: 'day', label: 'День' },
+  { id: 'week', label: 'Неделя' },
+  { id: 'month', label: 'Месяц' },
+]
+
+// Dirty-deposit companion: clean balance + drawdown (floating loss of open positions).
+function DrawdownStrip({ dd }: { dd: Drawdown | null }) {
+  if (!dd) return null
+  const inDd = dd.unrealized < -0.005
+  const cell = (label: string, value: string, sub: string | null, color: string, hint: string) => (
+    <div title={hint} style={{ flex: 1, minWidth: 0, padding: '7px 10px', background: 'rgba(255,255,255,.03)', border: `1px solid ${T.border}`, borderRadius: 8 }}>
+      <div style={{ fontSize: 10, color: T.faint, textTransform: 'uppercase', letterSpacing: '.8px', fontWeight: 600, whiteSpace: 'nowrap' }}>{label}</div>
+      <div style={{ ...mono, fontSize: 13, fontWeight: 700, color, marginTop: 3, whiteSpace: 'nowrap' }}>
+        {value}{sub && <span style={{ fontSize: 11, fontWeight: 600, marginLeft: 6 }}>{sub}</span>}
+      </div>
+    </div>
+  )
+  return (
+    <div data-testid="deposit-drawdown" style={{ display: 'flex', gap: 6, marginTop: 9 }}>
+      {dd.clean != null && cell('Депозит', fmt$(dd.clean), null, T.body, 'Депозит без учёта плавающего PnL открытых позиций')}
+      {cell(
+        inDd ? 'Просадка на закрытие' : 'Плавающий PnL',
+        inDd ? sgn(dd.unrealized) : dd.unrealized > 0.005 ? sgn(dd.unrealized) : 'нет',
+        dd.unrealizedPct != null && Math.abs(dd.unrealized) > 0.005 ? fmtPct(dd.unrealizedPct) : null,
+        inDd ? T.red : dd.unrealized > 0.005 ? T.green : T.dim,
+        'Плавающий результат открытых позиций на последнем срезе; процент — от депозита',
+      )}
+      {dd.worstUsd != null && cell(
+        'Макс. просадка',
+        dd.worstUsd < -0.005 ? sgn(dd.worstUsd) : 'нет',
+        dd.worstUsd < -0.005 && dd.worstPct != null ? fmtPct(dd.worstPct) : null,
+        dd.worstUsd < -0.005 ? T.red : T.dim,
+        'Худший плавающий результат за срез по 30-минутным замерам; процент — от депозита в тот момент',
+      )}
+    </div>
+  )
+}
+
+function DepositSliceCard({ s }: { s: DepositSlice }) {
+  const pos = s.result_usd >= 0
+  return (
+    <div data-testid="deposit-day" style={{ padding: '12px 14px', background: 'rgba(255,255,255,.03)', border: `1px solid ${T.border}`, borderRadius: 11 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ ...grotesk, fontSize: 14, fontWeight: 700, color: T.text, whiteSpace: 'nowrap' }}>
+            {s.label}
+            {s.live && <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: T.blue, textTransform: 'uppercase', letterSpacing: '1px' }}>идёт</span>}
+            {s.estimated && <span title="Баланс восстановлен по сделкам и переводам, не по реальному срезу" style={{ marginLeft: 8, fontSize: 10, color: T.faint }}>расчётно</span>}
+          </div>
+          <div style={{ ...mono, fontSize: 11, color: T.dim, marginTop: 3 }}>
+            {s.sublabel && <span style={{ color: T.faint }}>{s.sublabel} · </span>}
+            {fmt$(s.equity_open)} → {fmt$(s.equity_close)}
+          </div>
+        </div>
+        <div style={{ flex: 1 }} />
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ ...mono, fontSize: 16, fontWeight: 700, color: pos ? T.green : T.red }}>{sgn(s.result_usd)}</div>
+          <div title="Доходность от капитала в работе (депозит на начало + внесённое)" style={{ ...mono, fontSize: 11, color: pos ? T.green : T.red, marginTop: 2 }}>{fmtPct(s.result_pct)}</div>
+        </div>
+      </div>
+      <DrawdownStrip dd={s.drawdown} />
+      <div style={{ marginTop: 9 }}><PartsBar parts={s} /></div>
+      <PartsGrid parts={s} trades={s.trades} />
+    </div>
+  )
+}
+
+function DepositCard({ period, accountId }: { period: Period; accountId: string }) {
+  const [days, setDays] = useState<DepositDay[] | null>(null)
+  const [failed, setFailed] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  // The expanded view has its own time filter: how results are sliced (day/week/month) over the
+  // account's whole recorded history, independent of the dashboard's period tabs.
+  const [group, setGroup] = useState<DepositGroup>('day')
+  const [allDays, setAllDays] = useState<DepositDay[] | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    setFailed(false)
+    if (!accountId) { setDays([]); return }
+    getDashboardDeposit(period, accountId)
+      .then(d => { if (alive) setDays(d) })
+      .catch(() => { if (alive) { setDays([]); setFailed(true) } })
+    return () => { alive = false }
+  }, [period, accountId])
+
+  useEffect(() => {
+    if (!expanded || !accountId) return
+    let alive = true
+    setAllDays(null)
+    getDashboardDeposit('all', accountId)
+      .then(d => { if (alive) setAllDays(d) })
+      .catch(() => { if (alive) { setAllDays([]); setFailed(true) } })
+    return () => { alive = false }
+  }, [expanded, accountId])
+
+  useEffect(() => {
+    if (!expanded) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setExpanded(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [expanded])
+
+  const renderBody = (src: DepositDay[] | null, mode: DepositGroup) => {
+    if (!accountId) return <NoData height={200} />
+    if (src === null) return <div style={{ color: T.dim, fontSize: 12 }}>Загрузка…</div>
+    if (src.length === 0) {
+      return (
+        <div style={{ color: T.dim, fontSize: 12 }}>
+          {failed ? 'Не удалось загрузить историю депозита' : 'Данные накапливаются — первый срез появится в течение 30 минут'}
+        </div>
+      )
+    }
+    const sum = (k: keyof DepositDay) => src.reduce((s, d) => s + (d[k] as number), 0)
+    const parts: DepParts = {
+      realized_usd: sum('realized_usd'), fees_usd: sum('fees_usd'), funding_usd: sum('funding_usd'),
+      positions_usd: sum('positions_usd'), deposits_usd: sum('deposits_usd'), withdrawals_usd: sum('withdrawals_usd'),
+    }
+    const result = sum('result_usd')
+    const base = src[0].equity_open
+    const pct = returnPct(base, sum('deposits_usd'), result)
+    const slices = groupDepositDays(src, mode).reverse()
+    return (
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div data-testid="deposit-summary" style={{ padding: '12px 14px', background: 'linear-gradient(180deg, rgba(91,140,255,.10), rgba(91,140,255,.03))', border: `1px solid ${T.border}`, borderRadius: 11 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10 }}>
+            <div>
+              <div title="Изменение депозита за вычетом внесённого извне (плюс выведенное)"><Lbl>Результат за период</Lbl></div>
+              <div style={{ ...mono, fontSize: 22, fontWeight: 700, marginTop: 3, color: result >= 0 ? T.green : T.red }}>{sgn(result)}</div>
+            </div>
+            <div style={{ flex: 1 }} />
+            <div style={{ textAlign: 'right' }}>
+              {pct != null && (
+                <div title="Доходность без учёта ввода и вывода, от капитала в работе" style={{ ...mono, fontSize: 12, fontWeight: 700, color: pct >= 0 ? T.green : T.red }}>
+                  {fmtPct(pct)} <span style={{ fontSize: 10, fontWeight: 600, color: T.faint }}>доходность</span>
+                </div>
+              )}
+              <div style={{ ...mono, fontSize: 11, color: T.dim, marginTop: 2 }}>{fmt$(base)} → {fmt$(src[src.length - 1].equity_close)}</div>
+            </div>
+          </div>
+          <DrawdownStrip dd={drawdownOf(src)} />
+          <div style={{ marginTop: 10 }}><PartsBar parts={parts} /></div>
+          <PartsGrid parts={parts} trades={sum('trades')} />
+        </div>
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {slices.map(s => <DepositSliceCard key={s.day} s={s} />)}
+        </div>
+      </div>
+    )
+  }
+
+  const head = (inModal: boolean) => (
+    <SHead title="Депозит" sub="без плавающего PnL · UTC"
+      right={
+        <button
+          title={inModal ? 'Закрыть' : 'Развернуть'}
+          aria-label={inModal ? 'Закрыть' : 'Развернуть'}
+          onClick={() => setExpanded(!inModal)}
+          style={{ width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent', border: `1px solid ${T.border}`, borderRadius: 7, color: T.dim, cursor: 'pointer', padding: 0 }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            {inModal ? <path d="M6 6l12 12M18 6L6 18" /> : <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />}
+          </svg>
+        </button>
+      }
+    />
+  )
+
+  return (
+    <>
+      <Card pad="16px 18px" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {head(false)}
+        {renderBody(days, 'day')}
+      </Card>
+      {expanded && (
+        <div
+          data-testid="deposit-modal"
+          onClick={() => setExpanded(false)}
+          style={{ position: 'fixed', inset: 0, zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(8,10,16,.65)', backdropFilter: 'blur(6px)', padding: 20 }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ width: '100%', maxWidth: 860, height: '85vh', display: 'flex', flexDirection: 'column', background: T.panel, border: `1px solid ${T.borderHi}`, borderRadius: 16, boxShadow: '0 40px 80px -20px rgba(0,0,0,.7)', padding: '18px 22px', overflow: 'hidden' }}
+          >
+            {head(true)}
+            <div role="tablist" aria-label="Срез по времени" style={{ display: 'inline-flex', alignSelf: 'flex-start', gap: 2, padding: 3, marginBottom: 12, background: 'rgba(255,255,255,.04)', border: `1px solid ${T.border}`, borderRadius: 9 }}>
+              {GROUP_TABS.map(t => (
+                <button
+                  key={t.id}
+                  role="tab"
+                  aria-selected={group === t.id}
+                  onClick={() => setGroup(t.id)}
+                  style={{ padding: '5px 14px', border: 'none', borderRadius: 7, cursor: 'pointer', fontSize: 12, fontWeight: 600, background: group === t.id ? 'rgba(91,140,255,.22)' : 'transparent', color: group === t.id ? T.text : T.dim }}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {renderBody(allDays, group)}
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 
@@ -1345,7 +1542,7 @@ export function DashboardPage() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gridAutoRows: '360px', gap: 14, marginBottom: 18 }}>
                 <PnLCurveCard data={data} period={period} />
                 <DailyBarsCard data={data} />
-                <DrawdownCard data={data} />
+                <DepositCard period={period} accountId={selectedAccountId || ''} />
                 <OpenPositionsCard positions={positions} accountLabel={accLabel} />
                 <AssetAllocationCard positions={positions} />
                 <BotsCard data={data} period={period} />

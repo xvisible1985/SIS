@@ -1773,3 +1773,46 @@ func (e *BinanceExchange) FetchWhitelistedIPs(ctx context.Context) ([]string, er
 // ever stops satisfying trader.Exchange — mirrors pkg/trader/exchange.go's own
 // var _ Exchange = (*BybitExchange)(nil).
 var _ trader.Exchange = (*BinanceExchange)(nil)
+
+var _ trader.FundsFlowFetcher = (*BinanceExchange)(nil)
+
+// FetchFundsFlows reads /fapi/v1/income?incomeType=TRANSFER — the futures wallet's own
+// transfer-in/out events (signed `income`), in ≤7-day windows. Only USDT/USDC/BUSD count.
+func (e *BinanceExchange) FetchFundsFlows(ctx context.Context, since, until time.Time) ([]trader.FundsFlow, error) {
+	const window = 7 * 24 * time.Hour
+	var out []trader.FundsFlow
+	for ws := since; ws.Before(until); ws = ws.Add(window) {
+		we := ws.Add(window)
+		if we.After(until) {
+			we = until
+		}
+		data, err := doSignedGET(ctx, e.creds, "/fapi/v1/income", url.Values{
+			"incomeType": {"TRANSFER"},
+			"startTime":  {strconv.FormatInt(ws.UnixMilli(), 10)},
+			"endTime":    {strconv.FormatInt(we.UnixMilli(), 10)},
+			"limit":      {"1000"},
+		})
+		if err != nil {
+			return nil, err
+		}
+		var rows []struct {
+			Income string `json:"income"`
+			Asset  string `json:"asset"`
+			Time   int64  `json:"time"`
+		}
+		if err := json.Unmarshal(data, &rows); err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			if r.Asset != "USDT" && r.Asset != "USDC" && r.Asset != "BUSD" {
+				continue
+			}
+			amt, err := strconv.ParseFloat(r.Income, 64)
+			if err != nil || amt == 0 {
+				continue
+			}
+			out = append(out, trader.FundsFlow{Time: time.UnixMilli(r.Time).UTC(), Amount: amt})
+		}
+	}
+	return out, nil
+}

@@ -146,6 +146,9 @@ func main() {
 	closedPnlSyncer := NewClosedPnlSyncer(pool, encKey)
 	closedPnlSyncer.Start(ctx)
 
+	// Snapshot each account's equity every 30 min into account_daily_equity (dashboard "Депозит" widget)
+	RunDepositCollector(ctx, pool, encKey)
+
 	// Start max-leverage DB refresher (every 10 min, covers the full exchange symbol
 	// universe — the "leverage" activation signal needs whitelist candidates too, not
 	// just symbols already being traded)
@@ -354,6 +357,7 @@ func main() {
 		// Dashboard
 		r.Get("/dashboard", s.GetDashboard)
 		r.Get("/dashboard/recent-trades", s.GetDashboardRecentTrades)
+		r.Get("/dashboard/deposit", s.GetDashboardDeposit)
 
 		// Admin
 		r.Get("/admin/metrics", s.GetAdminMetrics)

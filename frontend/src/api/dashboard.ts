@@ -93,3 +93,48 @@ export async function getDashboardRecentTrades(
   const res = await apiClient.get<DashboardRecentTradesPage>('/dashboard/recent-trades', { params })
   return res.data
 }
+
+export interface DepositDay {
+  /** UTC day, YYYY-MM-DD */
+  day: string
+  equity_open: number
+  equity_close: number
+  /** raw equity change (includes deposits/withdrawals) */
+  change_usd: number
+  /** the day's real result: change without deposits/withdrawals */
+  result_usd: number
+  result_pct: number
+  // components of result_usd — signed, they add up to it exactly
+  realized_usd: number
+  fees_usd: number
+  funding_usd: number
+  positions_usd: number
+  // external funds movement (not part of the result)
+  deposits_usd: number
+  withdrawals_usd: number
+  trades: number
+  /** today: the closing value is still moving */
+  live: boolean
+  // equity_close already includes floating PnL (the "dirty" deposit); null for days recorded
+  // before the collector captured it
+  unrealized_usd: number | null
+  unrealized_pct: number | null
+  clean_close: number | null
+  /** clean close restored from trades/transfers rather than a real snapshot */
+  estimated?: boolean
+  dd_worst_usd: number | null
+  dd_worst_pct: number | null
+}
+
+// Per-UTC-day deposit history of ONE account (the "Депозит" widget). Without an account id the
+// server returns no days — the widget is single-account only.
+export async function getDashboardDeposit(
+  period: DashboardPeriod,
+  accountId: string | undefined,
+): Promise<DepositDay[]> {
+  if (!accountId) return []
+  const res = await apiClient.get<{ days: DepositDay[] }>('/dashboard/deposit', {
+    params: { period, account_id: accountId },
+  })
+  return res.data.days ?? []
+}
