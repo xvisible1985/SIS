@@ -7,9 +7,11 @@ Found live (2026-10-25/26, account "SIS", bot "ALS-Bot" — `bot_kind='hedge'`, 
 a hedge bot's main leg closes via TP with `hedge_tp_main_mode='flip'` enabled,
 `handleMainTpFlip` → `releaseHedgeToGrid` **detaches** the surviving hedge leg from the
 bot entirely — `bot_id=NULL`, `strategy_type` forced to `'grid'`, `sl_pct=0` (no stop
-loss at all), `tp_pct=0.5` (a thin 0.5% take-profit is the only protection left). A fresh
-hedge is only opened against this detached leg once its drawdown crosses the bot's normal
-activation threshold (`hedge_act_value`, e.g. -2%) — not immediately.
+loss at all), `tp_pct=0.5` (a thin 0.5% take-profit is the only protection left) — before
+immediately opening a new hedge against it (`releaseHedgeToGrid`'s own tail already does
+this unconditionally, with no threshold wait — the risk isn't in the new hedge's timing,
+it's that the *promoted* leg itself spends the time between the flip and its own 0.5% TP
+firing completely unprotected and outside the bot's management).
 
 Two consecutive flips on APRUSDT under ALS-Bot (2026-10-25 12:26 and 2026-10-26 01:31)
 produced two such detached, unprotected legs sitting in parallel:
@@ -74,10 +76,10 @@ Replaces `releaseHedgeToGrid` at the two in-scope call sites (signature mirrors 
    cycles/levels/events via `ON DELETE CASCADE`), and `ForceRemoveStrategy` to drop it
    from the live engine.
 4. Immediately call `createBotStrategy` for a new hedge in the opposite direction, with
-   `hedgedStrategyID = <promoted strategy's id>` — **no threshold wait**. This is the
-   behavioral change from "ordinary activation" (which waits for `hedge_act_value`
-   drawdown on the main before opening a hedge): right after a flip we already know a
-   hedge is wanted, so open it now.
+   `hedgedStrategyID = <promoted strategy's id>` — reusing `releaseHedgeToGrid`'s existing
+   tail verbatim (lines 2043-2070 today), which already does this unconditionally with no
+   threshold wait. This part of the behavior is unchanged from today; only step 2 above
+   (leaving the promoted leg's own config untouched) is new.
 5. Keep the existing `hedge_sessions` bookkeeping (`ended_at=NOW(), end_reason='deactivation'`
    on the old session) and `restoreHedgeMainControls` call, logging, and
    `s.engine.Notify` — unchanged from `releaseHedgeToGrid`.
