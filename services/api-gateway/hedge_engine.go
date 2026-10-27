@@ -1838,7 +1838,8 @@ func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID st
 				if s.hedgeHasOpenFilledLevels(ctx, h.id) {
 					// In flip mode: if the main strategy is definitively stopped and its last
 					// cycle closed via TP, the flip trigger was missed (restart or prior bug).
-					// Promote the hedge to standalone now as a recovery path.
+					// Promote the hedge to become the new main in place (bot-managed, config
+					// unchanged) now as a recovery path.
 					if cfg.HedgeTpMainMode == "flip" && h.linkedMainID != "" {
 						var mainStatus, lastResult string
 						s.pool.QueryRow(ctx,
