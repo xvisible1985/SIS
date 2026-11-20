@@ -50,6 +50,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [token])
 
   function login(newToken: string, newUserId: string, newEmail: string, newIsAdmin = false, persist = true) {
+    // A fresh login ends any earlier impersonation: a stale admin_token left in localStorage
+    // is sent by the /admin/* calls instead of the new token, comes back 401 and bounces the
+    // user straight back to /login.
+    localStorage.removeItem('admin_token')
+    localStorage.removeItem('impersonating_as')
     const store = persist ? localStorage : sessionStorage
     store.setItem('token', newToken)
     store.setItem('userId', newUserId)
@@ -62,6 +67,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   function logout() {
+    localStorage.removeItem('admin_token')
+    localStorage.removeItem('impersonating_as')
     localStorage.removeItem('token')
     localStorage.removeItem('userId')
     localStorage.removeItem('email')

@@ -1,7 +1,7 @@
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { useTheme } from '../hooks/useTheme'
-import { listAccounts, getAccountBalance, getAccountPositions } from '../api/accounts'
+import { listAccounts, getAccountBalance, getAccountPositions, isServerUnavailable } from '../api/accounts'
 import { getProfile } from '../api/account'
 import { Sidebar } from './Sidebar'
 import { MobileNav } from './MobileNav'
@@ -22,6 +22,7 @@ export function Layout({ children }: { children: ReactNode }) {
   const { selectedAccountId, setSelectedAccountId } = useSelectedAccount()
   const [accounts, setAccounts] = useState<ExchangeAccount[]>([])
   const [equity, setEquity] = useState(0)
+  const [serverUnavailable, setServerUnavailable] = useState(false)
   const wallet = useWalletWs(selectedAccountId)
   const [pnl24h, setPnl24h] = useState({ percent: 0, usd: 0 })
   const [has24hData, setHas24hData] = useState(false)
@@ -57,10 +58,20 @@ export function Layout({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!selectedAccountId) return
-    Promise.all([
+    let cancelled = false
+    let retry: ReturnType<typeof setTimeout> | undefined
+    setServerUnavailable(false)
+
+    const load = () => Promise.all([
       getAccountBalance(selectedAccountId),
       getAccountPositions(selectedAccountId),
     ]).then(([balanceRes, posRes]) => {
+      if (cancelled) return
+      // Proxy layer down: say so instead of showing a zero balance, and keep retrying until
+      // the exchange is reachable again.
+      const down = isServerUnavailable(balanceRes)
+      setServerUnavailable(down)
+      if (down) retry = setTimeout(load, 15000)
       if (balanceRes.ok && balanceRes.equity != null) {
         setEquity(balanceRes.equity)
         if (balanceRes.equity_change_percent != null && balanceRes.equity_change_usd != null) {
@@ -74,12 +85,23 @@ export function Layout({ children }: { children: ReactNode }) {
           setHas24hData(false)
         }
       }
-    }).catch(() => {})
+    }).catch(() => {
+      // gateway itself unreachable / 5xx: equally "server unavailable", never a silent zero
+      if (cancelled) return
+      setServerUnavailable(true)
+      retry = setTimeout(load, 15000)
+    })
+
+    load()
+    return () => { cancelled = true; if (retry) clearTimeout(retry) }
   }, [selectedAccountId])
 
   // Keep equity in sync with live WS wallet updates (overrides the REST snapshot)
   useEffect(() => {
-    if (wallet.equity != null && wallet.equity > 0) setEquity(wallet.equity)
+    if (wallet.equity != null && wallet.equity > 0) {
+      setEquity(wallet.equity)
+      setServerUnavailable(false)
+    }
   }, [wallet.equity])
 
   const selectedAccount = accounts.find(a => a.id === selectedAccountId)
@@ -121,6 +143,7 @@ export function Layout({ children }: { children: ReactNode }) {
           }))}
           selectedAccountId={selectedAccountId}
           equity={equity}
+          serverUnavailable={serverUnavailable}
           pnl24h={pnl24h}
           has24hData={has24hData}
           spark={[0, 0]}

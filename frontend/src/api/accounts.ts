@@ -38,11 +38,18 @@ export async function verifyAccount(id: string): Promise<VerifyResult> {
 export interface BalanceResult {
   ok: boolean
   message?: string
+  /** "server_unavailable": our proxy layer cannot reach the exchange — show that, not zeros */
+  code?: string
   equity?: number
   available?: number
   equity_24h_ago?: number
   equity_change_usd?: number
   equity_change_percent?: number
+}
+
+/** True when the balance could not be read because the server side (proxies) is down. */
+export function isServerUnavailable(res: { ok: boolean; code?: string } | null | undefined): boolean {
+  return !!res && !res.ok && res.code === 'server_unavailable'
 }
 
 export async function getAccountBalance(id: string): Promise<BalanceResult> {

@@ -70,6 +70,7 @@ export function Sidebar({
   pickerAccounts = [],
   selectedAccountId,
   equity,
+  serverUnavailable = false,
   pnl24h,
   has24hData = false,
   spark,
@@ -213,6 +214,15 @@ export function Sidebar({
                 <Eye size={12} />
               </button>
             </div>
+            {serverUnavailable ? (
+              <div className="mt-1.5" role="status">
+                <div className="text-[17px] font-bold leading-tight text-amber-300">Сервер недоступен</div>
+                <div className="mt-1 text-[10px] leading-snug text-slate-400">
+                  Баланс временно не загружается. Обновится автоматически, когда связь восстановится.
+                </div>
+              </div>
+            ) : (
+            <>
             <div className="mt-1 flex items-baseline gap-1.5 text-[26px] font-bold tracking-[-0.6px] text-white">
               ${equity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               <span className="text-xs font-medium text-slate-400">USDT</span>
@@ -240,6 +250,8 @@ export function Sidebar({
             <div className="-mx-0.5 mt-2">
               <Sparkline data={spark} width={204} height={36} positive={pnl24h.percent >= 0} />
             </div>
+            </>
+            )}
           </div>
         </div>
       )}

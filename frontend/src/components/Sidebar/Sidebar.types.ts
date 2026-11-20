@@ -34,6 +34,8 @@ export type SidebarProps = {
   pickerAccounts?: PickerAccount[];
   selectedAccountId?: string;
   equity: number;
+  /** balance unreadable because our server side is down: show a notice instead of $0.00 */
+  serverUnavailable?: boolean;
   pnl24h: Pnl;
   has24hData?: boolean;
   spark: number[];

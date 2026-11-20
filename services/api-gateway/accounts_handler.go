@@ -2,11 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"sis/pkg/crypto"
+	"sis/pkg/proxy"
 	"sis/pkg/trader"
 	"sis/pkg/trader/binance"
 )
@@ -317,6 +320,34 @@ func (s *Server) verifyBinanceAccount(w http.ResponseWriter, r *http.Request, id
 	})
 }
 
+// isProxyUnavailable reports whether an exchange call failed because the platform's own proxy
+// layer cannot reach the exchange (no healthy proxy, none matching the key's IP whitelist, or the
+// proxy itself timing out / refusing) — as opposed to the exchange rejecting the request. Users
+// must see "server unavailable" for this, not a zero balance or a raw error string.
+func isProxyUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, proxy.ErrNoHealthyProxy) || errors.Is(err, proxy.ErrNoWhitelistedProxy) {
+		return true
+	}
+	// errors from the exchange clients are often flattened with %v, losing the sentinel
+	msg := err.Error()
+	return strings.Contains(msg, "no healthy proxy available") ||
+		strings.Contains(msg, "no proxy matches") ||
+		strings.Contains(msg, "proxyconnect")
+}
+
+// exchangeErrorBody is the {"ok": false, ...} payload of the read-only account endpoints.
+// "code": "server_unavailable" marks proxy-layer failures so the UI can say so.
+func exchangeErrorBody(err error) map[string]any {
+	body := map[string]any{"ok": false, "message": err.Error()}
+	if isProxyUnavailable(err) {
+		body["code"] = "server_unavailable"
+	}
+	return body
+}
+
 // GetAccountBalance returns wallet balance (equity + available) from Bybit.
 // Also saves a snapshot and returns 24h change if history exists.
 // GET /accounts/:id/balance
@@ -330,7 +361,7 @@ func (s *Server) GetAccountBalance(w http.ResponseWriter, r *http.Request) {
 	}
 	equity, available, err := ex.GetWalletBalance(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
+		writeJSON(w, http.StatusOK, exchangeErrorBody(err))
 		return
 	}
 
@@ -376,7 +407,7 @@ func (s *Server) GetAccountPositions(w http.ResponseWriter, r *http.Request) {
 	}
 	positions, err := ex.FetchPositions(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
+		writeJSON(w, http.StatusOK, exchangeErrorBody(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "positions": positions})

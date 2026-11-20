@@ -810,6 +810,18 @@ func (s *Server) positionPassesBotFilter(
 	accountID, symbol, mainDir string,
 	whitelist, blacklist []string,
 ) bool {
+	return s.positionPassesBotFilterFor(ctx, accountID, symbol, mainDir, "", whitelist, blacklist)
+}
+
+// positionPassesBotFilterFor is positionPassesBotFilter for a specific hedge bot (ownBotID).
+// A main that lost its bot_id (e.g. a hedge leg promoted to main by an older flip) but still
+// remembers this hedge bot in origin_bot_id / flip_origin_bot_id counts as the bot's own, so
+// the bot's whitelist (locked to its paired signal bot) no longer silently drops it.
+func (s *Server) positionPassesBotFilterFor(
+	ctx context.Context,
+	accountID, symbol, mainDir, ownBotID string,
+	whitelist, blacklist []string,
+) bool {
 	if len(whitelist) == 0 && len(blacklist) == 0 {
 		return true
 	}
@@ -818,9 +830,10 @@ func (s *Server) positionPassesBotFilter(
 	// Priority: active first, then finishing, then stopped; most recently created within
 	// each status. This prevents a stale stopped strategy from a whitelisted bot from
 	// granting access to a position that is currently owned by a different (non-whitelisted) bot.
-	var botID string
+	var botID, originID, flipOriginID, hedgedID string
 	err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE(bot_id::text, '')
+		`SELECT COALESCE(bot_id::text, ''), COALESCE(origin_bot_id::text, ''), COALESCE(flip_origin_bot_id::text, ''),
+		        COALESCE(hedged_strategy_id::text, '')
 		 FROM strategies
 		 WHERE account_id = $1
 		   AND symbol     = $2
@@ -833,34 +846,43 @@ func (s *Server) positionPassesBotFilter(
 		          created_at DESC
 		 LIMIT 1`,
 		accountID, symbol, mainDir,
-	).Scan(&botID)
+	).Scan(&botID, &originID, &flipOriginID, &hedgedID)
 	if err != nil {
 		// No strategy found — position has no DB owner (manual trade or fully deleted strategy).
 		// With a whitelist we cannot verify ownership → reject.
 		// With only a blacklist there's nothing to blacklist → allow.
-		if len(whitelist) > 0 {
-			return false
-		}
-		return true
+		return len(whitelist) == 0
 	}
+	return botFilterVerdict(botID, originID, flipOriginID, hedgedID, ownBotID, whitelist, blacklist)
+}
 
-	// Blacklist check.
+// botFilterVerdict decides the bot whitelist/blacklist for a main strategy owned by botID.
+// Two kinds of the hedge bot's own mains pass its whitelist (which is locked to the paired
+// signal bot): an orphan main (empty botID) whose origin/flip-origin is ownBotID, and a hedge
+// leg promoted to main in place by a flip — still bot-owned (botID == ownBotID) but no longer
+// anyone's hedge (empty hedgedID). Without the latter the promoted leg was silently dropped
+// and its new hedge sat paused forever. A leg that still hedges something (hedgedID set) is
+// never a main, so the bot cannot end up hedging its own hedges.
+func botFilterVerdict(botID, originID, flipOriginID, hedgedID, ownBotID string, whitelist, blacklist []string) bool {
 	for _, bl := range blacklist {
 		if botID == bl {
 			return false
 		}
 	}
-
-	// Whitelist check.
 	if len(whitelist) > 0 {
 		for _, wl := range whitelist {
 			if botID == wl {
 				return true
 			}
 		}
-		return false
+		if ownBotID == "" {
+			return false
+		}
+		if botID == "" {
+			return originID == ownBotID || flipOriginID == ownBotID
+		}
+		return botID == ownBotID && hedgedID == ""
 	}
-
 	return true
 }
 
@@ -918,6 +940,14 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 		}
 	}
 
+	// The bot's own promoted legs pass its whitelist (see botFilterVerdict) — but not under force
+	// activation, where standalone hedges also have no hedged_strategy_id and must not be mistaken
+	// for mains to hedge.
+	ownBotID := botID
+	if cfg.HedgeForceActivation {
+		ownBotID = ""
+	}
+
 	for _, bySymbol := range posMap {
 		for side, pos := range bySymbol {
 			// Blacklists always block regardless of whitelist logic.
@@ -941,7 +971,7 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 			switch {
 			case symbolWL && botWL:
 				symbolOK := symbolPassesHedgeFilter(pos.Symbol, whitelist, nil, nil)
-				botOK := s.positionPassesBotFilter(ctx, accountID, pos.Symbol, mainDir, cfg.HedgeBotWhitelist, nil)
+				botOK := s.positionPassesBotFilterFor(ctx, accountID, pos.Symbol, mainDir, ownBotID, cfg.HedgeBotWhitelist, nil)
 				if !symbolOK && !botOK {
 					continue
 				}
@@ -950,7 +980,7 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 					continue
 				}
 			case botWL:
-				if !s.positionPassesBotFilter(ctx, accountID, pos.Symbol, mainDir, cfg.HedgeBotWhitelist, nil) {
+				if !s.positionPassesBotFilterFor(ctx, accountID, pos.Symbol, mainDir, ownBotID, cfg.HedgeBotWhitelist, nil) {
 					continue
 				}
 			}
@@ -1755,7 +1785,11 @@ func (s *Server) hedgeHasPendingOrders(ctx context.Context, strategyID string) b
 func (s *Server) checkHedgeDeactivation(ctx context.Context, botID, accountID string, cfg botCfgJSON, ex trader.Exchange, posMap map[string]map[string]hedgePosInfo) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, symbol, direction, COALESCE(hedged_strategy_id::text,'') FROM strategies
-		 WHERE bot_id=$1 AND status IN ('active','finishing')`,
+		 WHERE bot_id=$1 AND status IN ('active','finishing')
+		   -- a hedge leg promoted to main by a flip is bot-owned but is somebody's hedge target, not a
+		   -- hedge: treating it as one made it look for a "main" on the opposite side and log a
+		   -- warning every tick
+		   AND NOT EXISTS (SELECT 1 FROM strategies h WHERE h.hedged_strategy_id = strategies.id)`,
 		botID)
 	if err != nil {
 		return

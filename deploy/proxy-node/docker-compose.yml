@@ -1,0 +1,40 @@
+# Proxy node (runs on the proxy servers, NOT on the SIS host).
+# Self-heals two ways: `restart` revives a crashed container, `autoheal` restarts a squid whose
+# healthcheck fails (hung but still "Up").
+#
+# Deploy: copy this directory next to your existing squid.conf, set the published port to the one
+# registered in SIS (proxies table) and run `docker compose up -d`.
+services:
+  squid:
+    image: sameersbn/squid:3.5.27-2
+    restart: always
+    labels:
+      autoheal: "true"
+    # squid dies with "Too many open files" under many concurrent exchange tunnels; the daemon
+    # limit (systemd LimitNOFILE for docker) must be at least this high too.
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    ports:
+      - "${SQUID_PORT:-3128}:3128"
+    # volumes:                      # uncomment if the node uses a custom config (auth, ACLs)
+    #   - ./squid.conf:/etc/squid/squid.conf:ro
+    volumes:
+      - ./healthcheck.sh:/healthcheck.sh:ro
+    healthcheck:
+      test: ["CMD", "/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  autoheal:
+    image: willfarrell/autoheal:1.2.0
+    restart: always
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: 30
+      AUTOHEAL_START_PERIOD: 30
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

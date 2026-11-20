@@ -32,6 +32,8 @@ apiClient.interceptors.response.use(
       isLoggingOut = true
       localStorage.removeItem('token')
       sessionStorage.removeItem('token')
+      localStorage.removeItem('admin_token')
+      localStorage.removeItem('impersonating_as')
       window.location.href = '/login'
       return new Promise<never>(() => {})
     }

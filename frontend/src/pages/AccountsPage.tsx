@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, type CSSProperties } from 'react'
 import {
   listAccounts, createAccount, deleteAccount,
-  verifyAccount, getAccountBalance, toggleAccountActive, patchAccountRiskSettings,
+  verifyAccount, getAccountBalance, toggleAccountActive, patchAccountRiskSettings, isServerUnavailable,
   type VerifyResult, type BalanceResult, type RiskSettingsInput,
 } from '../api/accounts'
 import type { ExchangeAccount } from '../types'
@@ -411,7 +411,8 @@ function KeyCard({ acc, balance, verify, latency, expanded, testing, onToggle, o
   const isErr  = status === 'error'
   const isExp  = status === 'expiring'
   const equity = balance?.ok ? balance.equity : null
-  const ip = verify?.ips?.join(', ') ?? null
+  const serverDown = isServerUnavailable(balance)
+  const ip =verify?.ips?.join(', ') ?? null
 
   const perms = {
     futures:  verify ? !!verify.permissions?.ContractTrade?.length || !!verify.permissions?.Derivatives?.length : false,
@@ -491,9 +492,15 @@ function KeyCard({ acc, balance, verify, latency, expanded, testing, onToggle, o
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <div style={{ textAlign: 'right' }}>
             <div style={{ fontSize: 10, color: T.dim, textTransform: 'uppercase', letterSpacing: 1, fontWeight: 600 }}>Equity</div>
-            <div style={{ ...grotesk, fontSize: 17, fontWeight: 700, color: isErr ? T.dim : T.text, letterSpacing: -0.3 }}>
-              {fmt$(equity)}
-            </div>
+            {serverDown ? (
+              <div style={{ fontSize: 12, fontWeight: 600, color: T.orange }} title="Не удаётся связаться с биржей через наш сервер. Это не ошибка вашего ключа — данные появятся, когда связь восстановится.">
+                Сервер недоступен
+              </div>
+            ) : (
+              <div style={{ ...grotesk, fontSize: 17, fontWeight: 700, color: isErr ? T.dim : T.text, letterSpacing: -0.3 }}>
+                {fmt$(equity)}
+              </div>
+            )}
           </div>
           <div style={{
             width: 30, height: 30, borderRadius: 8, background: 'rgba(255,255,255,.04)',
@@ -1240,6 +1247,8 @@ function StatsStrip({ accounts, balances, verifyData }: {
     return (v && !v.ok) || (a.expires_at && (daysLeft(a.expires_at) ?? 999) < 21)
   }).length
   const equity   = Object.values(balances).reduce((s, b) => s + (b.ok && b.equity ? b.equity : 0), 0)
+  // a partial sum would understate the total, and an all-zero one looks like an empty account
+  const serverDown = Object.values(balances).some(isServerUnavailable)
   const exchanges = new Set(accounts.map(a => a.exchange.toLowerCase())).size
 
   return (
@@ -1247,7 +1256,9 @@ function StatsStrip({ accounts, balances, verifyData }: {
       <StatCard label="Всего ключей"           value={accounts.length} sub={`${exchanges} бирж`} />
       <StatCard label="Активных"               value={active}          sub="торгуют сейчас"       accent={T.green} />
       <StatCard label="Требуют внимания"        value={issues}          sub={issues ? 'ошибка / истекает' : 'всё в порядке'} accent={issues ? T.orange : T.body} />
-      <StatCard label="Совокупный equity"       value={fmt$(equity)}    sub="по подключённым счетам" />
+      <StatCard label="Совокупный equity"       value={serverDown ? '—' : fmt$(equity)}
+        sub={serverDown ? 'сервер недоступен' : 'по подключённым счетам'}
+        accent={serverDown ? T.orange : undefined} />
       <StatCard label="Последняя синхронизация" value="авто"            sub="каждые 30s"            isMono />
     </div>
   )
