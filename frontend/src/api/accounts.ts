@@ -2,7 +2,7 @@ import { apiClient } from './client'
 import type { ExchangeAccount, Position } from '../types'
 
 export async function listAccounts(): Promise<ExchangeAccount[]> {
-  const res = await apiClient.get<ExchangeAccount[]>('/accounts')
+  const res = await apiClient.get<ExchangeAccount[]>('/accounts', { params: { format: 'json' } })
   return res.data
 }
 
