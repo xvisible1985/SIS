@@ -232,7 +232,7 @@ func (s *Server) refreshExchangeSymsIfNeeded(ctx context.Context) {
 		m[sym] = append(m[sym], "bybit")
 	}
 
-	if syms := fetchBinanceFuturesSymbols(ctx); len(syms) > 0 {
+	if syms := fetchBinanceFuturesSymbols(ctx, &http.Client{Timeout: 10 * time.Second}); len(syms) > 0 {
 		for _, sym := range syms {
 			m[sym] = append(m[sym], "binance")
 		}
@@ -249,13 +249,12 @@ func (s *Server) refreshExchangeSymsIfNeeded(ctx context.Context) {
 	s.exchangeSymsMu.Unlock()
 }
 
-func fetchBinanceFuturesSymbols(ctx context.Context) []string {
+func fetchBinanceFuturesSymbols(ctx context.Context, client *http.Client) []string {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		"https://fapi.binance.com/fapi/v1/exchangeInfo", nil)
 	if err != nil {
 		return nil
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("whale exchange: binance fetch: %v", err)

@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"sis/pkg/auth"
 	"sis/pkg/signal"
-	"sis/pkg/trader"
 )
 
 type botSignalUpdate struct {
@@ -71,24 +70,29 @@ func (s *Server) BotSignalUpdatesStream(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) computeBotSignalCounts(ctx context.Context, userID string) []botSignalUpdate {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, symbol_whitelist, symbol_blacklist, strategy_config
+		`SELECT id, symbol_whitelist, symbol_blacklist, strategy_config, COALESCE((SELECT exchange FROM exchange_accounts WHERE id = bots.account_id), 'bybit')
          FROM bots WHERE owner_id = $1 AND status = 'active'`, userID)
 	if err != nil {
 		return []botSignalUpdate{}
 	}
 	defer rows.Close()
 
-	allSymbols, _ := trader.FetchAllLinearSymbols(ctx)
+	symbolsByExchange := make(map[string][]string)
 
 	var results []botSignalUpdate
 	for rows.Next() {
-		var id string
+		var id, exchangeName string
 		var whitelist, blacklist []string
 		var stratCfg []byte
-		if err := rows.Scan(&id, &whitelist, &blacklist, &stratCfg); err != nil {
+		if err := rows.Scan(&id, &whitelist, &blacklist, &stratCfg, &exchangeName); err != nil {
 			continue
 		}
-		if upd, ok := s.computeOneBotSignalCount(ctx, id, whitelist, blacklist, stratCfg, allSymbols); ok {
+		allSymbols, loaded := symbolsByExchange[exchangeName]
+		if !loaded {
+			allSymbols = s.botSymbolsForExchange(ctx, exchangeName)
+			symbolsByExchange[exchangeName] = allSymbols
+		}
+		if upd, ok := s.computeOneBotSignalCount(ctx, id, exchangeName, whitelist, blacklist, stratCfg, allSymbols); ok {
 			results = append(results, upd)
 		}
 	}
@@ -101,7 +105,7 @@ func (s *Server) computeBotSignalCounts(ctx context.Context, userID string) []bo
 
 func (s *Server) computeOneBotSignalCount(
 	ctx context.Context,
-	id string,
+	id, exchangeName string,
 	whitelist, blacklist []string,
 	strategyConfig []byte,
 	allSymbols []string,
@@ -147,7 +151,7 @@ func (s *Server) computeOneBotSignalCount(
 			// bot-check overlay and what actually triggers a strategy. The previous
 			// ComputeStateForce evaluated every signal against a single timeframe
 			// snapshot (and could serve cached state), overcounting multi-TF bots.
-			st := s.signalEngine.ComputeMultiTFState(sym, sigCfgs)
+			st := s.signalEngine.ForExchange(exchangeName).ComputeMultiTFState(sym, sigCfgs)
 			match := false
 			switch direction {
 			case "long":

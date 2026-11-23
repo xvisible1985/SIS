@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"sis/pkg/bybitnews"
 	"sis/pkg/crypto"
+	"sis/pkg/proxy"
 	"sis/pkg/signal"
 	"sis/pkg/strategy"
 	"sis/pkg/trader"
@@ -64,6 +65,7 @@ func computeStateWithTimeout(timeout time.Duration, fn func() signal.State) (sig
 
 // reactiveOpp carries a single signal-fired trading opportunity.
 type reactiveOpp struct {
+	exchange string
 	symbol   string
 	interval string
 	hash     string
@@ -406,14 +408,16 @@ func (s *Server) RunBotEngine(ctx context.Context) {
 	s.botEngineCtx = ctx
 
 	// Register global signal callback once before the ticker loop.
-	s.signalEngine.OnStateChange(func(sym, iv, h string, st signal.State) {
-		if st == signal.Buy || st == signal.Sell {
-			select {
-			case s.reactiveSignals <- reactiveOpp{symbol: sym, interval: iv, hash: h, state: st}:
-			default: // channel full; tick will catch it
+	for _, exchange := range []string{"bybit", "binance"} {
+		s.signalEngine.ForExchange(exchange).OnStateChange(func(sym, iv, h string, st signal.State) {
+			if st == signal.Buy || st == signal.Sell {
+				select {
+				case s.reactiveSignals <- reactiveOpp{exchange: exchange, symbol: sym, interval: iv, hash: h, state: st}:
+				default: // channel full; tick will catch it
+				}
 			}
-		}
-	})
+		})
+	}
 
 	// Start the reactive processor goroutine.
 	go s.runReactiveProcessor(ctx)
@@ -444,6 +448,7 @@ func (s *Server) RunBotEngine(ctx context.Context) {
 }
 
 type botEngineRow struct {
+	exchange          string
 	id                string
 	ownerID           string
 	accountID         string
@@ -460,6 +465,7 @@ type botEngineRow struct {
 
 // groupKey identifies a unique (interval, signal-config-hash) pair.
 type groupKey struct {
+	exchange string
 	interval string
 	hash     string
 }
@@ -516,7 +522,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 
 	// ── STEP 1: Load bots from DB ─────────────────────────────────────────
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, owner_id, account_id,
+		SELECT id, owner_id, account_id, (SELECT exchange FROM exchange_accounts WHERE id = bots.account_id),
 		       symbol_whitelist, symbol_blacklist,
 		       strategy_config, max_strategies, max_margin_usdt, auto_mode,
 		       max_long_strategies, max_short_strategies, max_sym_consecutive_runs
@@ -531,7 +537,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 	for rows.Next() {
 		var b botEngineRow
 		if err := rows.Scan(
-			&b.id, &b.ownerID, &b.accountID,
+			&b.id, &b.ownerID, &b.accountID, &b.exchange,
 			&b.whitelist, &b.blacklist,
 			&b.stratCfg, &b.maxStrat, &b.maxMargin, &b.autoMode,
 			&b.maxLong, &b.maxShort, &b.maxSymConsecutive,
@@ -559,6 +565,12 @@ func (s *Server) botEngineTick(ctx context.Context) {
 	})
 
 	allSymbols, _ := trader.FetchAllLinearSymbols(ctx)
+	symbolsByExchange := map[string][]string{"bybit": allSymbols}
+	for _, bot := range bots {
+		if _, loaded := symbolsByExchange[bot.exchange]; !loaded {
+			symbolsByExchange[bot.exchange] = s.botSymbolsForExchange(ctx, bot.exchange)
+		}
+	}
 
 	// Cache allSymbols snapshot for reactive processor
 	s.allSymbolsSnapMu.Lock()
@@ -648,7 +660,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 
 		// Symbol-agnostic hash (pass "" as symbol)
 		hash := signal.HashConfigs("", interval, sigCfgs)
-		key := groupKey{interval: interval, hash: hash}
+		key := groupKey{exchange: b.exchange, interval: interval, hash: hash}
 
 		entry, exists := groups[key]
 		if !exists {
@@ -658,7 +670,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 
 		// Merge bot's symbols into the group's union (deduplicated via set)
 		delistSymbols := s.GetDelistingSymbols()
-		botSymbols := resolveSymbolList(b.whitelist, b.blacklist, delistSymbols, allSymbols)
+		botSymbols := resolveSymbolList(b.whitelist, b.blacklist, delistSymbols, symbolsByExchange[b.exchange])
 		symSet := make(map[string]struct{}, len(entry.symbols)+len(botSymbols))
 		for _, s := range entry.symbols {
 			symSet[s] = struct{}{}
@@ -685,7 +697,9 @@ func (s *Server) botEngineTick(ctx context.Context) {
 	// ── STEP 3: EnsureIntervals ───────────────────────────────────────────
 	intervalSet := make(map[string]struct{}, len(groups))
 	for k := range groups {
-		intervalSet[k.interval] = struct{}{}
+		if k.exchange != "binance" {
+			intervalSet[k.interval] = struct{}{}
+		}
 	}
 	intervals := make([]string, 0, len(intervalSet))
 	for iv := range intervalSet {
@@ -697,13 +711,17 @@ func (s *Server) botEngineTick(ctx context.Context) {
 	s.botSubsMu.Lock()
 	for key, entry := range groups {
 		for _, sym := range entry.symbols {
-			subID := "botengine:" + sym + ":" + key.interval + ":" + key.hash
+			subID := "botengine:" + key.exchange + ":" + sym + ":" + key.interval + ":" + key.hash
 			if !s.botSubs[subID] {
 				s.botSubs[subID] = true
+				if key.exchange == "binance" {
+					s.subscribeBinanceBotSignals(sym, key.interval, entry.sigCfgs)
+					continue
+				}
 				symCopy, ivCopy, cfgCopy := sym, key.interval, make([]signal.Config, len(entry.sigCfgs))
 				copy(cfgCopy, entry.sigCfgs)
 				go func(id, sym, iv string, cfgs []signal.Config) {
-					if err := s.signalEngine.Subscribe(id, sym, iv, cfgs, func(signal.State) {}); err != nil {
+					if err := s.signalEngine.ForExchange(key.exchange).Subscribe(id, sym, iv, cfgs, func(signal.State) {}); err != nil {
 						log.Printf("botengine sub %s: %v", id, err)
 						s.botSubsMu.Lock()
 						delete(s.botSubs, id)
@@ -749,7 +767,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 					defer func() { <-sem }()
 
 					st, ok := computeStateWithTimeout(botEngineSymbolStateTimeout, func() signal.State {
-						return s.signalEngine.ComputeMultiTFState(sym, entry.sigCfgs)
+						return s.signalEngine.ForExchange(key.exchange).ComputeMultiTFState(sym, entry.sigCfgs)
 					})
 					if !ok {
 						log.Printf("botEngineTick: ComputeMultiTFState(%s) exceeded %s — skipping this symbol this tick",
@@ -800,7 +818,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 				cfg := item.cfg
 
 				// Resolve this bot's own symbol list
-				botSymbols := resolveSymbolList(b.whitelist, b.blacklist, s.GetDelistingSymbols(), allSymbols)
+				botSymbols := resolveSymbolList(b.whitelist, b.blacklist, s.GetDelistingSymbols(), symbolsByExchange[b.exchange])
 				if len(botSymbols) == 0 {
 					return
 				}
@@ -915,7 +933,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 							if openDir == "" || opened[openDirectionKey{r.sym, openDir}] {
 								continue
 							}
-							score := computeOpportunityScore(s.signalEngine, r.sym, key.interval, entry.sigCfgs, cfg.PrioritySignal)
+							score := computeOpportunityScore(s.signalEngine.ForExchange(key.exchange), r.sym, key.interval, entry.sigCfgs, cfg.PrioritySignal)
 							s.sendBotOpportunity(b.id, botOpportunity{
 								sym: r.sym, dir: openDir, score: score, source: "tick",
 							})
@@ -953,7 +971,7 @@ func (s *Server) botEngineTick(ctx context.Context) {
 			b := item.row
 			cfg := item.cfg
 
-			botSymbols := resolveSymbolList(b.whitelist, b.blacklist, s.GetDelistingSymbols(), allSymbols)
+			botSymbols := resolveSymbolList(b.whitelist, b.blacklist, s.GetDelistingSymbols(), symbolsByExchange[b.exchange])
 			if len(botSymbols) == 0 {
 				return
 			}
@@ -2131,7 +2149,7 @@ func (s *Server) runReactiveProcessor(ctx context.Context) {
 			go func(o reactiveOpp) {
 				defer func() { <-sem }()
 				defer recoverEngine("processBotSymbol " + o.symbol)
-				s.processBotSymbol(ctx, o.symbol, o.interval, o.hash, o.state)
+				s.processBotSymbol(ctx, o.exchange, o.symbol, o.interval, o.hash, o.state)
 			}(opp)
 		}
 	}
@@ -2366,7 +2384,7 @@ func (s *Server) runWhaleBotTicker(ctx context.Context) {
 // processBotSymbol checks all active bots for a given symbol/interval/state and
 // opens strategies where applicable, replicating the logic of botEngineTick but
 // scoped to a single symbol that just fired a signal.
-func (s *Server) processBotSymbol(ctx context.Context, symbol, interval, hash string, state signal.State) {
+func (s *Server) processBotSymbol(ctx context.Context, exchange, symbol, interval, hash string, state signal.State) {
 	s.botSnapshotMu.RLock()
 	bots := make([]botEngineRow, len(s.botSnapshot))
 	copy(bots, s.botSnapshot)
@@ -2381,11 +2399,18 @@ func (s *Server) processBotSymbol(ctx context.Context, symbol, interval, hash st
 	}
 
 	s.allSymbolsSnapMu.RLock()
-	allSymbols := make([]string, len(s.allSymbolsSnap))
-	copy(allSymbols, s.allSymbolsSnap)
+	allSymbols := s.allSymbolsSnap
+	if exchange == "binance" {
+		s.binanceSymbolsMu.Lock()
+		allSymbols = s.binanceSymbolsSnap
+		s.binanceSymbolsMu.Unlock()
+	}
 	s.allSymbolsSnapMu.RUnlock()
 
 	for _, b := range bots {
+		if b.exchange != exchange {
+			continue
+		}
 		cfg, ok := cfgsSnap[b.id]
 		if !ok {
 			continue
@@ -2434,21 +2459,32 @@ func (s *Server) processBotSymbol(ctx context.Context, symbol, interval, hash st
 			continue
 		}
 
+		botState := state
+		if exchange == "binance" {
+			var ok bool
+			botState, ok = computeStateWithTimeout(botEngineSymbolStateTimeout, func() signal.State {
+				return s.signalEngine.ForExchange(exchange).ComputeMultiTFState(symbol, sigCfgs)
+			})
+			if !ok || botState == signal.Neutral {
+				continue
+			}
+		}
+
 		// Check direction
 		var openDir string
 		switch cfg.Direction {
 		case "long":
-			if state == signal.Buy {
+			if botState == signal.Buy {
 				openDir = "long"
 			}
 		case "short":
-			if state == signal.Sell {
+			if botState == signal.Sell {
 				openDir = "short"
 			}
 		default:
-			if state == signal.Buy {
+			if botState == signal.Buy {
 				openDir = "long"
-			} else if state == signal.Sell {
+			} else if botState == signal.Sell {
 				openDir = "short"
 			}
 		}
@@ -2465,9 +2501,43 @@ func (s *Server) processBotSymbol(ctx context.Context, symbol, interval, hash st
 		// The worker applies limits and ranking — no race conditions possible
 		// because only one goroutine per bot ever calls createBotStrategy.
 		s.ensureBotWorker(ctx, b.id)
-		reactiveScore := computeOpportunityScore(s.signalEngine, symbol, interval, sigCfgs, cfg.PrioritySignal)
+		reactiveScore := computeOpportunityScore(s.signalEngine.ForExchange(exchange), symbol, interval, sigCfgs, cfg.PrioritySignal)
 		s.sendBotOpportunity(b.id, botOpportunity{
 			sym: symbol, dir: openDir, score: reactiveScore, source: "reactive",
+		})
+	}
+}
+
+func (s *Server) botSymbolsForExchange(ctx context.Context, exchangeName string) []string {
+	if exchangeName == "binance" {
+		s.binanceSymbolsMu.Lock()
+		defer s.binanceSymbolsMu.Unlock()
+		if time.Since(s.binanceSymbolsAt) < 5*time.Minute {
+			return s.binanceSymbolsSnap
+		}
+		if symbols := fetchBinanceFuturesSymbols(ctx, proxy.HTTPClient()); len(symbols) != 0 {
+			s.binanceSymbolsSnap = symbols
+			s.binanceSymbolsAt = time.Now()
+		}
+		return s.binanceSymbolsSnap
+	}
+	symbols, _ := trader.FetchAllLinearSymbols(ctx)
+	return symbols
+}
+
+func (s *Server) subscribeBinanceBotSignals(symbol, interval string, configs []signal.Config) {
+	hub := s.signalEngine.ForExchange("binance").Hub()
+	hash := signal.HashConfigs(symbol, interval, configs)
+	timeframes := make(map[string]struct{})
+	for _, cfg := range configs {
+		timeframes[cfg.Str("tf", "15")] = struct{}{}
+	}
+	for tf := range timeframes {
+		hub.Subscribe(symbol, tf, func([]signal.Candle) {
+			select {
+			case s.reactiveSignals <- reactiveOpp{exchange: "binance", symbol: symbol, interval: interval, hash: hash}:
+			default:
+			}
 		})
 	}
 }

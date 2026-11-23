@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"sync"
 	"time"
@@ -475,6 +476,15 @@ func (s *Server) matrixRepairCandidates(ctx context.Context, botID string) map[s
 // market order that would double the exchange position.
 func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, accountID string, whitelist, blacklist []string, cfg botCfgJSON, posMap map[string]map[string]hedgePosInfo, skipSymbols map[string]bool) {
 	delistSymbols := s.GetDelistingSymbols()
+	exchangeName := "bybit"
+	if len(whitelist) == 0 || len(cfg.ActivationSignals) > 0 {
+		var err error
+		exchangeName, err = s.loadAccountExchangeName(ctx, accountID)
+		if err != nil {
+			log.Printf("matrix: load account exchange: %v", err)
+			return
+		}
+	}
 
 	// Per-bot strategy count limits (0 = unlimited) — stored on the bots table itself,
 	// not botCfgJSON, and were NEVER enforced anywhere in the matrix engine before this
@@ -517,12 +527,11 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 	// the tick itself had zero symbols to iterate over in the first place.
 	symbols := whitelist
 	if len(symbols) == 0 {
-		all, err := trader.FetchAllLinearSymbols(ctx)
-		if err != nil {
-			s.logBotEvent(ctx, botID, fmt.Sprintf("Матрикс: ошибка получения списка символов: %v", err), "error", "matrix")
+		symbols = s.botSymbolsForExchange(ctx, exchangeName)
+		if len(symbols) == 0 {
+			s.logBotEvent(ctx, botID, "Матрикс: список символов биржи недоступен", "error", "matrix")
 			return
 		}
-		symbols = all
 	}
 
 	// Aggregate counters for a single end-of-tick summary log — NOT logged per symbol,
@@ -702,7 +711,7 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 	// Computed concurrently (bounded) up front — see matrixBatchCheckActivation for why
 	// a sequential per-symbol call in this loop is dangerous now that symbols can number
 	// in the hundreds.
-	activationResults := s.matrixBatchCheckActivation(ctx, symbols, cfg)
+	activationResults := s.matrixBatchCheckActivation(ctx, symbols, cfg, s.signalEngine.ForExchange(exchangeName))
 
 	for _, symbol := range symbols {
 		if maxTotal > 0 && activeTotal >= maxTotal {
@@ -836,11 +845,11 @@ func (s *Server) ensureMatrixStrategies(ctx context.Context, botID, ownerID, acc
 // expansion) per symbol instead of one per tick. Found live (2026-10-07): resolving here
 // exhausted the pool under load, and even hedgeEngineTick's own simple bots-listing query
 // started timing out ("context deadline exceeded") as a result.
-func (s *Server) matrixActivationSignalOK(symbol string, interval string, sigCfgs []signal.Config) bool {
+func (s *Server) matrixActivationSignalOK(symbol string, interval string, sigCfgs []signal.Config, engine *signal.Engine) bool {
 	if len(sigCfgs) == 0 {
 		return true
 	}
-	state := s.signalEngine.ComputeStateForce(symbol, interval, sigCfgs)
+	state := engine.ComputeStateForce(symbol, interval, sigCfgs)
 	return state != signal.Neutral
 }
 
@@ -876,7 +885,7 @@ func matrixActivationInterval(cfg botCfgJSON) string {
 //     bot's activation signal would keep evaluating against the same frozen candle
 //     snapshot from the first cold fetch indefinitely, never reflecting real price
 //     movement again.
-func (s *Server) matrixBatchCheckActivation(ctx context.Context, symbols []string, cfg botCfgJSON) map[string]bool {
+func (s *Server) matrixBatchCheckActivation(ctx context.Context, symbols []string, cfg botCfgJSON, engine *signal.Engine) map[string]bool {
 	result := make(map[string]bool, len(symbols))
 	if len(cfg.ActivationSignals) == 0 {
 		for _, sym := range symbols {
@@ -904,7 +913,13 @@ func (s *Server) matrixBatchCheckActivation(ctx context.Context, symbols []strin
 	}
 
 	interval := matrixActivationInterval(cfg)
-	s.globalWarmer.EnsureIntervals([]string{interval})
+	if engine == s.signalEngine {
+		s.globalWarmer.EnsureIntervals([]string{interval})
+	} else {
+		for _, sym := range symbols {
+			engine.Hub().Subscribe(sym, interval, nil)
+		}
+	}
 	sem := make(chan struct{}, 20)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -919,7 +934,7 @@ func (s *Server) matrixBatchCheckActivation(ctx context.Context, symbols []strin
 			case sem <- struct{}{}:
 			}
 			defer func() { <-sem }()
-			ok := s.matrixActivationSignalOK(sym, interval, sigCfgs)
+			ok := s.matrixActivationSignalOK(sym, interval, sigCfgs, engine)
 			mu.Lock()
 			result[sym] = ok
 			mu.Unlock()

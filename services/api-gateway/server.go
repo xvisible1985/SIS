@@ -17,6 +17,8 @@ import (
 	"sis/pkg/proxy"
 	"sis/pkg/signal"
 	"sis/pkg/strategy"
+	"sis/pkg/trader"
+	"sis/pkg/trader/binance"
 )
 
 // Server holds shared dependencies for all HTTP handlers.
@@ -58,8 +60,11 @@ type Server struct {
 	// unaffected — runReactiveProcessor already passes the root ctx straight through).
 	botEngineCtx context.Context
 
-	allSymbolsSnapMu sync.RWMutex
-	allSymbolsSnap   []string
+	allSymbolsSnapMu   sync.RWMutex
+	allSymbolsSnap     []string
+	binanceSymbolsMu   sync.Mutex
+	binanceSymbolsSnap []string
+	binanceSymbolsAt   time.Time
 
 	exchangeSymsMu      sync.RWMutex
 	exchangeSyms        map[string][]string // trading-pair → exchange list
@@ -265,4 +270,12 @@ func newUUID() string {
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// accountSignalEngine selects candles from the exchange used for execution.
+func (s *Server) accountSignalEngine(exchange trader.Exchange) *signal.Engine {
+	if _, ok := exchange.(*binance.BinanceExchange); ok {
+		return s.signalEngine.ForExchange("binance")
+	}
+	return s.signalEngine
 }

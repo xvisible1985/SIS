@@ -39,6 +39,7 @@ func (s *Server) SetSignalOverride(w http.ResponseWriter, r *http.Request) {
 		signal.SetTestOverride(name, *body.Value)
 	}
 	s.signalEngine.ForceRecompute(name)
+	s.signalEngine.ForExchange("binance").ForceRecompute(name)
 	s.engine.PushSignalOverride(name)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

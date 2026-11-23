@@ -71,15 +71,7 @@ var timesfmIntervalDuration = map[string]time.Duration{
 	"1h": time.Hour, "4h": 4 * time.Hour, "1d": 24 * time.Hour,
 }
 
-// timesfmExchange/timesfmMarket are the only exchange/market this platform's candles table
-// currently stores (models.ExchangeBybit / models.MarketFutures — see pkg/models/candle.go).
-// Written explicitly into every row (timesfm_predictions.exchange/.market, added in Task 1)
-// rather than relying on a DB default, so it's always clear from the Go code — not just the
-// schema — which candle series a prediction is scored against.
-const (
-	timesfmExchange = "bybit"
-	timesfmMarket   = "futures"
-)
+const timesfmMarket = "futures"
 
 // timesfmLogThresholdPct is the FIXED threshold used to classify predicted_direction/
 // actual_direction in the timesfm_predictions log — deliberately independent of any
@@ -100,7 +92,7 @@ func timesfmDirection(pct float64) string {
 	}
 }
 
-func insertTimesfmPrediction(ctx context.Context, pool *pgxpool.Pool, symbol, timeframe string, contextBars, horizonBars int, priceAtPredict, predictedPct float64) error {
+func insertTimesfmPrediction(ctx context.Context, pool *pgxpool.Pool, exchange, symbol, timeframe string, contextBars, horizonBars int, priceAtPredict, predictedPct float64) error {
 	barDur, ok := timesfmIntervalDuration[timeframe]
 	if !ok {
 		return fmt.Errorf("timesfm: unknown timeframe %q", timeframe)
@@ -111,7 +103,7 @@ func insertTimesfmPrediction(ctx context.Context, pool *pgxpool.Pool, symbol, ti
 		INSERT INTO timesfm_predictions
 			(exchange, symbol, market, timeframe, context_bars, horizon_bars, predicted_at, price_at_predict, predicted_pct, predicted_direction, target_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		timesfmExchange, symbol, timesfmMarket, timeframe, contextBars, horizonBars, predictedAt, priceAtPredict, predictedPct, timesfmDirection(predictedPct), targetAt,
+		exchange, symbol, timesfmMarket, timeframe, contextBars, horizonBars, predictedAt, priceAtPredict, predictedPct, timesfmDirection(predictedPct), targetAt,
 	)
 	return err
 }
@@ -143,6 +135,10 @@ func newTimesfmRefreshFunc(pool *pgxpool.Pool, baseURL string) func(symbol, time
 			series[i] = c.Close
 		}
 		lastClose := series[len(series)-1]
+		exchange := candles[len(candles)-1].Exchange
+		if exchange == "" {
+			exchange = "bybit"
+		}
 		// Checked before the HTTP call (not after) — this is known from the candles alone,
 		// so there's no reason to pay for an external round-trip before failing on it.
 		if lastClose == 0 {
@@ -175,12 +171,12 @@ func newTimesfmRefreshFunc(pool *pgxpool.Pool, baseURL string) func(symbol, time
 		// an already-successful model call over a transient DB hiccup.
 		dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer dbCancel()
-		if err := insertTimesfmPrediction(dbCtx, pool, symbol, timeframe, contextBars, horizonBars, lastClose, predictedPct); err != nil {
+		if err := insertTimesfmPrediction(dbCtx, pool, exchange, symbol, timeframe, contextBars, horizonBars, lastClose, predictedPct); err != nil {
 			log.Printf("timesfm: insert prediction %s/%s: %v", symbol, timeframe, err)
 			return
 		}
 		// Cache is only updated after the DB write succeeds, so a DB failure doesn't leave
 		// pkg/signal confidently serving a forecast this service has no record of.
-		signal.SetTimesfmForecast(symbol, timeframe, contextBars, horizonBars, predictedPct)
+		signal.SetTimesfmForecastForExchange(exchange, symbol, timeframe, contextBars, horizonBars, predictedPct)
 	}
 }

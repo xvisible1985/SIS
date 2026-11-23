@@ -13,17 +13,18 @@ import (
 // computeUnit represents one unique (symbol, interval, []Config) combination.
 // Multiple strategy subscriptions sharing identical configs reuse the same unit.
 type computeUnit struct {
-	hash      string
-	symbol    string
-	interval  string
-	configs   []Config
-	signals   []Signal // built once at construction
-	sigLabel  string   // human-readable, e.g. "RSI Oversold + MACD Crossover"
+	hash     string
+	symbol   string
+	interval string
+	configs  []Config
+	signals  []Signal // built once at construction
+	sigLabel string   // human-readable, e.g. "RSI Oversold + MACD Crossover"
 
-	mu              sync.Mutex
-	lastState       State
-	lastComputedAt  time.Time
-	subs            map[string]func(State) // subscriptionID → callback
+	mu             sync.Mutex
+	lastState      State
+	lastComputedAt time.Time
+	lastCandleTime int64
+	subs           map[string]func(State) // subscriptionID → callback
 
 	emitFn func(symbol, interval, hash string, state State) // set by Engine; may be nil
 }
@@ -94,6 +95,9 @@ func (u *computeUnit) compute(candles []Candle, m *Metrics) {
 	changed := combined != u.lastState
 	u.lastState = combined
 	u.lastComputedAt = time.Now()
+	if len(candles) > 0 {
+		u.lastCandleTime = candles[len(candles)-1].Time
+	}
 	cbs := make([]func(State), 0, len(u.subs))
 	for _, cb := range u.subs {
 		cbs = append(cbs, cb)
@@ -137,6 +141,7 @@ func labelFor(cfg Config) string {
 // Engine manages signal subscriptions, deduplicates compute units,
 // and dispatches results to subscribers.
 type Engine struct {
+	binance   *Engine
 	hub       *KlineHub
 	tickerHub *TickerHub
 	metrics   *Metrics
@@ -154,6 +159,24 @@ func NewEngine(ctx context.Context, exec ExecFn) *Engine {
 	hub := NewKlineHub(ctx)
 	tickerHub := NewTickerHub(ctx)
 	m := newMetrics(ctx, exec)
+	bybit := newEngine(hub, tickerHub, m)
+	binanceHub := NewKlineHub(ctx)
+	binanceHub.binance = true
+	bybit.binance = newEngine(binanceHub, tickerHub, newMetrics(ctx, nil))
+	bybit.binance.binance = bybit.binance
+	return bybit
+}
+
+// ForExchange returns the engine for the account's candle source.
+// Accountless callers and existing callers default to Bybit.
+func (e *Engine) ForExchange(exchange string) *Engine {
+	if e != nil && exchange == "binance" && e.binance != nil {
+		return e.binance
+	}
+	return e
+}
+
+func newEngine(hub *KlineHub, tickerHub *TickerHub, m *Metrics) *Engine {
 	return &Engine{
 		hub:       hub,
 		tickerHub: tickerHub,
@@ -332,7 +355,7 @@ func (e *Engine) ComputeStateForce(symbol, interval string, configs []Config) St
 	e.mu.RLock()
 	unit, exists := e.units[hash]
 	e.mu.RUnlock()
-	if exists {
+	if exists && e.canUseCachedState(unit, symbol, interval) {
 		unit.mu.Lock()
 		state := unit.lastState
 		computed := !unit.lastComputedAt.IsZero()
@@ -375,7 +398,7 @@ func (e *Engine) QueryTTLRemaining(symbol, interval string, configs []Config) fl
 	unit, exists := e.units[hash]
 	e.mu.RUnlock()
 
-	if exists {
+	if exists && e.canUseCachedState(unit, symbol, interval) {
 		unit.mu.Lock()
 		computed := !unit.lastComputedAt.IsZero()
 		unit.mu.Unlock()
@@ -418,6 +441,19 @@ func (e *Engine) QueryTTLRemaining(symbol, interval string, configs []Config) fl
 		}
 	}
 	return min
+}
+
+func (e *Engine) canUseCachedState(unit *computeUnit, symbol, interval string) bool {
+	if !e.hub.binance {
+		return true
+	}
+	snapshot := e.hub.Snapshot(symbol, interval)
+	if !e.hub.canUseSnapshot(snapshot, interval) {
+		return false
+	}
+	unit.mu.Lock()
+	defer unit.mu.Unlock()
+	return !unit.lastComputedAt.IsZero() && unit.lastCandleTime == snapshot[len(snapshot)-1].Time
 }
 
 // Hub returns the underlying KlineHub (for conn count metrics).
@@ -470,7 +506,7 @@ func (e *Engine) QueryState(symbol, interval string, configs []Config) (State, b
 	e.mu.RLock()
 	unit, exists := e.units[hash]
 	e.mu.RUnlock()
-	if exists {
+	if exists && e.canUseCachedState(unit, symbol, interval) {
 		unit.mu.Lock()
 		state := unit.lastState
 		unit.mu.Unlock()
@@ -487,7 +523,7 @@ func (e *Engine) QueryState(symbol, interval string, configs []Config) (State, b
 	if err != nil {
 		return Neutral, false
 	}
-	combined := first.Compute(snap)
+	combined := computeSignalState(first, symbol, snap)
 	for _, cfg := range configs[1:] {
 		if combined == Neutral {
 			break
@@ -496,7 +532,7 @@ func (e *Engine) QueryState(symbol, interval string, configs []Config) (State, b
 		if err != nil {
 			return Neutral, false
 		}
-		if sig.Compute(snap) != combined {
+		if computeSignalState(sig, symbol, snap) != combined {
 			combined = Neutral
 		}
 	}

@@ -15,7 +15,7 @@ import (
 
 const (
 	spotWSURL    = "wss://stream.binance.com:9443/stream?streams="
-	futuresWSURL = "wss://fstream.binance.com/stream?streams="
+	futuresWSURL = "wss://fstream.binance.com/market/stream?streams="
 )
 
 // Client implements exchange.Client for Binance.
@@ -81,7 +81,7 @@ func (c *Client) runWSSession(ctx context.Context, url string, market models.Mar
 		}
 		inner := msg[start+7 : len(msg)-1]
 
-		candle, err := parseWSCandle(inner, market)
+		candle, err := ParseWSCandle(inner, market)
 		if err != nil {
 			log.Printf("binance ws: parse error: %v", err)
 			continue

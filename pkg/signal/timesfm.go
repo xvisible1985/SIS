@@ -29,8 +29,9 @@ func (s *timesfmSignal) ComputeWithSymbol(symbol string, candles []Candle) State
 	horizonBars := int(s.horizonBars)
 	maxAge := time.Duration(s.refreshIntervalSec) * time.Second
 
-	predictedPct, fresh := GetTimesfmForecast(symbol, tf, contextBars, horizonBars, maxAge)
-	if !fresh && TimesfmRefreshFunc != nil && tryStartTimesfmRefresh(symbol, tf, contextBars, horizonBars, maxAge) {
+	cacheSymbol := timesfmSymbolKey(candles[len(candles)-1].Exchange, symbol)
+	predictedPct, fresh := GetTimesfmForecast(cacheSymbol, tf, contextBars, horizonBars, maxAge)
+	if !fresh && TimesfmRefreshFunc != nil && tryStartTimesfmRefresh(cacheSymbol, tf, contextBars, horizonBars, maxAge) {
 		context := candles
 		// contextBars > 0 guards against a misconfigured (e.g. negative) context_bars bot
 		// param slicing out of bounds here — this runs synchronously, BEFORE the goroutine
@@ -42,7 +43,7 @@ func (s *timesfmSignal) ComputeWithSymbol(symbol string, candles []Candle) State
 		}
 		refresh := TimesfmRefreshFunc
 		go func() {
-			defer finishTimesfmRefresh(symbol, tf, contextBars, horizonBars)
+			defer finishTimesfmRefresh(cacheSymbol, tf, contextBars, horizonBars)
 			// recover() here matters beyond just this one forecast: TimesfmRefreshFunc's
 			// real implementation (a later task) makes an HTTP call to an external service
 			// this process doesn't control — an unrecovered panic in ANY goroutine, including

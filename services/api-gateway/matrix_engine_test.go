@@ -16,7 +16,7 @@ import (
 // live signalEngine; that path is covered by manual/integration testing instead.
 func TestMatrixActivationSignalOK_EmptyAlwaysPasses(t *testing.T) {
 	s := &Server{}
-	if !s.matrixActivationSignalOK("BTCUSDT", "15", nil) {
+	if !s.matrixActivationSignalOK("BTCUSDT", "15", nil, s.signalEngine) {
 		t.Fatal("expected true — empty sigCfgs must not block matrix bots (backward compatibility)")
 	}
 }
@@ -29,7 +29,7 @@ func TestMatrixActivationSignalOK_EmptyAlwaysPasses(t *testing.T) {
 func TestMatrixBatchCheckActivation_EmptySignalsAllTrueNoNetwork(t *testing.T) {
 	s := &Server{}
 	symbols := []string{"BTCUSDT", "ETHUSDT", "SOLUSDT"}
-	got := s.matrixBatchCheckActivation(context.Background(), symbols, botCfgJSON{})
+	got := s.matrixBatchCheckActivation(context.Background(), symbols, botCfgJSON{}, s.signalEngine)
 	if len(got) != len(symbols) {
 		t.Fatalf("result count = %d, want %d", len(got), len(symbols))
 	}

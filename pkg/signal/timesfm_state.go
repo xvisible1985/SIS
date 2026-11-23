@@ -37,6 +37,19 @@ func timesfmCacheKey(symbol, timeframe string, contextBars, horizonBars int) str
 // time from each caller's own threshold (see timesfm.go's deriveTimesfmState), not baked in
 // here from whichever config happened to trigger the refresh.
 func SetTimesfmForecast(symbol, timeframe string, contextBars, horizonBars int, predictedPct float64) {
+	SetTimesfmForecastForExchange("", symbol, timeframe, contextBars, horizonBars, predictedPct)
+}
+
+func timesfmSymbolKey(exchange, symbol string) string {
+	if exchange == "binance" {
+		return exchange + ":" + symbol
+	}
+	return symbol
+}
+
+// SetTimesfmForecastForExchange stores the result under the candle source.
+func SetTimesfmForecastForExchange(exchange, symbol, timeframe string, contextBars, horizonBars int, predictedPct float64) {
+	symbol = timesfmSymbolKey(exchange, symbol)
 	key := timesfmCacheKey(symbol, timeframe, contextBars, horizonBars)
 	timesfmCache.mu.Lock()
 	timesfmCache.entries[key] = timesfmEntry{predictedPct: predictedPct, updatedAt: time.Now()}

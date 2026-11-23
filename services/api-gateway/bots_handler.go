@@ -1843,14 +1843,14 @@ func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Fetch bot (including account_id needed for hedge bots)
-	var ownerID string
+	var ownerID, exchangeName string
 	var accountIDPtr *string
 	var whitelist, blacklist []string
 	var stratCfgBytes []byte
 	if err := s.pool.QueryRow(ctx,
-		`SELECT owner_id, account_id, symbol_whitelist, symbol_blacklist, strategy_config
+		`SELECT owner_id, account_id, symbol_whitelist, symbol_blacklist, strategy_config, COALESCE((SELECT exchange FROM exchange_accounts WHERE id = bots.account_id), 'bybit')
 		 FROM bots WHERE id = $1`, botID,
-	).Scan(&ownerID, &accountIDPtr, &whitelist, &blacklist, &stratCfgBytes); err != nil {
+	).Scan(&ownerID, &accountIDPtr, &whitelist, &blacklist, &stratCfgBytes, &exchangeName); err != nil {
 		writeError(w, http.StatusNotFound, "bot not found")
 		return
 	}
@@ -1894,7 +1894,7 @@ func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 	// resolveBotSignalConfigs's doc comment for the live incident this fixes).
 	sigCfgs := s.resolveBotSignalConfigs(ctx, cfg.ActivationSignals)
 
-	allSymbols, _ := trader.FetchAllLinearSymbols(ctx)
+	allSymbols := s.botSymbolsForExchange(ctx, exchangeName)
 	delistSymbols := s.GetDelistingSymbols()
 	symbols := resolveSymbolList(whitelist, blacklist, delistSymbols, allSymbols)
 	if len(symbols) == 0 {
@@ -1939,13 +1939,13 @@ func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 				return
 			default:
 			}
-			st := s.signalEngine.ComputeMultiTFState(sym, sigCfgs)
+			st := s.signalEngine.ForExchange(exchangeName).ComputeMultiTFState(sym, sigCfgs)
 			if st == signal.Neutral {
 				return
 			}
 
 			// Get raw signal value for the priority signal (or first available).
-			vals := s.signalEngine.QueryValues(sym, interval, sigCfgs)
+			vals := s.signalEngine.ForExchange(exchangeName).QueryValues(sym, interval, sigCfgs)
 			var sigVal float64
 			if vals != nil {
 				if cfg.PrioritySignal != "" {
@@ -1958,7 +1958,7 @@ func (s *Server) ScanBot(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			ttlRem := s.signalEngine.QueryTTLRemaining(sym, interval, sigCfgs)
+			ttlRem := s.signalEngine.ForExchange(exchangeName).QueryTTLRemaining(sym, interval, sigCfgs)
 
 			// Strength = sort key (higher = preferred).
 			// priority_signal=st-flip  → TTL remaining (more = more recent signal)

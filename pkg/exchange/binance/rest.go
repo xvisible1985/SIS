@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 
 	"sis/pkg/models"
@@ -35,6 +37,20 @@ func FetchCandles(ctx context.Context, symbol string, market models.Market, tf m
 			spotBaseURL, symbol, string(tf), from.UnixMilli(), to.UnixMilli())
 	}
 
+	return fetchKlines(ctx, url, symbol, market, tf, time.Time{})
+}
+
+// FetchRecentClosedFuturesCandles returns the latest fully closed USD-M candles.
+func FetchRecentClosedFuturesCandles(ctx context.Context, symbol string, tf models.Timeframe, limit int) ([]models.Candle, error) {
+	query := url.Values{"symbol": {symbol}, "interval": {string(tf)}, "limit": {strconv.Itoa(limit + 1)}}
+	candles, err := fetchKlines(ctx, futuresBaseURL+"/fapi/v1/klines?"+query.Encode(), symbol, models.MarketFutures, tf, time.Now())
+	if len(candles) > limit {
+		candles = candles[len(candles)-limit:]
+	}
+	return candles, err
+}
+
+func fetchKlines(ctx context.Context, url, symbol string, market models.Market, tf models.Timeframe, closedBefore time.Time) ([]models.Candle, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("binance rest: new request: %w", err)
@@ -56,6 +72,15 @@ func FetchCandles(ctx context.Context, symbol string, market models.Market, tf m
 
 	candles := make([]models.Candle, 0, len(rows))
 	for _, row := range rows {
+		if !closedBefore.IsZero() {
+			var closeTime int64
+			if err := json.Unmarshal(row[6], &closeTime); err != nil {
+				return nil, fmt.Errorf("binance rest: decode close time: %w", err)
+			}
+			if closeTime >= closedBefore.UnixMilli() {
+				continue
+			}
+		}
 		c, err := parseRESTCandle(row, symbol, market, tf)
 		if err != nil {
 			return nil, err

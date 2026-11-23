@@ -13,20 +13,23 @@ import (
 type wsKlineMsg struct {
 	Symbol string `json:"s"`
 	Kline  struct {
-		OpenTime int64  `json:"t"`
-		Interval string `json:"i"`
-		Open     string `json:"o"`
-		High     string `json:"h"`
-		Low      string `json:"l"`
-		Close    string `json:"c"`
-		Volume   string `json:"v"`
-		IsClosed bool   `json:"x"`
+		OpenTime       int64  `json:"t"`
+		CloseTime      int64  `json:"T"`
+		Interval       string `json:"i"`
+		Open           string `json:"o"`
+		High           string `json:"h"`
+		Low            string `json:"l"`
+		LastTradeID    int64  `json:"L"`
+		Close          string `json:"c"`
+		Volume         string `json:"v"`
+		TakerBuyVolume string `json:"V"`
+		IsClosed       bool   `json:"x"`
 	} `json:"k"`
 }
 
 type restKlineRow [12]json.RawMessage
 
-func parseWSCandle(data []byte, market models.Market) (models.Candle, error) {
+func ParseWSCandle(data []byte, market models.Market) (models.Candle, error) {
 	var msg wsKlineMsg
 	if err := json.Unmarshal(data, &msg); err != nil {
 		return models.Candle{}, fmt.Errorf("binance parse ws: %w", err)

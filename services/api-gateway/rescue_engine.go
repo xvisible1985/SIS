@@ -297,7 +297,7 @@ func (s *Server) checkRescuePartialClose(ctx context.Context, botID, accountID s
 			if v, ok := trig.Params["tf"].(string); ok && v != "" {
 				interval = v
 			}
-			state := s.signalEngine.ComputeStateForce(sr.symbol, interval, sigCfgs)
+			state := s.accountSignalEngine(ex).ComputeStateForce(sr.symbol, interval, sigCfgs)
 			if state != want {
 				signalMet = false
 				break

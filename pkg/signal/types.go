@@ -13,12 +13,13 @@ const (
 
 // Candle is a single OHLCV bar.
 type Candle struct {
-	Time   int64
-	Open   float64
-	High   float64
-	Low    float64
-	Close  float64
-	Volume float64
+	Exchange string `json:"-"`
+	Time     int64
+	Open     float64
+	High     float64
+	Low      float64
+	Close    float64
+	Volume   float64
 }
 
 // Config identifies a signal by name + mixed params (numbers and strings).

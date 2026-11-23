@@ -1150,7 +1150,7 @@ func (s *Server) checkHedgeActivation(ctx context.Context, botID, ownerID, accou
 					}
 				}
 
-				state := s.signalEngine.ComputeStateForce(pos.Symbol, interval, sigCfgs)
+				state := s.accountSignalEngine(ex).ComputeStateForce(pos.Symbol, interval, sigCfgs)
 				var want signal.State
 				if hedgeDir == "short" {
 					want = signal.Sell
